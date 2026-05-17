@@ -54,6 +54,7 @@ def _warn(code: str, severity: str, message: str, blocks_trading: bool = False) 
 def build_guard_report(
     validation_summary: Optional[Dict[str, Any]] = None,
     empty_engines: Optional[Iterable[Dict[str, Any]]] = None,
+    engine_health: Optional[Dict[str, Any]] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     summary = validation_summary if validation_summary is not None else _load_summary()
@@ -129,6 +130,31 @@ def build_guard_report(
             "critical",
             f"Key engines returned no data: {', '.join(sorted(set(failed)))}.",
             blocks_trading=True,
+        ))
+
+    if engine_health is None:
+        try:
+            from telemetry.engine_health import load_summary
+            engine_health = load_summary()
+        except Exception:
+            engine_health = {}
+    weak_key_engines = []
+    for row in (engine_health or {}).get("engines", []):
+        name = str(row.get("engine") or "")
+        if name not in KEY_ENGINES:
+            continue
+        health = float(row.get("health_score") or 100)
+        hit_rate = float(row.get("hit_rate") or 1)
+        if health < 50 or hit_rate < 0.50:
+            weak_key_engines.append(name)
+    if weak_key_engines:
+        warnings.append(_warn(
+            "engine_health",
+            "warning",
+            "Key engines have weak rolling health: "
+            + ", ".join(sorted(set(weak_key_engines)))
+            + ". Treat affected factors as low-confidence until coverage recovers.",
+            blocks_trading=False,
         ))
 
     status = "blocked" if any(w["blocks_trading"] for w in warnings) else (

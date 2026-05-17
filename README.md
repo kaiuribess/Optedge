@@ -73,6 +73,8 @@ This writes:
 - `data/validation_report.html`
 - `data/validation_summary.json`
 - `data/equity_curve.png`
+- `data/factor_ic_summary.json`
+- `data/position_aging_summary.json`
 
 Primary validation uses the current model era by default so older stale data is not treated as proof for the latest weights. Use `--validation-all-time` only when you intentionally want the full historical view.
 
@@ -143,6 +145,12 @@ Historical factor IC backtest:
 python run.py --backtest
 ```
 
+Heston pricing stability check:
+
+```bash
+python run.py --heston-stability
+```
+
 ## Dashboard
 
 Each scan writes a local dashboard to `data/dashboard_*.html` and opens it in the browser by default.
@@ -151,9 +159,10 @@ The dashboard includes:
 
 - Macro regime and run statistics.
 - Live analytics and open-position P&L charts.
+- Factor IC and open-position aging charts.
 - Calls, puts, shares, value, and futures cards.
 - Search, sort, ready/watch filters, asset filters, compact mode, and expandable sections.
-- Engine telemetry and empty-engine diagnostics.
+- Engine telemetry, rolling engine health, and empty-engine diagnostics.
 - TradingView watchlist export.
 
 Generated dashboards are ignored by Git so local research output stays private.
@@ -167,6 +176,7 @@ The validation report is the main proof layer for the research loop. It reports:
 - Win rate, average return, median return, profit factor, and max drawdown.
 - Calls versus puts performance.
 - DTE, spread, and confidence bucket performance.
+- Factor IC and open-position age buckets.
 - Performance after estimated slippage.
 - SPY and QQQ benchmark comparison when market data is reachable.
 - Random baseline comparison.
@@ -187,6 +197,7 @@ It warns or blocks trust when:
 - Win rate is below a simple breakeven threshold.
 - Model updates appear stale.
 - Key data sources return no data.
+- Key engines have weak rolling health.
 
 These guardrails are meant to slow down overconfidence, not replace human review.
 

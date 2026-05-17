@@ -28,6 +28,24 @@ log = logging.getLogger("optedge.fusion")
 
 
 # -------- Helpers ------------------------------------------------------
+def _regime_adjusted_weights(macro: Dict[str, Any]) -> Dict[str, float]:
+    """Apply small regime-specific nudges to factor weights, then normalize."""
+    weights = dict(SIGNAL_WEIGHTS)
+    try:
+        import config as _cfg
+        mults = getattr(_cfg, "REGIME_FACTOR_MULTIPLIERS", {})
+    except Exception:
+        mults = {}
+    regime = str((macro or {}).get("regime", "neutral"))
+    for key, mult in (mults.get(regime) or {}).items():
+        if key in weights:
+            weights[key] = float(weights[key]) * float(mult)
+    total = sum(float(v) for v in weights.values() if v is not None)
+    if total > 0:
+        weights = {k: float(v) / total for k, v in weights.items()}
+    return weights
+
+
 def _confidence(aligned_score: float) -> int:
     """Map an action-aligned score to 0–100. Positive aligned = high conf."""
     return int(max(0, min(100, 50 + aligned_score * 22)))
@@ -221,8 +239,11 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
         df = df.merge(mp_summary[["ticker", "iv_rank", "skew_25d", "term_slope"]],
                       on="ticker", how="left")
     if not df.empty and sentiment is not None and not sentiment.empty:
-        df = df.merge(sentiment[["ticker", "mentions", "sentiment_now",
-                                 "sentiment_delta", "velocity"]],
+        sent_cols = ["ticker", "mentions", "sentiment_now", "sentiment_delta", "velocity"]
+        for extra in ("decayed_mentions", "sentiment_decay"):
+            if extra in sentiment.columns:
+                sent_cols.append(extra)
+        df = df.merge(sentiment[sent_cols],
                       on="ticker", how="left")
     elif not df.empty:
         for c in ["mentions", "sentiment_now", "sentiment_delta", "velocity"]:
@@ -502,7 +523,8 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     # Side multiplier — secondary signals are bullish-tilted; align to side
     side_mult = np.where(df["side"] == "call", 1.0, -1.0)
 
-    df["sentiment_aligned"] = df["sentiment_delta"].fillna(0) * side_mult
+    sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    df["sentiment_aligned"] = sent_source.fillna(0) * side_mult
     df["fund_aligned"] = df["fund_score"].fillna(0) * side_mult
     df["insider_aligned"] = df["insider_score"].fillna(0) * side_mult
     df["macro_aligned"] = df["macro_tilt"].fillna(0) * side_mult
@@ -626,7 +648,7 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     df = df.copy()
 
     # Weighted fusion → directional buy score
-    w = SIGNAL_WEIGHTS
+    w = _regime_adjusted_weights(macro)
     df["fused_score"] = (
         w["mispricing"]    * df["z_mispricing"]
         + w["iv_rank"]     * df["z_iv_rank"]
@@ -755,8 +777,11 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df = pd.DataFrame(rows)
 
     if sentiment is not None and not sentiment.empty:
-        df = df.merge(sentiment[["ticker", "mentions", "sentiment_now",
-                                 "sentiment_delta", "velocity"]],
+        sent_cols = ["ticker", "mentions", "sentiment_now", "sentiment_delta", "velocity"]
+        for extra in ("decayed_mentions", "sentiment_decay"):
+            if extra in sentiment.columns:
+                sent_cols.append(extra)
+        df = df.merge(sentiment[sent_cols],
                       on="ticker", how="left")
     else:
         for c in ["mentions", "sentiment_now", "sentiment_delta", "velocity"]:
@@ -816,7 +841,8 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["regime"] = macro.get("regime", "neutral")
 
     # Cross-sectional z-scores (no side multiplier — shares are inherently long bullish)
-    df["z_sent"] = zscore(df["sentiment_delta"].fillna(0))
+    sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    df["z_sent"] = zscore(sent_source.fillna(0))
     df["z_fund"] = zscore(df["fund_score"].fillna(0))
     df["z_insider"] = zscore(df["insider_score"].fillna(0))
     df["z_velocity"] = zscore(df["velocity"].fillna(0))
@@ -826,16 +852,31 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["z_congress"] = zscore(df["congress_score"].fillna(0))
 
     # Bullish-tilt fusion (shares-only)
+    sw = _regime_adjusted_weights(macro)
+    share_raw = {
+        "sent": sw.get("sentiment_d", 0.08),
+        "fund": sw.get("fundamentals", 0.07),
+        "insider": sw.get("insider", 0.07),
+        "velocity": sw.get("social", 0.04),
+        "macro": sw.get("macro", 0.06),
+        "news": sw.get("news", 0.06),
+        "earnings": sw.get("earnings", 0.06),
+        "value": sw.get("value", 0.08),
+        "congress": sw.get("congress", 0.05),
+    }
+    share_total = sum(share_raw.values()) or 1.0
+    share_w = {k: v / share_total for k, v in share_raw.items()}
+
     df["share_score"] = (
-        0.16 * df["z_sent"]
-        + 0.14 * df["z_fund"]
-        + 0.14 * df["z_insider"]
-        + 0.05 * df["z_velocity"]
-        + 0.06 * df["macro_tilt"]
-        + 0.09 * df["z_news"]
-        + 0.09 * df["z_earnings"]
-        + 0.15 * df["z_value"]
-        + 0.12 * df["z_congress"]
+        share_w["sent"] * df["z_sent"]
+        + share_w["fund"] * df["z_fund"]
+        + share_w["insider"] * df["z_insider"]
+        + share_w["velocity"] * df["z_velocity"]
+        + share_w["macro"] * df["macro_tilt"]
+        + share_w["news"] * df["z_news"]
+        + share_w["earnings"] * df["z_earnings"]
+        + share_w["value"] * df["z_value"]
+        + share_w["congress"] * df["z_congress"]
     )
 
     # Long-only: keep bullish-aligned above threshold

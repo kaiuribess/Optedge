@@ -402,6 +402,8 @@ def main():
                     help="Build the formal validation report from local logs/positions")
     ap.add_argument("--validation-all-time", action="store_true",
                     help="Validation report: include stale historical data instead of current model era only")
+    ap.add_argument("--heston-stability", action="store_true",
+                    help="Run a Heston numerical stability report without enabling Heston")
     ap.add_argument("--bankroll", type=float, default=10000,
                     help="Account size used for Kelly position sizing (default $10K)")
     ap.add_argument("--aggressive", action="store_true",
@@ -450,6 +452,17 @@ def main():
             print("\nWarnings:")
             for warning in summary["warnings"]:
                 print(f"  - {warning}")
+        return 0
+
+    if args.heston_stability:
+        from reports.heston_stability import OUT_JSON, write_report
+        log.info("== HESTON STABILITY ==")
+        report = write_report()
+        print(f"\nHeston stability: {OUT_JSON}")
+        print(f"Contracts checked: {report.get('contracts_checked', 0)}")
+        print(f"Stable enough to enable: {report.get('ok')}")
+        if report.get("reason"):
+            print(f"Reason: {report['reason']}")
         return 0
 
     if args.forward:
@@ -961,7 +974,8 @@ def main():
             save_guard_report as _save_guard_report,
         )
         research_guard_report = _build_guard_report(
-            empty_engines=empty_engines if "empty_engines" in dir() else None
+            empty_engines=empty_engines if "empty_engines" in dir() else None,
+            engine_health=engine_health_summary if "engine_health_summary" in dir() else None,
         )
         _save_guard_report(research_guard_report)
         ranked_opts, _ = _apply_research_guard(ranked_opts, guard_report=research_guard_report)

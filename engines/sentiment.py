@@ -24,6 +24,10 @@ if str(ROOT) not in sys.path:
 
 import data_provider
 from config import SUBREDDITS, SENTIMENT_LOOKBACK_HOURS, USER_AGENT
+try:
+    from config import SENTIMENT_HALF_LIFE_HOURS
+except Exception:
+    SENTIMENT_HALF_LIFE_HOURS = 6.0
 
 log = logging.getLogger("optedge.sentiment")
 
@@ -94,6 +98,16 @@ def _score_text(text: str) -> float:
     vader = _VADER.polarity_scores(text)["compound"]
     kw = _keyword_tilt(text)
     return 0.6 * vader + 0.4 * kw
+
+
+def _time_decay_weight(ts: datetime, now: datetime) -> float:
+    """Fast social chatter should fade quickly; default half-life is 6h."""
+    try:
+        age_hours = max(0.0, (now - ts).total_seconds() / 3600.0)
+        half_life = max(float(SENTIMENT_HALF_LIFE_HOURS), 0.25)
+        return 0.5 ** (age_hours / half_life)
+    except Exception:
+        return 1.0
 
 
 def _finbert_blend_scores(posts: List[Dict[str, Any]],
@@ -179,8 +193,9 @@ def _fetch_comments(sub: str, limit: int = 100) -> List[dict]:
 def run(universe: List[str]) -> pd.DataFrame:
     """Per-ticker: mentions, sentiment_now, sentiment_prev, sentiment_delta, velocity."""
     allowed = _allowed_tickers(universe)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=SENTIMENT_LOOKBACK_HOURS)
-    half = datetime.now(timezone.utc) - timedelta(hours=SENTIMENT_LOOKBACK_HOURS / 2)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=SENTIMENT_LOOKBACK_HOURS)
+    half = now - timedelta(hours=SENTIMENT_LOOKBACK_HOURS / 2)
 
     # Collect posts AND comments. Posts weight 1.0, comments 0.3 (noisier per-message).
     posts: List[Dict[str, Any]] = []
@@ -248,14 +263,18 @@ def run(universe: List[str]) -> pd.DataFrame:
     stats: Dict[str, Dict[str, Any]] = defaultdict(
         lambda: {"now_score_sum": 0.0, "prev_score_sum": 0.0,
                  "now_w": 0.0, "prev_w": 0.0,
+                 "decayed_score_sum": 0.0, "decayed_w": 0.0,
                  "now_n": 0, "prev_n": 0, "ups": 0}
     )
     for p in posts:
         bucket = "now" if p["ts"] >= half else "prev"
-        w = p["weight"]
+        decay = _time_decay_weight(p["ts"], now)
+        w = p["weight"] * decay
         for t in p["tickers"]:
             stats[t][f"{bucket}_score_sum"] += p["score"] * w
             stats[t][f"{bucket}_w"] += w
+            stats[t]["decayed_score_sum"] += p["score"] * w
+            stats[t]["decayed_w"] += w
             stats[t][f"{bucket}_n"] += 1
             stats[t]["ups"] += p["ups"]
 
@@ -265,12 +284,15 @@ def run(universe: List[str]) -> pd.DataFrame:
         n_prev = d["prev_n"]
         s_now = d["now_score_sum"] / d["now_w"] if d["now_w"] else 0.0
         s_prev = d["prev_score_sum"] / d["prev_w"] if d["prev_w"] else 0.0
+        s_decayed = d["decayed_score_sum"] / d["decayed_w"] if d["decayed_w"] else 0.0
         rows.append({
             "ticker": t,
             "mentions": n_now + n_prev,
+            "decayed_mentions": d["now_w"] + d["prev_w"],
             "sentiment_now": s_now,
             "sentiment_prev": s_prev,
             "sentiment_delta": s_now - s_prev,
+            "sentiment_decay": s_decayed,
             "velocity": n_now - n_prev,
             "ups": d["ups"],
         })

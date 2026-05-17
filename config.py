@@ -160,6 +160,7 @@ HESTON_ENABLED = False  # experimental; enable only after a stability validation
 # ---- Sentiment --------------------------------------------------------
 SUBREDDITS = ["wallstreetbets", "stocks", "investing", "options", "smallstreetbets"]
 SENTIMENT_LOOKBACK_HOURS = 48
+SENTIMENT_HALF_LIFE_HOURS = 6.0
 USER_AGENT = "optedge-research/0.1 (research@optedge.local)"
 
 # ---- Insider ----------------------------------------------------------
@@ -262,6 +263,20 @@ SIGNAL_WEIGHTS = {
     # Tier D (3 new risk / portfolio factors)
     "yield_curve":  0.03,    # FRED Treasury curve PCA factors (banks/insurers/duration)
     "credit_spread": 0.03,   # IG/HY OAS divergence (cyclical credit stress)
+}
+
+REGIME_FACTOR_MULTIPLIERS = {
+    "risk_on": {
+        "sentiment_d": 1.25, "social": 1.20, "uoa": 1.20, "sector_rs": 1.15,
+        "technicals": 1.15, "short_int": 1.15, "gtrends": 1.15,
+        "credit_spread": 0.80, "macro": 0.90,
+    },
+    "risk_off": {
+        "macro": 1.35, "credit_spread": 1.35, "vix_term": 1.25,
+        "iv_surface": 1.20, "skew": 1.20, "put_call": 1.15,
+        "sentiment_d": 0.75, "social": 0.75, "uoa": 0.80,
+        "short_int": 0.80, "gtrends": 0.80,
+    },
 }
 
 # ---- Analyst (Finnhub) -----------------------------------------------
