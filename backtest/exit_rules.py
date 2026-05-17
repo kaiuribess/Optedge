@@ -115,6 +115,10 @@ def compute_exit_pressure(position: Dict[str, Any],
         if val is not None and _num(val) < -0.10:
             pressure += 10
             reasons.append(label)
+        old_val = position.get(key)
+        if val is not None and old_val is not None and (_num(old_val) - _num(val)) > 0.25:
+            pressure += 8
+            reasons.append(f"{label} vs entry")
 
     old_regime = str(position.get("regime") or "")
     new_regime = str((current_signal or {}).get("regime") or "")
@@ -154,6 +158,16 @@ def compute_exit_pressure(position: Dict[str, Any],
         if (current_signal or {}).get("tech_score") is not None and _num((current_signal or {}).get("tech_score")) < -0.5:
             pressure += 12
             reasons.append("trend deteriorated")
+        for key, label in [
+            ("earnings_score", "earnings setup deteriorated"),
+            ("analyst_score", "analyst support deteriorated"),
+            ("fund_score", "fundamental score deteriorated"),
+            ("value_score", "value support deteriorated"),
+        ]:
+            if (current_signal or {}).get(key) is not None and position.get(key) is not None:
+                if (_num(position.get(key)) - _num((current_signal or {}).get(key))) > 0.35:
+                    pressure += 6
+                    reasons.append(label)
     elif asset == "futures":
         direction = str(position.get("direction", "long")).lower()
         fs = (current_signal or {}).get("futures_score")
@@ -163,6 +177,15 @@ def compute_exit_pressure(position: Dict[str, Any],
         if (current_signal or {}).get("hv20") is not None and _num((current_signal or {}).get("hv20")) > _num(position.get("hv20"), 0) * 1.5:
             pressure += 10
             reasons.append("volatility spike")
+        if (current_signal or {}).get("range_pos") is not None and position.get("range_pos") is not None:
+            old_range = _num(position.get("range_pos"), 0.5)
+            new_range = _num((current_signal or {}).get("range_pos"), 0.5)
+            if direction == "long" and old_range < 0.35 and new_range > 0.85:
+                pressure += 10
+                reasons.append("range position reversed high")
+            if direction == "short" and old_range > 0.65 and new_range < 0.20:
+                pressure += 10
+                reasons.append("range position reversed low")
 
     pressure = max(0, min(100, int(round(pressure))))
     watch_t = int(policy.get("watch_pressure_threshold", 40))

@@ -1,5 +1,8 @@
 name: Optedge CI
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches: [main]
@@ -26,6 +29,8 @@ jobs:
           pip install pytest ruff
 
       - name: Run tests
+        env:
+          PYTHONPATH: .
         run: |
           python tests/test_pricing.py
           python tests/test_research_guard.py

@@ -16,6 +16,27 @@ CLOSED_FILE = DATA_DIR / "closed_share_positions.json"
 
 log = logging.getLogger("optedge.share_positions")
 
+ENTRY_FACTOR_PREFIXES = ("z_", "factor_")
+ENTRY_FACTOR_COLUMNS = {
+    "mentions", "sentiment_now", "sentiment_delta", "sentiment_decay", "velocity",
+    "news_delta", "news_velocity", "top_headline", "n_24h", "fund_score",
+    "classification", "rev_growth", "op_margin", "pe", "market_cap",
+    "insider_score", "n_buys", "n_sells", "buys_value", "sells_value",
+    "earnings_date", "next_earnings_date", "days_to_earnings", "earnings_score",
+    "value_score", "value_bucket", "earnings_yield", "fcf_yield", "graham_score",
+    "congress_score", "congress_buys_n", "congress_top_buyer", "social_score",
+    "stocktwits_n", "stocktwits_avg_sent", "analyst_score", "analyst_total",
+    "analyst_avg", "analyst_momentum", "sector_rs_score", "sector_etf",
+    "ticker_ret_20d", "sector_ret_20d", "dark_pool_score", "short_vol_ratio",
+    "fda_score", "days_to_catalyst", "sector_flow_score", "tech_score", "rsi",
+    "macd_hist", "bb_percent_b", "ma_cross", "adx", "stoch_k", "obv_slope",
+    "short_int_score", "short_pct_of_float", "short_ratio_days_to_cover",
+    "cot_score", "thirteen_f_score", "vix_term_score", "eia_score",
+    "wasde_score", "buyback_score", "gtrends_score", "form_144_score",
+    "whisper_score", "hyperliquid_score", "twitter_score", "r_options_score",
+    "curve_score", "credit_score", "cluster_buys_score",
+}
+
 
 def _load(path: Path) -> List[Dict]:
     if not path.exists():
@@ -33,6 +54,18 @@ def _save(path: Path, rows: List[Dict]) -> None:
 
 def _position_id(ticker: str, entry_time: str) -> str:
     return f"share|{ticker}|{entry_time}"
+
+
+def _json_value(value):
+    if hasattr(value, "item"):
+        value = value.item()
+    if not isinstance(value, (list, dict, tuple)):
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+    return value
 
 
 def _latest_price(ticker: str) -> Optional[float]:
@@ -100,11 +133,9 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
         for col in s.index:
             if col in row:
                 continue
-            if str(col).startswith(("z_", "factor_")):
-                value = s.get(col)
-                if hasattr(value, "item"):
-                    value = value.item()
-                row[str(col)] = value
+            col_name = str(col)
+            if col_name.startswith(ENTRY_FACTOR_PREFIXES) or col_name in ENTRY_FACTOR_COLUMNS:
+                row[col_name] = _json_value(s.get(col))
         rows.append(row)
         existing.add(ticker)
         added += 1

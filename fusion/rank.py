@@ -757,7 +757,30 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
                 macro: Dict[str, Any], excluded_tickers: set = None,
                 news: pd.DataFrame = None, earnings: pd.DataFrame = None,
                 value: pd.DataFrame = None,
-                congress: pd.DataFrame = None) -> pd.DataFrame:
+                congress: pd.DataFrame = None,
+                social: pd.DataFrame = None,
+                analyst: pd.DataFrame = None,
+                sector_rs: pd.DataFrame = None,
+                dark_pool: pd.DataFrame = None,
+                fda: pd.DataFrame = None,
+                sector_flow: pd.DataFrame = None,
+                technicals: pd.DataFrame = None,
+                short_int: pd.DataFrame = None,
+                cot: pd.DataFrame = None,
+                thirteen_f: pd.DataFrame = None,
+                vix_term: pd.DataFrame = None,
+                eia: pd.DataFrame = None,
+                wasde: pd.DataFrame = None,
+                buybacks: pd.DataFrame = None,
+                gtrends: pd.DataFrame = None,
+                form_144: pd.DataFrame = None,
+                whisper: pd.DataFrame = None,
+                hyperliquid: pd.DataFrame = None,
+                twitter: pd.DataFrame = None,
+                r_options: pd.DataFrame = None,
+                yield_curve: pd.DataFrame = None,
+                credit_spread: pd.DataFrame = None,
+                cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
     """Score small caps for long shares.
 
     Built from the multi-factor stack only (no option pricing). Bullish-aligned
@@ -840,6 +863,55 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["macro_tilt"] = macro.get("macro_tilt", 0.0)
     df["regime"] = macro.get("regime", "neutral")
 
+    # Broader non-option factor stack. Shares intentionally skip option-chain
+    # fields such as strikes, expiries, IV, Greeks, theo pricing, and spreads.
+    df = _safe_merge_score(df, social, "social_score",
+                           ["stocktwits_n", "stocktwits_avg_sent", "trump_n"])
+    df = _safe_merge_score(df, analyst, "analyst_score",
+                           ["analyst_total", "analyst_avg", "analyst_momentum"])
+    df = _safe_merge_score(df, sector_rs, "sector_rs_score",
+                           ["sector_etf", "ticker_ret_20d", "sector_ret_20d"])
+    df = _safe_merge_score(df, dark_pool, "dark_pool_score", ["short_vol_ratio"])
+    df = _safe_merge_score(df, fda, "fda_score",
+                           ["next_catalyst_date", "days_to_catalyst", "catalyst_type"])
+    df = _safe_merge_score(df, sector_flow, "sector_flow_score")
+    df = _safe_merge_score(df, technicals, "tech_score",
+                           ["rsi", "macd_hist", "bb_percent_b", "ma_cross",
+                            "dist_52w_high", "dist_52w_low", "adx", "stoch_k",
+                            "obv_slope"])
+    df = _safe_merge_score(df, short_int, "short_int_score",
+                           ["short_pct_of_float", "short_ratio_days_to_cover",
+                            "short_int_change_pct"])
+    df = _safe_merge_score(df, cot, "cot_score",
+                           ["cot_market", "cot_net_change", "cot_report_date"])
+    df = _safe_merge_score(df, thirteen_f, "thirteen_f_score",
+                           ["tf_n_new", "tf_n_growing", "tf_n_cutting",
+                            "tf_n_exiting", "tf_funds"])
+    df = _safe_merge_score(df, vix_term, "vix_term_score",
+                           ["vix_regime", "vix_contango_ratio"])
+    df = _safe_merge_score(df, eia, "eia_score", ["eia_meta", "eia_commodity"])
+    df = _safe_merge_score(df, wasde, "wasde_score",
+                           ["wasde_proximity", "wasde_days_since"])
+    df = _safe_merge_score(df, buybacks, "buyback_score",
+                           ["buyback_date_latest", "buyback_n_filings"])
+    df = _safe_merge_score(df, gtrends, "gtrends_score", ["gtrends_term"])
+    df = _safe_merge_score(df, form_144, "form_144_score",
+                           ["form_144_count_30d", "form_144_latest_date"])
+    df = _safe_merge_score(df, whisper, "whisper_score",
+                           ["whisper_eps", "whisper_consensus", "whisper_gap_pct",
+                            "whisper_report_date"])
+    df = _safe_merge_score(df, hyperliquid, "hyperliquid_score",
+                           ["hl_crypto", "hl_funding_annual"])
+    df = _safe_merge_score(df, twitter, "twitter_score",
+                           ["twitter_n", "twitter_excerpt"])
+    df = _safe_merge_score(df, r_options, "r_options_score",
+                           ["r_options_n", "r_options_avg_sent"])
+    df = _safe_merge_score(df, yield_curve, "curve_score", ["curve_factor"])
+    df = _safe_merge_score(df, credit_spread, "credit_score",
+                           ["credit_hy_oas", "credit_spread_chg_5d"])
+    df = _safe_merge_score(df, cluster_buys, "cluster_buys_score",
+                           ["cluster_n_buyers", "cluster_buys_dollar"])
+
     # Cross-sectional z-scores (no side multiplier — shares are inherently long bullish)
     sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
     df["z_sent"] = zscore(sent_source.fillna(0))
@@ -850,6 +922,29 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["z_earnings"] = zscore(df["earnings_score"].fillna(0))
     df["z_value"] = zscore(df["value_score"].fillna(0))
     df["z_congress"] = zscore(df["congress_score"].fillna(0))
+    df["z_social"] = zscore(df["social_score"].fillna(0))
+    df["z_analyst"] = zscore(df["analyst_score"].fillna(0))
+    df["z_sector_rs"] = zscore(df["sector_rs_score"].fillna(0))
+    df["z_dark_pool"] = zscore(df["dark_pool_score"].fillna(0))
+    df["z_fda"] = zscore(df["fda_score"].fillna(0))
+    df["z_sector_flow"] = zscore(df["sector_flow_score"].fillna(0))
+    df["z_tech"] = zscore(df["tech_score"].fillna(0))
+    df["z_short_int"] = zscore(df["short_int_score"].fillna(0))
+    df["z_cot"] = zscore(df["cot_score"].fillna(0))
+    df["z_thirteen_f"] = zscore(df["thirteen_f_score"].fillna(0))
+    df["z_vix_term"] = zscore(df["vix_term_score"].fillna(0))
+    df["z_eia"] = zscore(df["eia_score"].fillna(0))
+    df["z_wasde"] = zscore(df["wasde_score"].fillna(0))
+    df["z_buybacks"] = zscore(df["buyback_score"].fillna(0))
+    df["z_gtrends"] = zscore(df["gtrends_score"].fillna(0))
+    df["z_form_144"] = zscore(df["form_144_score"].fillna(0))
+    df["z_whisper"] = zscore(df["whisper_score"].fillna(0))
+    df["z_hyperliquid"] = zscore(df["hyperliquid_score"].fillna(0))
+    df["z_twitter"] = zscore(df["twitter_score"].fillna(0))
+    df["z_r_options"] = zscore(df["r_options_score"].fillna(0))
+    df["z_yield_curve"] = zscore(df["curve_score"].fillna(0))
+    df["z_credit_spread"] = zscore(df["credit_score"].fillna(0))
+    df["z_cluster_buys"] = zscore(df["cluster_buys_score"].fillna(0))
 
     # Bullish-tilt fusion (shares-only)
     sw = _regime_adjusted_weights(macro)
@@ -863,6 +958,29 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         "earnings": sw.get("earnings", 0.06),
         "value": sw.get("value", 0.08),
         "congress": sw.get("congress", 0.05),
+        "social": sw.get("social", 0.04),
+        "analyst": sw.get("analyst", 0.05),
+        "sector_rs": sw.get("sector_rs", 0.04),
+        "dark_pool": sw.get("dark_pool", 0.03),
+        "fda": sw.get("fda", 0.03),
+        "sector_flow": sw.get("sector_flow", 0.04),
+        "technicals": sw.get("technicals", 0.04),
+        "short_int": sw.get("short_int", 0.03),
+        "cot": sw.get("cot", 0.02),
+        "thirteen_f": sw.get("thirteen_f", 0.03),
+        "vix_term": sw.get("vix_term", 0.02),
+        "eia": sw.get("eia", 0.02),
+        "wasde": sw.get("wasde", 0.02),
+        "buybacks": sw.get("buybacks", 0.03),
+        "gtrends": sw.get("gtrends", 0.03),
+        "form_144": sw.get("form_144", 0.03),
+        "whisper": sw.get("whisper", 0.02),
+        "hyperliquid": sw.get("hyperliquid", 0.02),
+        "twitter": sw.get("twitter", 0.02),
+        "r_options": sw.get("r_options", 0.02),
+        "yield_curve": sw.get("yield_curve", 0.02),
+        "credit_spread": sw.get("credit_spread", 0.02),
+        "cluster_buys": sw.get("cluster_buys", 0.03),
     }
     share_total = sum(share_raw.values()) or 1.0
     share_w = {k: v / share_total for k, v in share_raw.items()}
@@ -877,6 +995,29 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         + share_w["earnings"] * df["z_earnings"]
         + share_w["value"] * df["z_value"]
         + share_w["congress"] * df["z_congress"]
+        + share_w["social"] * df["z_social"]
+        + share_w["analyst"] * df["z_analyst"]
+        + share_w["sector_rs"] * df["z_sector_rs"]
+        + share_w["dark_pool"] * df["z_dark_pool"]
+        + share_w["fda"] * df["z_fda"]
+        + share_w["sector_flow"] * df["z_sector_flow"]
+        + share_w["technicals"] * df["z_tech"]
+        + share_w["short_int"] * df["z_short_int"]
+        + share_w["cot"] * df["z_cot"]
+        + share_w["thirteen_f"] * df["z_thirteen_f"]
+        + share_w["vix_term"] * df["z_vix_term"]
+        + share_w["eia"] * df["z_eia"]
+        + share_w["wasde"] * df["z_wasde"]
+        + share_w["buybacks"] * df["z_buybacks"]
+        + share_w["gtrends"] * df["z_gtrends"]
+        + share_w["form_144"] * df["z_form_144"]
+        + share_w["whisper"] * df["z_whisper"]
+        + share_w["hyperliquid"] * df["z_hyperliquid"]
+        + share_w["twitter"] * df["z_twitter"]
+        + share_w["r_options"] * df["z_r_options"]
+        + share_w["yield_curve"] * df["z_yield_curve"]
+        + share_w["credit_spread"] * df["z_credit_spread"]
+        + share_w["cluster_buys"] * df["z_cluster_buys"]
     )
 
     # Long-only: keep bullish-aligned above threshold
@@ -891,6 +1032,90 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["rank_score"] = df["share_score"]
     df = df.sort_values("rank_score", ascending=False).reset_index(drop=True)
     return df
+
+
+def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
+                           sentiment: pd.DataFrame = None,
+                           fundamentals: pd.DataFrame = None,
+                           insider: pd.DataFrame = None,
+                           news: pd.DataFrame = None,
+                           earnings: pd.DataFrame = None,
+                           value: pd.DataFrame = None,
+                           congress: pd.DataFrame = None,
+                           social: pd.DataFrame = None,
+                           analyst: pd.DataFrame = None,
+                           sector_rs: pd.DataFrame = None,
+                           dark_pool: pd.DataFrame = None,
+                           fda: pd.DataFrame = None,
+                           sector_flow: pd.DataFrame = None,
+                           technicals: pd.DataFrame = None,
+                           short_int: pd.DataFrame = None,
+                           cot: pd.DataFrame = None,
+                           thirteen_f: pd.DataFrame = None,
+                           vix_term: pd.DataFrame = None,
+                           eia: pd.DataFrame = None,
+                           wasde: pd.DataFrame = None,
+                           buybacks: pd.DataFrame = None,
+                           gtrends: pd.DataFrame = None,
+                           form_144: pd.DataFrame = None,
+                           whisper: pd.DataFrame = None,
+                           hyperliquid: pd.DataFrame = None,
+                           twitter: pd.DataFrame = None,
+                           r_options: pd.DataFrame = None,
+                           yield_curve: pd.DataFrame = None,
+                           credit_spread: pd.DataFrame = None,
+                           cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
+    """Attach non-option factor context to futures via their ETF proxy."""
+    if futures_df is None or futures_df.empty or "etf" not in futures_df.columns:
+        return futures_df
+    base = futures_df.copy()
+    base["ticker"] = base["etf"]
+    out = _join_per_ticker(
+        base, pd.DataFrame(), sentiment, fundamentals, insider, macro,
+        news=news, earnings=earnings, congress=congress, social=social,
+        analyst=analyst, sector_rs=sector_rs, dark_pool=dark_pool, fda=fda,
+        sector_flow=sector_flow, technicals=technicals, short_int=short_int,
+        cot=cot, thirteen_f=thirteen_f, vix_term=vix_term, eia=eia,
+        wasde=wasde, buybacks=buybacks, gtrends=gtrends, form_144=form_144,
+        whisper=whisper, hyperliquid=hyperliquid, twitter=twitter,
+        r_options=r_options, yield_curve=yield_curve,
+        credit_spread=credit_spread, cluster_buys=cluster_buys,
+    )
+    if value is not None and not value.empty:
+        value_cols = ["ticker", "value_score", "value_bucket", "earnings_yield",
+                      "fcf_yield", "graham_score"]
+        out = out.merge(value[[c for c in value_cols if c in value.columns]],
+                        on="ticker", how="left")
+    else:
+        out["value_score"] = 0.0
+        out["value_bucket"] = None
+    factor_cols = [
+        "sentiment_delta", "fund_score", "insider_score", "news_delta",
+        "earnings_score", "value_score", "congress_score", "social_score",
+        "analyst_score", "sector_rs_score", "dark_pool_score", "fda_score",
+        "sector_flow_score", "tech_score", "short_int_score", "cot_score",
+        "thirteen_f_score", "vix_term_score", "eia_score", "wasde_score",
+        "buyback_score", "gtrends_score", "form_144_score", "whisper_score",
+        "hyperliquid_score", "twitter_score", "r_options_score", "curve_score",
+        "credit_score", "cluster_buys_score",
+    ]
+    for col in factor_cols:
+        if col not in out.columns:
+            out[col] = 0.0
+    z_cols = []
+    for col in factor_cols:
+        z_col = f"z_context_{col.replace('_score', '').replace('_delta', '')}"
+        out[z_col] = zscore(pd.to_numeric(out[col], errors="coerce").fillna(0.0))
+        z_cols.append(z_col)
+    if z_cols:
+        out["futures_context_score"] = out[z_cols].mean(axis=1).fillna(0.0)
+    else:
+        out["futures_context_score"] = 0.0
+    out["rank_score"] = (
+        pd.to_numeric(out.get("futures_score", 0.0), errors="coerce").fillna(0.0)
+        + 0.20 * out["futures_context_score"]
+    )
+    return out
 
 
 def top_shares(df: pd.DataFrame, n: int = TOP_N_SHARES) -> pd.DataFrame:

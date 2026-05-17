@@ -25,6 +25,12 @@ FUTURES_SPECS: Dict[str, Dict[str, Any]] = {
 
 def _atr_like(row: pd.Series) -> float:
     spot = float(row.get("spot") or row.get("entry") or 0)
+    try:
+        atr = float(row.get("atr20") or 0)
+        if atr > 0:
+            return max(atr, spot * 0.003)
+    except Exception:
+        pass
     hv20 = row.get("hv20")
     try:
         hv = float(hv20)

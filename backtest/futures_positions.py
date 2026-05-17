@@ -16,6 +16,22 @@ CLOSED_FILE = DATA_DIR / "closed_futures_positions.json"
 
 log = logging.getLogger("optedge.futures_positions")
 
+ENTRY_FACTOR_PREFIXES = ("z_", "factor_", "z_context_")
+ENTRY_FACTOR_COLUMNS = {
+    "etf", "kind", "ret_5d", "ret_20d", "ret_60d", "hv20", "atr20",
+    "range_pos", "futures_context_score", "rank_score", "macro_tilt",
+    "regime", "mentions", "sentiment_now", "sentiment_delta", "sentiment_decay",
+    "velocity", "news_delta", "news_velocity", "top_headline", "n_24h",
+    "fund_score", "classification", "insider_score", "earnings_score",
+    "days_to_earnings", "value_score", "value_bucket", "congress_score",
+    "social_score", "analyst_score", "sector_rs_score", "dark_pool_score",
+    "fda_score", "sector_flow_score", "tech_score", "short_int_score",
+    "cot_score", "thirteen_f_score", "vix_term_score", "eia_score",
+    "wasde_score", "buyback_score", "gtrends_score", "form_144_score",
+    "whisper_score", "hyperliquid_score", "twitter_score", "r_options_score",
+    "curve_score", "credit_score", "cluster_buys_score",
+}
+
 
 def _load(path: Path) -> List[Dict]:
     if not path.exists():
@@ -29,6 +45,18 @@ def _load(path: Path) -> List[Dict]:
 def _save(path: Path, rows: List[Dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
+
+
+def _json_value(value):
+    if hasattr(value, "item"):
+        value = value.item()
+    if not isinstance(value, (list, dict, tuple)):
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:
+            pass
+    return value
 
 
 def _latest_price(symbol: str) -> Optional[float]:
@@ -89,6 +117,12 @@ def add_new_futures_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "latest_exit_action": None,
             "reprice_failed_count": 0,
         }
+        for col in s.index:
+            if col in row:
+                continue
+            col_name = str(col)
+            if col_name.startswith(ENTRY_FACTOR_PREFIXES) or col_name in ENTRY_FACTOR_COLUMNS:
+                row[col_name] = _json_value(s.get(col))
         rows.append(row)
         existing.add((symbol, direction))
         added += 1

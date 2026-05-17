@@ -1008,7 +1008,23 @@ def main():
     ranked_shares = fusion_rank.fuse_shares(universe_shares, sent_df, fund_df, ins_df, macro_state,
                                              excluded_tickers=excluded,
                                              news=news_df, earnings=earn_df, value=value_df,
-                                             congress=congress_df)
+                                             congress=congress_df, social=social_df,
+                                             analyst=analyst_df, sector_rs=sector_rs_df,
+                                             dark_pool=dark_pool_df, fda=fda_df,
+                                             sector_flow=sector_flow_df,
+                                             technicals=technicals_df,
+                                             short_int=short_int_df, cot=cot_df,
+                                             thirteen_f=thirteen_f_df,
+                                             vix_term=vix_term_df, eia=eia_df,
+                                             wasde=wasde_df, buybacks=buybacks_df,
+                                             gtrends=gtrends_df, form_144=form_144_df,
+                                             whisper=whisper_df,
+                                             hyperliquid=hyperliquid_df,
+                                             twitter=twitter_df,
+                                             r_options=r_options_df,
+                                             yield_curve=yield_curve_df,
+                                             credit_spread=credit_spread_df,
+                                             cluster_buys=cluster_buys_df)
     if has_predictor:
         ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, coefs)
     ranked_shares = bt_sizing.add_sizing_to_shares(ranked_shares, bankroll=args.bankroll,
@@ -1047,9 +1063,30 @@ def main():
     # Top futures plays
     top_fut = pd.DataFrame()
     if not futures_df.empty and "futures_score" in futures_df.columns:
+        try:
+            futures_df = fusion_rank.enrich_futures_context(
+                futures_df, macro_state, sentiment=sent_df,
+                fundamentals=fund_df, insider=ins_df, news=news_df,
+                earnings=earn_df, value=value_df, congress=congress_df,
+                social=social_df, analyst=analyst_df, sector_rs=sector_rs_df,
+                dark_pool=dark_pool_df, fda=fda_df,
+                sector_flow=sector_flow_df, technicals=technicals_df,
+                short_int=short_int_df, cot=cot_df,
+                thirteen_f=thirteen_f_df, vix_term=vix_term_df,
+                eia=eia_df, wasde=wasde_df, buybacks=buybacks_df,
+                gtrends=gtrends_df, form_144=form_144_df,
+                whisper=whisper_df, hyperliquid=hyperliquid_df,
+                twitter=twitter_df, r_options=r_options_df,
+                yield_curve=yield_curve_df,
+                credit_spread=credit_spread_df,
+                cluster_buys=cluster_buys_df,
+            )
+        except Exception as e:
+            log.debug("futures context enrichment skipped: %s", e)
+        fut_rank_col = "rank_score" if "rank_score" in futures_df.columns else "futures_score"
         # Bullish + bearish split
-        bullish = futures_df[futures_df["futures_score"] > 0.3].sort_values("futures_score", ascending=False)
-        bearish = futures_df[futures_df["futures_score"] < -0.3].sort_values("futures_score")
+        bullish = futures_df[futures_df["futures_score"] > 0.3].sort_values(fut_rank_col, ascending=False)
+        bearish = futures_df[futures_df["futures_score"] < -0.3].sort_values(fut_rank_col)
         top_fut = pd.concat([bullish.head(args.max_futures // 2),
                              bearish.head(args.max_futures // 2)], ignore_index=True)
         try:

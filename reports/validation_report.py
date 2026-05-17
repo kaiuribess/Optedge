@@ -318,9 +318,17 @@ def _closed_with_slippage(closed: pd.DataFrame) -> pd.DataFrame:
 
 def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, Any]:
     out = {}
+    reviews = _load_exit_reviews()
+    policy = _exit_policy_summary()
+    policies = policy.get("assets", {}) if isinstance(policy, dict) else {}
     for asset in ("option", "share", "futures"):
         open_sub = open_df[open_df.get("asset", "") == asset] if not open_df.empty else pd.DataFrame()
         closed_sub = closed[closed.get("asset", "") == asset] if not closed.empty else pd.DataFrame()
+        review_sub = (
+            reviews[reviews["asset"] == asset]
+            if not reviews.empty and "asset" in reviews.columns else pd.DataFrame()
+        )
+        asset_policy = policies.get(asset, {}) if isinstance(policies, dict) else {}
         out[asset] = {
             "open_positions": int(len(open_sub)),
             "closed_positions": int(len(closed_sub)),
@@ -331,6 +339,14 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
                 .astype(str).value_counts().to_dict()
                 if not closed_sub.empty else {}
             ),
+            "dynamic_exit_actions": (
+                review_sub.get("action", pd.Series(dtype=str)).fillna("unknown")
+                .astype(str).value_counts().to_dict()
+                if not review_sub.empty else {}
+            ),
+            "learned_policy_active": bool(asset_policy.get("learned_active", False)),
+            "policy_version": asset_policy.get("policy_version", policy.get("policy_version", "default")
+                                                if isinstance(policy, dict) else "default"),
             "pnl_dollars": (
                 float(pd.to_numeric(closed_sub.get("pnl_dollars"), errors="coerce").sum())
                 if "pnl_dollars" in closed_sub.columns else None
@@ -339,6 +355,7 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
                 float(pd.to_numeric(closed_sub.get("pnl_points"), errors="coerce").sum())
                 if "pnl_points" in closed_sub.columns else None
             ),
+            "pnl_pct_column": "pnl_pct" if "pnl_pct" in closed_sub.columns else None,
         }
     return out
 
@@ -627,15 +644,21 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             f"<td>{int(row.get('closed_positions') or 0)}</td>"
             f"<td>{_fmt_pct(overall.get('win_rate'))}</td>"
             f"<td>{_fmt_pct(overall.get('avg_return'))}</td>"
+            f"<td>{_fmt_pct(overall.get('median_return'))}</td>"
             f"<td>{_fmt_pct(overall.get('max_drawdown'))}</td>"
             f"<td>{_fmt(overall.get('profit_factor'))}</td>"
+            f"<td>{html.escape(json.dumps(row.get('dynamic_exit_actions', {})))}</td>"
+            f"<td>{html.escape(str(row.get('learned_policy_active', False)))}</td>"
+            f"<td>{_fmt(row.get('pnl_dollars'))}</td>"
+            f"<td>{_fmt(row.get('pnl_points'))}</td>"
             f"<td>{html.escape(json.dumps(row.get('exit_reasons', {})))}</td>"
             "</tr>"
         )
     return (
         "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th>"
-        "<th>Win rate</th><th>Avg return</th><th>Max DD</th>"
-        "<th>Profit factor</th><th>Exit reasons</th></tr></thead>"
+        "<th>Win rate</th><th>Avg return</th><th>Median</th><th>Max DD</th>"
+        "<th>Profit factor</th><th>Exit actions</th><th>Learned exits</th>"
+        "<th>P&L dollars</th><th>P&L points</th><th>Exit reasons</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
 

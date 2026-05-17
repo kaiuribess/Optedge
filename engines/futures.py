@@ -72,13 +72,33 @@ def _hv(close: pd.Series, n: int) -> Optional[float]:
     return float(rets.std() * math.sqrt(252))
 
 
+def _atr(h: pd.DataFrame, n: int = 20) -> Optional[float]:
+    if h is None or h.empty or len(h) < n + 1:
+        return None
+    if not {"High", "Low", "Close"}.issubset(h.columns):
+        return None
+    high = h["High"].astype(float)
+    low = h["Low"].astype(float)
+    close = h["Close"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1).dropna()
+    if len(tr) < n:
+        return None
+    return float(tr.tail(n).mean())
+
+
 def _process(meta: Dict[str, Any]) -> Dict[str, Any]:
     sym = meta["symbol"]
     try:
         h = data_provider.get_history(sym, period="1y")
         if h is None or h.empty or "Close" not in h.columns:
             return {**meta, "spot": None, "ret_5d": None, "ret_20d": None,
-                    "ret_60d": None, "hv20": None, "range_pos": None,
+                    "ret_60d": None, "hv20": None, "atr20": None,
+                    "range_pos": None,
                     "futures_score": 0.0}
         close = h["Close"].dropna()
         if close.empty:
@@ -88,6 +108,7 @@ def _process(meta: Dict[str, Any]) -> Dict[str, Any]:
         ret_20d = float(close.iloc[-1] / close.iloc[-21] - 1) if len(close) > 21 else None
         ret_60d = float(close.iloc[-1] / close.iloc[-61] - 1) if len(close) > 61 else None
         hv20 = _hv(close, 20)
+        atr20 = _atr(h, 20)
 
         # 52-week range position
         last = close.tail(252) if len(close) > 252 else close
@@ -114,6 +135,7 @@ def _process(meta: Dict[str, Any]) -> Dict[str, Any]:
             "ret_20d": round(ret_20d, 4) if ret_20d is not None else None,
             "ret_60d": round(ret_60d, 4) if ret_60d is not None else None,
             "hv20": round(hv20, 4) if hv20 else None,
+            "atr20": round(atr20, 4) if atr20 else None,
             "range_pos": round(range_pos, 3),
             "futures_score": round(score, 3),
         }
