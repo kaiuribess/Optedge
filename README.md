@@ -11,11 +11,54 @@ It is built for research and decision support. It is not an autonomous trading s
 ## What It Does
 
 - Ranks long calls, long puts, share buys, value plays, and futures ideas.
-- Scores signals across mispricing, IV, skew, sentiment, fundamentals, insider activity, news, earnings, macro, Congress, social attention, technicals, and market structure.
+- Scores signals across options mispricing, IV, skew, sentiment, fundamentals, insider activity, filings, news, earnings, macro, Congress, retail attention, technicals, futures, and market structure.
 - Applies EV, estimated slippage, fractional Kelly, per-trade caps, sector caps, and exit triggers.
 - Tracks open and closed recommendations locally.
 - Generates an interactive HTML dashboard.
 - Produces a formal validation report with win rate, returns, drawdown, profit factor, buckets, benchmarks, and sample-size warnings.
+
+## Signal Coverage
+
+Optedge is intentionally broad. Each run can combine dozens of independent signals into one research board:
+
+| Area | What Optedge Looks At |
+|---|---|
+| Options pricing | Black-Scholes, CRR binomial, Bjerksund-Stensland, CBOE theoretical price, ensemble weights, fair value gaps, net edge after spread |
+| Options surface | IV rank, IV premium, skew, surface anomalies, DTE, delta, open interest, bid/ask spread, liquidity filters |
+| Options flow | Unusual options activity, put/call ratios, contract-level ranking, call/put separation |
+| Sentiment | WSB, r/options, StockTwits-style social signals, ApeWisdom/Twitter-style attention, FinBERT, VADER, keyword/degen-aware text scoring |
+| News | Recent headlines, 24-hour news count, headline sentiment, news momentum |
+| Earnings | Earnings calendar, days-to-earnings, whisper signals, IV-crush risk |
+| Fundamentals | Market cap, valuation, quality, P/E, FCF yield, earnings yield, EV/EBITDA, margin/ROIC proxies |
+| Value investing | Deep value buckets, Graham-style score, Magic Formula-style quality/value composite |
+| Insider activity | SEC Form 4 parsing, insider buys/sells, officer/director weighting, Finnhub MSPR aggregate insider sentiment |
+| Filings and flows | Form 144 planned sales, buyback announcements, 13F-style institutional context, cluster-buy detection |
+| Congress | STOCK Act transaction disclosures from House/Senate reports, net buying/selling by ticker |
+| Macro | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads |
+| Futures and commodities | Equity index, rates, energy, metals, agriculture, crypto futures, trend/range/volatility features |
+| Public macro datasets | CFTC CoT, EIA energy data, USDA WASDE, FRED yield/credit data when configured |
+| Market structure | Dark-pool/FINRA short-volume proxy, short interest, squeeze setups, sector ETF flows |
+| Technicals | Trend, momentum, RSI, MACD, relative strength, 52-week range position, volatility regime |
+| Special catalysts | FDA/biotech catalyst detection, earnings-window flags, event proximity |
+| Crypto attention | Hyperliquid open-interest style signals for crypto-linked names and futures context |
+| Portfolio context | Sector concentration, portfolio Greeks, drawdown breaker, engine latency telemetry |
+
+The goal is not to blindly trust every factor. The goal is to make competing evidence visible, size ideas conservatively, and then validate which signals actually work.
+
+## How A Run Works
+
+Each scan follows the same research pipeline:
+
+1. Builds a universe from configured option/share lists, prior tracked names, and WSB trending discovery.
+2. Filters the universe so the slower engines focus on names with enough liquidity, attention, or prior relevance.
+3. Runs live-data engines concurrently across options, news, filings, fundamentals, sentiment, macro, futures, technicals, and market-structure signals.
+4. Prices option contracts with multiple models, compares them to market prices, and logs model predictions for later scoring.
+5. Re-scores headlines and social text with local sentiment models when available.
+6. Updates forward-test evidence and model weights from logged signals when enough recent data exists.
+7. Fuses factor scores into ranked calls, puts, share ideas, value plays, and futures setups.
+8. Applies slippage, spread checks, fractional Kelly sizing, bankroll caps, sector concentration caps, earnings-risk adjustments, and research guardrails.
+9. Tracks open recommendations and closes them when exit or aging rules are reached.
+10. Writes a dashboard, TradingView watchlist, signal logs, model telemetry, and optional validation report.
 
 ## Current Validation Status
 
