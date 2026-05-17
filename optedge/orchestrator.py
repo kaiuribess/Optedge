@@ -1290,9 +1290,31 @@ def main():
         bucket = r.get("value_bucket") or "—"
         print(f"  {r['ticker']:<6} score {r['value_score']:+.2f}  P/E {r.get('pe', '—'):>5}  bucket {bucket}")
     print("\n=== TOP FUTURES PLAYS ===")
+    def _fmt_cli_num(value, digits=2):
+        try:
+            if value is None or pd.isna(value):
+                return "-"
+            return f"{float(value):.{digits}f}"
+        except Exception:
+            return "-"
+
     for _, r in top_fut.head(10).iterrows():
         side = "LONG" if r["futures_score"] > 0 else "SHORT"
-        print(f"  {r['symbol']:<8} {r['name']:<22} {side}  score {r['futures_score']:+.2f}  ret20d {(r.get('ret_20d') or 0)*100:+.1f}%")
+        contract = r.get("contract") or "-"
+        micro = "micro" if r.get("using_micro") else "full"
+        status = r.get("trade_status") or "Watch"
+        ctx = r.get("futures_context_score")
+        atr = r.get("atr20") if r.get("atr20") is not None else r.get("atr_estimate")
+        print(
+            f"  {r['symbol']:<8} {r['name']:<22} {side:<5} "
+            f"score {r['futures_score']:+.2f}  ctx {(ctx if ctx is not None else 0):+.2f}  "
+            f"20d {(r.get('ret_20d') or 0)*100:+.1f}%  "
+            f"ATR {_fmt_cli_num(atr, 2)}  "
+            f"{contract} {micro} x{int(r.get('suggested_contracts') or 0)}  "
+            f"stop {_fmt_cli_num(r.get('stop_price'), 2)}  "
+            f"target {_fmt_cli_num(r.get('target_price'), 2)}  "
+            f"{status}"
+        )
     print(f"\n→ Dashboard: file://{html_path}")
     print(f"→ TradingView watchlist: {tv_path}")
     return 0

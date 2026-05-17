@@ -1099,14 +1099,16 @@ def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
         "hyperliquid_score", "twitter_score", "r_options_score", "curve_score",
         "credit_score", "cluster_buys_score",
     ]
-    for col in factor_cols:
-        if col not in out.columns:
-            out[col] = 0.0
-    z_cols = []
+    missing = [col for col in factor_cols if col not in out.columns]
+    if missing:
+        out = pd.concat([out, pd.DataFrame(0.0, index=out.index, columns=missing)], axis=1)
+    z_data = {}
     for col in factor_cols:
         z_col = f"z_context_{col.replace('_score', '').replace('_delta', '')}"
-        out[z_col] = zscore(pd.to_numeric(out[col], errors="coerce").fillna(0.0))
-        z_cols.append(z_col)
+        z_data[z_col] = zscore(pd.to_numeric(out[col], errors="coerce").fillna(0.0))
+    z_df = pd.DataFrame(z_data, index=out.index)
+    out = pd.concat([out, z_df], axis=1).copy()
+    z_cols = list(z_data)
     if z_cols:
         out["futures_context_score"] = out[z_cols].mean(axis=1).fillna(0.0)
     else:

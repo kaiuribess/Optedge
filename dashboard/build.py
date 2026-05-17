@@ -332,29 +332,42 @@ def _futures_card(row: pd.Series) -> str:
     side_color = "#10b981" if is_long else "#f87171"
     side_label = "LONG" if is_long else "SHORT"
     proxy = row.get("etf") or "-"
+    contract = row.get("contract") or "-"
+    micro = "micro" if row.get("using_micro") else "full"
+    context = row.get("futures_context_score")
+    rank_score = row.get("rank_score")
+    atr = row.get("atr20") if row.get("atr20") is not None else row.get("atr_estimate")
+    trade_status = row.get("trade_status") or "Watch"
     return f"""
-<article class="card" data-ticker="{html.escape(str(row['symbol'])).upper()}" data-side="futures" data-status="watch" data-conf="0" data-pred="{float(row.get('futures_score') or 0) * 100:.2f}" data-ev="0" data-kelly="{float(row.get('kelly_pct') or 0) * 100:.2f}">
+<article class="card" data-ticker="{html.escape(str(row['symbol'])).upper()}" data-side="futures" data-status="{html.escape(str(trade_status)).lower()}" data-conf="0" data-pred="{float(row.get('futures_score') or 0) * 100:.2f}" data-ev="0" data-kelly="{float(row.get('kelly_pct') or 0) * 100:.2f}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["symbol"])}</span>
       {_badge(side_label, side_color)}
       <span class="chip">{html.escape(row.get('kind') or '')}</span>
+      <span class="chip">{html.escape(str(trade_status))}</span>
     </div>
     <div class="muted" style="font-family:'JetBrains Mono', monospace; font-size:13px;">
-      score <strong>{row['futures_score']:+.2f}</strong>
+      score <strong>{row['futures_score']:+.2f}</strong>{f" · rank {float(rank_score):+.2f}" if rank_score is not None else ""}
     </div>
   </header>
   <div class="contract">
     <span class="contract-line">{html.escape(row.get('name') or '')}</span>
-    <span class="muted">spot ${_fmt_num(row.get('spot'))}  -  ETF proxy {html.escape(proxy)}</span>
+    <span class="muted">spot ${_fmt_num(row.get('spot'))} · ETF proxy {html.escape(proxy)} · {html.escape(str(contract))} ({micro})</span>
   </div>
   <div class="grid">
     <div><span class="lab">5d</span><span class="val">{_fmt_pct(row.get('ret_5d')) if row.get('ret_5d') is not None else '-'}</span></div>
     <div><span class="lab">20d</span><span class="val">{_fmt_pct(row.get('ret_20d')) if row.get('ret_20d') is not None else '-'}</span></div>
     <div><span class="lab">60d</span><span class="val">{_fmt_pct(row.get('ret_60d')) if row.get('ret_60d') is not None else '-'}</span></div>
     <div><span class="lab">HV20</span><span class="val">{_fmt_pct(row.get('hv20')) if row.get('hv20') is not None else '-'}</span></div>
+    <div><span class="lab">ATR20</span><span class="val">{_fmt_num(atr, 2) if atr is not None else '-'}</span></div>
     <div><span class="lab">52w pos</span><span class="val">{_fmt_num((row.get('range_pos') or 0)*100, 0)}%</span></div>
-    <div><span class="lab">Bias</span><span class="val">{side_label}</span></div>
+    <div><span class="lab">Context</span><span class="val">{_fmt_num(context, 2) if context is not None else '-'}</span></div>
+    <div><span class="lab">Contracts</span><span class="val">{_safe_int(row.get('suggested_contracts'))}</span></div>
+    <div><span class="lab">Stop</span><span class="val">{_fmt_num(row.get('stop_price'), 2)}</span></div>
+    <div><span class="lab">Target</span><span class="val">{_fmt_num(row.get('target_price'), 2)}</span></div>
+    <div><span class="lab">Risk</span><span class="val">${_fmt_num(row.get('suggested_dollars_risk'), 0)}</span></div>
+    <div><span class="lab">R:R</span><span class="val">{_fmt_num(row.get('reward_risk_ratio'), 2)}</span></div>
   </div>
 </article>
 """
