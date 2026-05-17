@@ -74,11 +74,17 @@ def _ticker_to_cik() -> Dict[str, str]:
 
 
 def _fetch_submissions(cik: str) -> Optional[dict]:
+    cache_key = f"edgar_submissions:{cik}"
+    cached = data_provider.cache_get(cache_key, max_age_sec=12 * 3600)
+    if cached:
+        return cached
     try:
         r = requests.get(EDGAR_SUBMISSIONS.format(cik=cik), headers=_HDRS, timeout=15)
         if r.status_code != 200:
             return None
-        return r.json()
+        data = r.json()
+        data_provider.cache_put(cache_key, data)
+        return data
     except Exception as e:
         log.debug("submissions fail %s: %s", cik, e)
         return None
@@ -232,9 +238,17 @@ def _process_ticker(t: str, cik_map: Dict[str, str], cutoff: datetime,
         return {"ticker": t, "insider_score": 0.0, "buys_value": 0,
                 "sells_value": 0, "n_buys": 0, "n_sells": 0, "n_form4": 0}
 
-    cache_key = f"insider:{t}:{cutoff.strftime('%Y%m%d')}:{'fast' if fast_mode else 'full'}"
+    mode_key = "fast" if fast_mode else "full"
+    cache_key = f"insider:{t}:lookback{INSIDER_LOOKBACK_DAYS}:{mode_key}:v2"
     cached = data_provider.cache_get(cache_key, max_age_sec=86400)
     if cached:
+        return cached
+    # Backward-compatible warm start: older versions keyed the cache by UTC
+    # cutoff date, which caused a full cold SEC parse every midnight UTC.
+    old_cache_key = f"insider:{t}:{cutoff.strftime('%Y%m%d')}:{mode_key}"
+    cached = data_provider.cache_get(old_cache_key, max_age_sec=86400)
+    if cached:
+        data_provider.cache_put(cache_key, cached)
         return cached
 
     subs = _fetch_submissions(cik)
