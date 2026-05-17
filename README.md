@@ -1,4 +1,26 @@
-# Optedge — Free Self-Improving Quant Cockpit (v20.7)
+# Optedge — Multi-Factor Options & Market Research Cockpit
+
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Status](https://img.shields.io/badge/status-research-orange)
+
+Optedge is a local research cockpit for options, shares, futures, and value ideas. It is built to rank evidence, size risk conservatively, log outcomes, and validate whether the signal stack is actually improving.
+
+## Current validation status
+
+Run `python reports/validation_report.py` to generate `data/validation_report.html`, `data/validation_summary.json`, and `data/equity_curve.png`.
+
+| Metric | Value |
+|---|---:|
+| Closed signals | TBD |
+| Win rate | TBD |
+| Avg return | TBD |
+| Max drawdown | TBD |
+| Profit factor | TBD |
+| SPY benchmark | TBD |
+| QQQ benchmark | TBD |
+
+Primary validation defaults to the current model era so older stale data does not get treated as proof for the latest weights. Use `--all-time` only when you want the historical view.
 
 ## v20.7 patch (May 2026) — profitability fixes + position tracking + unit tests
 

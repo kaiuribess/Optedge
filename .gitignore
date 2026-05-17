@@ -10,6 +10,7 @@ data/*.json
 data/*.html
 data/*.txt
 data/*.jsonl
+data/*.png
 logs/*.parquet
 telemetry/*.parquet
 

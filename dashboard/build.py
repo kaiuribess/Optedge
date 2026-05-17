@@ -1793,6 +1793,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
            portfolio_greeks: Optional[Dict] = None,
            hedge_suggestion: Optional[Dict] = None,
            breaker_state: Optional[Dict] = None,
+           research_guard_report: Optional[Dict] = None,
            engine_timings: Optional[Dict] = None,
            v20_factors: Optional[Dict] = None,
            empty_engines: Optional[List[Dict]] = None,
@@ -1839,6 +1840,19 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     demo_banner = ('<div class="demo-banner"><strong>DEMO/HYBRID MODE</strong> - '
                     'options + sentiment data is synthetic. Insider data is LIVE if SEC EDGAR is reachable. '
                     'Run without <code>--demo</code> on a residential IP for full live mode.</div>') if demo else ""
+    guard_banner = ""
+    if research_guard_report and research_guard_report.get("warnings"):
+        status = html.escape(str(research_guard_report.get("status", "review")).upper())
+        rows = "".join(
+            f"<li>{html.escape(str(w.get('message', w)))}</li>"
+            for w in research_guard_report.get("warnings", [])[:5]
+        )
+        guard_banner = f"""
+  <section class="panel" style="border-left:4px solid #f59e0b">
+    <h3>Research Guard <span class="muted">({status})</span></h3>
+    <ul style="margin:8px 0 0 18px; color:#cbd5e1">{rows}</ul>
+  </section>
+"""
 
     html_doc = f"""<!doctype html>
 <html lang="en">
@@ -1864,6 +1878,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   </header>
 
   {demo_banner}
+  {guard_banner}
   {_macro_banner(macro)}
   {stats}
   {_build_analytics_html()}

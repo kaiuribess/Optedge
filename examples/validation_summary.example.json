@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-05-16T00:00:00+00:00",
+  "total_signals": 0,
+  "closed_positions": 0,
+  "open_positions": 0,
+  "overall": {
+    "n": 0,
+    "win_rate": null,
+    "avg_return": null,
+    "median_return": null,
+    "profit_factor": null,
+    "max_drawdown": null
+  },
+  "warnings": [
+    "Sample size too small: 0 closed signals; need at least 500."
+  ]
+}

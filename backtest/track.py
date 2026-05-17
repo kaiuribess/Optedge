@@ -43,13 +43,15 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     fp = LOG_DIR / f"signals_{asof.strftime('%Y%m%d_%H%M%S')}.parquet"
     cols = [
         "ticker", "contract", "side", "strike", "expiry", "dte", "spot",
-        "mid", "iv_market", "fair_vol", "vol_premium", "delta", "open_interest",
+        "mid", "bid", "ask", "spread_pct", "net_edge_pct",
+        "iv_market", "fair_vol", "vol_premium", "delta", "open_interest",
         "is_buy", "fused_score", "confidence", "signal", "reasoning", "risks",
         "z_mispricing", "z_iv_rank", "z_skew", "z_sent", "z_fund", "z_insider",
         "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social", "z_analyst",
         "pred_stock_return_pct", "pred_option_return_pct", "ev_pct", "kelly_pct",
         "suggested_contracts", "actual_dollars", "stop_price", "target_price",
         "trade_status", "trade_score", "setup_quality_mult",
+        "research_guard_status", "research_guard_warnings",
         "entry_time",
     ]
     out = _ensure_entry_time(df, asof)
@@ -69,6 +71,7 @@ def log_signals_shares(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         "ticker", "spot", "share_score", "confidence", "classification", "market_cap",
         "stop_pct", "target_pct", "suggested_dollars", "kelly_pct", "ev_pct",
         "trade_status", "trade_score", "setup_quality_mult",
+        "research_guard_status", "research_guard_warnings",
         "z_sent", "z_fund", "z_insider", "z_news", "z_earnings", "z_value",
         "z_congress", "z_social", "z_analyst",
         "sentiment_delta", "fund_score", "insider_score", "news_delta", "n_24h",

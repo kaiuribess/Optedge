@@ -1,0 +1,18 @@
+[project]
+name = "optedge"
+version = "20.7.0"
+description = "Free multi-factor options, shares, futures, and value research cockpit."
+requires-python = ">=3.11,<3.14"
+readme = "README.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
