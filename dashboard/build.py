@@ -229,7 +229,7 @@ def _option_card(row: pd.Series) -> str:
   </div>"""
 
     return f"""
-<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="{row["side"]}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_opt or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}" data-dte="{_safe_int(row.get('dte'))}">
+<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="{row["side"]}" data-status="{html.escape(str(row.get('trade_status') or 'Watch')).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_opt or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}" data-dte="{_safe_int(row.get('dte'))}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -300,7 +300,7 @@ def _value_card(row: pd.Series) -> str:
         insider_chip = (f'<span class="chip" style="background:{ins_color}20;color:{ins_color}">'
                         f'Insider {insider:+.1f} ({n_buys}P/{n_sells}S)</span>')
     return f"""
-<article class="card">
+<article class="card" data-ticker="{html.escape(str(row['ticker'])).upper()}" data-side="value" data-status="watch" data-conf="0" data-pred="0" data-ev="0" data-kelly="0">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -333,7 +333,7 @@ def _futures_card(row: pd.Series) -> str:
     side_label = "LONG" if is_long else "SHORT"
     proxy = row.get("etf") or "-"
     return f"""
-<article class="card">
+<article class="card" data-ticker="{html.escape(str(row['symbol'])).upper()}" data-side="futures" data-status="watch" data-conf="0" data-pred="{float(row.get('futures_score') or 0) * 100:.2f}" data-ev="0" data-kelly="{float(row.get('kelly_pct') or 0) * 100:.2f}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["symbol"])}</span>
@@ -416,7 +416,7 @@ def _share_card(row: pd.Series) -> str:
   </div>"""
 
     return f"""
-<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="shares" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_stk or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}">
+<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="shares" data-status="{html.escape(str(row.get('trade_status') or 'Watch')).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_stk or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -739,12 +739,15 @@ def _shares_table(df: pd.DataFrame) -> str:
 
 _CSS = """
 :root {
-  --bg: #0a0a0b; --panel: #111114; --panel-2: #161619;
-  --border: #1f1f24; --text: #e5e5e7; --muted: #8b8b93; --accent: #c8c8d0;
+  --bg: #090b10; --panel: #10131a; --panel-2: #151a23;
+  --panel-3: #1b2330; --border: #283142; --text: #edf2f7;
+  --muted: #98a2b3; --accent: #d7dee8; --focus: #38bdf8;
+  --good: #10b981; --warn: #f59e0b; --bad: #ef4444;
 }
 * { box-sizing: border-box; }
 body {
-  margin: 0; background: var(--bg); color: var(--text);
+  margin: 0; background: radial-gradient(circle at 50% -20%, #182230 0, var(--bg) 38%);
+  color: var(--text);
   font-family: -apple-system, "Inter", "Helvetica Neue", Arial, sans-serif;
   font-size: 14px; line-height: 1.55;
 }
@@ -815,8 +818,14 @@ details.dash-section > summary:hover h2.section-title { color: #fff; }
 }
 .card {
   background: var(--panel); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px 18px;
+  border-radius: 8px; padding: 16px 18px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.14);
+  transition: transform .14s ease, border-color .14s ease, background .14s ease;
 }
+.card:hover { transform: translateY(-1px); border-color: #43516a; background: #121722; }
+body.compact .card { padding: 12px 14px; }
+body.compact .reason, body.compact .risks, body.compact .headline, body.compact .exit-block { display: none; }
+body.compact .grid { padding: 8px 0; gap: 4px 12px; }
 .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; flex-wrap: wrap; }
 .ticker-block { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ticker { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }
@@ -933,7 +942,8 @@ details.dash-section > summary:hover h2.section-title { color: #fff; }
 /* Interactive controls */
 .controls {
   position: sticky; top: 0; z-index: 100;
-  background: var(--bg); padding: 12px 0; margin-bottom: 16px;
+  background: rgba(9,11,16,.92); backdrop-filter: blur(12px);
+  padding: 12px 0; margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
   display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
 }
@@ -959,6 +969,21 @@ details.dash-section > summary:hover h2.section-title { color: #fff; }
   margin-left: auto; font-size: 12px; color: var(--muted);
   font-family: "JetBrains Mono", monospace;
 }
+.control-button {
+  cursor: pointer; border: 1px solid var(--border); background: var(--panel-2);
+  color: var(--text); border-radius: 6px; padding: 8px 10px;
+  font-size: 12px; font-family: inherit;
+}
+.control-button:hover { border-color: var(--focus); }
+.section-nav {
+  display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px;
+}
+.section-nav a {
+  color: var(--muted); text-decoration: none; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px;
+  background: var(--panel-2);
+}
+.section-nav a:hover { color: #fff; border-color: var(--focus); }
 
 /* Sizing block on cards */
 .sizing-block {
@@ -1009,6 +1034,12 @@ details.dash-section > summary:hover h2.section-title { color: #fff; }
   padding: 32px 16px; text-align: center; color: var(--muted);
   font-style: italic;
 }
+.chart-empty {
+  height: 100%; min-height: 160px; display: flex; align-items: center; justify-content: center;
+  border: 1px dashed #334155; border-radius: 8px; color: #94a3b8;
+  background: linear-gradient(135deg, rgba(15,23,42,.7), rgba(30,41,59,.45));
+  text-align: center; padding: 18px; font-size: 13px;
+}
 
 table.ranked {
   width: 100%; border-collapse: collapse; font-size: 12px;
@@ -1039,6 +1070,17 @@ table.ranked tbody tr:hover { background: var(--panel-2); }
   background: #422006; border: 1px solid #92400e; color: #fbbf24;
   padding: 10px 16px; border-radius: 6px; margin-bottom: 16px;
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .wrap { padding: 20px 14px 72px; }
+  header.top { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .macro-grid, .stats-panel, .perf-headline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .panel-row, .two-col { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: 1fr; }
+  .controls { top: 0; gap: 8px; }
+  .controls input, .controls select { width: 100%; min-width: 0; }
+  .controls .stats { margin-left: 0; width: 100%; }
 }
 .tv-export {
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -1379,14 +1421,20 @@ def _build_analytics_html() -> str:
             dfs.append(pd.read_parquet(f))
         except Exception:
             pass
-    if not dfs:
-        return ""
+    if dfs:
+        all_out = pd.concat(dfs, ignore_index=True)
+    else:
+        all_out = pd.DataFrame(columns=["log_time", "outcome", "pnl_pct", "bucket"])
+    if "log_time" in all_out.columns and not all_out.empty:
+        all_out["log_time"] = pd.to_datetime(all_out["log_time"], utc=True)
+        all_out["date_str"] = all_out["log_time"].dt.strftime("%Y-%m-%d")
+    else:
+        all_out["date_str"] = pd.Series(dtype=str)
 
-    all_out = pd.concat(dfs, ignore_index=True)
-    all_out["log_time"] = pd.to_datetime(all_out["log_time"], utc=True)
-    all_out["date_str"] = all_out["log_time"].dt.strftime("%Y-%m-%d")
-
-    closed = all_out[all_out["outcome"].isin(["stop", "target"])].copy()
+    if "outcome" in all_out.columns and not all_out.empty:
+        closed = all_out[all_out["outcome"].isin(["stop", "target"])].copy()
+    else:
+        closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
     closed = closed.sort_values("log_time")
 
     #  2. Load open positions 
@@ -1398,6 +1446,7 @@ def _build_analytics_html() -> str:
         df_open["entry_time"] = pd.to_datetime(df_open["entry_time"], utc=True)
         df_open["entry_date"] = df_open["entry_time"].dt.strftime("%Y-%m-%d")
     except Exception:
+        op_list = []
         df_open = pd.DataFrame()
 
     #  3. Load closed positions (from stop/target logs) 
@@ -1680,7 +1729,17 @@ def _build_analytics_html() -> str:
 
 <script>
 (function() {{
-  if (typeof Plotly === 'undefined') return;
+  function showEmpty(id, text) {{
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = '<div class="chart-empty">' + text + '</div>';
+  }}
+  if (typeof Plotly === 'undefined') {{
+    ['chart-pnl-curve','chart-bucket-wr','chart-outcome-pie','chart-conf-wr','chart-factor-ic','chart-open-positions'].forEach(function(id) {{
+      showEmpty(id, 'Chart library did not load. Refresh once, or check the CDN/network connection.');
+    }});
+    return;
+  }}
   var DARK = {{ paper_bgcolor:'transparent', plot_bgcolor:'transparent',
     font:{{color:'#94a3b8',family:'JetBrains Mono,monospace',size:11}},
     xaxis:{{gridcolor:'#1e293b',linecolor:'#1e293b',zerolinecolor:'#334155'}},
@@ -1708,6 +1767,7 @@ def _build_analytics_html() -> str:
     legend: {{orientation:'h', y:-0.15, x:0, bgcolor:'transparent'}},
     margin: {{t:10,b:50,l:55,r:55}}
   }}), {{displayModeBar:false, responsive:true}});
+  if ({len(pnl_dates)} === 0) showEmpty('chart-pnl-curve', 'No closed outcomes yet. This fills in after positions close or hit stop/target.');
 
   // 2. Bucket win rates
   var bColors = {J(bucket_wr)}.map(v => v >= 40 ? '#10b981' : v >= 25 ? '#f59e0b' : '#ef4444');
@@ -1716,10 +1776,12 @@ def _build_analytics_html() -> str:
        type:'bar', marker:{{color:bColors}},
        hovertemplate:'%{{x}}<br>Win rate: %{{y:.1f}}%<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
+    xaxis: Object.assign({{}}, DARK.xaxis, {{type:'category'}}),
     yaxis: Object.assign({{}}, DARK.yaxis, {{title:'Win Rate %', range:[0,100]}}),
     shapes: [{{type:'line', x0:-0.5, x1:{len(bucket_labels)}-0.5, y0:50, y1:50,
               line:{{color:'#475569',dash:'dot',width:1}}}}]
   }}), {{displayModeBar:false, responsive:true}});
+  if ({len(bucket_labels)} === 0) showEmpty('chart-bucket-wr', 'No closed strategy buckets yet.');
 
   // 3. Outcome pie
   Plotly.newPlot('chart-outcome-pie', [
@@ -1730,6 +1792,7 @@ def _build_analytics_html() -> str:
        hovertemplate:'%{{label}}: %{{value}} trades<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{margin:{{t:10,b:10,l:10,r:10}}}}),
   {{displayModeBar:false, responsive:true}});
+  if ({len(pie_values)} === 0) showEmpty('chart-outcome-pie', 'No closed outcomes yet.');
 
   // 4. Conf vs win rate
   var cColors = {J(conf_wr_vals)}.map(v => v >= 40 ? '#10b981' : '#ef4444');
@@ -1739,9 +1802,10 @@ def _build_analytics_html() -> str:
        customdata:{J(list(zip(conf_n, conf_pnl)))},
        hovertemplate:'Conf %{{x}}<br>Win rate: %{{y:.1f}}%<br>n=%{{customdata[0]}}<br>Avg P&L: %{{customdata[1]:+.1f}}%<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
-    xaxis: Object.assign({{}}, DARK.xaxis, {{title:'Confidence bucket'}}),
+    xaxis: Object.assign({{}}, DARK.xaxis, {{title:'Confidence bucket', type:'category'}}),
     yaxis: Object.assign({{}}, DARK.yaxis, {{title:'Win rate %', range:[0,100]}})
   }}), {{displayModeBar:false, responsive:true}});
+  if ({len(conf_labels)} === 0) showEmpty('chart-conf-wr', 'No confidence bucket history yet.');
 
   // 5. Factor IC
   var icSorted = {J(list(zip(factor_labels, factor_ic)))}.sort((a,b)=>b[1]-a[1]);
@@ -1753,8 +1817,10 @@ def _build_analytics_html() -> str:
        hovertemplate:'%{{y}}<br>IC: %{{x:.4f}}<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
     xaxis: Object.assign({{}}, DARK.xaxis, {{title:'Information Coefficient (correlation)', zeroline:true}}),
+    yaxis: Object.assign({{}}, DARK.yaxis, {{type:'category'}}),
     margin: {{t:10,b:40,l:100,r:15}}
   }}), {{displayModeBar:false, responsive:true}});
+  if (icLabels.length === 0) showEmpty('chart-factor-ic', 'Need at least 5 closed outcomes with factor columns for IC.');
 
   // 6. Open positions bar
   var posColors = {J([v*100 for v in unr_vals])}.map(v => v >= 0 ? '#10b981' : '#ef4444');
@@ -1764,11 +1830,13 @@ def _build_analytics_html() -> str:
        marker:{{color:posColors}},
        hovertemplate:'%{{x}}<br>Unrealized: %{{y:+.1f}}%<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
+    xaxis: Object.assign({{}}, DARK.xaxis, {{type:'category', tickangle:-45}}),
     yaxis: Object.assign({{}}, DARK.yaxis, {{title:'Unrealized %', zeroline:true}}),
     shapes: [{{type:'line', x0:-0.5, x1:{len(unr_labels)}-0.5, y0:0, y1:0,
               line:{{color:'#475569',width:1}}}}],
     margin: {{t:10,b:60,l:55,r:15}}
   }}), {{displayModeBar:false, responsive:true}});
+  if ({len(unr_labels)} === 0) showEmpty('chart-open-positions', 'No open positions have mark-to-market data yet.');
 }})();
 </script>
 </details>
@@ -1883,6 +1951,16 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   {stats}
   {_build_analytics_html()}
 
+  <nav class="section-nav" aria-label="Dashboard sections">
+    <a href="#sect-analytics">Analytics</a>
+    <a href="#sect-calls">Calls</a>
+    <a href="#sect-puts">Puts</a>
+    <a href="#sect-shares">Shares</a>
+    <a href="#sect-value">Value</a>
+    <a href="#sect-futures">Futures</a>
+    <a href="#sect-telemetry">Engines</a>
+  </nav>
+
   <div class="controls" id="controls">
     <input type="text" id="search-box" placeholder=" Search ticker (e.g., NVDA, TSLA)..." autocomplete="off">
     <select id="sort-by">
@@ -1894,12 +1972,20 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
       <option value="ticker">Sort: ticker A-Z</option>
     </select>
     <span class="filter-chip active" data-filter="all">all</span>
+    <span class="filter-chip" data-filter="ready">ready</span>
+    <span class="filter-chip" data-filter="watch">watch</span>
     <span class="filter-chip" data-filter="call">calls only</span>
     <span class="filter-chip" data-filter="put">puts only</span>
     <span class="filter-chip" data-filter="shares">shares only</span>
+    <span class="filter-chip" data-filter="value">value</span>
+    <span class="filter-chip" data-filter="futures">futures</span>
     <span class="filter-chip" data-filter="high-conf">conf >= 70</span>
     <span class="filter-chip" data-filter="positive-ev">EV &gt; 0</span>
     <span class="filter-chip" data-filter="positive-kelly">Kelly &gt; 0</span>
+    <button class="control-button" type="button" id="density-toggle">Compact</button>
+    <button class="control-button" type="button" id="expand-all">Expand</button>
+    <button class="control-button" type="button" id="collapse-all">Collapse</button>
+    <button class="control-button" type="button" id="reset-filters">Reset</button>
     <span class="stats" id="card-counter">- cards visible</span>
   </div>
   <div class="muted" style="font-size:11px; margin-bottom:16px; font-family:'JetBrains Mono', monospace;">
@@ -2205,6 +2291,10 @@ _INTERACTIVE_JS = r"""<script>
   const sortBy = document.getElementById('sort-by');
   const chips = Array.from(document.querySelectorAll('.filter-chip'));
   const counter = document.getElementById('card-counter');
+  const densityToggle = document.getElementById('density-toggle');
+  const expandAll = document.getElementById('expand-all');
+  const collapseAll = document.getElementById('collapse-all');
+  const resetFilters = document.getElementById('reset-filters');
   let activeFilter = 'all';
 
   function num(card, attr, def) {
@@ -2219,6 +2309,7 @@ _INTERACTIVE_JS = r"""<script>
     allCards.forEach(card => {
       const ticker = (card.dataset.ticker || '').toUpperCase();
       const side = card.dataset.side;
+      const status = (card.dataset.status || '').toLowerCase();
       const conf = num(card, 'conf');
       const ev = num(card, 'ev');
       const kelly = num(card, 'kelly');
@@ -2228,6 +2319,10 @@ _INTERACTIVE_JS = r"""<script>
       if (activeFilter === 'call' && side !== 'call') show = false;
       if (activeFilter === 'put' && side !== 'put') show = false;
       if (activeFilter === 'shares' && side !== 'shares') show = false;
+      if (activeFilter === 'value' && side !== 'value') show = false;
+      if (activeFilter === 'futures' && side !== 'futures') show = false;
+      if (activeFilter === 'ready' && status !== 'trade') show = false;
+      if (activeFilter === 'watch' && status !== 'watch') show = false;
       if (activeFilter === 'high-conf' && conf < 70) show = false;
       if (activeFilter === 'positive-ev' && ev <= 0) show = false;
       if (activeFilter === 'positive-kelly' && kelly <= 0) show = false;
@@ -2270,6 +2365,26 @@ _INTERACTIVE_JS = r"""<script>
       activeFilter = chip.dataset.filter;
       applyFilters();
     });
+  });
+
+  densityToggle.addEventListener('click', () => {
+    document.body.classList.toggle('compact');
+    densityToggle.textContent = document.body.classList.contains('compact') ? 'Comfortable' : 'Compact';
+  });
+  expandAll.addEventListener('click', () => {
+    document.querySelectorAll('details.dash-section').forEach(d => d.setAttribute('open', ''));
+  });
+  collapseAll.addEventListener('click', () => {
+    document.querySelectorAll('details.dash-section').forEach(d => {
+      if (d.id !== 'sect-analytics') d.removeAttribute('open');
+    });
+  });
+  resetFilters.addEventListener('click', () => {
+    searchBox.value = '';
+    sortBy.value = 'default';
+    activeFilter = 'all';
+    chips.forEach(c => c.classList.toggle('active', c.dataset.filter === 'all'));
+    applyFilters();
   });
 
   applyFilters();
