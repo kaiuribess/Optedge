@@ -40,6 +40,7 @@ jobs:
           python tests/test_futures_sizing.py
           python tests/test_share_positions.py
           python tests/test_futures_positions.py
+          python tests/test_validation_report.py
 
       - name: Lint
         run: |

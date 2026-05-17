@@ -260,12 +260,24 @@ def _factor_ic(closed: pd.DataFrame, min_n: int = 5) -> List[Dict[str, Any]]:
 
 def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
     if open_df is None or open_df.empty or "entry_time" not in open_df.columns:
-        return {"open_count": int(len(open_df) if open_df is not None else 0), "buckets": [], "oldest": []}
+        asset_counts = {}
+        if open_df is not None and not open_df.empty and "asset" in open_df.columns:
+            asset_counts = open_df["asset"].fillna("unknown").astype(str).value_counts().to_dict()
+        return {
+            "open_count": int(len(open_df) if open_df is not None else 0),
+            "asset_breakdown": asset_counts,
+            "buckets": [],
+            "oldest": [],
+        }
     df = open_df.copy()
     now = pd.Timestamp.now(tz="UTC")
     df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce", utc=True)
     df["age_days"] = (now - df["entry_time"]).dt.total_seconds() / 86400.0
     df["age_days"] = df["age_days"].clip(lower=0)
+    asset_counts = (
+        df["asset"].fillna("unknown").astype(str).value_counts().to_dict()
+        if "asset" in df.columns else {}
+    )
     bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
     labels = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
     df["age_bucket"] = pd.cut(df["age_days"], bins=bins, labels=labels)
@@ -280,11 +292,16 @@ def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
             "count": int(len(sub)),
             "avg_unrealized_pct": avg_unrealized,
         })
-    keep = [c for c in ("ticker", "side", "expiry", "entry_time", "age_days",
+    keep = [c for c in ("asset", "ticker", "symbol", "side", "direction", "expiry", "entry_time", "age_days",
                         "unrealized_pct", "confidence", "trade_status")
             if c in df.columns]
     oldest = df.sort_values("age_days", ascending=False).head(20)[keep].to_dict(orient="records")
-    return {"open_count": int(len(df)), "buckets": buckets, "oldest": oldest}
+    return {
+        "open_count": int(len(df)),
+        "asset_breakdown": asset_counts,
+        "buckets": buckets,
+        "oldest": oldest,
+    }
 
 
 def _side_performance(closed: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -510,7 +527,6 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         cutoff = _model_update_cutoff()
     if scope != "all_time":
         logs = _filter_since(logs, cutoff)
-        open_df = _filter_since(open_df, cutoff)
         closed = _filter_since(closed, cutoff)
 
     total_signals = int(len(logs))
