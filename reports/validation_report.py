@@ -36,6 +36,8 @@ LOGS_DIR = ROOT / "logs"
 REPORT_HTML = DATA_DIR / "validation_report.html"
 SUMMARY_JSON = DATA_DIR / "validation_summary.json"
 EQUITY_PNG = DATA_DIR / "equity_curve.png"
+FACTOR_IC_JSON = DATA_DIR / "factor_ic_summary.json"
+POSITION_AGING_JSON = DATA_DIR / "position_aging_summary.json"
 
 MIN_CLOSED_SIGNALS = 500
 BREAKEVEN_WIN_RATE = 0.50
@@ -209,6 +211,65 @@ def _bucket_performance(df: pd.DataFrame, source_col: str, buckets: List[Tuple[f
         row.update(_stats(sub))
         rows.append(row)
     return sorted(rows, key=lambda r: r["bucket"])
+
+
+def _factor_ic(closed: pd.DataFrame, min_n: int = 5) -> List[Dict[str, Any]]:
+    """Per-factor information coefficient from closed positions.
+
+    The position tracker now preserves factor z-columns at entry, so each
+    closed recommendation can say which entry factors were predictive.
+    """
+    if closed is None or closed.empty or "pnl_pct" not in closed.columns:
+        return []
+    z_cols = [c for c in closed.columns if str(c).startswith("z_")]
+    rows = []
+    for col in z_cols:
+        sub = closed[[col, "pnl_pct"]].copy()
+        sub[col] = pd.to_numeric(sub[col], errors="coerce")
+        sub["pnl_pct"] = pd.to_numeric(sub["pnl_pct"], errors="coerce")
+        sub = sub.dropna()
+        if len(sub) < min_n or sub[col].nunique() < 2:
+            continue
+        ic = sub[col].corr(sub["pnl_pct"])
+        if pd.isna(ic):
+            continue
+        rows.append({
+            "factor": col.replace("z_", ""),
+            "z_col": col,
+            "n": int(len(sub)),
+            "ic": float(ic),
+            "avg_score": float(sub[col].mean()),
+        })
+    return sorted(rows, key=lambda r: abs(r["ic"]), reverse=True)
+
+
+def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
+    if open_df is None or open_df.empty or "entry_time" not in open_df.columns:
+        return {"open_count": int(len(open_df) if open_df is not None else 0), "buckets": [], "oldest": []}
+    df = open_df.copy()
+    now = pd.Timestamp.now(tz="UTC")
+    df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce", utc=True)
+    df["age_days"] = (now - df["entry_time"]).dt.total_seconds() / 86400.0
+    df["age_days"] = df["age_days"].clip(lower=0)
+    bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
+    labels = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
+    df["age_bucket"] = pd.cut(df["age_days"], bins=bins, labels=labels)
+    buckets = []
+    for label, sub in df.groupby("age_bucket", observed=True):
+        avg_unrealized = None
+        if "unrealized_pct" in sub.columns:
+            avg = pd.to_numeric(sub["unrealized_pct"], errors="coerce").mean()
+            avg_unrealized = None if pd.isna(avg) else float(avg)
+        buckets.append({
+            "bucket": str(label),
+            "count": int(len(sub)),
+            "avg_unrealized_pct": avg_unrealized,
+        })
+    keep = [c for c in ("ticker", "side", "expiry", "entry_time", "age_days",
+                        "unrealized_pct", "confidence", "trade_status")
+            if c in df.columns]
+    oldest = df.sort_values("age_days", ascending=False).head(20)[keep].to_dict(orient="records")
+    return {"open_count": int(len(df)), "buckets": buckets, "oldest": oldest}
 
 
 def _side_performance(closed: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -396,6 +457,8 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
             (70, 85, "70-84"),
             (85, float("inf"), "85+"),
         ]),
+        "factor_ic": _factor_ic(closed),
+        "position_aging": _position_aging(open_df),
         "benchmarks": _benchmark_comparison(closed),
         "random_baseline": _random_baseline(_num(closed.get("pnl_pct", pd.Series(dtype=float))).dropna()),
         "warnings": warnings,
@@ -428,6 +491,28 @@ def _bucket_table(rows: List[Dict[str, Any]]) -> str:
     return (
         "<table><thead><tr><th>Bucket</th><th>n</th><th>Win rate</th>"
         "<th>Avg return</th><th>Median return</th><th>Profit factor</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
+    if not rows:
+        return "<p class='muted'>No closed positions with factor snapshots yet.</p>"
+    body = []
+    for row in rows:
+        ic = row.get("ic")
+        color = "#047857" if ic is not None and ic > 0 else "#b91c1c" if ic is not None and ic < 0 else "#475569"
+        body.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('factor', '-')))}</td>"
+            f"<td>{int(row.get('n') or 0)}</td>"
+            f"<td style='color:{color};font-weight:600'>{_fmt(ic, 4)}</td>"
+            f"<td>{_fmt(row.get('avg_score'), 3)}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Factor</th><th>n</th><th>IC</th>"
+        "<th>Avg entry z</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
 
@@ -520,6 +605,11 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
     <section><h2>Spread Buckets</h2>{_bucket_table(summary["spread_buckets"])}</section>
     <section><h2>Confidence Buckets</h2>{_bucket_table(summary["confidence_buckets"])}</section>
   </div>
+
+  <section>
+    <h2>Factor IC</h2>
+    {_factor_ic_table(summary.get("factor_ic", []))}
+  </section>
 </main>
 </body>
 </html>
@@ -537,6 +627,11 @@ def write_report(scope: str = "current_model", since: Optional[str] = None) -> D
             closed = _filter_since(closed, cutoff)
     _write_equity_curve(closed, EQUITY_PNG)
     SUMMARY_JSON.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    FACTOR_IC_JSON.write_text(json.dumps(summary.get("factor_ic", []), indent=2, default=str), encoding="utf-8")
+    POSITION_AGING_JSON.write_text(
+        json.dumps(summary.get("position_aging", {}), indent=2, default=str),
+        encoding="utf-8",
+    )
     REPORT_HTML.write_text(render_html(summary), encoding="utf-8")
     return summary
 
@@ -552,6 +647,8 @@ def main() -> int:
     print(f"Validation report: {REPORT_HTML}")
     print(f"Validation summary: {SUMMARY_JSON}")
     print(f"Equity curve: {EQUITY_PNG}")
+    print(f"Factor IC summary: {FACTOR_IC_JSON}")
+    print(f"Position aging summary: {POSITION_AGING_JSON}")
     if summary.get("warnings"):
         print("\nWarnings:")
         for warning in summary["warnings"]:

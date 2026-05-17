@@ -1458,6 +1458,27 @@ def _build_analytics_html() -> str:
     except Exception:
         df_closed_pos = pd.DataFrame()
 
+    if closed.empty and not df_closed_pos.empty and "pnl_pct" in df_closed_pos.columns:
+        closed = df_closed_pos.copy()
+        if "exit_time" in closed.columns:
+            closed["log_time"] = pd.to_datetime(closed["exit_time"], errors="coerce", utc=True)
+        elif "entry_time" in closed.columns:
+            closed["log_time"] = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True)
+        else:
+            closed["log_time"] = pd.Timestamp.utcnow()
+        closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
+        if "outcome" not in closed.columns:
+            closed["outcome"] = closed.get("exit_reason", pd.Series("closed", index=closed.index)).fillna("closed")
+        if "bucket" not in closed.columns:
+            closed["bucket"] = closed.get("side", pd.Series("option", index=closed.index)).fillna("option")
+        closed = closed.sort_values("log_time")
+
+    validation_summary = {}
+    try:
+        validation_summary = json.loads((ROOT / "data" / "validation_summary.json").read_text(encoding="utf-8"))
+    except Exception:
+        validation_summary = {}
+
     #  4. Compute PnL curve 
     if not closed.empty:
         closed["cum_pnl_pct"] = closed["pnl_pct"].cumsum()
@@ -1514,15 +1535,24 @@ def _build_analytics_html() -> str:
         conf_labels = conf_wr_vals = conf_n = conf_pnl = []
 
     #  7. Factor importance (IC) 
-    z_cols = [c for c in closed.columns if c.startswith("z_")]
     factor_labels, factor_ic = [], []
-    for col in z_cols:
-        sub = closed[[col, "pnl_pct"]].dropna()
-        if len(sub) >= 5:
-            ic = sub[col].corr(sub["pnl_pct"])
-            if not pd.isna(ic):
-                factor_labels.append(col.replace("z_", "").replace("_", " ").title())
-                factor_ic.append(round(ic, 4))
+    try:
+        ic_rows = json.loads((ROOT / "data" / "factor_ic_summary.json").read_text(encoding="utf-8"))
+    except Exception:
+        ic_rows = []
+    if ic_rows:
+        for r in ic_rows[:18]:
+            factor_labels.append(str(r.get("factor", "")).replace("_", " ").title())
+            factor_ic.append(round(float(r.get("ic") or 0), 4))
+    else:
+        z_cols = [c for c in closed.columns if c.startswith("z_")]
+        for col in z_cols:
+            sub = closed[[col, "pnl_pct"]].dropna()
+            if len(sub) >= 5:
+                ic = sub[col].corr(sub["pnl_pct"])
+                if not pd.isna(ic):
+                    factor_labels.append(col.replace("z_", "").replace("_", " ").title())
+                    factor_ic.append(round(ic, 4))
 
     #  8. Open positions unrealized distribution 
     if not df_open.empty and "unrealized_pct" in df_open.columns:
@@ -1542,6 +1572,26 @@ def _build_analytics_html() -> str:
         unr_vals = unr_labels = unr_sides = []
         open_total_unrealized = total_open = gainers = losers = 0
 
+    age_labels, age_counts, age_avg = [], [], []
+    if not df_open.empty and "entry_time" in df_open.columns:
+        if "age_days" not in df_open.columns:
+            df_open["age_days"] = (
+                pd.Timestamp.utcnow() - pd.to_datetime(df_open["entry_time"], errors="coerce", utc=True)
+            ).dt.total_seconds() / 86400.0
+        age_bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
+        age_names = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
+        df_open["age_bucket"] = pd.cut(df_open["age_days"].clip(lower=0), bins=age_bins, labels=age_names)
+        age_stats = df_open.groupby("age_bucket", observed=True).agg(
+            count=("ticker", "count"),
+            avg_unrealized=("unrealized_pct", "mean") if "unrealized_pct" in df_open.columns else ("ticker", "size"),
+        ).reset_index()
+        age_labels = age_stats["age_bucket"].astype(str).tolist()
+        age_counts = [int(v) for v in age_stats["count"].tolist()]
+        age_avg = [
+            None if pd.isna(v) else round(float(v) * 100, 2)
+            for v in age_stats["avg_unrealized"].tolist()
+        ]
+
     #  9. Outcome pie 
     if not closed.empty:
         oc = closed["outcome"].value_counts()
@@ -1555,6 +1605,13 @@ def _build_analytics_html() -> str:
     overall_wr = round((closed["outcome"] == "target").mean() * 100, 1) if not closed.empty else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
     gross_pnl = round(closed["pnl_pct"].sum() * 100, 2) if not closed.empty else 0
+    if validation_summary:
+        overall = validation_summary.get("overall", {})
+        total_closed = int(validation_summary.get("closed_positions") or total_closed)
+        if overall.get("win_rate") is not None:
+            overall_wr = round(float(overall["win_rate"]) * 100, 1)
+        if overall.get("avg_return") is not None:
+            overall_avg_pnl = round(float(overall["avg_return"]) * 100, 2)
 
     # JSON-serialize for JS
     import json as _json
@@ -1691,6 +1748,10 @@ def _build_analytics_html() -> str:
     <h4>Factor IC (correlation w/ realized P&amp;L)</h4>
     <div id="chart-factor-ic" style="height:240px;"></div>
   </div>
+  <div class="chart-box">
+    <h4>Position aging</h4>
+    <div id="chart-position-aging" style="height:240px;"></div>
+  </div>
 </div>
 
 <div class="chart-box" style="margin-bottom:18px;">
@@ -1704,7 +1765,7 @@ def _build_analytics_html() -> str:
   <table class="positions-table">
     <thead><tr>
       <th>Ticker</th><th>Side</th><th>Strike</th><th>Expiry</th>
-      <th>Entry $</th><th>Current $</th><th>Unrealized</th><th>Conf</th><th>Stop</th><th>Target</th>
+      <th>Entry $</th><th>Current $</th><th>Unrealized</th><th>Age</th><th>Conf</th><th>Stop</th><th>Target</th>
     </tr></thead>
     <tbody id="pos-tbody">
     {''.join(
@@ -1716,6 +1777,7 @@ def _build_analytics_html() -> str:
         <td>${r.get('entry_price',0):.2f}</td>
         <td>${r.get('current_mid',0):.2f}</td>
         <td style="color:{'#10b981' if r.get('unrealized_pct',0)>=0 else '#ef4444'};font-weight:600">{r.get('unrealized_pct',0)*100:+.1f}%</td>
+        <td>{float(r.get('age_days',0) or 0):.1f}d</td>
         <td>{int(r.get('confidence',0)) if r.get('confidence') else '-'}</td>
         <td style="color:#f59e0b">${r.get('stop_price',0):.2f}</td>
         <td style="color:#10b981">${r.get('target_price',0):.2f}</td>
@@ -1735,7 +1797,7 @@ def _build_analytics_html() -> str:
     el.innerHTML = '<div class="chart-empty">' + text + '</div>';
   }}
   if (typeof Plotly === 'undefined') {{
-    ['chart-pnl-curve','chart-bucket-wr','chart-outcome-pie','chart-conf-wr','chart-factor-ic','chart-open-positions'].forEach(function(id) {{
+    ['chart-pnl-curve','chart-bucket-wr','chart-outcome-pie','chart-conf-wr','chart-factor-ic','chart-position-aging','chart-open-positions'].forEach(function(id) {{
       showEmpty(id, 'Chart library did not load. Refresh once, or check the CDN/network connection.');
     }});
     return;
@@ -1822,7 +1884,19 @@ def _build_analytics_html() -> str:
   }}), {{displayModeBar:false, responsive:true}});
   if (icLabels.length === 0) showEmpty('chart-factor-ic', 'Need at least 5 closed outcomes with factor columns for IC.');
 
-  // 6. Open positions bar
+  // 6. Position aging
+  Plotly.newPlot('chart-position-aging', [
+    {{ x:{J(age_labels)}, y:{J(age_counts)}, type:'bar',
+       marker:{{color:'#38bdf8'}},
+       customdata:{J(age_avg)},
+       hovertemplate:'%{{x}}<br>Open positions: %{{y}}<br>Avg unrealized: %{{customdata:+.1f}}%<extra></extra>' }}
+  ], Object.assign({{}}, DARK, {{
+    xaxis: Object.assign({{}}, DARK.xaxis, {{type:'category'}}),
+    yaxis: Object.assign({{}}, DARK.yaxis, {{title:'Open count'}})
+  }}), {{displayModeBar:false, responsive:true}});
+  if ({len(age_labels)} === 0) showEmpty('chart-position-aging', 'No open-position age history yet.');
+
+  // 7. Open positions bar
   var posColors = {J([v*100 for v in unr_vals])}.map(v => v >= 0 ? '#10b981' : '#ef4444');
   Plotly.newPlot('chart-open-positions', [
     {{ x:{J(unr_labels)}, y:{J([round(v*100,2) for v in unr_vals])},
@@ -1863,6 +1937,8 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
            breaker_state: Optional[Dict] = None,
            research_guard_report: Optional[Dict] = None,
            engine_timings: Optional[Dict] = None,
+           engine_health: Optional[Dict] = None,
+           validation_summary: Optional[Dict] = None,
            v20_factors: Optional[Dict] = None,
            empty_engines: Optional[List[Dict]] = None,
            **_unused) -> Path:
@@ -2076,6 +2152,7 @@ __JS_PLACEHOLDER__
         hedge_suggestion=hedge_suggestion,
         breaker_state=breaker_state,
         engine_timings=engine_timings or {},
+        engine_health=engine_health or {},
         v20_factors=v20_factors,
         empty_engines=empty_engines,
     )
@@ -2088,6 +2165,7 @@ __JS_PLACEHOLDER__
 
 def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Dict],
                             breaker_state: Optional[Dict], engine_timings: Dict,
+                            engine_health: Optional[Dict],
                             v20_factors: Dict,
                             empty_engines: Optional[List[Dict]] = None) -> str:
     """Generate the v20 dashboard panels block - Greeks, breaker, telemetry,
@@ -2261,6 +2339,31 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
         </details>
         """
 
+    health_html = ""
+    health_rows = (engine_health or {}).get("engines", []) if isinstance(engine_health, dict) else []
+    if health_rows:
+        rows = []
+        for r in health_rows[:12]:
+            score = float(r.get("health_score") or 0)
+            color = "#10b981" if score >= 75 else "#f59e0b" if score >= 50 else "#f87171"
+            rows.append(
+                f"<tr>"
+                f"<td style='padding:5px 6px;font-weight:600'>{html.escape(str(r.get('engine')))}</td>"
+                f"<td style='padding:5px 6px;color:{color};font-weight:700;text-align:right'>{score:.0f}</td>"
+                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('hit_rate') or 0)*100:.0f}%</td>"
+                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('ok_rate') or 0)*100:.0f}%</td>"
+                f"<td style='padding:5px 6px;text-align:right' class='muted'>{float(r.get('avg_elapsed') or 0):.1f}s</td>"
+                f"</tr>"
+            )
+        health_html = f"""
+        <details class="dash-section" id="sect-engine-health">
+          <summary><h2 class="section-title">v Engine health <span class="muted">(rolling self-check; lowest scores first)</span></h2></summary>
+          <table style='font-family:Inter;font-size:13px;width:100%;max-width:780px;border-collapse:collapse'><thead>
+            <tr style='border-bottom:1px solid #333'><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:right;padding:6px'>Health</th><th style='text-align:right;padding:6px'>Hit rate</th><th style='text-align:right;padding:6px'>OK rate</th><th style='text-align:right;padding:6px'>Avg latency</th></tr>
+          </thead><tbody>{''.join(rows)}</tbody></table>
+        </details>
+        """
+
     # --- Empty engines diagnostic ---
     empty_html = ""
     if empty_engines:
@@ -2281,7 +2384,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
         </details>
         """
 
-    return greeks_html + breaker_html + empty_html + new_factors_html + telemetry_html
+    return greeks_html + breaker_html + empty_html + new_factors_html + telemetry_html + health_html
 
 
 _INTERACTIVE_JS = r"""<script>

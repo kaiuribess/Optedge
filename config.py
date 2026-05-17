@@ -155,6 +155,7 @@ MAX_DTE = 60
 
 # ---- Pricing ----------------------------------------------------------
 RISK_FREE_RATE_DEFAULT = 0.045
+HESTON_ENABLED = False  # experimental; enable only after a stability validation run
 
 # ---- Sentiment --------------------------------------------------------
 SUBREDDITS = ["wallstreetbets", "stocks", "investing", "options", "smallstreetbets"]

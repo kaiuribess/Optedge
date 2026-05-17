@@ -95,6 +95,12 @@ def _option_setup_quality_mult(row: pd.Series) -> float:
             mult *= 0.65
         elif spread > 0.08:
             mult *= 0.80
+        edge = row.get("net_edge_pct")
+        if edge is not None and not pd.isna(edge):
+            edge_abs = max(abs(float(edge)), 0.01)
+            spread_to_edge = float(spread) / edge_abs
+            if float(spread) > 0.05 and spread_to_edge > 1.5:
+                mult *= 0.50
 
     return _bounded(mult, 0.25, 1.30)
 
@@ -120,11 +126,16 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
     kelly = out.get("kelly_pct", pd.Series(0.0, index=out.index)).fillna(0.0)
     if asset == "option":
         contracts = out.get("suggested_contracts", pd.Series(0, index=out.index)).fillna(0)
-        trade = (ev > 0) & (kelly > 0) & (contracts > 0)
+        ratio = out.get("spread_to_edge_ratio", pd.Series(0.0, index=out.index)).fillna(0.0)
+        spread_bad = (ratio > 1.5) & (
+            out.get("spread_pct", pd.Series(0.0, index=out.index)).fillna(0.0) > 0.05
+        )
+        trade = (ev > 0) & (kelly > 0) & (contracts > 0) & ~spread_bad
     else:
         dollars = out.get("suggested_dollars", pd.Series(0.0, index=out.index)).fillna(0.0)
+        spread_bad = pd.Series(False, index=out.index)
         trade = (ev > 0) & (kelly > 0) & (dollars > 0)
-    watch = (ev > 0) & ~trade
+    watch = (ev > 0) & ~trade & ~spread_bad
     out["trade_status"] = np.where(trade, "Trade", np.where(watch, "Watch", "Skip"))
     out["is_actionable"] = trade
     return out
@@ -215,6 +226,13 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     pred = pred * crush_mult * tod_mult
     # v20.7: subtract round-trip fill cost from predicted return BEFORE EV/Kelly
     pred_net = pred - fill_slippage_pct
+    spread = float(row.get("spread_pct") or 0.0)
+    edge = abs(float(row.get("net_edge_pct") or 0.0))
+    spread_to_edge = spread / max(edge, 0.01)
+    spread_penalty = 0.0
+    if spread > 0.05 and spread_to_edge > 1.0:
+        spread_penalty = min(0.25, max(0.0, spread - edge))
+        pred_net -= spread_penalty
 
     delta = float(row.get("delta") or 0.5)
     mid = float(row.get("mid") or 0)
@@ -227,14 +245,17 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     if mid <= 0 or not has_prediction:
         return {"ev_pct": float("nan"), "ev_dollar_per_contract": float("nan"),
                 "kelly_full": float("nan"), "kelly_pct": float("nan"),
-                "prob_win": prob_win}
+                "prob_win": prob_win, "spread_to_edge_ratio": spread_to_edge,
+                "liquidity_penalty_pct": spread_penalty}
 
     ev_pct = pred_net
     ev_dollar = ev_pct * mid * 100
 
     if pred_net <= 0:
         return {"ev_pct": ev_pct, "ev_dollar_per_contract": ev_dollar,
-                "kelly_full": 0.0, "kelly_pct": 0.0, "prob_win": prob_win}
+                "kelly_full": 0.0, "kelly_pct": 0.0, "prob_win": prob_win,
+                "spread_to_edge_ratio": spread_to_edge,
+                "liquidity_penalty_pct": spread_penalty}
 
     # v20.7: conservative Kelly prior. Until we have 500+ logged signals AND
     # 10+ days of forward P&L, use a less-optimistic avg_win.
@@ -259,6 +280,8 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
         "prob_win": prob_win,
         "fill_slippage_pct": fill_slippage_pct,
         "setup_quality_mult": setup_mult,
+        "spread_to_edge_ratio": spread_to_edge,
+        "liquidity_penalty_pct": spread_penalty,
     }
 
 

@@ -42,6 +42,11 @@ OPEN_FILE   = DATA_DIR / "open_positions.json"
 CLOSED_FILE = DATA_DIR / "closed_positions.json"
 
 OPTION_KEY_COLS = ("ticker", "side", "strike", "expiry")
+TRACKED_SIGNAL_PREFIXES = ("z_", "factor_")
+TRACKED_SIGNAL_COLS = {
+    "rank_score", "fused_score", "confidence", "ev_pct", "kelly_pct",
+    "prob_win", "setup_quality_mult", "trade_score", "bucket",
+}
 
 
 def _load(path: Path) -> List[Dict]:
@@ -78,7 +83,7 @@ def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
         key = (s.get("ticker"), s.get("side"), s.get("strike"), s.get("expiry"))
         if key in existing or any(v is None for v in key):
             continue
-        open_rows.append({
+        row = {
             "ticker": s.get("ticker"),
             "side": s.get("side"),
             "strike": float(s.get("strike") or 0),
@@ -99,7 +104,21 @@ def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "research_guard_warnings": s.get("research_guard_warnings"),
             "stop_price":   float(s.get("stop_price") or 0),
             "target_price": float(s.get("target_price") or 0),
-        })
+        }
+        for col in s.index:
+            if col in row:
+                continue
+            if col in TRACKED_SIGNAL_COLS or any(str(col).startswith(p) for p in TRACKED_SIGNAL_PREFIXES):
+                value = s.get(col)
+                try:
+                    if pd.isna(value):
+                        continue
+                except Exception:
+                    pass
+                if hasattr(value, "item"):
+                    value = value.item()
+                row[str(col)] = value
+        open_rows.append(row)
         added += 1
     if added:
         _save(OPEN_FILE, open_rows)
@@ -164,6 +183,11 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
     unrealized_pcts: List[float] = []
     now = asof if isinstance(asof, datetime) else datetime.now(timezone.utc)
     for pos in open_rows:
+        try:
+            entry_ts = pd.to_datetime(pos.get("entry_time"), errors="coerce", utc=True)
+            age_days = max(0.0, (pd.Timestamp(now) - entry_ts).total_seconds() / 86400.0)
+        except Exception:
+            age_days = None
         # Check expiry first — if past today, close it
         try:
             exp_dt = datetime.strptime(str(pos.get("expiry")), "%Y-%m-%d") \
@@ -187,16 +211,16 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
             pnl_pct = ((final - entry) / entry) if entry > 0 else 0.0
             closed = {**pos, "exit_time": now.isoformat(),
                       "exit_price": final, "exit_reason": "expired",
-                      "pnl_pct": pnl_pct}
+                      "pnl_pct": pnl_pct, "age_days": age_days}
             newly_closed.append(closed)
             continue
         if cur_mid is None:
             # Couldn't reprice — keep open, no MTM update
-            still_open.append(pos)
+            still_open.append({**pos, "age_days": age_days})
             continue
         entry = float(pos.get("entry_price") or 0)
         if entry <= 0:
-            still_open.append({**pos, "current_mid": cur_mid})
+            still_open.append({**pos, "current_mid": cur_mid, "age_days": age_days})
             continue
         pnl_pct = (cur_mid - entry) / entry
         unrealized_pcts.append(pnl_pct)
@@ -206,14 +230,15 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
         if stop > 0 and cur_mid <= stop:
             newly_closed.append({**pos, "exit_time": now.isoformat(),
                                   "exit_price": cur_mid, "exit_reason": "stop",
-                                  "pnl_pct": pnl_pct})
+                                  "pnl_pct": pnl_pct, "age_days": age_days})
             continue
         if target > 0 and cur_mid >= target:
             newly_closed.append({**pos, "exit_time": now.isoformat(),
                                   "exit_price": cur_mid, "exit_reason": "target",
-                                  "pnl_pct": pnl_pct})
+                                  "pnl_pct": pnl_pct, "age_days": age_days})
             continue
-        still_open.append({**pos, "current_mid": cur_mid, "unrealized_pct": pnl_pct})
+        still_open.append({**pos, "current_mid": cur_mid, "unrealized_pct": pnl_pct,
+                           "age_days": age_days})
 
     if newly_closed:
         prev_closed = _load(CLOSED_FILE)
@@ -241,3 +266,40 @@ def summary() -> Dict[str, float]:
         "realized_win_rate": realized_win_rate,
         "realized_avg_pnl_pct": realized_avg,
     }
+
+
+def aging_summary(asof: Optional[datetime] = None) -> Dict[str, object]:
+    """Summarize open recommendation age so stale theses are visible."""
+    rows = _load(OPEN_FILE)
+    if not rows:
+        return {"open_count": 0, "buckets": [], "oldest": []}
+    now = asof or datetime.now(timezone.utc)
+    df = pd.DataFrame(rows)
+    df["entry_time"] = pd.to_datetime(df.get("entry_time"), errors="coerce", utc=True)
+    df["age_days"] = (pd.Timestamp(now) - df["entry_time"]).dt.total_seconds() / 86400.0
+    df["age_days"] = df["age_days"].clip(lower=0)
+    bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
+    labels = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
+    df["age_bucket"] = pd.cut(df["age_days"], bins=bins, labels=labels)
+    buckets = []
+    for label, sub in df.groupby("age_bucket", observed=True):
+        avg_unrealized = None
+        if "unrealized_pct" in sub.columns:
+            avg = pd.to_numeric(sub["unrealized_pct"], errors="coerce").mean()
+            avg_unrealized = None if pd.isna(avg) else float(avg)
+        buckets.append({
+            "bucket": str(label),
+            "count": int(len(sub)),
+            "avg_unrealized_pct": avg_unrealized,
+        })
+    oldest_cols = [
+        c for c in ("ticker", "side", "expiry", "entry_time", "age_days",
+                    "unrealized_pct", "confidence", "trade_status")
+        if c in df.columns
+    ]
+    oldest = (
+        df.sort_values("age_days", ascending=False)
+          .head(20)[oldest_cols]
+          .to_dict(orient="records")
+    )
+    return {"open_count": int(len(df)), "buckets": buckets, "oldest": oldest}

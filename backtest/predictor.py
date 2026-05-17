@@ -70,6 +70,19 @@ FACTOR_TO_ZCOL = {
     "insider_score":   "z_insider",
 }
 
+ZCOL_TO_SIGNAL = {
+    "z_mispricing": "mispricing",
+    "z_iv_rank": "iv_rank",
+    "z_skew": "skew",
+    "z_sent": "sentiment_d",
+    "z_fund": "fundamentals",
+    "z_insider": "insider",
+    "z_macro": "macro",
+    "z_news": "news",
+    "z_earnings": "earnings",
+    "z_value": "value",
+}
+
 
 def _bootstrap_coefs_from_ic(ic_df: pd.DataFrame, horizon: int = DEFAULT_HORIZON_DAYS) -> Dict[str, float]:
     """Seed coefficients from backtest IC × Q5-Q1 spread when no forward data exists.
@@ -300,6 +313,60 @@ def _has_enough_history_for_lasso(forward_signals: pd.DataFrame,
         return False
 
 
+def _rolling_forward_ic_weights(forward_signals: pd.DataFrame,
+                                baseline: Dict[str, float],
+                                lookback_days: int = 90,
+                                min_samples: int = 100,
+                                min_unique_days: int = 5) -> Optional[Dict[str, float]]:
+    """Reweight factors from rolling forward IC before trusting full Lasso."""
+    if forward_signals is None or forward_signals.empty:
+        return None
+    target_col = "pnl_pct_after_slippage" if "pnl_pct_after_slippage" in forward_signals.columns else "pnl_pct"
+    if target_col not in forward_signals.columns or "entry_time" not in forward_signals.columns:
+        return None
+    df = forward_signals.copy()
+    df["entry_time"] = pd.to_datetime(df["entry_time"], errors="coerce", utc=True)
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
+    df = df[df["entry_time"] >= cutoff].dropna(subset=[target_col])
+    if len(df) < min_samples or df["entry_time"].dt.date.nunique() < min_unique_days:
+        return None
+
+    ic_by_signal: Dict[str, float] = {}
+    for z_col, signal_key in ZCOL_TO_SIGNAL.items():
+        if z_col not in df.columns or signal_key not in baseline:
+            continue
+        sub = df[[z_col, target_col]].copy()
+        sub[z_col] = pd.to_numeric(sub[z_col], errors="coerce")
+        sub[target_col] = pd.to_numeric(sub[target_col], errors="coerce")
+        sub = sub.dropna()
+        if len(sub) < min_samples or sub[z_col].nunique() < 2:
+            continue
+        ic = sub[z_col].corr(sub[target_col])
+        if not pd.isna(ic):
+            ic_by_signal[signal_key] = float(ic)
+    if not ic_by_signal:
+        return None
+
+    raw = {}
+    for key, base in baseline.items():
+        ic = ic_by_signal.get(key)
+        if ic is None:
+            raw[key] = max(float(base) * 0.50, 0.001)
+        elif ic <= -0.05:
+            raw[key] = max(float(base) * 0.20, 0.001)
+        elif ic < 0:
+            raw[key] = max(float(base) * 0.50, 0.001)
+        else:
+            raw[key] = max(float(base), 0.001) * (1.0 + min(ic, 0.25) * 6.0)
+    total = sum(raw.values())
+    if total <= 0:
+        return None
+    weights = {k: round(v / total, 4) for k, v in raw.items()}
+    log.info("rolling %dd IC weights from %d forward samples; strongest=%s",
+             lookback_days, len(df), max(weights, key=weights.get))
+    return weights
+
+
 def update_runtime_weights(forward_signals: pd.DataFrame = None,
                             ic_df: pd.DataFrame = None,
                             min_samples: int = 500) -> Optional[Dict[str, float]]:
@@ -346,6 +413,10 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
             log.info("walk-forward guard: %d samples / need %d "
                      "across ≥10 distinct days — skipping Lasso refit, using IC only",
                      len(df), min_samples)
+            rolling_weights = _rolling_forward_ic_weights(df, baseline)
+            if rolling_weights:
+                _persist_runtime_weights(rolling_weights, source="rolling_90d_forward_ic")
+                return rolling_weights
         elif len(df) >= min_samples:
             try:
                 from sklearn.linear_model import LassoCV

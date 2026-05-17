@@ -31,7 +31,7 @@ import data_provider
 from config import (
     MIN_OPEN_INTEREST, MIN_DAILY_VOLUME, MAX_BID_ASK_SPREAD_PCT,
     MIN_OPTION_PRICE, MIN_DTE, MAX_DTE, RISK_FREE_RATE_DEFAULT,
-    WORKERS_MISPRICING,
+    WORKERS_MISPRICING, HESTON_ENABLED,
 )
 from utils import bs_price, bs_implied_vol, bs_delta, retry, safe, safe_int, safe_float
 # v20.3/v20.4: multi-model vectorized pricing ensemble
@@ -236,10 +236,14 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
 
     # ---- Vectorized multi-model pricing ----
     if HAVE_ENSEMBLE:
+        models = {"bs", "crr", "bjs", "cboe"}
+        if HESTON_ENABLED:
+            models.add("heston")
         per_model = all_models_vec(
             S_arr, K_arr, T_arr, r, fair_vol_arr, q_arr, call_mask,
             cboe_theo=cboe_arr,
             crr_steps=80,
+            models=models,
         )
         theo_arr = ensemble_theo_vec(per_model, weights)
         theo_bs_arr  = per_model.get("bs",  np.full(len(df), np.nan))

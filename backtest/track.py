@@ -45,6 +45,7 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         "ticker", "contract", "side", "strike", "expiry", "dte", "spot",
         "mid", "bid", "ask", "spread_pct", "net_edge_pct",
         "iv_market", "fair_vol", "vol_premium", "delta", "open_interest",
+        "regime", "macro_tilt",
         "is_buy", "fused_score", "confidence", "signal", "reasoning", "risks",
         "z_mispricing", "z_iv_rank", "z_skew", "z_sent", "z_fund", "z_insider",
         "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social", "z_analyst",
@@ -69,6 +70,7 @@ def log_signals_shares(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     fp = LOG_DIR / f"shares_signals_{asof.strftime('%Y%m%d_%H%M%S')}.parquet"
     cols = [
         "ticker", "spot", "share_score", "confidence", "classification", "market_cap",
+        "regime", "macro_tilt",
         "stop_pct", "target_pct", "suggested_dollars", "kelly_pct", "ev_pct",
         "trade_status", "trade_score", "setup_quality_mult",
         "research_guard_status", "research_guard_warnings",

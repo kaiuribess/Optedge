@@ -435,12 +435,17 @@ def main():
 
     # Standalone modes — validation / forward / backtest only
     if args.validation_report:
-        from reports.validation_report import EQUITY_PNG, REPORT_HTML, SUMMARY_JSON, write_report
+        from reports.validation_report import (
+            EQUITY_PNG, FACTOR_IC_JSON, POSITION_AGING_JSON, REPORT_HTML,
+            SUMMARY_JSON, write_report,
+        )
         log.info("== VALIDATION REPORT ==")
         summary = write_report(scope="all_time" if args.validation_all_time else "current_model")
         print(f"\nValidation report: {REPORT_HTML}")
         print(f"Validation summary: {SUMMARY_JSON}")
         print(f"Equity curve: {EQUITY_PNG}")
+        print(f"Factor IC summary: {FACTOR_IC_JSON}")
+        print(f"Position aging summary: {POSITION_AGING_JSON}")
         if summary.get("warnings"):
             print("\nWarnings:")
             for warning in summary["warnings"]:
@@ -889,6 +894,15 @@ def main():
         log.info("v20 empty engines (%d): %s",
                  len(empty_engines),
                  ", ".join(e["name"] for e in empty_engines))
+    engine_health_summary = {}
+    try:
+        from telemetry.engine_health import record as _record_engine_health
+        engine_health_summary = _record_engine_health(
+            engine_timings if "engine_timings" in dir() else {},
+            empty_engines=empty_engines,
+        )
+    except Exception as e:
+        log.debug("engine health record skipped: %s", e)
 
     log.info("== Fusion ==")
     ranked_opts = fusion_rank.fuse_options(contracts, summary, sent_df, fund_df, ins_df,
@@ -1073,6 +1087,16 @@ def main():
     except Exception as e:
         log.debug("position tracking skipped: %s", e)
 
+    validation_summary = None
+    try:
+        from reports.validation_report import write_report as _write_validation_report
+        validation_summary = _write_validation_report(scope="current_model")
+        log.info("validation refreshed: %d closed / %d open",
+                 validation_summary.get("closed_positions", 0),
+                 validation_summary.get("open_positions", 0))
+    except Exception as e:
+        log.debug("validation refresh skipped: %s", e)
+
     tv_text = fusion_rank.to_tv_watchlist(calls, puts, top_sh)
     tv_path = out_dir / f"tradingview_watchlist_{asof_tag}.txt"
     tv_path.write_text(tv_text)
@@ -1141,6 +1165,8 @@ def main():
         breaker_state=breaker_state,
         research_guard_report=research_guard_report,
         engine_timings=engine_timings if 'engine_timings' in dir() else {},
+        engine_health=engine_health_summary,
+        validation_summary=validation_summary,
         v20_factors=v20_df_map,
         empty_engines=empty_engines,
     )
