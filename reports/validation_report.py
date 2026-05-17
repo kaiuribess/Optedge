@@ -109,8 +109,23 @@ def load_signal_logs() -> pd.DataFrame:
 
 
 def load_positions() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    open_df = pd.DataFrame(_read_json_rows(DATA_DIR / "open_positions.json"))
-    closed_df = pd.DataFrame(_read_json_rows(DATA_DIR / "closed_positions.json"))
+    open_frames = []
+    closed_frames = []
+    for asset, open_name, closed_name in [
+        ("option", "open_positions.json", "closed_positions.json"),
+        ("share", "open_share_positions.json", "closed_share_positions.json"),
+        ("futures", "open_futures_positions.json", "closed_futures_positions.json"),
+    ]:
+        open_part = pd.DataFrame(_read_json_rows(DATA_DIR / open_name))
+        closed_part = pd.DataFrame(_read_json_rows(DATA_DIR / closed_name))
+        if not open_part.empty:
+            open_part["asset"] = asset
+            open_frames.append(open_part)
+        if not closed_part.empty:
+            closed_part["asset"] = asset
+            closed_frames.append(closed_part)
+    open_df = pd.concat(open_frames, ignore_index=True, sort=False) if open_frames else pd.DataFrame()
+    closed_df = pd.concat(closed_frames, ignore_index=True, sort=False) if closed_frames else pd.DataFrame()
     for df in (open_df, closed_df):
         if not df.empty:
             for col in ("entry_time", "exit_time"):
@@ -294,10 +309,90 @@ def _closed_with_slippage(closed: pd.DataFrame) -> pd.DataFrame:
         slippage = float(FILL_SLIPPAGE_PCT)
     except Exception:
         slippage = 0.04
+    asset = out.get("asset", pd.Series("option", index=out.index)).astype(str).str.lower()
     side = out.get("side", pd.Series("", index=out.index)).astype(str).str.lower()
     out["pnl_pct_after_slippage"] = _num(out.get("pnl_pct", pd.Series(np.nan, index=out.index)))
-    out.loc[side.isin(["call", "put"]), "pnl_pct_after_slippage"] -= slippage
+    out.loc[(asset == "option") | side.isin(["call", "put"]), "pnl_pct_after_slippage"] -= slippage
     return out
+
+
+def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, Any]:
+    out = {}
+    for asset in ("option", "share", "futures"):
+        open_sub = open_df[open_df.get("asset", "") == asset] if not open_df.empty else pd.DataFrame()
+        closed_sub = closed[closed.get("asset", "") == asset] if not closed.empty else pd.DataFrame()
+        out[asset] = {
+            "open_positions": int(len(open_sub)),
+            "closed_positions": int(len(closed_sub)),
+            "overall": _stats(closed_sub),
+            "after_slippage": _stats(closed_sub, "pnl_pct_after_slippage"),
+            "exit_reasons": (
+                closed_sub.get("exit_reason", pd.Series(dtype=str)).fillna("unknown")
+                .astype(str).value_counts().to_dict()
+                if not closed_sub.empty else {}
+            ),
+            "pnl_dollars": (
+                float(pd.to_numeric(closed_sub.get("pnl_dollars"), errors="coerce").sum())
+                if "pnl_dollars" in closed_sub.columns else None
+            ),
+            "pnl_points": (
+                float(pd.to_numeric(closed_sub.get("pnl_points"), errors="coerce").sum())
+                if "pnl_points" in closed_sub.columns else None
+            ),
+        }
+    return out
+
+
+def _load_exit_reviews() -> pd.DataFrame:
+    path = DATA_DIR / "exit_reviews.jsonl"
+    if not path.exists():
+        return pd.DataFrame()
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+    except Exception:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def _exit_review_summary() -> Dict[str, Any]:
+    df = _load_exit_reviews()
+    if df.empty:
+        return {"by_asset": {}, "total_reviews": 0}
+    by_asset = {}
+    for asset, sub in df.groupby("asset"):
+        by_asset[str(asset)] = {
+            "reviews": int(len(sub)),
+            "actions": sub.get("action", pd.Series(dtype=str)).fillna("unknown").astype(str).value_counts().to_dict(),
+            "learned_policy_reviews": int(sub.get("used_learned_policy", pd.Series(False, index=sub.index)).fillna(False).astype(bool).sum()),
+        }
+    return {"by_asset": by_asset, "total_reviews": int(len(df))}
+
+
+def _exit_effectiveness(closed: pd.DataFrame) -> Dict[str, Any]:
+    if closed is None or closed.empty:
+        return {}
+    out = {}
+    for asset, sub in closed.groupby(closed.get("asset", pd.Series("option", index=closed.index))):
+        dyn = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str) == "dynamic_exit"]
+        hard = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str).str.startswith("hard_")]
+        out[str(asset)] = {
+            "dynamic_exit": _stats(dyn),
+            "hard_exit": _stats(hard),
+            "dynamic_exit_count": int(len(dyn)),
+            "hard_exit_count": int(len(hard)),
+        }
+    return out
+
+
+def _exit_policy_summary() -> Dict[str, Any]:
+    try:
+        from backtest.exit_learning import load_exit_policy
+        return load_exit_policy()
+    except Exception:
+        return {}
 
 
 def _period_return(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> Optional[float]:
@@ -437,6 +532,10 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "overall": overall,
         "all_time_overall": _stats(all_time_closed),
         "after_slippage": after_slippage,
+        "assets": _asset_breakdown(open_df, closed),
+        "exit_reviews": _exit_review_summary(),
+        "exit_effectiveness": _exit_effectiveness(closed),
+        "exit_policy": _exit_policy_summary(),
         "calls_vs_puts": _side_performance(closed),
         "dte_buckets": _bucket_performance(closed, "dte_at_entry", [
             (0, 8, "0-7 DTE"),
@@ -517,6 +616,30 @@ def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
     )
 
 
+def _asset_table(assets: Dict[str, Any]) -> str:
+    body = []
+    for asset, row in (assets or {}).items():
+        overall = row.get("overall", {})
+        body.append(
+            "<tr>"
+            f"<td>{html.escape(str(asset))}</td>"
+            f"<td>{int(row.get('open_positions') or 0)}</td>"
+            f"<td>{int(row.get('closed_positions') or 0)}</td>"
+            f"<td>{_fmt_pct(overall.get('win_rate'))}</td>"
+            f"<td>{_fmt_pct(overall.get('avg_return'))}</td>"
+            f"<td>{_fmt_pct(overall.get('max_drawdown'))}</td>"
+            f"<td>{_fmt(overall.get('profit_factor'))}</td>"
+            f"<td>{html.escape(json.dumps(row.get('exit_reasons', {})))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th>"
+        "<th>Win rate</th><th>Avg return</th><th>Max DD</th>"
+        "<th>Profit factor</th><th>Exit reasons</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
 def render_html(summary: Dict[str, Any]) -> str:
     overall = summary["overall"]
     slip = summary["after_slippage"]
@@ -593,6 +716,11 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
       ])}
     </section>
   </div>
+
+  <section>
+    <h2>Asset Breakdown</h2>
+    {_asset_table(summary.get("assets", {}))}
+  </section>
 
   <section>
     <h2>Equity Curve</h2>

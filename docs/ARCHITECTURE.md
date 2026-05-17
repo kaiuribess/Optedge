@@ -8,8 +8,9 @@ Optedge is a local research cockpit built around a scan, fuse, size, log, and va
 2. Engines collect independent factors: options mispricing, sentiment, news, fundamentals, earnings, insider activity, Congress, futures, macro, flows, and technicals.
 3. Fusion combines factor rows into ranked options, shares, value plays, and futures.
 4. Sizing applies EV, fractional Kelly, slippage, sector caps, and setup-quality multipliers.
-5. Tracking writes signal logs and position state.
-6. Validation reads logged signals and closed/open positions to produce a formal research report.
+5. Tracking writes signal logs and asset-specific position state.
+6. Every scan reprices and reanalyzes exits for open options, shares, and futures.
+7. Validation reads logged signals and closed/open positions to produce a formal research report.
 
 ## Main Modules
 
@@ -20,6 +21,29 @@ Optedge is a local research cockpit built around a scan, fuse, size, log, and va
 - `dashboard/`: local HTML cockpit rendering.
 - `reports/`: formal validation reports and research artifacts.
 - `risk/`: research safety guardrails.
+- `archive.py`: safe generated-artifact archive/reset helper.
+
+## Asset Lifecycles
+
+Options use option-chain pricing, theoretical value, IV/skew/DTE fields, stop/target/expiry exits, and dynamic exit review after hard exits.
+
+Shares use equity prices and non-option factors such as sentiment, news, fundamentals, insider activity, analyst data, macro context, technicals, sector flow, and filings. They do not require strikes, expiries, Greeks, or option-chain fields.
+
+Futures use futures scores, macro context, momentum, volatility, range position, point-value sizing, micro-contract preference, ATR-like stops, and direction-aware long/short exits.
+
+State files are intentionally plain JSON:
+
+- `data/open_positions.json` and `data/closed_positions.json`
+- `data/open_share_positions.json` and `data/closed_share_positions.json`
+- `data/open_futures_positions.json` and `data/closed_futures_positions.json`
+- `data/exit_reviews.jsonl`
+- `data/exit_policy.json`
+
+## Archive Reset
+
+`python archive.py` moves generated run artifacts into `archive/run_YYYYMMDD_HHMMSS/` while preserving `data/` and `logs/` subfolders. It does not touch source code, config files, docs, tests, engines, backtest modules, fusion, dashboard, or `.github`.
+
+Use `python archive.py --dry-run` to preview moves. Use `python archive.py --keep-learned` to preserve learned/adaptive files such as `data/model_weights.json`, `data/exit_policy.json`, `data/exit_policy_history.jsonl`, and `data/exit_reviews.jsonl`.
 
 ## Refactor Direction
 

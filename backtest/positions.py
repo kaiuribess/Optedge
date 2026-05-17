@@ -71,6 +71,15 @@ def _option_key(row: Dict) -> Tuple:
     return tuple(row.get(c) for c in OPTION_KEY_COLS)
 
 
+def _signal_map(current_signals: Optional[pd.DataFrame]) -> Dict[Tuple, Dict]:
+    if current_signals is None or current_signals.empty:
+        return {}
+    out = {}
+    for _, r in current_signals.iterrows():
+        out[tuple(r.get(c) for c in OPTION_KEY_COLS)] = r.to_dict()
+    return out
+
+
 def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
     """Insert any new (ticker, side, strike, expiry) tuples not already open.
     Returns the number of new positions added."""
@@ -145,13 +154,21 @@ def _current_mid_for_position(pos: Dict, chain_blobs: Dict[str, dict]) -> Option
     return last if last > 0 else None
 
 
-def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float]:
+def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
+                   current_signals: Optional[pd.DataFrame] = None) -> Dict[str, float]:
     """Re-fetch the current chain for each unique open-position ticker and
     compute per-position unrealized P&L. Move expired/triggered positions
     to closed. Returns a small summary dict for logging."""
     open_rows = _load(OPEN_FILE)
     if not open_rows:
         return {"open": 0, "closed_this_iter": 0, "mean_unrealized_pct": 0.0}
+    try:
+        from backtest.exit_rules import (
+            apply_dynamic_exit_action, compute_exit_pressure, log_exit_review,
+        )
+    except Exception:
+        apply_dynamic_exit_action = compute_exit_pressure = log_exit_review = None
+    signal_lookup = _signal_map(current_signals)
 
     try:
         import chain_provider
@@ -183,6 +200,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
     unrealized_pcts: List[float] = []
     now = asof if isinstance(asof, datetime) else datetime.now(timezone.utc)
     for pos in open_rows:
+        current_signal = signal_lookup.get(_option_key(pos))
         try:
             entry_ts = pd.to_datetime(pos.get("entry_time"), errors="coerce", utc=True)
             age_days = max(0.0, (pd.Timestamp(now) - entry_ts).total_seconds() / 86400.0)
@@ -212,11 +230,22 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
             closed = {**pos, "exit_time": now.isoformat(),
                       "exit_price": final, "exit_reason": "expired",
                       "pnl_pct": pnl_pct, "age_days": age_days}
+            if compute_exit_pressure and log_exit_review:
+                review = compute_exit_pressure(closed, current_signal, asset="option")
+                review.update({"action": "expired", "current_price": final,
+                               "current_pnl_pct": pnl_pct})
+                log_exit_review(review)
             newly_closed.append(closed)
             continue
         if cur_mid is None:
             # Couldn't reprice — keep open, no MTM update
-            still_open.append({**pos, "age_days": age_days})
+            pos2 = {**pos, "age_days": age_days,
+                    "reprice_failed_count": int(pos.get("reprice_failed_count") or 0) + 1}
+            if compute_exit_pressure and apply_dynamic_exit_action and log_exit_review:
+                review = compute_exit_pressure(pos2, current_signal, asset="option")
+                log_exit_review(review)
+                pos2 = apply_dynamic_exit_action(pos2, review)
+            still_open.append(pos2)
             continue
         entry = float(pos.get("entry_price") or 0)
         if entry <= 0:
@@ -228,17 +257,40 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60) -> Dict[str, float
         stop = float(pos.get("stop_price") or 0)
         target = float(pos.get("target_price") or 0)
         if stop > 0 and cur_mid <= stop:
-            newly_closed.append({**pos, "exit_time": now.isoformat(),
-                                  "exit_price": cur_mid, "exit_reason": "stop",
-                                  "pnl_pct": pnl_pct, "age_days": age_days})
+            closed = {**pos, "exit_time": now.isoformat(),
+                      "exit_price": cur_mid, "exit_reason": "hard_stop",
+                      "pnl_pct": pnl_pct, "age_days": age_days}
+            if compute_exit_pressure and log_exit_review:
+                review = compute_exit_pressure(closed, current_signal, asset="option")
+                review.update({"action": "hard_stop", "current_price": cur_mid,
+                               "current_pnl_pct": pnl_pct})
+                log_exit_review(review)
+            newly_closed.append(closed)
             continue
         if target > 0 and cur_mid >= target:
-            newly_closed.append({**pos, "exit_time": now.isoformat(),
-                                  "exit_price": cur_mid, "exit_reason": "target",
-                                  "pnl_pct": pnl_pct, "age_days": age_days})
+            closed = {**pos, "exit_time": now.isoformat(),
+                      "exit_price": cur_mid, "exit_reason": "hard_target",
+                      "pnl_pct": pnl_pct, "age_days": age_days}
+            if compute_exit_pressure and log_exit_review:
+                review = compute_exit_pressure(closed, current_signal, asset="option")
+                review.update({"action": "hard_target", "current_price": cur_mid,
+                               "current_pnl_pct": pnl_pct})
+                log_exit_review(review)
+            newly_closed.append(closed)
             continue
-        still_open.append({**pos, "current_mid": cur_mid, "unrealized_pct": pnl_pct,
-                           "age_days": age_days})
+        pos2 = {**pos, "current_mid": cur_mid, "current_price": cur_mid,
+                "unrealized_pct": pnl_pct, "age_days": age_days}
+        if compute_exit_pressure and apply_dynamic_exit_action and log_exit_review:
+            review = compute_exit_pressure(pos2, current_signal, asset="option")
+            log_exit_review(review)
+            if review["action"] == "close_early":
+                newly_closed.append({**pos2, "exit_time": now.isoformat(),
+                                     "exit_price": cur_mid,
+                                     "exit_reason": "dynamic_exit",
+                                     "pnl_pct": pnl_pct})
+                continue
+            pos2 = apply_dynamic_exit_action(pos2, review, current_price=cur_mid)
+        still_open.append(pos2)
 
     if newly_closed:
         prev_closed = _load(CLOSED_FILE)

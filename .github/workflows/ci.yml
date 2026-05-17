@@ -29,6 +29,12 @@ jobs:
         run: |
           python tests/test_pricing.py
           python tests/test_research_guard.py
+          python tests/test_archive.py
+          python tests/test_exit_rules.py
+          python tests/test_exit_learning.py
+          python tests/test_futures_sizing.py
+          python tests/test_share_positions.py
+          python tests/test_futures_positions.py
 
       - name: Lint
         run: |

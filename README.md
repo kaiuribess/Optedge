@@ -167,6 +167,26 @@ The dashboard includes:
 
 Generated dashboards are ignored by Git so local research output stays private.
 
+## Archive / Reset
+
+Archive generated run data without deleting anything:
+
+```bash
+python archive.py
+```
+
+Preview first:
+
+```bash
+python archive.py --dry-run
+```
+
+Keep learned/adaptive files while archiving normal run history:
+
+```bash
+python archive.py --keep-learned
+```
+
 ## Validation Report
 
 The validation report is the main proof layer for the research loop. It reports:

@@ -1052,6 +1052,15 @@ def main():
         bearish = futures_df[futures_df["futures_score"] < -0.3].sort_values("futures_score")
         top_fut = pd.concat([bullish.head(args.max_futures // 2),
                              bearish.head(args.max_futures // 2)], ignore_index=True)
+        try:
+            from backtest.futures_sizing import add_sizing_to_futures
+            top_fut = add_sizing_to_futures(top_fut, bankroll=args.bankroll,
+                                            aggressive=args.aggressive)
+            if not futures_df.empty:
+                futures_df = add_sizing_to_futures(futures_df, bankroll=args.bankroll,
+                                                   aggressive=args.aggressive)
+        except Exception as e:
+            log.debug("futures sizing skipped: %s", e)
 
     log.info("top calls: %d  top puts: %d  top shares: %d  top value: %d  top futures: %d",
              len(calls), len(puts), len(top_sh), len(top_value), len(top_fut))
@@ -1097,9 +1106,31 @@ def main():
         from backtest import positions as _pos
         if not top_opts.empty:
             _pos.add_new_signals(top_opts, run_asof)
-        _pos.mark_to_market(run_asof)
+        _pos.mark_to_market(run_asof, current_signals=ranked_opts)
     except Exception as e:
         log.debug("position tracking skipped: %s", e)
+
+    try:
+        from backtest import share_positions as _share_pos
+        if not top_sh.empty:
+            _share_pos.add_new_share_signals(top_sh, run_asof)
+        _share_pos.mark_to_market_shares(run_asof, current_signals=ranked_shares)
+    except Exception as e:
+        log.warning("share lifecycle skipped: %s", e)
+
+    try:
+        from backtest import futures_positions as _fut_pos
+        if not top_fut.empty:
+            _fut_pos.add_new_futures_signals(top_fut, run_asof)
+        _fut_pos.mark_to_market_futures(run_asof, current_signals=futures_df)
+    except Exception as e:
+        log.warning("futures lifecycle skipped: %s", e)
+
+    try:
+        from backtest.exit_learning import refit_exit_policy
+        refit_exit_policy()
+    except Exception as e:
+        log.debug("exit policy refit skipped: %s", e)
 
     validation_summary = None
     try:
