@@ -1,0 +1,19 @@
+{
+  "weights": {
+    "trend": 0.3,
+    "momentum": 0.15,
+    "range_pos": 0.1,
+    "macro_align": 0.1,
+    "news": 0.2,
+    "atr_regime": 0.05,
+    "term_structure": 0.1
+  },
+  "meta": {
+    "source": "priors",
+    "n_samples": 3,
+    "fitted_at": "2026-05-12T03:52:37.101698+00:00",
+    "ic_score": null,
+    "factor_ic": {},
+    "decay_flags": []
+  }
+}

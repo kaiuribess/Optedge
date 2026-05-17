@@ -1,0 +1,37 @@
+{
+  "weights": {
+    "mispricing": -0.26,
+    "iv_rank": 0.05,
+    "skew": 0.08,
+    "sentiment_d": 0.050382,
+    "fundamentals": 0.16,
+    "insider": -0.16,
+    "macro": 0.1,
+    "news": 0.08,
+    "earnings": 0.08,
+    "value": 0.06,
+    "congress": 0.05,
+    "social": 0.05,
+    "analyst": 0.1
+  },
+  "meta": {
+    "source": "lasso_refit",
+    "n_samples": 127,
+    "fitted_at": "2026-05-12T03:52:37.070723+00:00",
+    "ic_score": 0.18909041251627068,
+    "factor_ic": {
+      "mispricing": -0.32304758288958185,
+      "iv_rank": 0.0,
+      "skew": -0.23072213337764125,
+      "sentiment_d": -0.013341407240676995,
+      "fundamentals": 0.2745090001899553,
+      "insider": -0.015919088032952687,
+      "macro": 0.10277628326126743
+    },
+    "decay_flags": [
+      "skew",
+      "sentiment_d",
+      "insider"
+    ]
+  }
+}

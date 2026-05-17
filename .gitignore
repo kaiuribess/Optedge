@@ -1,0 +1,26 @@
+# Local-only files
+keys.py
+.optedge_status.json
+config_runtime.py
+
+# Caches & outputs
+data/_cache/
+data/*.parquet
+data/*.json
+data/*.html
+data/*.txt
+data/*.jsonl
+logs/*.parquet
+telemetry/*.parquet
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.codex_git/
+*.egg-info/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
