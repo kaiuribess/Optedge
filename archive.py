@@ -11,7 +11,15 @@ from typing import Iterable, List, Tuple
 ROOT = Path(__file__).resolve().parent
 
 ARCHIVE_PATTERNS = [
+    "data/*.parquet",
     "data/signals_*.json",
+    "data/backtest_summary.json",
+    "data/engine_health.json",
+    "data/engine_health_history.jsonl",
+    "data/heston_stability.json",
+    "data/model_weights_history.jsonl",
+    "data/predictor_coefs.json",
+    "data/research_guard.json",
     "data/open_positions.json",
     "data/closed_positions.json",
     "data/open_share_positions.json",
@@ -29,6 +37,8 @@ ARCHIVE_PATTERNS = [
     "data/exit_policy_history.jsonl",
     "data/exit_reviews.jsonl",
     "data/dashboard_*.html",
+    "data/tradingview_watchlist_*.txt",
+    "data/macro_*.json",
     "logs/**/*",
 ]
 

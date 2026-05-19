@@ -18,10 +18,12 @@ def test_archive_moves_data_and_logs():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _write(root / "data" / "validation_summary.json")
+        _write(root / "data" / "forward_outcomes_options_call.parquet")
         _write(root / "logs" / "example.log")
         archive_root, moved = archive.run_archive(root, dry_run=False, keep_learned=False)
-        assert len(moved) == 2
+        assert len(moved) == 3
         assert (archive_root / "data" / "validation_summary.json").exists()
+        assert (archive_root / "data" / "forward_outcomes_options_call.parquet").exists()
         assert (archive_root / "logs" / "example.log").exists()
         assert not (root / "data" / "validation_summary.json").exists()
 

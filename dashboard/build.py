@@ -1160,8 +1160,81 @@ def _calibration_panel(calib) -> str:
 </section>"""
 
 
-def _performance_panel(forward_summary) -> str:
-    """Render the Performance Tracking panel from a forward-test result."""
+def _performance_panel(forward_summary, validation_summary: Optional[Dict] = None) -> str:
+    """Render the Performance Tracking panel from lifecycle validation first.
+
+    Forward repricing is useful research telemetry, but it is not the same thing
+    as the open/closed trade lifecycle. When validation is available, keep this
+    panel aligned with the lifecycle dashboard so a fresh archive/reset does not
+    display stale forward-test P&L next to current open positions.
+    """
+    if validation_summary:
+        assets = validation_summary.get("assets", {}) or {}
+        closed = int(validation_summary.get("closed_positions") or 0)
+        open_count = int(validation_summary.get("open_positions") or 0)
+        overall = validation_summary.get("overall", {}) or {}
+        avg_ret = overall.get("avg_return")
+        med_ret = overall.get("median_return")
+        win_rate = overall.get("win_rate")
+        pf = overall.get("profit_factor")
+        max_dd = overall.get("max_drawdown")
+
+        def _fmt_pct(value, default="0.0%"):
+            if value is None:
+                return default
+            try:
+                return f"{float(value) * 100:+.1f}%"
+            except Exception:
+                return default
+
+        def _asset_row(asset: str, label: str) -> str:
+            row = assets.get(asset, {}) or {}
+            c = int(row.get("closed_positions") or 0)
+            o = int(row.get("open_positions") or 0)
+            wr = row.get("win_rate")
+            ar = row.get("avg_return")
+            wr_txt = "n/a" if wr is None else f"{float(wr) * 100:.1f}%"
+            ar_txt = _fmt_pct(ar, "n/a")
+            color = "#10b981" if (ar or 0) >= 0 else "#ef4444"
+            return f"""
+<div class="perf-row">
+  <div class="perf-bucket">{label}</div>
+  <div class="perf-n">{o} open / {c} closed</div>
+  <div class="perf-win">win {wr_txt}</div>
+  <div class="perf-pnl" style="color:{color}">{ar_txt}</div>
+</div>"""
+
+        win_color = "#10b981" if (win_rate or 0) >= 0.55 else "#f59e0b" if (win_rate or 0) >= 0.45 else "#ef4444"
+        pnl_color = "#10b981" if (avg_ret or 0) >= 0 else "#ef4444"
+        return f"""
+<section class="panel">
+  <h3>Analyst Performance Tracking <span class="muted">(lifecycle validation)</span></h3>
+  <div class="perf-headline">
+    <div><span class="lab">Open</span><span class="val">{open_count}</span></div>
+    <div><span class="lab">Closed</span><span class="val">{closed}</span></div>
+    <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{'n/a' if win_rate is None else f'{float(win_rate)*100:.1f}%'}</span></div>
+    <div><span class="lab">Avg P&amp;L</span><span class="val" style="color:{pnl_color}">{_fmt_pct(avg_ret)}</span></div>
+    <div><span class="lab">Median</span><span class="val">{_fmt_pct(med_ret)}</span></div>
+  </div>
+  <div class="perf-headline" style="margin-top:14px;">
+    <div><span class="lab">Profit factor</span><span class="val">{'n/a' if pf is None else f'{float(pf):.2f}'}</span></div>
+    <div><span class="lab">Max DD</span><span class="val" style="color:#ef4444">{_fmt_pct(max_dd)}</span></div>
+    <div><span class="lab">Scope</span><span class="val">current</span></div>
+  </div>
+  <div class="two-col" style="margin-top:14px;">
+    <div>
+      <h4 class="sub">By asset class</h4>
+      {_asset_row('option', 'OPTIONS')}
+      {_asset_row('share', 'SHARES')}
+      {_asset_row('futures', 'FUTURES')}
+    </div>
+    <div>
+      <h4 class="sub">Why this may be empty</h4>
+      <p class="muted">Closed P&amp;L starts at zero after an archive/reset and fills in only when lifecycle positions close. Forward-reprice history is kept separate so stale paper history cannot mix into the current experiment.</p>
+    </div>
+  </div>
+</section>
+"""
     if not forward_summary or forward_summary.get("signals", pd.DataFrame()).empty:
         return f"""
 <section class="panel">
@@ -1423,74 +1496,80 @@ def _congress_panel(congress: pd.DataFrame, top_n: int = 12) -> str:
 
 def _build_analytics_html() -> str:
     """Build the Plotly-powered analytics section using live data from disk."""
-    import glob, json
+    import json
     import warnings
     warnings.filterwarnings("ignore")
 
-    #  1. Load all forward outcomes 
-    dfs = []
-    for f in sorted(glob.glob(str(ROOT / "data" / "forward_outcomes_*.parquet"))):
+    def _load_json_rows(filename: str, asset: str) -> list:
         try:
-            dfs.append(pd.read_parquet(f))
+            rows = json.loads((ROOT / "data" / filename).read_text(encoding="utf-8"))
         except Exception:
-            pass
-    if dfs:
-        all_out = pd.concat(dfs, ignore_index=True)
-    else:
-        all_out = pd.DataFrame(columns=["log_time", "outcome", "pnl_pct", "bucket"])
-    if "log_time" in all_out.columns and not all_out.empty:
-        all_out["log_time"] = pd.to_datetime(all_out["log_time"], utc=True)
-        all_out["date_str"] = all_out["log_time"].dt.strftime("%Y-%m-%d")
-    else:
-        all_out["date_str"] = pd.Series(dtype=str)
-
-    if "outcome" in all_out.columns and not all_out.empty:
-        closed = all_out[all_out["outcome"].isin(["stop", "target"])].copy()
-    else:
-        closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
-    closed = closed.sort_values("log_time")
-
-    #  2. Load open positions 
-    op_path = ROOT / "data" / "open_positions.json"
-    try:
-        with open(op_path) as f:
-            op_list = json.load(f)
-        df_open = pd.DataFrame(op_list)
-        df_open["entry_time"] = pd.to_datetime(df_open["entry_time"], utc=True)
-        df_open["entry_date"] = df_open["entry_time"].dt.strftime("%Y-%m-%d")
-    except Exception:
-        op_list = []
-        df_open = pd.DataFrame()
-
-    #  3. Load closed positions (from stop/target logs) 
-    cp_path = ROOT / "data" / "closed_positions.json"
-    try:
-        with open(cp_path) as f:
-            cp_list = json.load(f)
-        df_closed_pos = pd.DataFrame(cp_list)
-    except Exception:
-        df_closed_pos = pd.DataFrame()
-
-    if closed.empty and not df_closed_pos.empty and "pnl_pct" in df_closed_pos.columns:
-        closed = df_closed_pos.copy()
-        if "exit_time" in closed.columns:
-            closed["log_time"] = pd.to_datetime(closed["exit_time"], errors="coerce", utc=True)
-        elif "entry_time" in closed.columns:
-            closed["log_time"] = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True)
-        else:
-            closed["log_time"] = pd.Timestamp.utcnow()
-        closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
-        if "outcome" not in closed.columns:
-            closed["outcome"] = closed.get("exit_reason", pd.Series("closed", index=closed.index)).fillna("closed")
-        if "bucket" not in closed.columns:
-            closed["bucket"] = closed.get("side", pd.Series("option", index=closed.index)).fillna("option")
-        closed = closed.sort_values("log_time")
+            return []
+        if not isinstance(rows, list):
+            return []
+        cleaned = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("asset", asset)
+            if "ticker" not in item:
+                item["ticker"] = item.get("symbol") or item.get("name") or asset
+            if "side" not in item:
+                item["side"] = item.get("direction") or asset
+            cleaned.append(item)
+        return cleaned
 
     validation_summary = {}
     try:
         validation_summary = json.loads((ROOT / "data" / "validation_summary.json").read_text(encoding="utf-8"))
     except Exception:
         validation_summary = {}
+
+    # 1. Load lifecycle closed positions only. Forward reprice files are separate
+    # research telemetry and can be stale after archive/reset.
+    closed_rows = (
+        _load_json_rows("closed_positions.json", "option")
+        + _load_json_rows("closed_share_positions.json", "share")
+        + _load_json_rows("closed_futures_positions.json", "futures")
+    )
+    closed = pd.DataFrame(closed_rows)
+    if not closed.empty:
+        if "pnl_pct" not in closed.columns:
+            closed["pnl_pct"] = pd.NA
+        for col in ("current_pnl_pct", "return_pct", "unrealized_pct"):
+            if col in closed.columns:
+                closed["pnl_pct"] = closed["pnl_pct"].fillna(closed[col])
+        closed["pnl_pct"] = pd.to_numeric(closed["pnl_pct"], errors="coerce").fillna(0.0)
+        if "exit_time" in closed.columns:
+            closed["log_time"] = pd.to_datetime(closed["exit_time"], errors="coerce", utc=True)
+        elif "entry_time" in closed.columns:
+            closed["log_time"] = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True)
+        else:
+            closed["log_time"] = pd.Timestamp.utcnow()
+        closed["log_time"] = closed["log_time"].fillna(pd.Timestamp.utcnow())
+        closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
+        if "outcome" not in closed.columns:
+            closed["outcome"] = closed.get("exit_reason", pd.Series("closed", index=closed.index)).fillna("closed")
+        if "bucket" not in closed.columns:
+            closed["bucket"] = closed.get("asset", pd.Series("position", index=closed.index)).fillna("position")
+        closed = closed.sort_values("log_time")
+    else:
+        closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
+
+    # 2. Load current open lifecycle positions across all asset classes.
+    op_list = (
+        _load_json_rows("open_positions.json", "option")
+        + _load_json_rows("open_share_positions.json", "share")
+        + _load_json_rows("open_futures_positions.json", "futures")
+    )
+    df_open = pd.DataFrame(op_list)
+    try:
+        if not df_open.empty and "entry_time" in df_open.columns:
+            df_open["entry_time"] = pd.to_datetime(df_open["entry_time"], utc=True)
+            df_open["entry_date"] = df_open["entry_time"].dt.strftime("%Y-%m-%d")
+    except Exception:
+        pass
 
     #  4. Compute PnL curve 
     if not closed.empty:
@@ -1567,7 +1646,42 @@ def _build_analytics_html() -> str:
                     factor_labels.append(col.replace("z_", "").replace("_", " ").title())
                     factor_ic.append(round(ic, 4))
 
-    #  8. Open positions unrealized distribution 
+    #  8. Open positions unrealized distribution
+    display_open_rows = []
+    if not df_open.empty:
+        if "unrealized_pct" not in df_open.columns:
+            df_open["unrealized_pct"] = pd.NA
+        for col in ("current_pnl_pct", "pnl_pct"):
+            if col in df_open.columns:
+                df_open["unrealized_pct"] = df_open["unrealized_pct"].fillna(df_open[col])
+        df_open["unrealized_pct"] = pd.to_numeric(df_open["unrealized_pct"], errors="coerce").fillna(0.0)
+
+        def _num(value, default=0.0):
+            try:
+                if value is None or pd.isna(value):
+                    return default
+                return float(value)
+            except Exception:
+                return default
+
+        for r in op_list:
+            current_price = r.get("current_mid", r.get("current_price", r.get("last_price", 0)))
+            side = str(r.get("side") or r.get("direction") or r.get("asset") or "-").upper()
+            display_open_rows.append({
+                "ticker": r.get("ticker") or r.get("symbol") or "-",
+                "asset": r.get("asset") or "position",
+                "side": side,
+                "strike": r.get("strike", r.get("contract", "-")),
+                "expiry": r.get("expiry", "-"),
+                "entry_price": _num(r.get("entry_price")),
+                "current_price": _num(current_price),
+                "unrealized_pct": _num(r.get("unrealized_pct", r.get("current_pnl_pct", r.get("pnl_pct", 0)))),
+                "age_days": _num(r.get("age_days")),
+                "confidence": r.get("confidence"),
+                "stop_price": _num(r.get("stop_price")),
+                "target_price": _num(r.get("target_price")),
+            })
+
     if not df_open.empty and "unrealized_pct" in df_open.columns:
         unr_vals = df_open["unrealized_pct"].dropna().tolist()
         unr_labels = df_open["ticker"].tolist() if "ticker" in df_open.columns else [str(i) for i in range(len(unr_vals))]
@@ -1784,18 +1898,18 @@ def _build_analytics_html() -> str:
     {''.join(
       f"""<tr>
         <td><strong>{html.escape(str(r.get("ticker","-")))}</strong></td>
-        <td><span style="color:{'#10b981' if r.get('side')=='call' else '#f87171'}">{r.get('side','-').upper()}</span></td>
+        <td><span style="color:{'#10b981' if str(r.get('side')).lower() in ('call','long','share') else '#f87171'}">{html.escape(str(r.get('side','-')).upper())}</span></td>
         <td>{r.get('strike','-')}</td>
         <td>{r.get('expiry','-')}</td>
         <td>${r.get('entry_price',0):.2f}</td>
-        <td>${r.get('current_mid',0):.2f}</td>
+        <td>${r.get('current_price',0):.2f}</td>
         <td style="color:{'#10b981' if r.get('unrealized_pct',0)>=0 else '#ef4444'};font-weight:600">{r.get('unrealized_pct',0)*100:+.1f}%</td>
         <td>{float(r.get('age_days',0) or 0):.1f}d</td>
         <td>{int(r.get('confidence',0)) if r.get('confidence') else '-'}</td>
         <td style="color:#f59e0b">${r.get('stop_price',0):.2f}</td>
         <td style="color:#10b981">${r.get('target_price',0):.2f}</td>
       </tr>"""
-      for r in op_list
+      for r in display_open_rows
     )}
     </tbody>
   </table>
@@ -2088,7 +2202,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     <div>{earn_panel}</div>
   </div>
 
-  {_performance_panel(forward_summary)}
+  {_performance_panel(forward_summary, validation_summary)}
   {_calibration_panel(calibration_summary)}
   {_analyst_panel(analyst)}
   {_congress_panel(congress)}
