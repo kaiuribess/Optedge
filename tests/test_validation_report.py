@@ -1,4 +1,6 @@
+import binascii
 import json
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -116,9 +118,33 @@ def test_current_model_does_not_hide_active_signal_logs():
             validation_report.load_signal_logs = old_loader
 
 
+def _assert_valid_png(path: Path):
+    data = path.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    offset = 8
+    while offset < len(data):
+        length = struct.unpack(">I", data[offset:offset + 4])[0]
+        kind = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + length]
+        crc_expected = struct.unpack(">I", data[offset + 8 + length:offset + 12 + length])[0]
+        crc_actual = binascii.crc32(kind + payload) & 0xFFFFFFFF
+        assert crc_actual == crc_expected
+        offset += 12 + length
+        if kind == b"IEND":
+            break
+
+
+def test_empty_equity_curve_writes_valid_png():
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "equity_curve.png"
+        validation_report._write_equity_curve(pd.DataFrame(), out)
+        _assert_valid_png(out)
+
+
 if __name__ == "__main__":
     test_validation_counts_open_options_and_futures()
     test_validation_current_model_keeps_old_open_positions()
     test_position_aging_counts_open_positions_by_asset()
     test_current_model_does_not_hide_active_signal_logs()
-    print("4/4 validation report tests passed")
+    test_empty_equity_curve_writes_valid_png()
+    print("5/5 validation report tests passed")

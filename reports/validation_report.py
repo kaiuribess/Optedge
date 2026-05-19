@@ -12,14 +12,16 @@ instead of being inferred. Run with:
 """
 from __future__ import annotations
 
-import base64
 import argparse
+import binascii
 import glob
 import html
 import json
 import math
 import random
+import struct
 import sys
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -508,10 +510,7 @@ def _random_baseline(returns: Iterable[float], trials: int = 1000) -> Dict[str, 
 def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if closed.empty or "pnl_pct_after_slippage" not in closed.columns:
-        # 1x1 transparent PNG fallback.
-        path.write_bytes(base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axnP7sAAAAASUVORK5CYII="
-        ))
+        _write_empty_equity_curve(path)
         return
     curve = closed.copy()
     sort_col = "exit_time" if "exit_time" in curve.columns else "entry_time"
@@ -533,9 +532,55 @@ def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
         plt.savefig(path, dpi=140)
         plt.close()
     except Exception:
-        path.write_bytes(base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axnP7sAAAAASUVORK5CYII="
-        ))
+        _write_valid_blank_png(path)
+
+
+def _png_chunk(kind: bytes, data: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
+    )
+
+
+def _write_valid_blank_png(path: Path) -> None:
+    """Write a tiny valid transparent PNG without optional dependencies."""
+    width, height = 1, 1
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    raw = b"\x00\xff\xff\xff\x00"
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(raw))
+        + _png_chunk(b"IEND", b"")
+    )
+    path.write_bytes(png)
+
+
+def _write_empty_equity_curve(path: Path) -> None:
+    """Create a valid placeholder chart when no closed trades exist yet."""
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(9, 4.5))
+        plt.axhline(1.0, color="#64748b", linewidth=1.0, linestyle="--")
+        plt.text(
+            0.5, 0.52, "No closed positions yet",
+            ha="center", va="center", fontsize=15, color="#475569",
+            transform=plt.gca().transAxes,
+        )
+        plt.title("Optedge Closed-Signal Equity Curve")
+        plt.xlabel("Closed signal")
+        plt.ylabel("Equity multiple")
+        plt.xlim(0, 1)
+        plt.ylim(0.95, 1.05)
+        plt.grid(True, alpha=0.2)
+        plt.tight_layout()
+        plt.savefig(path, dpi=140)
+        plt.close()
+    except Exception:
+        _write_valid_blank_png(path)
 
 
 def build_summary(scope: str = "current_model", since: Optional[str] = None) -> Dict[str, Any]:
