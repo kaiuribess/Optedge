@@ -9,13 +9,20 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backtest import futures_positions
+from backtest import exit_rules, futures_positions
 
 
 def _patch_files(td):
     futures_positions.OPEN_FILE = Path(td) / "open_futures_positions.json"
     futures_positions.CLOSED_FILE = Path(td) / "closed_futures_positions.json"
     futures_positions.DATA_DIR = Path(td)
+    exit_rules.DATA_DIR = Path(td)
+    exit_rules.EXIT_REVIEWS_FILE = Path(td) / "exit_reviews.jsonl"
+
+
+def _restore_exit_rules(old_data, old_file):
+    exit_rules.DATA_DIR = old_data
+    exit_rules.EXIT_REVIEWS_FILE = old_file
 
 
 def _signal(direction="long"):
@@ -35,30 +42,42 @@ def _signal(direction="long"):
 
 def test_futures_long_closes_on_stop():
     with tempfile.TemporaryDirectory() as td:
+        old_data, old_file = exit_rules.DATA_DIR, exit_rules.EXIT_REVIEWS_FILE
         _patch_files(td)
-        asof = datetime.now(timezone.utc)
-        futures_positions.add_new_futures_signals(_signal("long"), asof)
-        futures_positions._latest_price = lambda symbol: 94
-        assert futures_positions.mark_to_market_futures(asof, None)["closed_this_iter"] == 1
+        try:
+            asof = datetime.now(timezone.utc)
+            futures_positions.add_new_futures_signals(_signal("long"), asof)
+            futures_positions._latest_price = lambda symbol: 94
+            assert futures_positions.mark_to_market_futures(asof, None)["closed_this_iter"] == 1
+        finally:
+            _restore_exit_rules(old_data, old_file)
 
 
 def test_futures_short_closes_on_target():
     with tempfile.TemporaryDirectory() as td:
+        old_data, old_file = exit_rules.DATA_DIR, exit_rules.EXIT_REVIEWS_FILE
         _patch_files(td)
-        asof = datetime.now(timezone.utc)
-        futures_positions.add_new_futures_signals(_signal("short"), asof)
-        futures_positions._latest_price = lambda symbol: 89
-        assert futures_positions.mark_to_market_futures(asof, None)["closed_this_iter"] == 1
+        try:
+            asof = datetime.now(timezone.utc)
+            futures_positions.add_new_futures_signals(_signal("short"), asof)
+            futures_positions._latest_price = lambda symbol: 89
+            assert futures_positions.mark_to_market_futures(asof, None)["closed_this_iter"] == 1
+        finally:
+            _restore_exit_rules(old_data, old_file)
 
 
 def test_futures_closes_on_score_reversal():
     with tempfile.TemporaryDirectory() as td:
+        old_data, old_file = exit_rules.DATA_DIR, exit_rules.EXIT_REVIEWS_FILE
         _patch_files(td)
-        asof = datetime.now(timezone.utc)
-        futures_positions.add_new_futures_signals(_signal("long"), asof)
-        futures_positions._latest_price = lambda symbol: 101
-        current = pd.DataFrame([{"symbol": "ES=F", "futures_score": -1.0}])
-        assert futures_positions.mark_to_market_futures(asof, current)["closed_this_iter"] == 1
+        try:
+            asof = datetime.now(timezone.utc)
+            futures_positions.add_new_futures_signals(_signal("long"), asof)
+            futures_positions._latest_price = lambda symbol: 101
+            current = pd.DataFrame([{"symbol": "ES=F", "futures_score": -1.0}])
+            assert futures_positions.mark_to_market_futures(asof, current)["closed_this_iter"] == 1
+        finally:
+            _restore_exit_rules(old_data, old_file)
 
 
 if __name__ == "__main__":
