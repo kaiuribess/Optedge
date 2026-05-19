@@ -327,6 +327,7 @@ python tests/test_futures_sizing.py
 python tests/test_share_positions.py
 python tests/test_futures_positions.py
 python tests/test_validation_report.py
+python tests/test_external_paper_track.py
 ```
 
 If `pytest` and `ruff` are installed:
@@ -343,6 +344,7 @@ ruff check . --select E9,F63,F7,F82
 - [Data Sources](docs/DATA_SOURCES.md)
 - [Risk Model](docs/RISK_MODEL.md)
 - [Factor Library](docs/FACTOR_LIBRARY.md)
+- [Third-Party Forward Testing](docs/THIRD_PARTY_FORWARD_TESTING.md)
 - [Limitations](docs/LIMITATIONS.md)
 
 ## Limitations

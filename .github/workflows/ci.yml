@@ -41,6 +41,7 @@ jobs:
           python tests/test_share_positions.py
           python tests/test_futures_positions.py
           python tests/test_validation_report.py
+          python tests/test_external_paper_track.py
 
       - name: Lint
         run: |
