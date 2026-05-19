@@ -1,74 +1,110 @@
-# Optedge — Multi-Factor Options & Market Research Cockpit
+# Optedge - Multi-Asset Market Research Cockpit
 
+![CI](https://github.com/kaiuribess/Optedge/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-research-orange)
 
-Optedge is a local research cockpit for options, shares, futures, and value ideas. It combines live market data, options-chain analytics, retail attention, fundamentals, filings, macro context, sizing rules, and validation reports into one dashboard.
+Optedge is a local research cockpit for options, shares, futures, and value ideas. It combines options-chain analytics, market data, retail attention, news, fundamentals, filings, macro context, sizing rules, lifecycle tracking, validation reports, and guardrails into one local dashboard.
 
-It is built for research and decision support. It is not an autonomous trading system, and it does not place trades.
+Optedge is built for research and decision support. It does not place trades, connect to a broker, or promise future returns.
 
-## What It Does
+## What Optedge Is
 
-- Ranks long calls, long puts, share buys, value plays, and futures ideas.
-- Scores signals across options mispricing, IV, skew, sentiment, fundamentals, insider activity, filings, news, earnings, macro, Congress, retail attention, technicals, futures, and market structure.
-- Applies EV, estimated slippage, fractional Kelly, per-trade caps, sector caps, and exit triggers.
-- Tracks open and closed recommendations locally.
-- Generates an interactive HTML dashboard.
-- Produces a formal validation report with win rate, returns, drawdown, profit factor, buckets, benchmarks, and sample-size warnings.
+- A local research cockpit that runs on your machine.
+- A multi-asset signal ranking system for options, shares, futures, and value ideas.
+- A dashboard and validation layer for reviewing recommendations, open positions, closed outcomes, and model evidence.
+- A lifecycle tracker that stores open and closed recommendations locally.
+- A research tool with archive/reset support and safety guardrails.
+
+## What Optedge Is Not
+
+- Not financial advice.
+- Not a profit guarantee.
+- Not an autonomous execution engine.
+- Not a replacement for human review.
+- Not production-ready for live capital without strong validation evidence.
+
+## Core Features
+
+- Options mispricing, chain analytics, surface checks, and contract ranking.
+- Share and value ranking using the full non-option factor stack.
+- Futures ranking using futures trend, macro, risk, volatility, and cross-asset context.
+- Multi-factor fusion across sentiment, news, fundamentals, filings, macro, technicals, market structure, and retail attention.
+- EV, slippage, fractional Kelly sizing, bankroll caps, and sector concentration controls.
+- Multi-asset lifecycle tracking for open and closed recommendations.
+- Dynamic exit pressure reviewed every scan.
+- Conservative self-learning exit policy that stays inactive until enough evidence exists.
+- Validation report, factor IC summary, equity curve, and position aging output.
+- Interactive local HTML dashboard.
+- Safe archive/reset tool for generated research artifacts.
+- Research guardrails for sample size, drawdown, spreads, stale models, and data health.
 
 ## Signal Coverage
 
-Optedge is intentionally broad. Each run can combine dozens of independent signals into one research board:
+Optedge is intentionally broad. Each scan can combine many independent signals, but the goal is not to trust every factor blindly. The goal is to make the evidence visible, size ideas conservatively, and validate which signals are actually helping.
 
-| Area | What Optedge Looks At |
+| Area | Coverage |
 |---|---|
-| Options pricing | Black-Scholes, CRR binomial, Bjerksund-Stensland, CBOE theoretical price, ensemble weights, fair value gaps, net edge after spread |
-| Options surface | IV rank, IV premium, skew, surface anomalies, DTE, delta, open interest, bid/ask spread, liquidity filters |
-| Options flow | Unusual options activity, put/call ratios, contract-level ranking, call/put separation |
-| Sentiment | WSB, r/options, StockTwits-style social signals, ApeWisdom/Twitter-style attention, FinBERT, VADER, keyword/degen-aware text scoring |
-| News | Recent headlines, 24-hour news count, headline sentiment, news momentum |
-| Earnings | Earnings calendar, days-to-earnings, whisper signals, IV-crush risk |
-| Fundamentals | Market cap, valuation, quality, P/E, FCF yield, earnings yield, EV/EBITDA, margin/ROIC proxies |
-| Value investing | Deep value buckets, Graham-style score, Magic Formula-style quality/value composite |
-| Insider activity | SEC Form 4 parsing, insider buys/sells, officer/director weighting, Finnhub MSPR aggregate insider sentiment |
-| Filings and flows | Form 144 planned sales, buyback announcements, 13F-style institutional context, cluster-buy detection |
-| Congress | STOCK Act transaction disclosures from House/Senate reports, net buying/selling by ticker |
-| Macro | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads |
-| Futures and commodities | Equity index, rates, energy, metals, agriculture, crypto futures, trend/range/volatility features |
-| Public macro datasets | CFTC CoT, EIA energy data, USDA WASDE, FRED yield/credit data when configured |
-| Market structure | Dark-pool/FINRA short-volume proxy, short interest, squeeze setups, sector ETF flows |
-| Technicals | Trend, momentum, RSI, MACD, relative strength, 52-week range position, volatility regime |
-| Special catalysts | FDA/biotech catalyst detection, earnings-window flags, event proximity |
-| Crypto attention | Hyperliquid open-interest style signals for crypto-linked names and futures context |
-| Portfolio context | Sector concentration, portfolio Greeks, drawdown breaker, engine latency telemetry |
+| Options pricing, surface, and flow | Black-Scholes, CRR binomial, Bjerksund-Stensland, CBOE theoretical price, ensemble weights, IV rank, IV premium, skew, surface anomalies, DTE, delta, open interest, bid/ask spread, unusual options activity, put/call ratios, and contract-level call/put ranking |
+| Sentiment, social, and retail attention | WSB, r/options, StockTwits-style social signals, ApeWisdom/Twitter-style attention, FinBERT, VADER, keyword/degen-aware scoring, Google Trends, and attention momentum |
+| News, earnings, and catalysts | Recent headlines, headline sentiment, news momentum, earnings calendar, days-to-earnings, whisper signals, IV-crush risk, FDA/biotech catalysts, and event proximity |
+| Fundamentals and value | Market cap, valuation, quality, P/E, FCF yield, earnings yield, EV/EBITDA, margin/ROIC proxies, deep value buckets, Graham-style score, and Magic Formula-style quality/value composite |
+| Insider, filings, and Congress | SEC Form 4 parsing, insider buys/sells, officer/director weighting, Finnhub MSPR aggregate insider sentiment, Form 144 planned sales, buybacks, 13F context, cluster-buy detection, and STOCK Act disclosures |
+| Macro, rates, credit, and volatility | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads, FRED data when configured, and volatility regime context |
+| Futures, commodities, and crypto | Equity index, rates, energy, metals, agriculture, crypto futures, trend/range/volatility features, CFTC CoT, EIA energy data, USDA WASDE, and Hyperliquid-style crypto context |
+| Market structure and technicals | Dark-pool/FINRA short-volume proxy, short interest, squeeze setups, sector ETF flows, trend, momentum, RSI, MACD, relative strength, 52-week range position, and volatility regime |
+| Risk, portfolio, and telemetry | Sector concentration, portfolio Greeks, drawdown breaker, research guard report, engine health, empty-engine diagnostics, and engine latency telemetry |
 
-The goal is not to blindly trust every factor. The goal is to make competing evidence visible, size ideas conservatively, and then validate which signals actually work.
+## Multi-Asset Trade Lifecycle
+
+Every scan can add new qualified recommendations, reprice existing open recommendations, review exits, and update local open/closed state files.
+
+### Options
+
+- Uses the full research stack plus option-chain data and option-specific pricing math.
+- Prices, ranks, sizes, tracks, reprices, and closes recommendations.
+- Applies hard exits for stop, target, and expiry.
+- Runs dynamic exit review every scan after hard risk exits.
+
+### Shares
+
+- Uses the full non-option research stack for equity ideas.
+- Tracks equity entries, current prices, suggested sizing, stops, targets, and dynamic exit pressure.
+- Does not depend on option-chain fields.
+
+### Futures
+
+- Uses the full non-option research stack plus futures, macro, trend, volatility, and risk context.
+- Uses ATR-like stop/target logic, point-value risk sizing, and micro futures preference when available.
+- Reviews futures score reversals, volatility changes, macro context, and reprice failures every scan.
+
+Shares and futures do not use option-specific fields such as strike, expiry, DTE, IV, delta, Black-Scholes, CRR, BJS, CBOE theoretical price, or option mispricing. All assets remain research recommendations only. Optedge does not submit orders.
 
 ## How A Run Works
 
-Each scan follows the same research pipeline:
-
 1. Builds a universe from configured option/share lists, prior tracked names, and WSB trending discovery.
-2. Filters the universe so the slower engines focus on names with enough liquidity, attention, or prior relevance.
+2. Filters the universe so slower engines focus on liquid, relevant, or attention-heavy names.
 3. Runs live-data engines concurrently across options, news, filings, fundamentals, sentiment, macro, futures, technicals, and market-structure signals.
-4. Prices option contracts with multiple models, compares them to market prices, and logs model predictions for later scoring.
-5. Re-scores headlines and social text with local sentiment models when available.
-6. Updates forward-test evidence and model weights from logged signals when enough recent data exists.
+4. Prices option contracts with multiple models and logs model predictions for later scoring.
+5. Scores social and headline text with local sentiment models when available.
+6. Updates forward-test evidence and model weights when enough recent data exists.
 7. Fuses factor scores into ranked calls, puts, share ideas, value plays, and futures setups.
-8. Applies slippage, spread checks, fractional Kelly sizing, bankroll caps, sector concentration caps, earnings-risk adjustments, and research guardrails.
-9. Tracks open recommendations and closes them when exit or aging rules are reached.
-10. Writes a dashboard, TradingView watchlist, signal logs, model telemetry, and optional validation report.
+8. Applies slippage, spread checks, fractional Kelly sizing, bankroll caps, sector caps, earnings-risk adjustments, and guardrails.
+9. Adds qualified recommendations to local open-position files.
+10. Reprices open options, shares, and futures.
+11. Applies hard exits, dynamic exit review, and conservative learned exit policy when evidence thresholds are met.
+12. Writes the dashboard, watchlist, signal logs, lifecycle state, telemetry, and validation outputs.
 
-## Current Validation Status
+## Validation Status
 
-Run:
+Generate the validation report with:
 
 ```bash
 python run.py --validation-report
 ```
 
-This writes:
+Outputs:
 
 - `data/validation_report.html`
 - `data/validation_summary.json`
@@ -76,17 +112,17 @@ This writes:
 - `data/factor_ic_summary.json`
 - `data/position_aging_summary.json`
 
-Primary validation uses the current model era by default so older stale data is not treated as proof for the latest weights. Use `--validation-all-time` only when you intentionally want the full historical view.
+Validation uses `current_model` scope by default so current-era results are separated from stale older results. Open positions are counted from the current open-position state files, while closed-position metrics only become meaningful after enough recommendations close.
 
-| Metric | Value |
-|---|---:|
-| Closed signals | TBD |
-| Win rate | TBD |
-| Avg return | TBD |
-| Max drawdown | TBD |
-| Profit factor | TBD |
-| SPY benchmark | TBD |
-| QQQ benchmark | TBD |
+Early reports are expected to show small-sample warnings. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
+
+Use all-time validation only when you intentionally want older history included:
+
+```bash
+python run.py --validation-all-time
+```
+
+See [docs/VALIDATION.md](docs/VALIDATION.md) for details.
 
 ## Install
 
@@ -127,6 +163,14 @@ Loop every 30 minutes:
 python run.py --aggressive --bankroll 25000 --loop 30
 ```
 
+Loop every 30 minutes without opening a browser:
+
+```bash
+python run.py --aggressive --bankroll 25000 --loop 30 --no-open
+```
+
+Loop mode sleeps after each run completes. It is not exact wall-clock scheduling.
+
 Faster loop when SEC insider parsing is slow:
 
 ```bash
@@ -153,7 +197,7 @@ python run.py --heston-stability
 
 ## Dashboard
 
-Each scan writes a local dashboard to `data/dashboard_*.html` and opens it in the browser by default.
+Each scan writes a local dashboard to `data/dashboard_*.html` and opens it in the browser by default unless `--no-open` is used.
 
 The dashboard includes:
 
@@ -169,7 +213,9 @@ Generated dashboards are ignored by Git so local research output stays private.
 
 ## Archive / Reset
 
-Archive generated run data without deleting anything:
+`archive.py` is a safe reset button for generated run data. It moves files into `archive/run_YYYYMMDD_HHMMSS/`, preserves subfolder structure, and does not delete source code.
+
+Archive generated run data:
 
 ```bash
 python archive.py
@@ -181,22 +227,32 @@ Preview first:
 python archive.py --dry-run
 ```
 
-Keep learned/adaptive files while archiving normal run history:
+Archive/reset while keeping learned adaptive files:
 
 ```bash
 python archive.py --keep-learned
 ```
+
+Default archive mode moves learned/adaptive files too, which is useful for a fully clean experiment reset. `--keep-learned` preserves:
+
+- `data/model_weights.json`
+- `data/exit_policy.json`
+- `data/exit_policy_history.jsonl`
+- `data/exit_reviews.jsonl`
+
+Archive/reset does not move source code, docs, tests, config, requirements, or GitHub workflow files.
 
 ## Validation Report
 
 The validation report is the main proof layer for the research loop. It reports:
 
 - Total signals.
-- Closed versus open positions.
+- Closed versus open positions by asset.
 - Win rate, average return, median return, profit factor, and max drawdown.
 - Calls versus puts performance.
 - DTE, spread, and confidence bucket performance.
 - Factor IC and open-position age buckets.
+- Dynamic exit actions and learned exit policy status.
 - Performance after estimated slippage.
 - SPY and QQQ benchmark comparison when market data is reachable.
 - Random baseline comparison.
@@ -219,7 +275,7 @@ It warns or blocks trust when:
 - Key data sources return no data.
 - Key engines have weak rolling health.
 
-These guardrails are meant to slow down overconfidence, not replace human review.
+Research Guard is supposed to be conservative. A warning is not cosmetic; it means the output needs more evidence or more human skepticism. If validation is weak, negative, sparse, or uncorrelated, Optedge should not be treated as reliable.
 
 ## Data Sources
 
@@ -247,35 +303,37 @@ optedge/
 
 engines/       factor and data engines
 fusion/        ranking and attribution
-backtest/      sizing, tracking, forward tests, calibration
+backtest/      sizing, lifecycle tracking, exits, forward tests, calibration
 dashboard/     interactive HTML dashboard
 reports/       validation report generation
 risk/          research guardrails
 docs/          architecture, validation, risk, limitations
-tests/         pricing and guardrail tests
+tests/         direct-run test files
 ```
 
 `run.py` is intentionally tiny and delegates to `optedge.cli`.
 
 ## Tests
 
-Run the pricing test file directly:
+The CI workflow runs direct test files so import behavior matches simple local commands. Current direct-run tests:
 
 ```bash
 python tests/test_pricing.py
-```
-
-Run the research guard tests:
-
-```bash
 python tests/test_research_guard.py
+python tests/test_archive.py
+python tests/test_exit_rules.py
+python tests/test_exit_learning.py
+python tests/test_futures_sizing.py
+python tests/test_share_positions.py
+python tests/test_futures_positions.py
+python tests/test_validation_report.py
 ```
 
 If `pytest` and `ruff` are installed:
 
 ```bash
 pytest
-ruff check .
+ruff check . --select E9,F63,F7,F82
 ```
 
 ## Documentation
