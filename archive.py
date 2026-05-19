@@ -59,6 +59,8 @@ def _iter_matches(root: Path, keep_learned: bool = False) -> List[Path]:
             if not path.is_file():
                 continue
             rel = path.relative_to(root)
+            if path.name == ".keep":
+                continue
             if keep_learned and rel in LEARNED_FILES:
                 continue
             if rel in seen:

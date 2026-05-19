@@ -3,6 +3,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -91,8 +93,32 @@ def test_position_aging_counts_open_positions_by_asset():
             validation_report.DATA_DIR = old_data
 
 
+def test_current_model_does_not_hide_active_signal_logs():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        old_loader = validation_report.load_signal_logs
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            validation_report.load_signal_logs = lambda: pd.DataFrame([{
+                "ticker": "AAA",
+                "entry_time": "2026-05-18T14:42:18+00:00",
+            }])
+            summary = validation_report.build_summary(
+                scope="current_model",
+                since="2099-01-01T00:00:00+00:00",
+            )
+            assert summary["total_signals"] == 1
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+            validation_report.load_signal_logs = old_loader
+
+
 if __name__ == "__main__":
     test_validation_counts_open_options_and_futures()
     test_validation_current_model_keeps_old_open_positions()
     test_position_aging_counts_open_positions_by_asset()
-    print("3/3 validation report tests passed")
+    test_current_model_does_not_hide_active_signal_logs()
+    print("4/4 validation report tests passed")

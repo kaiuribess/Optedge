@@ -13,6 +13,7 @@ data/*.jsonl
 data/*.png
 logs/*.parquet
 telemetry/*.parquet
+archive/
 
 # Python
 __pycache__/

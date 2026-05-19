@@ -62,9 +62,20 @@ def test_archive_keep_learned_preserves_policy_files():
         assert not (root / "data" / "validation_summary.json").exists()
 
 
+def test_archive_does_not_move_keep_placeholders():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _write(root / "logs" / ".keep", "")
+        _write(root / "logs" / "example.log")
+        archive.run_archive(root, dry_run=False, keep_learned=False)
+        assert (root / "logs" / ".keep").exists()
+        assert not (root / "logs" / "example.log").exists()
+
+
 if __name__ == "__main__":
     test_archive_moves_data_and_logs()
     test_archive_dry_run_moves_nothing()
     test_archive_does_not_move_source_files()
     test_archive_keep_learned_preserves_policy_files()
-    print("4/4 archive tests passed")
+    test_archive_does_not_move_keep_placeholders()
+    print("5/5 archive tests passed")

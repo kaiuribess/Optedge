@@ -62,6 +62,28 @@ def _filter_since(df: pd.DataFrame, since: Optional[pd.Timestamp], date_col: str
     return df[pd.to_datetime(df[date_col], errors="coerce", utc=True) >= since].copy()
 
 
+def _filter_logs_for_scope(logs: pd.DataFrame, cutoff: Optional[pd.Timestamp]) -> pd.DataFrame:
+    """Filter signal logs only when the cutoff does not erase active run data.
+
+    Adaptive files such as model_weights.json are updated during each scan. If
+    their mtime lands after the run's entry_time stamp, blindly filtering logs
+    by that mtime makes the current dashboard look disconnected from the
+    signals it just produced. Closed positions can still be filtered by model
+    era; logs represent the active, unarchived experiment folder.
+    """
+    if logs is None or logs.empty or cutoff is None or pd.isna(cutoff) or "entry_time" not in logs.columns:
+        return logs
+    filtered = _filter_since(logs, cutoff)
+    if not filtered.empty:
+        return filtered
+    entries = pd.to_datetime(logs["entry_time"], errors="coerce", utc=True).dropna()
+    if entries.empty:
+        return logs
+    if cutoff > entries.max():
+        return logs
+    return filtered
+
+
 def _read_json_rows(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
@@ -526,7 +548,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     if scope == "current_model" and cutoff is None:
         cutoff = _model_update_cutoff()
     if scope != "all_time":
-        logs = _filter_since(logs, cutoff)
+        logs = _filter_logs_for_scope(logs, cutoff)
         closed = _filter_since(closed, cutoff)
 
     total_signals = int(len(logs))
