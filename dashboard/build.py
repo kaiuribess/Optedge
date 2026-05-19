@@ -1168,7 +1168,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     panel aligned with the lifecycle dashboard so a fresh archive/reset does not
     display stale forward-test P&L next to current open positions.
     """
-    if validation_summary:
+    if validation_summary and (not forward_summary or forward_summary.get("signals", pd.DataFrame()).empty):
         assets = validation_summary.get("assets", {}) or {}
         closed = int(validation_summary.get("closed_positions") or 0)
         open_count = int(validation_summary.get("open_positions") or 0)
@@ -1494,7 +1494,7 @@ def _congress_panel(congress: pd.DataFrame, top_n: int = 12) -> str:
 """
 
 
-def _build_analytics_html() -> str:
+def _build_analytics_html(forward_summary=None) -> str:
     """Build the Plotly-powered analytics section using live data from disk."""
     import json
     import warnings
@@ -1534,6 +1534,7 @@ def _build_analytics_html() -> str:
         + _load_json_rows("closed_futures_positions.json", "futures")
     )
     closed = pd.DataFrame(closed_rows)
+    analytics_source = "lifecycle"
     if not closed.empty:
         if "pnl_pct" not in closed.columns:
             closed["pnl_pct"] = pd.NA
@@ -1556,6 +1557,28 @@ def _build_analytics_html() -> str:
         closed = closed.sort_values("log_time")
     else:
         closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
+
+    if closed.empty and forward_summary and not forward_summary.get("signals", pd.DataFrame()).empty:
+        closed = forward_summary["signals"].copy()
+        analytics_source = "forward"
+        if "pnl_pct" not in closed.columns:
+            closed["pnl_pct"] = pd.NA
+        closed["pnl_pct"] = pd.to_numeric(closed["pnl_pct"], errors="coerce").fillna(0.0)
+        if "entry_time" in closed.columns:
+            closed["log_time"] = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True)
+        else:
+            closed["log_time"] = pd.Timestamp.utcnow()
+        closed["log_time"] = closed["log_time"].fillna(pd.Timestamp.utcnow())
+        closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
+        closed["outcome"] = closed["pnl_pct"].map(lambda v: "target" if v > 0 else "stop")
+        if "bucket" not in closed.columns:
+            if "asset" in closed.columns:
+                closed["bucket"] = closed["asset"]
+            elif "side" in closed.columns:
+                closed["bucket"] = closed["side"]
+            else:
+                closed["bucket"] = "signal"
+        closed = closed.sort_values("log_time")
 
     # 2. Load current open lifecycle positions across all asset classes.
     op_list = (
@@ -1732,7 +1755,7 @@ def _build_analytics_html() -> str:
     overall_wr = round((closed["outcome"] == "target").mean() * 100, 1) if not closed.empty else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
     gross_pnl = round(closed["pnl_pct"].sum() * 100, 2) if not closed.empty else 0
-    if validation_summary:
+    if validation_summary and analytics_source == "lifecycle":
         overall = validation_summary.get("overall", {})
         total_closed = int(validation_summary.get("closed_positions") or total_closed)
         if overall.get("win_rate") is not None:
@@ -1856,7 +1879,7 @@ def _build_analytics_html() -> str:
 
 <div class="analytics-grid">
   <div class="chart-box" style="grid-column: span 2;">
-    <h4>Cumulative P&amp;L over time</h4>
+  <h4>Cumulative P&amp;L over time {'(current forward reprice)' if analytics_source == 'forward' else '(closed lifecycle)'}</h4>
     <div id="chart-pnl-curve" style="height:260px;"></div>
   </div>
   <div class="chart-box">
@@ -2152,7 +2175,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   {guard_banner}
   {_macro_banner(macro)}
   {stats}
-  {_build_analytics_html()}
+  {_build_analytics_html(forward_summary)}
 
   <nav class="section-nav" aria-label="Dashboard sections">
     <a href="#sect-analytics">Analytics</a>
