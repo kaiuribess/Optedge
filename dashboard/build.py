@@ -71,6 +71,13 @@ def _fmt_money(x):
     return f"${x:.0f}"
 
 
+def _fmt_text(x, default: str = "-") -> str:
+    if x is None or pd.isna(x):
+        return default
+    text = str(x).strip()
+    return text if text and text.lower() != "nan" else default
+
+
 def _badge(label: str, color: str) -> str:
     return f'<span class="badge" style="background:{color}">{label}</span>'
 
@@ -331,11 +338,12 @@ def _futures_card(row: pd.Series) -> str:
     is_long = (row.get("futures_score") or 0) > 0
     side_color = "#10b981" if is_long else "#f87171"
     side_label = "LONG" if is_long else "SHORT"
-    proxy = row.get("etf") or "-"
-    contract = row.get("contract") or "-"
+    proxy = _fmt_text(row.get("etf"))
+    contract = _fmt_text(row.get("contract"))
     micro = "micro" if row.get("using_micro") else "full"
     context = row.get("futures_context_score")
     rank_score = row.get("rank_score")
+    rank_html = f" - rank {float(rank_score):+.2f}" if rank_score is not None and not pd.isna(rank_score) else ""
     atr = row.get("atr20") if row.get("atr20") is not None else row.get("atr_estimate")
     trade_status = row.get("trade_status") or "Watch"
     return f"""
@@ -344,15 +352,15 @@ def _futures_card(row: pd.Series) -> str:
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["symbol"])}</span>
       {_badge(side_label, side_color)}
-      <span class="chip">{html.escape(row.get('kind') or '')}</span>
+      <span class="chip">{html.escape(_fmt_text(row.get('kind'), ''))}</span>
       <span class="chip">{html.escape(str(trade_status))}</span>
     </div>
     <div class="muted" style="font-family:'JetBrains Mono', monospace; font-size:13px;">
-      score <strong>{row['futures_score']:+.2f}</strong>{f" · rank {float(rank_score):+.2f}" if rank_score is not None else ""}
+      score <strong>{row['futures_score']:+.2f}</strong>{rank_html}
     </div>
   </header>
   <div class="contract">
-    <span class="contract-line">{html.escape(row.get('name') or '')}</span>
+    <span class="contract-line">{html.escape(_fmt_text(row.get('name'), ''))}</span>
     <span class="muted">spot ${_fmt_num(row.get('spot'))} · ETF proxy {html.escape(proxy)} · {html.escape(str(contract))} ({micro})</span>
   </div>
   <div class="grid">
@@ -1555,6 +1563,11 @@ def _build_analytics_html(forward_summary=None) -> str:
         if "bucket" not in closed.columns:
             closed["bucket"] = closed.get("asset", pd.Series("position", index=closed.index)).fillna("position")
         closed = closed.sort_values("log_time")
+        cutoff_raw = validation_summary.get("current_model_cutoff") if validation_summary else None
+        if validation_summary.get("validation_scope") == "current_model" and cutoff_raw:
+            cutoff = pd.to_datetime(cutoff_raw, errors="coerce", utc=True)
+            if not pd.isna(cutoff):
+                closed = closed[closed["log_time"] >= cutoff].copy()
     else:
         closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
 
@@ -1755,9 +1768,11 @@ def _build_analytics_html(forward_summary=None) -> str:
     overall_wr = round((closed["outcome"] == "target").mean() * 100, 1) if not closed.empty else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
     gross_pnl = round(closed["pnl_pct"].sum() * 100, 2) if not closed.empty else 0
+    pnl_scope_label = "re-priced" if analytics_source == "forward" else "closed"
     if validation_summary and analytics_source == "lifecycle":
         overall = validation_summary.get("overall", {})
-        total_closed = int(validation_summary.get("closed_positions") or total_closed)
+        if validation_summary.get("closed_positions") is not None:
+            total_closed = int(validation_summary.get("closed_positions") or 0)
         if overall.get("win_rate") is not None:
             overall_wr = round(float(overall["win_rate"]) * 100, 1)
         if overall.get("avg_return") is not None:
@@ -1853,7 +1868,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 <div class="stat-ribbon">
   <div class="stat-chip">
     <div class="sc-val" style="color:{'#10b981' if overall_avg_pnl >= 0 else '#ef4444'}">{overall_avg_pnl:+.1f}%</div>
-    <div class="sc-lab">Avg closed P&amp;L</div>
+    <div class="sc-lab">Avg {pnl_scope_label} P&amp;L</div>
   </div>
   <div class="stat-chip">
     <div class="sc-val" style="color:{'#10b981' if gross_pnl >= 0 else '#ef4444'}">{gross_pnl:+.0f}%</div>
@@ -1861,7 +1876,7 @@ def _build_analytics_html(forward_summary=None) -> str:
   </div>
   <div class="stat-chip">
     <div class="sc-val" style="color:{'#10b981' if overall_wr >= 40 else '#f59e0b'}">{overall_wr:.1f}%</div>
-    <div class="sc-lab">Win rate ({total_closed} closed)</div>
+    <div class="sc-lab">Win rate ({total_closed} {pnl_scope_label})</div>
   </div>
   <div class="stat-chip">
     <div class="sc-val" style="color:{'#10b981' if open_total_unrealized >= 0 else '#ef4444'}">{open_total_unrealized:+.1f}%</div>

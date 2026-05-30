@@ -35,6 +35,7 @@ if str(ROOT) not in sys.path:
 
 DATA_DIR = ROOT / "data"
 LOGS_DIR = ROOT / "logs"
+ARCHIVE_DIR = ROOT / "archive"
 REPORT_HTML = DATA_DIR / "validation_report.html"
 SUMMARY_JSON = DATA_DIR / "validation_summary.json"
 EQUITY_PNG = DATA_DIR / "equity_curve.png"
@@ -43,6 +44,23 @@ POSITION_AGING_JSON = DATA_DIR / "position_aging_summary.json"
 
 MIN_CLOSED_SIGNALS = 500
 BREAKEVEN_WIN_RATE = 0.50
+
+
+def _latest_archive_cutoff() -> Optional[pd.Timestamp]:
+    """Use the latest archive/reset as the active experiment boundary.
+
+    Adaptive model files are updated during scans, so their mtimes can move
+    past positions that are still part of the same clean experiment. The
+    archive folder is a steadier signal: everything left in data/ after the
+    latest reset belongs to the current unarchived run history.
+    """
+    if not ARCHIVE_DIR.exists():
+        return None
+    runs = [p for p in ARCHIVE_DIR.glob("run_*") if p.is_dir()]
+    if not runs:
+        return None
+    latest = max(runs, key=lambda p: p.stat().st_mtime)
+    return pd.Timestamp(latest.stat().st_mtime, unit="s", tz="UTC")
 
 
 def _model_update_cutoff() -> Optional[pd.Timestamp]:
@@ -56,6 +74,21 @@ def _model_update_cutoff() -> Optional[pd.Timestamp]:
         if path.exists():
             mtimes.append(pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC"))
     return max(mtimes) if mtimes else None
+
+
+def _current_scope_cutoff() -> Optional[pd.Timestamp]:
+    return _latest_archive_cutoff() or _model_update_cutoff()
+
+
+def _existing_total_signals() -> Optional[int]:
+    summary_path = DATA_DIR / "validation_summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        value = json.loads(summary_path.read_text(encoding="utf-8-sig")).get("total_signals")
+        return int(value) if value is not None else None
+    except Exception:
+        return None
 
 
 def _filter_since(df: pd.DataFrame, since: Optional[pd.Timestamp], date_col: str = "entry_time") -> pd.DataFrame:
@@ -172,6 +205,31 @@ def _fmt(v: Optional[float], digits: int = 2) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/a"
     return f"{v:.{digits}f}"
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        value = float(value)
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is pd.NA:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def _profit_factor(returns: pd.Series) -> Optional[float]:
@@ -591,12 +649,14 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
 
     cutoff = pd.to_datetime(since, errors="coerce", utc=True) if since else None
     if scope == "current_model" and cutoff is None:
-        cutoff = _model_update_cutoff()
+        cutoff = _current_scope_cutoff()
     if scope != "all_time":
         logs = _filter_logs_for_scope(logs, cutoff)
         closed = _filter_since(closed, cutoff)
 
     total_signals = int(len(logs))
+    if total_signals == 0 and list(LOGS_DIR.glob("*signals_*.parquet")):
+        total_signals = _existing_total_signals() or 0
     closed_count = int(len(closed))
     open_count = int(len(open_df))
     overall = _stats(closed)
@@ -607,7 +667,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         stale_excluded = max(0, len(all_time_closed) - len(closed))
         if stale_excluded:
             warnings.append(
-                f"Excluded {stale_excluded} older closed positions from the primary metrics because they predate the current model era."
+                f"Excluded {stale_excluded} older closed positions from the primary metrics because they predate the current experiment/model era."
             )
     elif scope != "all_time":
         warnings.append("No model-update timestamp found; validation scope could not isolate the current model era.")
@@ -860,10 +920,14 @@ def write_report(scope: str = "current_model", since: Optional[str] = None) -> D
         if cutoff is not None and not pd.isna(cutoff):
             closed = _filter_since(closed, cutoff)
     _write_equity_curve(closed, EQUITY_PNG)
-    SUMMARY_JSON.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
-    FACTOR_IC_JSON.write_text(json.dumps(summary.get("factor_ic", []), indent=2, default=str), encoding="utf-8")
+    safe_summary = _json_safe(summary)
+    SUMMARY_JSON.write_text(json.dumps(safe_summary, indent=2, allow_nan=False), encoding="utf-8")
+    FACTOR_IC_JSON.write_text(
+        json.dumps(_json_safe(summary.get("factor_ic", [])), indent=2, allow_nan=False),
+        encoding="utf-8",
+    )
     POSITION_AGING_JSON.write_text(
-        json.dumps(summary.get("position_aging", {}), indent=2, default=str),
+        json.dumps(_json_safe(summary.get("position_aging", {})), indent=2, allow_nan=False),
         encoding="utf-8",
     )
     REPORT_HTML.write_text(render_html(summary), encoding="utf-8")

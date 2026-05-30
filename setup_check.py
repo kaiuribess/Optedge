@@ -69,7 +69,7 @@ def check_packages() -> bool:
         ("pyarrow", "pyarrow"),
         ("scikit-learn", "sklearn"),
     ]
-    optional = [("curl_cffi", "curl_cffi")]
+    optional = [("curl_cffi", "curl_cffi"), ("ib_insync", "ib_insync")]
     all_good = True
     for name, importable in needed:
         try:

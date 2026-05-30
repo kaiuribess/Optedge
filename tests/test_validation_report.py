@@ -118,6 +118,69 @@ def test_current_model_does_not_hide_active_signal_logs():
             validation_report.load_signal_logs = old_loader
 
 
+def test_current_model_uses_latest_archive_reset_before_model_mtime():
+    with tempfile.TemporaryDirectory() as td:
+        old_root = validation_report.ROOT
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        old_archive = validation_report.ARCHIVE_DIR
+        root = Path(td)
+        validation_report.ROOT = root
+        validation_report.DATA_DIR = root / "data"
+        validation_report.LOGS_DIR = root / "logs"
+        validation_report.ARCHIVE_DIR = root / "archive"
+        try:
+            archive_run = validation_report.ARCHIVE_DIR / "run_20260518_074153"
+            archive_run.mkdir(parents=True)
+            model_file = validation_report.DATA_DIR / "model_weights.json"
+            model_file.parent.mkdir(parents=True)
+            model_file.write_text("{}", encoding="utf-8")
+            old_time = pd.Timestamp("2026-05-18T14:41:53+00:00").timestamp()
+            new_time = pd.Timestamp("2026-05-22T20:28:53+00:00").timestamp()
+            import os
+
+            os.utime(archive_run, (old_time, old_time))
+            os.utime(model_file, (new_time, new_time))
+            _write_json(
+                validation_report.DATA_DIR / "closed_positions.json",
+                [{
+                    "ticker": "AAA",
+                    "entry_time": "2026-05-18T14:42:18+00:00",
+                    "exit_time": "2026-05-22T20:27:24+00:00",
+                    "pnl_pct": 0.25,
+                }],
+            )
+            summary = validation_report.build_summary(scope="current_model")
+            assert summary["closed_positions"] == 1
+            assert summary["current_model_cutoff"].startswith("2026-05-18T14:41:53")
+        finally:
+            validation_report.ROOT = old_root
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+            validation_report.ARCHIVE_DIR = old_archive
+
+
+def test_total_signals_preserves_existing_count_when_parquet_unreadable():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            validation_report.DATA_DIR.mkdir(parents=True)
+            validation_report.LOGS_DIR.mkdir(parents=True)
+            (validation_report.LOGS_DIR / "signals_20260101_000000.parquet").write_bytes(b"not parquet")
+            (validation_report.DATA_DIR / "validation_summary.json").write_text(
+                json.dumps({"total_signals": 123}),
+                encoding="utf-8",
+            )
+            summary = validation_report.build_summary(scope="all_time")
+            assert summary["total_signals"] == 123
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
 def _assert_valid_png(path: Path):
     data = path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
@@ -146,5 +209,7 @@ if __name__ == "__main__":
     test_validation_current_model_keeps_old_open_positions()
     test_position_aging_counts_open_positions_by_asset()
     test_current_model_does_not_hide_active_signal_logs()
+    test_current_model_uses_latest_archive_reset_before_model_mtime()
+    test_total_signals_preserves_existing_count_when_parquet_unreadable()
     test_empty_equity_curve_writes_valid_png()
-    print("5/5 validation report tests passed")
+    print("7/7 validation report tests passed")

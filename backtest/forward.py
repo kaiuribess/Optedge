@@ -90,6 +90,19 @@ def _slippage_adjusted_pnl(row: pd.Series, pnl_pct: float, asset: str) -> float:
     return pnl_pct - slippage
 
 
+def _truthy(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "long", "buy"}:
+        return True
+    if text in {"0", "false", "no", "n", "short", "sell"}:
+        return False
+    return None
+
+
 # -------- Re-pricing per asset type -----------------------------------
 def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
     """Re-price an option contract at current spot, holding entry IV constant."""
@@ -151,7 +164,7 @@ def _process_share(row: pd.Series) -> Dict[str, Any]:
     ticker = row.get("ticker")
     if not ticker:
         return {"ticker": None, "_drop_reason": "no_ticker"}
-    entry_spot = safe_float(row.get("spot"))
+    entry_spot = safe_float(row.get("spot") or row.get("entry_price") or row.get("current_price"))
     if entry_spot <= 0:
         return {"ticker": ticker, "_drop_reason": "no_entry_spot"}
     hist = data_provider.get_history(ticker, period="5d")
@@ -181,10 +194,13 @@ def _process_future(row: pd.Series) -> Dict[str, Any]:
     symbol = row.get("symbol")
     if not symbol:
         return {"_drop_reason": "no_symbol"}
-    entry = safe_float(row.get("entry"))
-    is_long = bool(row.get("is_long", row.get("side") == "LONG"))
+    entry = safe_float(row.get("entry") or row.get("entry_price") or row.get("spot"))
+    direction = str(row.get("direction") or row.get("side") or "").lower()
+    is_long = _truthy(row.get("is_long"))
+    if is_long is None:
+        is_long = direction in {"long", "buy", "long futures"}
     point_value = safe_float(row.get("point_value"))
-    n_contracts = safe_int(row.get("n_contracts"))
+    n_contracts = safe_int(row.get("n_contracts") or row.get("suggested_contracts") or row.get("contracts"))
     if entry <= 0 or point_value <= 0:
         return {"_drop_reason": "no_entry_or_pointvalue"}
     # Fetch current price for the underlying ETF proxy (futures themselves are hard to fetch)
