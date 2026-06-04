@@ -60,16 +60,17 @@ DISPLAY_COLUMNS = {
     "open_options": [
         "ticker", "side", "strike", "expiry", "entry_time", "entry_price",
         "current_mid", "unrealized_pct", "trade_status", "stop_price", "target_price",
-        "last_reprice_source",
+        "latest_exit_pressure", "latest_exit_action", "last_reprice_source",
     ],
     "open_shares": [
         "ticker", "entry_time", "entry_price", "current_price", "unrealized_pct",
-        "trade_status", "stop_price", "target_price", "latest_exit_action",
+        "trade_status", "stop_price", "target_price", "latest_exit_pressure",
+        "latest_exit_action",
     ],
     "open_futures": [
         "symbol", "direction", "entry_time", "entry_price", "current_price",
         "pnl_pct", "pnl_dollars", "trade_status", "stop_price", "target_price",
-        "latest_exit_action",
+        "latest_exit_pressure", "latest_exit_action",
     ],
     "requested_option_matches": [
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
@@ -241,6 +242,105 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
     }
 
 
+def _status_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _research_action(
+    symbol: str,
+    best_idea: dict[str, Any] | None,
+    open_summary: dict[str, Any],
+    warnings: list[str],
+    total_hits: int,
+) -> dict[str, Any]:
+    """Conservative next-step guidance for a lookup screen."""
+    reasons: list[str] = []
+    next_steps: list[str] = []
+    risk_level = "low"
+    action = "review"
+    label = "Review local research"
+
+    if total_hits <= 0:
+        return {
+            "action": "run_focused_scan",
+            "label": "Run focused scan",
+            "risk_level": "unknown",
+            "reasons": [f"No current local rows were found for {symbol}."],
+            "next_steps": [
+                "Run a focused scan from the cockpit before making any judgment.",
+                "Avoid using stale dashboard rows from another symbol as a substitute.",
+            ],
+            "can_export_paper_candidate": False,
+        }
+
+    warning_text = " ".join(str(w).lower() for w in warnings)
+    blocked = "blocked" in warning_text or "do not trust" in warning_text
+    sample_small = "sample size" in warning_text or "too small" in warning_text
+    open_count = int(open_summary.get("count") or 0)
+    max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
+    avg_unreal = _float_value(open_summary.get("avg_unrealized_pct"))
+    status = _status_text((best_idea or {}).get("trade_status"))
+
+    if open_count > 0:
+        reasons.append(f"{open_count} open lifecycle position(s) already exist for {symbol}.")
+    if max_pressure >= 80:
+        action = "review_exit_now"
+        label = "Review exit now"
+        risk_level = "high"
+        reasons.append(f"Open-position exit pressure is high ({max_pressure:.0f}/100).")
+        next_steps.append("Check the open position monitor before adding anything new.")
+    elif max_pressure >= 60:
+        action = "tighten_or_watch"
+        label = "Tighten or watch"
+        risk_level = "medium"
+        reasons.append(f"Open-position exit pressure is elevated ({max_pressure:.0f}/100).")
+        next_steps.append("Review stop/target and thesis deterioration before sizing new exposure.")
+
+    if blocked:
+        action = "blocked_by_guardrails"
+        label = "Blocked by guardrails"
+        risk_level = "high"
+        reasons.append("Research guardrail warnings include blocked/do-not-trust language.")
+        next_steps.append("Do not paper-export this idea until validation/guardrail warnings clear.")
+    elif sample_small:
+        risk_level = "medium" if risk_level == "low" else risk_level
+        reasons.append("Validation sample-size warning is active.")
+        next_steps.append("Treat any signal as early research until more closed outcomes exist.")
+
+    if best_idea:
+        reasons.append(f"Best local idea status is {best_idea.get('trade_status') or 'unknown'}.")
+        if action == "review" and status in {"trade", "actionable", "buy", "long", "short"}:
+            action = "paper_candidate_review"
+            label = "Candidate for paper review"
+            next_steps.append("Review spread, sizing, stop/target, and guardrails before paper tracking.")
+        elif action == "review" and status in {"watch", "skip", "blocked"}:
+            action = "watch_only"
+            label = "Watch only"
+            risk_level = "medium" if status == "watch" else "high"
+            next_steps.append("Keep this on the research watchlist unless a fresh scan upgrades it.")
+    else:
+        action = "watchlist_or_rescan"
+        label = "Watchlist or rescan"
+        reasons.append("No ranked current idea was found, only position or historical context.")
+        next_steps.append("Add it to the watchlist or run a focused scan for a current ranked view.")
+
+    if avg_unreal is not None and open_count > 0:
+        reasons.append(f"Average open unrealized P&L is {avg_unreal * 100:+.1f}%.")
+
+    if not next_steps:
+        next_steps.append("Read the factor drivers and open exposure before making any manual decision.")
+
+    can_export = action == "paper_candidate_review" and risk_level != "high"
+    return {
+        "action": action,
+        "label": label,
+        "risk_level": risk_level,
+        "reasons": list(dict.fromkeys(reasons))[:6],
+        "next_steps": list(dict.fromkeys(next_steps))[:5],
+        "can_export_paper_candidate": can_export,
+    }
+
+
 def _load_json_obj(path: Path) -> dict[str, Any]:
     try:
         obj = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -271,16 +371,23 @@ def _research_brief(
         str(w.get("message", w)) for w in (guard.get("warnings") or [])[:3]
         if isinstance(w, (dict, str))
     )
+    deduped_warnings = list(dict.fromkeys(warnings))[:5]
+    best_idea = _best_idea_dict(best_section, best)
+    open_summary = _open_position_summary(open_rows)
+    total_hits = sum(len(rows) for rows in sections.values())
     brief = {
         "symbol": symbol,
         "resolved_from": resolution.get("query"),
         "resolution_source": resolution.get("source"),
         "request": resolution.get("request"),
-        "best_idea": _best_idea_dict(best_section, best),
-        "open_positions": _open_position_summary(open_rows),
+        "best_idea": best_idea,
+        "open_positions": open_summary,
         "top_positive_factors": drivers["positive"],
         "top_negative_factors": drivers["negative"],
-        "risk_warnings": list(dict.fromkeys(warnings))[:5],
+        "risk_warnings": deduped_warnings,
+        "research_action": _research_action(
+            symbol, best_idea, open_summary, deduped_warnings, total_hits
+        ),
         "validation": {
             "scope": validation.get("validation_scope"),
             "closed_positions": validation.get("closed_positions"),
@@ -469,6 +576,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     idea = brief.get("best_idea") or {}
     open_pos = brief.get("open_positions") or {}
     validation = brief.get("validation") or {}
+    action = brief.get("research_action") or {}
     positives = "".join(
         f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
         for x in brief.get("top_positive_factors", [])[:5]
@@ -480,6 +588,12 @@ def _render_brief(brief: dict[str, Any]) -> str:
     warnings = "".join(
         f"<li>{html.escape(str(w))}</li>" for w in brief.get("risk_warnings", [])[:5]
     ) or "<li>No local warnings found</li>"
+    next_steps = "".join(
+        f"<li>{html.escape(str(step))}</li>" for step in action.get("next_steps", [])[:5]
+    ) or "<li>Review local factors and exposure.</li>"
+    action_reasons = "".join(
+        f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6]
+    ) or "<li>No action-specific reasons surfaced.</li>"
     return f"""
 <section>
   <h2>Research Brief</h2>
@@ -487,6 +601,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
+    <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
+    <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
     <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get('avg_unrealized_pct'))}</strong></div>
     <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
@@ -495,6 +611,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
   <div class="two-col">
     <div><h3>Positive factors</h3><ul>{positives}</ul></div>
     <div><h3>Negative factors</h3><ul>{negatives}</ul></div>
+  </div>
+  <div class="two-col">
+    <div><h3>Action reasons</h3><ul>{action_reasons}</ul></div>
+    <div><h3>Next steps</h3><ul>{next_steps}</ul></div>
   </div>
   <h3>Warnings</h3><ul>{warnings}</ul>
 </section>"""

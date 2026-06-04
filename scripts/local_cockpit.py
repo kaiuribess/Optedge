@@ -1382,6 +1382,7 @@ function briefHtml(brief) {
   const idea = brief.best_idea || {};
   const open = brief.open_positions || {};
   const val = brief.validation || {};
+  const action = brief.research_action || {};
   const source = brief.resolution_source || '-';
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
@@ -1393,6 +1394,8 @@ function briefHtml(brief) {
     <div style="padding:12px">
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
+        <div class="brief-tile"><span>Research action</span><strong>${escHtml(action.label || 'Review')}</strong></div>
+        <div class="brief-tile"><span>Action risk</span><strong>${escHtml(action.risk_level || '-')}</strong></div>
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
@@ -1403,6 +1406,7 @@ function briefHtml(brief) {
       <div class="brief-cols">
         <div class="brief-list"><h4>Positive factors</h4><ul>${list(brief.top_positive_factors)}</ul></div>
         <div class="brief-list"><h4>Negative factors</h4><ul>${list(brief.top_negative_factors)}</ul></div>
+        <div class="brief-list"><h4>Next steps</h4><ul>${(action.next_steps && action.next_steps.length) ? action.next_steps.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>Review local factors and exposure.</li>'}</ul></div>
         <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
       </div>
     </div>

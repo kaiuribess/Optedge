@@ -63,6 +63,8 @@ def test_lookup_saves_json_and_html():
         assert paths["json"].exists()
         assert paths["html"].exists()
         assert "Optedge Lookup" in render_html(report)
+        assert report["brief"]["research_action"]["action"] == "run_focused_scan"
+        assert report["brief"]["research_action"]["can_export_paper_candidate"] is False
 
 
 def test_lookup_matches_requested_option_contract():
@@ -193,10 +195,42 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert brief["open_positions"]["count"] == 1
         assert brief["open_positions"]["avg_unrealized_pct"] == 0.5
         assert brief["validation"]["win_rate"] == 0.6
+        assert brief["research_action"]["action"] == "paper_candidate_review"
+        assert brief["research_action"]["can_export_paper_candidate"] is True
         assert "macro" in {x["factor"] for x in brief["top_positive_factors"]}
         assert "insider" in {x["factor"] for x in brief["top_negative_factors"]}
         assert "sample warning" in brief["risk_warnings"]
+        assert "Research action" in render_html(report)
         assert "Research Brief" in render_html(report)
+
+
+def test_lookup_action_prioritizes_open_exit_pressure():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "entry_price": 3.0,
+            "current_mid": 2.2,
+            "unrealized_pct": -0.27,
+            "latest_exit_pressure": 84,
+        }]), encoding="utf-8")
+
+        action = lookup_symbol("NVDA", data_dir)["brief"]["research_action"]
+        assert action["action"] == "review_exit_now"
+        assert action["risk_level"] == "high"
+        assert action["can_export_paper_candidate"] is False
 
 
 if __name__ == "__main__":
@@ -208,4 +242,5 @@ if __name__ == "__main__":
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
-    print("8/8 lookup tests passed")
+    test_lookup_action_prioritizes_open_exit_pressure()
+    print("9/9 lookup tests passed")
