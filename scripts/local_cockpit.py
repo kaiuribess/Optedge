@@ -543,6 +543,14 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .sections { display:grid; grid-template-columns:1fr; gap:12px; margin-top:14px; }
 .section { border:1px solid var(--border); border-radius:8px; background:#0b1220; overflow:hidden; }
 .section h3 { margin:0; padding:12px 14px; font-size:14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
+.brief-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
+.brief-tile { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
+.brief-tile span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
+.brief-tile strong { display:block; margin-top:5px; font-size:14px; }
+.brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
+.brief-list { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
+.brief-list h4 { margin:0 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+.brief-list ul { margin:0; padding-left:18px; color:#cbd5e1; font-size:12px; }
 .table-wrap { overflow:auto; }
 table { width:100%; border-collapse:collapse; font-size:12px; }
 th, td { padding:8px 10px; border-bottom:1px solid #1d2938; text-align:left; vertical-align:top; }
@@ -672,6 +680,37 @@ function escHtml(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll
 function cell(v) { return v === null || v === undefined || v === '' ? '-' : escHtml(String(v).slice(0, 220)); }
 function escAttr(v) { return escHtml(v); }
 function rowSymbol(r) { return r.ticker || r.symbol || ''; }
+function pct(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '-';
+}
+function briefHtml(brief) {
+  if (!brief) return '';
+  const idea = brief.best_idea || {};
+  const open = brief.open_positions || {};
+  const val = brief.validation || {};
+  const list = (rows) => (rows && rows.length ? rows.slice(0, 5).map(x => `<li>${escHtml(x.factor)} <b>${cell(x.value)}</b></li>`).join('') : '<li>None surfaced</li>');
+  const warnings = (brief.risk_warnings && brief.risk_warnings.length)
+    ? brief.risk_warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')
+    : '<li>No local warnings found</li>';
+  return `<div class="section"><h3><span>Research brief</span><span>${escHtml(brief.symbol || '')}</span></h3>
+    <div style="padding:12px">
+      <div class="brief-grid">
+        <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
+        <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
+        <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
+        <div class="brief-tile"><span>Avg unrealized</span><strong>${pct(open.avg_unrealized_pct)}</strong></div>
+        <div class="brief-tile"><span>Validation win rate</span><strong>${pct(val.win_rate)}</strong></div>
+        <div class="brief-tile"><span>Validation avg return</span><strong>${pct(val.avg_return)}</strong></div>
+      </div>
+      <div class="brief-cols">
+        <div class="brief-list"><h4>Positive factors</h4><ul>${list(brief.top_positive_factors)}</ul></div>
+        <div class="brief-list"><h4>Negative factors</h4><ul>${list(brief.top_negative_factors)}</ul></div>
+        <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
+      </div>
+    </div>
+  </div>`;
+}
 function table(rows, clickRows=false) {
   if (!rows || rows.length === 0) return '<div class="empty">No matching rows.</div>';
   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
@@ -773,9 +812,11 @@ async function lookup() {
   const data = await res.json();
   const resolved = data.lookup_symbol && data.lookup_symbol !== data.query ? ` (${data.lookup_symbol})` : '';
   $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.`;
-  $('lookup-results').innerHTML = Object.entries(data.sections).map(([name, rows]) => {
+  const brief = briefHtml(data.brief);
+  const sections = Object.entries(data.sections).map(([name, rows]) => {
     return `<div class="section"><h3><span>${name.replaceAll('_', ' ')}</span><span>${rows.length}</span></h3>${table(rows)}</div>`;
   }).join('');
+  $('lookup-results').innerHTML = brief + sections;
 }
 async function runSymbol() {
   const query = $('symbol').value.trim();

@@ -111,10 +111,60 @@ def test_option_request_falls_back_to_closest_strike():
         assert matches[0]["strike_diff"] == 10.0
 
 
+def test_lookup_builds_research_brief_from_local_factors_and_open_state():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+            "stop_price": 2.1,
+            "target_price": 8.4,
+            "z_macro": 1.5,
+            "z_insider": -0.8,
+            "top_headline": "NVDA test headline",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "entry_price": 3.0,
+            "current_mid": 4.5,
+            "unrealized_pct": 0.5,
+            "latest_exit_pressure": 22,
+        }]), encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "validation_scope": "current_model",
+            "closed_positions": 10,
+            "open_positions": 1,
+            "overall": {"win_rate": 0.6, "avg_return": 0.12},
+            "warnings": ["sample warning"],
+        }), encoding="utf-8")
+
+        report = lookup_symbol("NVDA", data_dir)
+        brief = report["brief"]
+        assert brief["symbol"] == "NVDA"
+        assert brief["best_idea"]["label"] == "NVDA C 200.0 2026-06-18"
+        assert brief["open_positions"]["count"] == 1
+        assert brief["open_positions"]["avg_unrealized_pct"] == 0.5
+        assert brief["validation"]["win_rate"] == 0.6
+        assert "macro" in {x["factor"] for x in brief["top_positive_factors"]}
+        assert "insider" in {x["factor"] for x in brief["top_negative_factors"]}
+        assert "sample warning" in brief["risk_warnings"]
+        assert "Research Brief" in render_html(report)
+
+
 if __name__ == "__main__":
     test_lookup_reads_open_option_positions()
     test_lookup_reads_open_futures_positions()
     test_lookup_saves_json_and_html()
     test_lookup_matches_requested_option_contract()
     test_option_request_falls_back_to_closest_strike()
-    print("5/5 lookup tests passed")
+    test_lookup_builds_research_brief_from_local_factors_and_open_state()
+    print("6/6 lookup tests passed")

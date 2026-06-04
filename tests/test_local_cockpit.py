@@ -45,6 +45,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/opportunities" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
+    assert "briefHtml" in html
+    assert "Research brief" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "Run focused scan" in html

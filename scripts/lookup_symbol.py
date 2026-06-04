@@ -128,6 +128,14 @@ def _clean_value(value: Any) -> Any:
     return value
 
 
+def _float_value(value: Any, default: float | None = None) -> float | None:
+    try:
+        out = float(value)
+    except Exception:
+        return default
+    return out if math.isfinite(out) else default
+
+
 def _frame_records(df: pd.DataFrame, section: str) -> list[dict[str, Any]]:
     if df is None or df.empty:
         return []
@@ -146,6 +154,142 @@ def _match(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
     q = query.strip().upper()
     values = df[column].astype(str).str.upper().str.strip()
     return df[values == q].copy()
+
+
+def _score_row(row: pd.Series) -> float:
+    for col in ("rank_score", "fused_score", "futures_score", "value_score", "confidence"):
+        value = _float_value(row.get(col))
+        if value is not None:
+            return value / 100.0 if col == "confidence" else value
+    return 0.0
+
+
+def _best_row(matches: dict[str, pd.DataFrame]) -> tuple[str | None, pd.Series | None]:
+    candidates: list[tuple[float, str, pd.Series]] = []
+    for section, df in matches.items():
+        if df is None or df.empty or section.startswith("open_"):
+            continue
+        for _, row in df.iterrows():
+            candidates.append((_score_row(row), section, row))
+    if not candidates:
+        return None, None
+    _, section, row = max(candidates, key=lambda item: item[0])
+    return section, row
+
+
+def _factor_drivers(row: pd.Series | None, limit: int = 6) -> dict[str, list[dict[str, Any]]]:
+    if row is None:
+        return {"positive": [], "negative": []}
+    items = []
+    for col, value in row.items():
+        name = str(col)
+        if not (name.startswith("z_") or name.endswith("_score") or name in {"rank_score", "fused_score"}):
+            continue
+        val = _float_value(value)
+        if val is None or abs(val) < 0.05:
+            continue
+        items.append({
+            "factor": name.replace("z_", "").replace("_score", "").replace("_", " "),
+            "column": name,
+            "value": round(val, 4),
+        })
+    positive = sorted([x for x in items if x["value"] > 0], key=lambda x: x["value"], reverse=True)
+    negative = sorted([x for x in items if x["value"] < 0], key=lambda x: x["value"])
+    return {"positive": positive[:limit], "negative": negative[:limit]}
+
+
+def _open_position_summary(open_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pnls = []
+    pressures = []
+    for row in open_rows:
+        pnl = _float_value(row.get("unrealized_pct", row.get("pnl_pct")))
+        pressure = _float_value(row.get("latest_exit_pressure"))
+        if pnl is not None:
+            pnls.append(pnl)
+        if pressure is not None:
+            pressures.append(pressure)
+    return {
+        "count": len(open_rows),
+        "avg_unrealized_pct": (sum(pnls) / len(pnls)) if pnls else None,
+        "worst_unrealized_pct": min(pnls) if pnls else None,
+        "best_unrealized_pct": max(pnls) if pnls else None,
+        "max_exit_pressure": max(pressures) if pressures else None,
+        "attention_count": sum(1 for p in pressures if p >= 60),
+    }
+
+
+def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any] | None:
+    if row is None or section is None:
+        return None
+    symbol = row.get("ticker", row.get("symbol"))
+    side = row.get("side", row.get("direction", section))
+    label = str(symbol or "-")
+    if section == "options":
+        label = f"{symbol} {str(side).upper()[:1]} {row.get('strike', '-')} {row.get('expiry', '-')}"
+    elif section == "futures":
+        label = f"{symbol} {str(side).upper()} {row.get('contract', '')}".strip()
+    return {
+        "asset": section.rstrip("s"),
+        "label": label,
+        "trade_status": _clean_value(row.get("trade_status")),
+        "confidence": _clean_value(row.get("confidence")),
+        "score": _score_row(row),
+        "entry_price": _clean_value(row.get("mid", row.get("spot", row.get("entry_price")))),
+        "stop_price": _clean_value(row.get("stop_price")),
+        "target_price": _clean_value(row.get("target_price")),
+        "headline": _clean_value(row.get("top_headline")),
+    }
+
+
+def _load_json_obj(path: Path) -> dict[str, Any]:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _research_brief(
+    symbol: str,
+    resolution: dict[str, Any],
+    raw_matches: dict[str, pd.DataFrame],
+    sections: dict[str, list[dict[str, Any]]],
+    data_dir: Path,
+) -> dict[str, Any]:
+    best_section, best = _best_row(raw_matches)
+    drivers = _factor_drivers(best)
+    open_rows = (
+        sections.get("open_options", [])
+        + sections.get("open_shares", [])
+        + sections.get("open_futures", [])
+    )
+    validation = _load_json_obj(data_dir / "validation_summary.json")
+    guard = _load_json_obj(data_dir / "research_guard_report.json") or _load_json_obj(data_dir / "research_guard.json")
+    warnings = []
+    warnings.extend(str(w) for w in (validation.get("warnings") or [])[:3])
+    warnings.extend(
+        str(w.get("message", w)) for w in (guard.get("warnings") or [])[:3]
+        if isinstance(w, (dict, str))
+    )
+    brief = {
+        "symbol": symbol,
+        "resolved_from": resolution.get("query"),
+        "resolution_source": resolution.get("source"),
+        "request": resolution.get("request"),
+        "best_idea": _best_idea_dict(best_section, best),
+        "open_positions": _open_position_summary(open_rows),
+        "top_positive_factors": drivers["positive"],
+        "top_negative_factors": drivers["negative"],
+        "risk_warnings": list(dict.fromkeys(warnings))[:5],
+        "validation": {
+            "scope": validation.get("validation_scope"),
+            "closed_positions": validation.get("closed_positions"),
+            "open_positions": validation.get("open_positions"),
+            "win_rate": (validation.get("overall") or {}).get("win_rate"),
+            "avg_return": (validation.get("overall") or {}).get("avg_return"),
+        },
+    }
+    return brief
 
 
 def _norm_side(value: Any) -> str:
@@ -259,11 +403,14 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     sections: dict[str, list[dict[str, Any]]] = {}
     sources: dict[str, str | None] = {}
+    raw_matches: dict[str, pd.DataFrame] = {}
 
     for section, (pattern, column) in SNAPSHOTS.items():
         path = _latest_file(data_dir, pattern)
         sources[section] = path.name if path else None
-        sections[section] = _frame_records(_match(_read_parquet(path), column, q), section)
+        matched = _match(_read_parquet(path), column, q)
+        raw_matches[section] = matched
+        sections[section] = _frame_records(matched, section)
 
     for section, (filename, column) in OPEN_FILES.items():
         path = data_dir / filename
@@ -277,11 +424,13 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
         sources["requested_option_matches"] = sources.get("options")
 
     total_hits = sum(len(rows) for rows in sections.values())
+    brief = _research_brief(q, resolution, raw_matches, sections, data_dir)
     return {
         "generated_at": generated_at,
         "query": original_query.upper(),
         "lookup_symbol": q,
         "resolution": resolution,
+        "brief": brief,
         "total_hits": total_hits,
         "sources": sources,
         "sections": sections,
@@ -307,6 +456,47 @@ def _render_table(rows: list[dict[str, Any]]) -> str:
             cells.append(f"<td>{html.escape(text[:220])}</td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
     return f"<div class='table-wrap'><table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+
+
+def _fmt_brief_pct(value: Any) -> str:
+    val = _float_value(value)
+    return "-" if val is None else f"{val * 100:+.1f}%"
+
+
+def _render_brief(brief: dict[str, Any]) -> str:
+    if not brief:
+        return ""
+    idea = brief.get("best_idea") or {}
+    open_pos = brief.get("open_positions") or {}
+    validation = brief.get("validation") or {}
+    positives = "".join(
+        f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
+        for x in brief.get("top_positive_factors", [])[:5]
+    ) or "<li>None surfaced</li>"
+    negatives = "".join(
+        f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
+        for x in brief.get("top_negative_factors", [])[:5]
+    ) or "<li>None surfaced</li>"
+    warnings = "".join(
+        f"<li>{html.escape(str(w))}</li>" for w in brief.get("risk_warnings", [])[:5]
+    ) or "<li>No local warnings found</li>"
+    return f"""
+<section>
+  <h2>Research Brief</h2>
+  <div class="brief-grid">
+    <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
+    <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
+    <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
+    <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get('avg_unrealized_pct'))}</strong></div>
+    <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
+    <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get('avg_return'))}</strong></div>
+  </div>
+  <div class="two-col">
+    <div><h3>Positive factors</h3><ul>{positives}</ul></div>
+    <div><h3>Negative factors</h3><ul>{negatives}</ul></div>
+  </div>
+  <h3>Warnings</h3><ul>{warnings}</ul>
+</section>"""
 
 
 def render_html(report: dict[str, Any]) -> str:
@@ -339,11 +529,17 @@ h2 span {{ color:#38bdf8; font-family:monospace; }}
 table {{ width:100%; border-collapse:collapse; font-size:12px; }}
 th, td {{ padding:8px 10px; border-bottom:1px solid #1f2937; text-align:left; vertical-align:top; }}
 th {{ color:#94a3b8; text-transform:uppercase; font-size:10px; letter-spacing:.4px; }}
+.brief-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; }}
+.brief-grid div {{ border:1px solid #223044; border-radius:8px; padding:10px; background:#0b1220; }}
+.brief-grid span {{ display:block; font-size:11px; }}
+.brief-grid strong {{ display:block; margin-top:4px; }}
+.two-col {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-top:12px; }}
 </style>
 </head>
 <body><div class="wrap">
 <header><div><h1>Optedge Lookup: {q}</h1><div class="muted">Latest local scan snapshot</div></div><div class="pill">{report.get('total_hits', 0)} hits</div></header>
 <ul>{notes}</ul>
+{_render_brief(report.get('brief', {}))}
 {''.join(parts)}
 </div></body></html>"""
 
