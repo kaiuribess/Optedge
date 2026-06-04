@@ -11,8 +11,8 @@ if str(ROOT) not in sys.path:
 
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_action_queue, build_data_health, build_positions, build_risk_summary, build_summary,
-    build_symbol_suggestions,
+    build_action_queue, build_data_health, build_performance_summary, build_positions,
+    build_risk_summary, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
 )
 
@@ -52,6 +52,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Portfolio risk" in html
     assert "/api/risk-summary" in html
     assert "riskSummaryHtml" in html
+    assert "Performance" in html
+    assert "/api/performance-summary" in html
+    assert "performanceSummaryHtml" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -425,6 +428,53 @@ def test_risk_summary_surfaces_concentration_and_exit_pressure():
         assert risk["worst_positions"][0]["ticker_or_symbol"] == "AAPL"
 
 
+def test_performance_summary_reads_engine_perf_health_cache_and_finbert_state():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        import data_provider
+        from telemetry import cache_stats, engine_health, perf
+
+        old_perf_log = perf.PERF_LOG
+        old_health_json = engine_health.HEALTH_JSON
+        old_health_jsonl = engine_health.HEALTH_JSONL
+        old_ram_enabled = data_provider.RAM_CACHE_ENABLED
+        old_ram_max = data_provider.RAM_CACHE_MAX_ITEMS
+        try:
+            perf.PERF_LOG = data_dir / "engine_perf.parquet"
+            engine_health.HEALTH_JSON = data_dir / "engine_health.json"
+            engine_health.HEALTH_JSONL = data_dir / "engine_health_history.jsonl"
+            pd.DataFrame([
+                {"ts": "2026-06-03T20:00:00+00:00", "engine": "insider", "elapsed_sec": 121.0, "rows": 10, "ok": True, "error": ""},
+                {"ts": "2026-06-03T20:00:01+00:00", "engine": "mispricing", "elapsed_sec": 44.0, "rows": 500, "ok": True, "error": ""},
+            ]).to_parquet(perf.PERF_LOG)
+            engine_health.record({
+                "insider": {"ok": True, "rows": 10, "elapsed": 121.0},
+                "mispricing": {"ok": True, "rows": 500, "elapsed": 44.0},
+            })
+            cache_stats.record_hit("history:AAPL")
+            cache_stats.record_miss("history:MSFT")
+            data_provider.configure_ram_cache(enabled=True, max_items=100)
+            data_provider.cache_put("test:cockpit-performance", {"ok": True})
+            pd.DataFrame([{
+                "ticker": "AAPL",
+                "finbert_device": "cuda",
+            }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+            summary = build_performance_summary(data_dir)
+        finally:
+            perf.PERF_LOG = old_perf_log
+            engine_health.HEALTH_JSON = old_health_json
+            engine_health.HEALTH_JSONL = old_health_jsonl
+            data_provider.configure_ram_cache(enabled=old_ram_enabled, max_items=old_ram_max)
+
+        assert summary["ram_cache"]["ram_cache_enabled"] is True
+        assert summary["finbert"]["status"] == "gpu"
+        assert summary["latest_slowest"][0]["engine"] == "insider"
+        assert "fast-insider" in summary["latest_slowest"][0]["tip"]
+        assert any(row["prefix"] == "history" for row in summary["cache_prefixes"])
+        assert summary["recommended_command"].endswith("--turbo --no-open")
+
+
 def test_paper_candidate_panel_builds_and_writes_filtered_exports():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -561,6 +611,7 @@ if __name__ == "__main__":
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
+    test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("11/11 local cockpit tests passed")
+    print("12/12 local cockpit tests passed")

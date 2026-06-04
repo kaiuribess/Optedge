@@ -26,6 +26,7 @@ ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
 if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
+import data_provider
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import build_external_orders, write_outputs
 from scripts.research_jobs import (
@@ -1044,6 +1045,140 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     }
 
 
+def _performance_tip(item: dict[str, Any]) -> str:
+    engine = str(item.get("engine") or "").lower()
+    elapsed = _float_value(item.get("last_elapsed") or item.get("elapsed_sec"))
+    if engine == "insider" and elapsed >= 90:
+        return "Use --turbo or --fast-insider during loops; run a full insider parse less often."
+    if engine == "mispricing" and elapsed >= 90:
+        return "Options chains are the likely bottleneck; keep IBKR/authorized data connected or narrow --universe for focused scans."
+    if engine in {"congress", "thirteen_f"} and elapsed >= 45:
+        return "Regulatory/PDF parsing can be slow; rely on cache in loop mode or skip for quick scans."
+    if engine in {"news", "sentiment", "gtrends", "twitter", "social"} and elapsed >= 30:
+        return "Retail/news web sources are slow or rate-limited; turbo cache helps after the first run."
+    if elapsed >= 60:
+        return "Slow engine; check source health and consider a focused --universe scan."
+    return "Healthy enough for now."
+
+
+def _latest_finbert_device(data_dir: Path) -> dict[str, Any]:
+    rows = []
+    for pattern in ("top_options_*.parquet", "top_shares_*.parquet"):
+        df = _read_parquet(_latest_file(data_dir, pattern))
+        if not df.empty and "finbert_device" in df.columns:
+            rows.extend(str(x) for x in df["finbert_device"].dropna().unique().tolist())
+    devices = sorted(set(x for x in rows if x and x.lower() != "nan"))
+    return {
+        "device": devices[0] if devices else None,
+        "devices_seen": devices,
+        "status": "gpu" if any("cuda" in d.lower() for d in devices) else "unknown",
+    }
+
+
+def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Summarize local speed, cache, and engine health telemetry for the cockpit."""
+    try:
+        from telemetry import cache_stats as _cache_stats
+        cache_prefixes = _cache_stats.summary()
+    except Exception:
+        cache_prefixes = {}
+    try:
+        from telemetry import perf as _perf
+        latest = _perf.latest_run_summary()
+        rolling = _perf.summary(last_n=20)
+    except Exception:
+        latest = {}
+        rolling = {}
+    try:
+        from telemetry import engine_health as _engine_health
+        health = _engine_health.load_summary()
+    except Exception:
+        health = {"engines": []}
+
+    latest_rows = []
+    for engine, row in (latest or {}).items():
+        item = {
+            "engine": engine,
+            "elapsed_sec": round(_float_value(row.get("elapsed_sec")), 2),
+            "rows": int(_float_value(row.get("rows"))),
+            "ok": bool(row.get("ok", False)),
+        }
+        item["tip"] = _performance_tip(item)
+        latest_rows.append(item)
+    latest_rows = sorted(latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True)
+
+    rolling_rows = []
+    for engine, row in (rolling or {}).items():
+        item = {
+            "engine": engine,
+            "n": int(_float_value(row.get("n"))),
+            "mean_sec": round(_float_value(row.get("mean")), 2),
+            "p95_sec": round(_float_value(row.get("p95")), 2),
+            "ok_rate": _clean_value(row.get("ok_rate")),
+            "avg_rows": round(_float_value(row.get("avg_rows")), 1),
+        }
+        item["tip"] = _performance_tip({"engine": engine, "last_elapsed": item["p95_sec"]})
+        rolling_rows.append(item)
+    rolling_rows = sorted(rolling_rows, key=lambda r: _float_value(r.get("p95_sec")), reverse=True)
+
+    cache_rows = []
+    for prefix, row in (cache_prefixes or {}).items():
+        cache_rows.append({
+            "prefix": prefix,
+            "hits": int(_float_value(row.get("hits"))),
+            "misses": int(_float_value(row.get("misses"))),
+            "hit_rate": _clean_value(row.get("hit_rate")),
+            "total": int(_float_value(row.get("total"))),
+        })
+    cache_rows = sorted(cache_rows, key=lambda r: int(r.get("total") or 0), reverse=True)[:12]
+
+    engine_health_rows = (health or {}).get("engines", []) if isinstance(health, dict) else []
+    if not latest_rows or max(_float_value(row.get("elapsed_sec")) for row in latest_rows) <= 0:
+        for row in engine_health_rows:
+            item = {
+                "engine": row.get("engine"),
+                "elapsed_sec": round(_float_value(row.get("last_elapsed")), 2),
+                "rows": int(_float_value(row.get("last_rows"))),
+                "ok": bool(row.get("last_ok", False)),
+                "source": "engine_health",
+            }
+            item["tip"] = _performance_tip(item)
+            latest_rows.append(item)
+        latest_rows = sorted(latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True)
+    worst_health = sorted(
+        engine_health_rows,
+        key=lambda r: (_float_value(r.get("health_score"), default=100.0), str(r.get("engine") or "")),
+    )[:12]
+    ram_stats = data_provider.cache_stats()
+    finbert = _latest_finbert_device(data_dir)
+    total_latest_sec = sum(_float_value(row.get("elapsed_sec")) for row in latest_rows)
+    warnings = []
+    if latest_rows and _float_value(latest_rows[0].get("elapsed_sec")) >= 90:
+        warnings.append(f"{latest_rows[0]['engine']} was the slowest recent engine at {latest_rows[0]['elapsed_sec']}s.")
+    if not ram_stats.get("ram_cache_enabled"):
+        warnings.append("RAM cache is disabled; --turbo enables it for loop scans.")
+    if finbert.get("status") != "gpu":
+        warnings.append("FinBERT GPU status is unknown in the latest local snapshots.")
+
+    return {
+        "generated_at": _now_iso(),
+        "total_latest_engine_sec": round(total_latest_sec, 2),
+        "ram_cache": ram_stats,
+        "finbert": finbert,
+        "latest_slowest": latest_rows[:12],
+        "rolling_slowest": rolling_rows[:12],
+        "cache_prefixes": cache_rows,
+        "engine_health": worst_health,
+        "warnings": warnings,
+        "recommended_command": "python run.py --aggressive --bankroll 25000 --loop 30 --turbo --no-open",
+        "notes": [
+            "Performance summary reads local telemetry; it does not run a scan.",
+            "Engine seconds are per-engine wall times and can overlap because engines run concurrently.",
+            "RAM cache helps repeat work inside one loop process; disk cache helps across restarts.",
+        ],
+    }
+
+
 def _queue_item(priority: int, category: str, label: str, detail: str,
                 action: str, symbol: Any = None, query: Any = None) -> dict[str, Any]:
     return {
@@ -1520,6 +1655,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="risk-results"></div></div>
   </section>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Performance</h2>
+    <div class="muted">Local speed telemetry: slow engines, RAM cache, GPU sentiment status, and cache hit rates.</div>
+    <div class="status" id="performance-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="performance-results"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Data health</h2>
     <div class="muted">Checks whether validation, open positions, snapshots, and images line up before you trust the screen.</div>
     <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
@@ -1759,6 +1900,32 @@ function riskSummaryHtml(risk) {
       <div class="brief-list"><h4>Highest exit pressure</h4>${table(risk.highest_exit_pressure || [], true)}</div>
     </div>`;
 }
+function performanceSummaryHtml(perf) {
+  if (!perf) return '<div class="empty">No performance summary available.</div>';
+  const ram = perf.ram_cache || {};
+  const finbert = perf.finbert || {};
+  const warnings = (perf.warnings && perf.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Warnings</h4><ul>${perf.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '<div class="empty">No local performance warnings surfaced.</div>';
+  const command = perf.recommended_command
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Fast loop command</h4><code>${escHtml(perf.recommended_command)}</code></div>`
+    : '';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Latest engine seconds</span><strong>${cell(perf.total_latest_engine_sec)}</strong></div>
+    <div class="brief-tile"><span>RAM cache</span><strong>${ram.ram_cache_enabled ? 'on' : 'off'}</strong></div>
+    <div class="brief-tile"><span>RAM cache items</span><strong>${cell(ram.ram_cache_items || 0)}</strong></div>
+    <div class="brief-tile"><span>FinBERT</span><strong>${escHtml(finbert.device || finbert.status || 'unknown')}</strong></div>
+  </div>`;
+  return `${tiles}${warnings}${command}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Latest slowest engines</h4>${table(perf.latest_slowest || [])}</div>
+      <div class="brief-list"><h4>Rolling slowest engines</h4>${table(perf.rolling_slowest || [])}</div>
+    </div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Cache hit rates</h4>${table(perf.cache_prefixes || [])}</div>
+      <div class="brief-list"><h4>Weakest engine health</h4>${table(perf.engine_health || [])}</div>
+    </div>`;
+}
 function healthClass(level) {
   if (level === 'bad') return 'bad';
   if (level === 'warn') return 'warn';
@@ -1975,6 +2142,14 @@ async function loadRiskSummary() {
   $('risk-results').innerHTML = riskSummaryHtml(data);
   wireClickableRows($('risk-results'));
 }
+async function loadPerformanceSummary() {
+  $('performance-status-text').textContent = 'Loading performance telemetry...';
+  const res = await fetch('/api/performance-summary');
+  const data = await res.json();
+  const ram = data.ram_cache || {};
+  $('performance-status-text').textContent = `RAM cache ${ram.ram_cache_enabled ? 'on' : 'off'}; latest engine seconds ${data.total_latest_engine_sec || 0}.`;
+  $('performance-results').innerHTML = performanceSummaryHtml(data);
+}
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
@@ -2115,7 +2290,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); loadRiskSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -2131,6 +2306,7 @@ loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
+loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
@@ -2180,6 +2356,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/risk-summary":
             self._send_json(build_risk_summary(self.data_dir))
+            return
+        if parsed.path == "/api/performance-summary":
+            self._send_json(build_performance_summary(self.data_dir))
             return
         if parsed.path == "/api/lookup":
             symbol = parse_qs(parsed.query).get("symbol", [""])[0]
