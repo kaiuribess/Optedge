@@ -10,8 +10,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.local_cockpit import (
-    artifact_path, build_opportunities, build_paper_candidates, build_positions,
-    build_summary, render_cockpit_html,
+    add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
+    build_positions, build_summary, load_watchlist, remove_watchlist_entry,
+    render_cockpit_html, run_watchlist_scans,
 )
 
 
@@ -48,6 +49,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/paper-candidates" in html
     assert "/api/export-paper" in html
     assert "Write export files" in html
+    assert "Research watchlist" in html
+    assert "/api/watchlist" in html
+    assert "/api/watchlist-add" in html
+    assert "/api/watchlist-run" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
@@ -248,6 +253,36 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         assert (data_dir / "external_paper_orders.json").exists()
 
 
+def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        added = add_watchlist_query("Apple", data_dir)
+        assert added["ok"] is True
+        assert added["entry"]["symbol"] == "AAPL"
+        assert added["count"] == 1
+
+        again = add_watchlist_query("Apple", data_dir)
+        assert again["ok"] is True
+        assert again["updated_existing"] is True
+        assert again["count"] == 1
+
+        opt = add_watchlist_query("Nvidia 20260618 C 200", data_dir)
+        assert opt["ok"] is True
+        assert opt["count"] == 2
+        assert opt["entry"]["request"]["ticker"] == "NVDA"
+
+        jobs = run_watchlist_scans(data_dir, mode="quick", bankroll=25000, aggressive=True, launch=False)
+        assert jobs["count"] == 2
+        assert jobs["scan_args"] == ["--minimal", "--aggressive", "--bankroll", "25000.0"]
+        assert all(job["ok"] for job in jobs["jobs"])
+
+        removed = remove_watchlist_entry(added["entry"]["id"], data_dir)
+        assert removed["removed"] is True
+        remaining = load_watchlist(data_dir)
+        assert remaining["count"] == 1
+        assert remaining["entries"][0]["symbol"] == "NVDA"
+
+
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
@@ -255,4 +290,5 @@ if __name__ == "__main__":
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
-    print("6/6 local cockpit tests passed")
+    test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
+    print("7/7 local cockpit tests passed")

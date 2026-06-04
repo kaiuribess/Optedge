@@ -29,6 +29,7 @@ from scripts.export_external_paper_track import build_external_orders, write_out
 from scripts.research_jobs import (
     create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
 )
+from scripts.symbol_resolver import resolve_symbol
 
 
 ARTIFACTS = {
@@ -92,6 +93,8 @@ POSITION_FILES = {
     "share": "open_share_positions.json",
     "futures": "open_futures_positions.json",
 }
+
+WATCHLIST_FILENAME = "cockpit_watchlist.json"
 
 
 def _latest_file(data_dir: Path, pattern: str) -> Path | None:
@@ -178,6 +181,156 @@ def _dedupe_position_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(row)
     return out
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _watchlist_file(data_dir: Path = DATA_DIR) -> Path:
+    return Path(data_dir) / WATCHLIST_FILENAME
+
+
+def _safe_id(value: Any) -> str:
+    text = str(value or "").strip()
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-", "=", "."} else "_" for ch in text)
+    return safe[:96] or "item"
+
+
+def _watchlist_entry_id(resolution: dict[str, Any], query: str) -> str:
+    symbol = str(resolution.get("symbol") or query).upper()
+    request = resolution.get("request") or {}
+    if request:
+        raw = (
+            f"{symbol}_{request.get('side','')}_{request.get('expiry','')}_"
+            f"{request.get('strike','')}"
+        )
+    else:
+        raw = symbol
+    return _safe_id(raw)
+
+
+def load_watchlist(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    rows = _read_json(_watchlist_file(data_dir))
+    if not isinstance(rows, list):
+        rows = []
+    cleaned: list[dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item_id = str(row.get("id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        cleaned.append(row)
+    return {
+        "generated_at": _now_iso(),
+        "count": len(cleaned),
+        "entries": cleaned,
+        "path": str(_watchlist_file(data_dir)),
+        "notes": [
+            "Watchlist entries are local research targets only.",
+            "Run all launches focused scans for resolved symbols; no trades are placed.",
+        ],
+    }
+
+
+def _save_watchlist(entries: list[dict[str, Any]], data_dir: Path = DATA_DIR) -> None:
+    path = _watchlist_file(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries, indent=2, default=str), encoding="utf-8")
+
+
+def add_watchlist_query(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    clean = str(query or "").strip()
+    if not clean:
+        return {"ok": False, "error": "query is required"}
+    resolution = resolve_symbol(clean)
+    if not resolution.get("symbol"):
+        return {
+            "ok": False,
+            "error": resolution.get("error") or "could not resolve symbol",
+            "resolution": resolution,
+        }
+    current = load_watchlist(data_dir)["entries"]
+    item_id = _watchlist_entry_id(resolution, clean)
+    now = _now_iso()
+    entry = {
+        "id": item_id,
+        "query": clean,
+        "symbol": str(resolution.get("symbol") or "").upper(),
+        "name": resolution.get("name"),
+        "source": resolution.get("source"),
+        "request": resolution.get("request"),
+        "resolution": resolution,
+        "added_at": now,
+        "updated_at": now,
+    }
+    replaced = False
+    for idx, row in enumerate(current):
+        if row.get("id") == item_id:
+            entry["added_at"] = row.get("added_at") or now
+            current[idx] = entry
+            replaced = True
+            break
+    if not replaced:
+        current.append(entry)
+    _save_watchlist(current, data_dir)
+    return {"ok": True, "entry": entry, "updated_existing": replaced, **load_watchlist(data_dir)}
+
+
+def remove_watchlist_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    clean_id = str(entry_id or "").strip()
+    current = load_watchlist(data_dir)["entries"]
+    remaining = [row for row in current if str(row.get("id")) != clean_id]
+    removed = len(remaining) != len(current)
+    _save_watchlist(remaining, data_dir)
+    return {"ok": removed, "removed": removed, **load_watchlist(data_dir)}
+
+
+def _scan_args_from_controls(mode: str = "full", bankroll: Any = None,
+                             aggressive: bool = False) -> list[str]:
+    scan_args = ["--minimal"] if str(mode or "full").strip().lower() == "quick" else []
+    if aggressive:
+        scan_args.append("--aggressive")
+    try:
+        bankroll_float = float(bankroll or 0)
+    except Exception:
+        bankroll_float = 0.0
+    if bankroll_float > 0:
+        scan_args.extend(["--bankroll", str(bankroll_float)])
+    return scan_args
+
+
+def run_watchlist_scans(
+    data_dir: Path = DATA_DIR,
+    mode: str = "full",
+    bankroll: Any = None,
+    aggressive: bool = False,
+    launch: bool = True,
+) -> dict[str, Any]:
+    entries = load_watchlist(data_dir)["entries"]
+    scan_args = _scan_args_from_controls(mode, bankroll, aggressive)
+    jobs = []
+    for entry in entries[:25]:
+        query = str(entry.get("query") or entry.get("symbol") or "").strip()
+        if not query:
+            continue
+        jobs.append(create_job(
+            query,
+            data_dir,
+            launch=launch,
+            extra_scan_args=scan_args,
+            scan_mode=str(mode or "full"),
+        ))
+    return {
+        "ok": True,
+        "count": len(jobs),
+        "jobs": jobs,
+        "scan_args": scan_args,
+        "launched": launch,
+    }
 
 
 def _position_label(row: dict[str, Any]) -> str:
@@ -739,6 +892,27 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="paper-results" class="table-wrap"></div></div>
   </section>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Research watchlist</h2>
+    <div class="muted">Save tickers, company names, futures, or option requests you want checked again. Run focused scans from the list when you are ready.</div>
+    <div class="search">
+      <input id="watchlist-query" placeholder="Add symbol/company/option, e.g. Apple, natural gas, NVDA 20260618 C 200" autocomplete="off">
+      <div class="search-actions">
+        <button class="btn" type="button" id="watchlist-add">Add</button>
+        <button class="btn" type="button" id="watchlist-run">Run watchlist scans</button>
+      </div>
+    </div>
+    <div class="scan-controls">
+      <select id="watchlist-scan-mode" aria-label="Watchlist scan mode">
+        <option value="full">Full scan</option>
+        <option value="quick">Quick scan</option>
+      </select>
+      <input id="watchlist-bankroll" type="number" min="1" step="100" placeholder="Bankroll override">
+      <label class="check"><input id="watchlist-aggressive" type="checkbox"> aggressive sizing</label>
+    </div>
+    <div class="status" id="watchlist-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="watchlist-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Symbol lookup</h2>
     <div class="muted">Search the latest local scan snapshots and open positions. For a new symbol, run a focused scan first.</div>
     <div class="search">
@@ -823,12 +997,43 @@ function table(rows, clickRows=false) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function watchlistTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No saved research targets yet.</div>';
+  const body = rows.map(r => {
+    const request = r.request ? `${r.request.side || ''} ${r.request.expiry || ''} ${r.request.strike || ''}` : '';
+    return `<tr>
+      <td><button class="btn watch-lookup-btn" type="button" data-query="${escAttr(r.query || r.symbol || '')}">Lookup</button></td>
+      <td><strong>${cell(r.symbol)}</strong></td>
+      <td>${cell(r.query)}</td>
+      <td>${cell(r.name)}</td>
+      <td>${cell(r.source)}</td>
+      <td>${cell(request)}</td>
+      <td><button class="btn watch-remove-btn" type="button" data-id="${escAttr(r.id)}">Remove</button></td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table><thead><tr>
+    <th></th><th>Symbol</th><th>Query</th><th>Name</th><th>Source</th><th>Request</th><th></th>
+  </tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function wireClickableRows(root=document) {
   root.querySelectorAll('.clickable-row').forEach(row => {
     row.addEventListener('click', async () => {
       $('symbol').value = row.dataset.symbol || '';
       await lookup();
       window.location.hash = 'lookup';
+    });
+  });
+}
+function wireWatchlistRows() {
+  document.querySelectorAll('.watch-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $('symbol').value = btn.dataset.query || '';
+      await lookup();
+    });
+  });
+  document.querySelectorAll('.watch-remove-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await removeWatchlist(btn.dataset.id || '');
     });
   });
 }
@@ -889,6 +1094,63 @@ async function loadExplorer() {
   $('explorer-status-text').textContent = `${data.count || 0} latest local opportunity row(s).`;
   $('explorer-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('explorer-results'));
+}
+async function loadWatchlist() {
+  const res = await fetch('/api/watchlist');
+  const data = await res.json();
+  $('watchlist-status-text').textContent = `${data.count || 0} saved research target(s).`;
+  $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
+  wireWatchlistRows();
+}
+async function addWatchlist() {
+  const query = $('watchlist-query').value.trim() || $('symbol').value.trim();
+  if (!query) return;
+  $('watchlist-status-text').textContent = 'Resolving and saving watchlist target...';
+  const res = await fetch('/api/watchlist-add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ query })
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) {
+    $('watchlist-status-text').textContent = 'Could not add: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('watchlist-query').value = '';
+  $('watchlist-status-text').textContent = `${data.entry.symbol} saved to watchlist.`;
+  $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
+  wireWatchlistRows();
+}
+async function removeWatchlist(id) {
+  if (!id) return;
+  const res = await fetch('/api/watchlist-remove', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id })
+  });
+  const data = await res.json();
+  $('watchlist-status-text').textContent = data.removed ? 'Removed watchlist target.' : 'Target was not found.';
+  $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
+  wireWatchlistRows();
+}
+async function runWatchlist() {
+  $('watchlist-status-text').textContent = 'Starting focused scans for saved targets...';
+  const res = await fetch('/api/watchlist-run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      mode: $('watchlist-scan-mode').value,
+      bankroll: $('watchlist-bankroll').value,
+      aggressive: $('watchlist-aggressive').checked
+    })
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) {
+    $('watchlist-status-text').textContent = 'Could not run watchlist: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('watchlist-status-text').textContent = `Started ${data.count || 0} focused scan job(s).`;
+  await loadJobs();
 }
 async function loadPaperCandidates(write=false) {
   $('paper-status-text').textContent = write ? 'Writing export files...' : 'Building paper candidate preview...';
@@ -980,11 +1242,15 @@ $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
+$('watchlist-add').addEventListener('click', addWatchlist);
+$('watchlist-run').addEventListener('click', runWatchlist);
+$('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
+loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
 </body>
@@ -1078,6 +1344,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 write=False,
             ))
             return
+        if parsed.path == "/api/watchlist":
+            self._send_json(load_watchlist(self.data_dir))
+            return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})
             return
@@ -1125,7 +1394,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/run-symbol", "/api/export-paper"}:
+        if parsed.path not in {
+            "/api/run-symbol", "/api/export-paper",
+            "/api/watchlist-add", "/api/watchlist-remove", "/api/watchlist-run",
+        }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         try:
@@ -1137,6 +1409,24 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
             body = {}
+        if parsed.path == "/api/watchlist-add":
+            result = add_watchlist_query(str(body.get("query") or ""), self.data_dir)
+            self._send_json(result, status=200 if result.get("ok") else 400)
+            return
+        if parsed.path == "/api/watchlist-remove":
+            result = remove_watchlist_entry(str(body.get("id") or ""), self.data_dir)
+            self._send_json(result, status=200 if result.get("ok") else 404)
+            return
+        if parsed.path == "/api/watchlist-run":
+            result = run_watchlist_scans(
+                self.data_dir,
+                mode=str(body.get("mode") or "full"),
+                bankroll=body.get("bankroll"),
+                aggressive=_bool_param(body.get("aggressive"), False),
+                launch=True,
+            )
+            self._send_json(result)
+            return
         if parsed.path == "/api/export-paper":
             asset = str(body.get("asset") or "all").strip().lower()
             if asset not in {"all", "option", "share", "futures"}:
@@ -1160,15 +1450,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "query is required"}, status=400)
             return
         mode = str(body.get("mode") or "full").strip().lower()
-        scan_args = ["--minimal"] if mode == "quick" else []
-        if body.get("aggressive"):
-            scan_args.append("--aggressive")
-        try:
-            bankroll = float(body.get("bankroll") or 0)
-        except Exception:
-            bankroll = 0.0
-        if bankroll > 0:
-            scan_args.extend(["--bankroll", str(bankroll)])
+        scan_args = _scan_args_from_controls(
+            mode,
+            body.get("bankroll"),
+            _bool_param(body.get("aggressive"), False),
+        )
         result = create_job(query, self.data_dir, launch=True,
                             extra_scan_args=scan_args, scan_mode=mode or "full")
         self._send_json(result, status=200 if result.get("ok") else 400)
