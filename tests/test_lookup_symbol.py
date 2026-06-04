@@ -10,6 +10,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.lookup_symbol import lookup_symbol, match_option_request, render_html, save_lookup
+from scripts.symbol_resolver import resolve_symbol
+
+
+def test_resolver_prefers_local_aliases_for_common_company_names_and_futures():
+    apple = resolve_symbol("Apple")
+    assert apple["symbol"] == "AAPL"
+    assert apple["source"] == "alias"
+
+    tesla = resolve_symbol("Tesla")
+    assert tesla["symbol"] == "TSLA"
+    assert tesla["source"] == "alias"
+
+    spx = resolve_symbol("S&P 500 futures")
+    assert spx["symbol"] == "ES=F"
+    assert spx["source"] == "alias"
 
 
 def test_lookup_reads_open_option_positions():
@@ -92,6 +107,30 @@ def test_lookup_matches_requested_option_contract():
         assert report["lookup_symbol"] == "AAPL"
 
 
+def test_lookup_resolves_company_name_option_request_to_ticker():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2026-06-18",
+                "mid": 3.2,
+                "confidence": 80,
+                "rank_score": 2.0,
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        report = lookup_symbol("Apple 20260618 C 200", data_dir)
+        assert report["lookup_symbol"] == "AAPL"
+        assert report["resolution"]["source"] == "alias"
+        assert report["resolution"]["request"]["ticker"] == "AAPL"
+        assert report["sections"]["requested_option_matches"][0]["match_quality"] == "exact"
+        assert report["brief"]["resolution_source"] == "alias"
+        assert "Resolved via" in render_html(report)
+
+
 def test_option_request_falls_back_to_closest_strike():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -161,10 +200,12 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
 
 
 if __name__ == "__main__":
+    test_resolver_prefers_local_aliases_for_common_company_names_and_futures()
     test_lookup_reads_open_option_positions()
     test_lookup_reads_open_futures_positions()
     test_lookup_saves_json_and_html()
     test_lookup_matches_requested_option_contract()
+    test_lookup_resolves_company_name_option_request_to_ticker()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
-    print("6/6 lookup tests passed")
+    print("8/8 lookup tests passed")

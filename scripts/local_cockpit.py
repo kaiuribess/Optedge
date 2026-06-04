@@ -786,6 +786,9 @@ function briefHtml(brief) {
   const idea = brief.best_idea || {};
   const open = brief.open_positions || {};
   const val = brief.validation || {};
+  const source = brief.resolution_source || '-';
+  const resolvedFrom = brief.resolved_from || '';
+  const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
   const list = (rows) => (rows && rows.length ? rows.slice(0, 5).map(x => `<li>${escHtml(x.factor)} <b>${cell(x.value)}</b></li>`).join('') : '<li>None surfaced</li>');
   const warnings = (brief.risk_warnings && brief.risk_warnings.length)
     ? brief.risk_warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')
@@ -795,6 +798,7 @@ function briefHtml(brief) {
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
+        <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
         <div class="brief-tile"><span>Avg unrealized</span><strong>${pct(open.avg_unrealized_pct)}</strong></div>
         <div class="brief-tile"><span>Validation win rate</span><strong>${pct(val.win_rate)}</strong></div>

@@ -18,6 +18,97 @@ _OCCISH_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ALIAS_CLEAN_RE = re.compile(r"[^a-z0-9]+")
+
+COMMON_ALIASES: dict[str, tuple[str, str]] = {
+    # Mega-cap / high-attention equities
+    "apple": ("AAPL", "Apple Inc."),
+    "apple inc": ("AAPL", "Apple Inc."),
+    "nvidia": ("NVDA", "NVIDIA Corporation"),
+    "nvidia corporation": ("NVDA", "NVIDIA Corporation"),
+    "tesla": ("TSLA", "Tesla, Inc."),
+    "tesla inc": ("TSLA", "Tesla, Inc."),
+    "microsoft": ("MSFT", "Microsoft Corporation"),
+    "microsoft corporation": ("MSFT", "Microsoft Corporation"),
+    "amazon": ("AMZN", "Amazon.com, Inc."),
+    "amazon com": ("AMZN", "Amazon.com, Inc."),
+    "meta": ("META", "Meta Platforms, Inc."),
+    "facebook": ("META", "Meta Platforms, Inc."),
+    "google": ("GOOGL", "Alphabet Inc."),
+    "alphabet": ("GOOGL", "Alphabet Inc."),
+    "amd": ("AMD", "Advanced Micro Devices, Inc."),
+    "advanced micro devices": ("AMD", "Advanced Micro Devices, Inc."),
+    "palantir": ("PLTR", "Palantir Technologies Inc."),
+    "coinbase": ("COIN", "Coinbase Global, Inc."),
+    "microstrategy": ("MSTR", "Strategy Inc."),
+    "strategy": ("MSTR", "Strategy Inc."),
+    "super micro": ("SMCI", "Super Micro Computer, Inc."),
+    "supermicro": ("SMCI", "Super Micro Computer, Inc."),
+    "broadcom": ("AVGO", "Broadcom Inc."),
+    "netflix": ("NFLX", "Netflix, Inc."),
+    "disney": ("DIS", "The Walt Disney Company"),
+    "walmart": ("WMT", "Walmart Inc."),
+    "berkshire": ("BRK-B", "Berkshire Hathaway Inc. Class B"),
+    "berkshire hathaway": ("BRK-B", "Berkshire Hathaway Inc. Class B"),
+    "jp morgan": ("JPM", "JPMorgan Chase & Co."),
+    "jpmorgan": ("JPM", "JPMorgan Chase & Co."),
+    "gamestop": ("GME", "GameStop Corp."),
+    "game stop": ("GME", "GameStop Corp."),
+    "amc": ("AMC", "AMC Entertainment Holdings, Inc."),
+    "sofi": ("SOFI", "SoFi Technologies, Inc."),
+    "rivian": ("RIVN", "Rivian Automotive, Inc."),
+    "lucid": ("LCID", "Lucid Group, Inc."),
+    "robinhood": ("HOOD", "Robinhood Markets, Inc."),
+    "draftkings": ("DKNG", "DraftKings Inc."),
+    "blackberry": ("BB", "BlackBerry Limited"),
+    "rocket lab": ("RKLB", "Rocket Lab USA, Inc."),
+    "asts": ("ASTS", "AST SpaceMobile, Inc."),
+    "ast spacemobile": ("ASTS", "AST SpaceMobile, Inc."),
+    "ast space mobile": ("ASTS", "AST SpaceMobile, Inc."),
+    "ionq": ("IONQ", "IonQ, Inc."),
+    "rigetti": ("RGTI", "Rigetti Computing, Inc."),
+
+    # Equity/index ETFs users often mean by plain-language searches
+    "spy": ("SPY", "SPDR S&P 500 ETF Trust"),
+    "s p 500 etf": ("SPY", "SPDR S&P 500 ETF Trust"),
+    "s&p 500 etf": ("SPY", "SPDR S&P 500 ETF Trust"),
+    "qqq": ("QQQ", "Invesco QQQ Trust"),
+    "nasdaq etf": ("QQQ", "Invesco QQQ Trust"),
+    "russell 2000 etf": ("IWM", "iShares Russell 2000 ETF"),
+    "bitcoin etf": ("IBIT", "iShares Bitcoin Trust ETF"),
+    "ethereum etf": ("ETHA", "iShares Ethereum Trust ETF"),
+
+    # Futures symbols used by Optedge
+    "s p 500 futures": ("ES=F", "S&P 500 E-mini Futures"),
+    "s&p 500 futures": ("ES=F", "S&P 500 E-mini Futures"),
+    "sp500 futures": ("ES=F", "S&P 500 E-mini Futures"),
+    "es futures": ("ES=F", "S&P 500 E-mini Futures"),
+    "nasdaq futures": ("NQ=F", "Nasdaq-100 E-mini Futures"),
+    "nasdaq 100 futures": ("NQ=F", "Nasdaq-100 E-mini Futures"),
+    "nq futures": ("NQ=F", "Nasdaq-100 E-mini Futures"),
+    "dow futures": ("YM=F", "Dow E-mini Futures"),
+    "russell futures": ("RTY=F", "Russell 2000 E-mini Futures"),
+    "vix": ("^VIX", "CBOE Volatility Index"),
+    "volatility index": ("^VIX", "CBOE Volatility Index"),
+    "crude oil": ("CL=F", "Crude Oil WTI Futures"),
+    "oil futures": ("CL=F", "Crude Oil WTI Futures"),
+    "wti": ("CL=F", "Crude Oil WTI Futures"),
+    "natural gas": ("NG=F", "Natural Gas Futures"),
+    "nat gas": ("NG=F", "Natural Gas Futures"),
+    "gold": ("GC=F", "Gold Futures"),
+    "gold futures": ("GC=F", "Gold Futures"),
+    "silver": ("SI=F", "Silver Futures"),
+    "silver futures": ("SI=F", "Silver Futures"),
+    "copper": ("HG=F", "Copper Futures"),
+    "wheat": ("ZW=F", "Wheat Futures"),
+    "corn": ("ZC=F", "Corn Futures"),
+    "soybeans": ("ZS=F", "Soybean Futures"),
+    "dollar index": ("DX=F", "US Dollar Index Futures"),
+    "bitcoin futures": ("BTC=F", "Bitcoin Futures"),
+    "ether futures": ("ETH=F", "Ether Futures"),
+    "ethereum futures": ("ETH=F", "Ether Futures"),
+}
+
 
 @dataclass
 class Resolution:
@@ -37,6 +128,18 @@ def _clean_query(query: str) -> str:
     return str(query or "").strip()
 
 
+def _alias_key(query: str) -> str:
+    cleaned = _ALIAS_CLEAN_RE.sub(" ", str(query or "").lower()).strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _alias_match(query: str) -> tuple[str, str] | None:
+    key = _alias_key(query)
+    if not key:
+        return None
+    return COMMON_ALIASES.get(key)
+
+
 def _normalize_expiry(value: str) -> str:
     raw = re.sub(r"[^0-9]", "", str(value or ""))
     if len(raw) == 6:
@@ -52,13 +155,17 @@ def parse_option_request(query: str) -> dict[str, Any] | None:
     if not match:
         return None
     side_raw = match.group("side").upper()
+    raw_ticker = match.group("ticker").upper()
+    alias = _alias_match(raw_ticker)
     return {
         "asset": "option",
-        "ticker": match.group("ticker").upper(),
+        "ticker": alias[0] if alias else raw_ticker,
         "expiry": _normalize_expiry(match.group("expiry")),
         "side": "call" if side_raw in {"C", "CALL"} else "put",
         "strike": float(match.group("strike")),
         "raw": _clean_query(query),
+        "ticker_source": "alias" if alias else "direct",
+        "ticker_name": alias[1] if alias else None,
     }
 
 
@@ -112,6 +219,20 @@ def yahoo_search(query: str, limit: int = 8, timeout: float = 6.0) -> list[dict[
 def resolve_symbol(query: str, timeout: float = 6.0) -> dict[str, Any]:
     clean = _clean_query(query)
     option_request = parse_option_request(clean)
+    alias = _alias_match(str(option_request.get("ticker")) if option_request else clean)
+    if alias:
+        symbol, name = alias
+        if option_request:
+            option_request["ticker"] = symbol
+        return Resolution(query=clean, symbol=symbol, name=name, source="alias",
+                          candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
+                          request=option_request).to_dict()
+    if option_request and option_request.get("ticker_source") == "alias":
+        symbol = str(option_request.get("ticker") or "")
+        name = option_request.get("ticker_name")
+        return Resolution(query=clean, symbol=symbol, name=name, source="alias",
+                          candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
+                          request=option_request).to_dict()
     direct = _direct_symbol(clean)
     if direct:
         return Resolution(query=clean, symbol=direct, source="direct", candidates=[],
