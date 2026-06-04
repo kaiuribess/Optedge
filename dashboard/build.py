@@ -1694,12 +1694,15 @@ def _build_analytics_html(forward_summary=None) -> str:
     except Exception:
         pass
 
-    #  4. Compute PnL curve 
+    #  4. Compute PnL curve
+    # Closed lifecycle records currently store trade-level percent returns,
+    # not reliable account-weighted dollars. Plot a running average instead
+    # of summing/compounding trade percentages into a fake account curve.
     if not closed.empty:
-        closed["cum_pnl_pct"] = closed["pnl_pct"].cumsum()
+        closed["running_avg_pnl_pct"] = closed["pnl_pct"].expanding().mean()
         daily_pnl = (
             closed.groupby("date_str")
-            .agg(cum_pnl=("cum_pnl_pct", "last"),
+            .agg(curve_pnl=("running_avg_pnl_pct", "last"),
                  trades=("pnl_pct", "count"),
                  avg_pnl=("pnl_pct", "mean"),
                  wins=("is_win", "sum"))
@@ -1707,7 +1710,7 @@ def _build_analytics_html(forward_summary=None) -> str:
         )
         daily_pnl["win_rate"] = (daily_pnl["wins"] / daily_pnl["trades"] * 100).round(1)
         pnl_dates = daily_pnl["date_str"].tolist()
-        pnl_cumulative = [round(v * 100, 2) for v in daily_pnl["cum_pnl"].tolist()]
+        pnl_cumulative = [round(v * 100, 2) for v in daily_pnl["curve_pnl"].tolist()]
         pnl_daily = [round(v * 100, 2) for v in daily_pnl["avg_pnl"].tolist()]
         pnl_trades = daily_pnl["trades"].tolist()
         pnl_wr = daily_pnl["win_rate"].tolist()
@@ -1860,7 +1863,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     total_closed = len(closed) if not closed.empty else 0
     overall_wr = round(closed["is_win"].mean() * 100, 1) if not closed.empty and "is_win" in closed.columns else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
-    gross_pnl = round(closed["pnl_pct"].sum() * 100, 2) if not closed.empty else 0
+    median_pnl = round(closed["pnl_pct"].median() * 100, 2) if not closed.empty else 0
     pnl_scope_label = "re-priced" if analytics_source == "forward" else "closed"
     if validation_summary and analytics_source == "lifecycle":
         overall = validation_summary.get("overall", {})
@@ -1964,8 +1967,8 @@ def _build_analytics_html(forward_summary=None) -> str:
     <div class="sc-lab">Avg {pnl_scope_label} P&amp;L</div>
   </div>
   <div class="stat-chip">
-    <div class="sc-val" style="color:{'#10b981' if gross_pnl >= 0 else '#ef4444'}">{gross_pnl:+.0f}%</div>
-    <div class="sc-lab">Gross cumulative P&amp;L</div>
+    <div class="sc-val" style="color:{'#10b981' if median_pnl >= 0 else '#ef4444'}">{median_pnl:+.0f}%</div>
+    <div class="sc-lab">Median {pnl_scope_label} P&amp;L</div>
   </div>
   <div class="stat-chip">
     <div class="sc-val" style="color:{'#10b981' if overall_wr >= 40 else '#f59e0b'}">{overall_wr:.1f}%</div>
@@ -1987,7 +1990,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 
 <div class="analytics-grid">
   <div class="chart-box" style="grid-column: span 2;">
-  <h4>Cumulative P&amp;L over time {'(current forward reprice)' if analytics_source == 'forward' else '(closed lifecycle)'}</h4>
+  <h4>Running average P&amp;L over time {'(current forward reprice)' if analytics_source == 'forward' else '(closed lifecycle)'}</h4>
     <div id="chart-pnl-curve" style="height:260px;"></div>
   </div>
   <div class="chart-box">
@@ -2069,11 +2072,11 @@ def _build_analytics_html(forward_summary=None) -> str:
   // 1. PnL curve
   Plotly.newPlot('chart-pnl-curve', [
     {{ x:{J(pnl_dates)}, y:{J(pnl_cumulative)},
-       type:'scatter', mode:'lines+markers', name:'Cumulative P&L %',
+       type:'scatter', mode:'lines+markers', name:'Running avg P&L %',
        line:{{color:'#10b981',width:2.5}},
        marker:{{size:6,color:'#10b981'}},
        fill:'tozeroy', fillcolor:'rgba(16,185,129,0.08)',
-       hovertemplate:'%{{x}}<br>Cumulative: %{{y:+.1f}}%<extra></extra>' }},
+       hovertemplate:'%{{x}}<br>Running avg: %{{y:+.1f}}%<extra></extra>' }},
     {{ x:{J(pnl_dates)}, y:{J(pnl_daily)},
        type:'bar', name:'Avg daily P&L %',
        marker:{{color:{J(pnl_daily)}, colorscale:[['0','#ef4444'],['0.5','#374151'],['1','#10b981']],
@@ -2364,7 +2367,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   </details>
 
   <details class="dash-section" open id="sect-value">
-    <summary><h2 class="section-title">v Value Value Plays <span class="count">{len(value_plays) if value_plays is not None else 0}</span> <span class="muted">(cheap & quality - Magic Formula + Graham composite)</span></h2></summary>
+    <summary><h2 class="section-title">v Value Plays <span class="count">{len(value_plays) if value_plays is not None else 0}</span> <span class="muted">(cheap & quality - Magic Formula + Graham composite)</span></h2></summary>
     <div class="cards">{cards_value}</div>
   </details>
 
@@ -2544,13 +2547,13 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
 
     new_factors_html = f"""
     <details class="dash-section" id="sect-v20-factors">
-      <summary><h2 class="section-title">v v20 new factors <span class="muted">(15 added  -  click to expand)</span></h2></summary>
+      <summary><h2 class="section-title">v Factor coverage <span class="muted">(newer factor engines - click to expand)</span></h2></summary>
       <div style="padding:10px 0">{v20_factor_table}</div>
     </details>
     """
 
-    # --- Engine telemetry (v20.7 - w/ SLA breach indicators) ---
-    telemetry_html = ""
+    # --- Engine telemetry + rolling health (v20.7 - w/ SLA breach indicators) ---
+    telemetry_body = ""
     if engine_timings:
         # Pull config.ENGINE_SLA_SECONDS for per-engine targets
         try:
@@ -2595,16 +2598,16 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                 f"<td style='text-align:right;padding:4px 6px' class='muted'>{int(t.get('rows', 0))} rows</td>"
                 f"</tr>"
             )
-        telemetry_html = f"""
-        <details class="dash-section" id="sect-telemetry">
-          <summary><h2 class="section-title">v Engine telemetry <span class="muted">(this run - bars relative, SLA flags from config)</span></h2></summary>
+        telemetry_body = f"""
+          <div class="chart-box">
+          <h4>This run</h4>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:780px;border-collapse:collapse'><thead>
             <tr style='border-bottom:1px solid #333'><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:right;padding:6px'>Latency</th><th style='text-align:right;padding:6px'>Output</th></tr>
           </thead><tbody>{''.join(rows)}</tbody></table>
-        </details>
+          </div>
         """
 
-    health_html = ""
+    health_body = ""
     health_rows = (engine_health or {}).get("engines", []) if isinstance(engine_health, dict) else []
     if health_rows:
         rows = []
@@ -2620,12 +2623,21 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                 f"<td style='padding:5px 6px;text-align:right' class='muted'>{float(r.get('avg_elapsed') or 0):.1f}s</td>"
                 f"</tr>"
             )
-        health_html = f"""
-        <details class="dash-section" id="sect-engine-health">
-          <summary><h2 class="section-title">v Engine health <span class="muted">(rolling self-check; lowest scores first)</span></h2></summary>
+        health_body = f"""
+          <div class="chart-box">
+          <h4>Rolling health</h4>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:780px;border-collapse:collapse'><thead>
             <tr style='border-bottom:1px solid #333'><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:right;padding:6px'>Health</th><th style='text-align:right;padding:6px'>Hit rate</th><th style='text-align:right;padding:6px'>OK rate</th><th style='text-align:right;padding:6px'>Avg latency</th></tr>
           </thead><tbody>{''.join(rows)}</tbody></table>
+          </div>
+        """
+
+    engines_html = ""
+    if telemetry_body or health_body:
+        engines_html = f"""
+        <details class="dash-section" id="sect-telemetry">
+          <summary><h2 class="section-title">v Engines <span class="muted">(this run latency + rolling health)</span></h2></summary>
+          <div class="analytics-grid">{telemetry_body}{health_body}</div>
         </details>
         """
 
@@ -2649,7 +2661,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
         </details>
         """
 
-    return greeks_html + breaker_html + empty_html + new_factors_html + telemetry_html + health_html
+    return greeks_html + breaker_html + empty_html + new_factors_html + engines_html
 
 
 _INTERACTIVE_JS = r"""<script>

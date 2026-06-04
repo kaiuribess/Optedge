@@ -120,6 +120,9 @@ def test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels():
             html = dashboard_build._build_analytics_html()
             assert "Win rate (3 closed)" in html
             assert "66.7%" in html
+            assert "Gross cumulative P&amp;L" not in html
+            assert "Median closed P&amp;L" in html
+            assert "+20%" in html
             assert "All open positions (2)" in html
             assert "AAPL C 280 06-18" in html
             assert "AAPL C 285 06-18" in html
@@ -156,8 +159,36 @@ def test_dashboard_performance_prefers_validation_over_forward_telemetry():
     assert "999" not in html
 
 
+def test_dashboard_engine_panels_are_merged_into_one_section():
+    html = dashboard_build._build_v20_panels_html(
+        portfolio_greeks={},
+        hedge_suggestion=None,
+        breaker_state=None,
+        engine_timings={
+            "news": {"elapsed": 2.0, "rows": 100, "ok": True},
+            "insider": {"elapsed": 5.0, "rows": 80, "ok": True},
+        },
+        engine_health={
+            "engines": [
+                {"engine": "news", "health_score": 90, "hit_rate": 0.9, "ok_rate": 1.0, "avg_elapsed": 2.0},
+                {"engine": "insider", "health_score": 65, "hit_rate": 0.6, "ok_rate": 0.9, "avg_elapsed": 5.0},
+            ]
+        },
+        v20_factors={},
+        empty_engines=[],
+    )
+
+    assert html.count('id="sect-telemetry"') == 1
+    assert "Engine health" not in html
+    assert "Engine telemetry" not in html
+    assert "v Engines" in html
+    assert "This run" in html
+    assert "Rolling health" in html
+
+
 if __name__ == "__main__":
     test_dashboard_helpers_dedupe_and_label_positions()
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
     test_dashboard_performance_prefers_validation_over_forward_telemetry()
-    print("3/3 dashboard data tests passed")
+    test_dashboard_engine_panels_are_merged_into_one_section()
+    print("4/4 dashboard data tests passed")
