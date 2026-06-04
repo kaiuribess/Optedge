@@ -46,6 +46,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data health" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
+    assert "queue-action-btn" in html
+    assert "routeQueueAction" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html

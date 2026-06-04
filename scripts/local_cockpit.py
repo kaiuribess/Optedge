@@ -1574,9 +1574,9 @@ function actionQueueTable(rows) {
   const body = rows.map(r => {
     const sym = r.query || r.symbol || '';
     const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
-    return `<tr${attrs}><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
+    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
   }).join('');
-  return `<div class="table-wrap"><table><thead><tr><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function healthClass(level) {
   if (level === 'bad') return 'bad';
@@ -1647,6 +1647,59 @@ function wireClickableRows(root=document) {
       $('symbol').value = row.dataset.symbol || '';
       await lookup();
       window.location.hash = 'lookup';
+    });
+  });
+}
+function scrollToId(id) {
+  const el = $(id);
+  if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+}
+async function routeQueueAction(action, query, symbol) {
+  const q = query || symbol || '';
+  if (action === 'refresh_or_fix_artifact' || action === 'review_data_health') {
+    await loadSummary();
+    scrollToId('health-results');
+    return;
+  }
+  if (action === 'open_position_monitor') {
+    $('positions-asset').value = 'all';
+    $('positions-status').value = 'attention';
+    $('positions-query').value = q;
+    await loadPositions();
+    scrollToId('positions-results');
+    return;
+  }
+  if (action === 'preview_paper_candidate' || action === 'review_paper_export') {
+    $('paper-dry-run').checked = false;
+    await loadPaperCandidates(false);
+    if (q) $('symbol').value = q;
+    scrollToId('paper-results');
+    return;
+  }
+  if (action === 'run_focused_scan') {
+    $('symbol').value = q;
+    await lookup();
+    $('lookup-status').textContent += ' Ready for focused scan review.';
+    scrollToId('lookup-results');
+    return;
+  }
+  if (action === 'review_watchlist') {
+    if (q) $('watchlist-query').value = q;
+    await loadWatchlist();
+    scrollToId('watchlist-results');
+    return;
+  }
+  if (q) {
+    $('symbol').value = q;
+    await lookup();
+    scrollToId('lookup-results');
+  }
+}
+function wireActionQueueRows() {
+  document.querySelectorAll('.queue-action-btn').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '');
     });
   });
 }
@@ -1731,6 +1784,7 @@ async function loadActionQueue() {
   $('queue-status-text').textContent = `${data.count || 0} prioritized local action item(s).`;
   $('queue-results').innerHTML = actionQueueTable(data.rows || []);
   wireClickableRows($('queue-results'));
+  wireActionQueueRows();
 }
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
