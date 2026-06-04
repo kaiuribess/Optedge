@@ -9,7 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.local_cockpit import artifact_path, build_opportunities, build_summary, render_cockpit_html
+from scripts.local_cockpit import (
+    artifact_path, build_opportunities, build_positions, build_summary, render_cockpit_html,
+)
 
 
 def test_cockpit_summary_counts_open_positions():
@@ -41,6 +43,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Optedge Local Cockpit" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
+    assert "Open position monitor" in html
+    assert "/api/positions" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "Run focused scan" in html
@@ -97,9 +101,81 @@ def test_opportunity_explorer_reads_and_filters_latest_snapshots():
         assert filtered["rows"][0]["actionable"] is True
 
 
+def test_position_monitor_reads_dedupes_and_filters_open_state():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        rows = [
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 280,
+                "expiry": "2026-06-18",
+                "entry_time": "2026-06-01T00:00:00+00:00",
+                "entry_price": 2.0,
+                "current_mid": 1.0,
+                "unrealized_pct": -0.5,
+                "trade_status": "Trade",
+                "latest_exit_pressure": 65,
+                "latest_exit_action": "tighten_stop",
+                "stop_price": 1.0,
+                "target_price": 4.0,
+            },
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 280,
+                "expiry": "2026-06-18",
+                "entry_time": "2026-06-01T00:00:00+00:00",
+                "entry_price": 2.0,
+                "current_mid": 1.0,
+                "unrealized_pct": -0.5,
+                "trade_status": "Trade",
+                "latest_exit_pressure": 65,
+                "latest_exit_action": "tighten_stop",
+            },
+            {
+                "ticker": "MSFT",
+                "side": "call",
+                "strike": 400,
+                "expiry": "2026-06-18",
+                "entry_time": "2026-06-01T01:00:00+00:00",
+                "entry_price": 2.0,
+                "current_mid": 2.1,
+                "unrealized_pct": 0.05,
+                "trade_status": "Watch",
+                "latest_exit_pressure": 10,
+                "latest_exit_action": "hold",
+            },
+        ]
+        (data_dir / "open_positions.json").write_text(json.dumps(rows), encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text(json.dumps([{
+            "symbol": "ETH=F",
+            "direction": "short",
+            "contract": "/MET",
+            "entry_time": "2026-06-01T02:00:00+00:00",
+            "entry_price": 1800,
+            "current_price": 1750,
+            "pnl_pct": 0.03,
+            "trade_status": "Trade",
+            "latest_exit_pressure": 20,
+        }]), encoding="utf-8")
+
+        all_report = build_positions(data_dir, asset="all", limit=10)
+        assert all_report["count"] == 3
+        labels = {row["position_label"] for row in all_report["rows"]}
+        assert "AAPL C 280 06-18" in labels
+        assert "ETH=F SHORT /MET" in labels
+
+        attention = build_positions(data_dir, asset="option", status="attention", limit=10)
+        assert attention["count"] == 1
+        assert attention["rows"][0]["ticker_or_symbol"] == "AAPL"
+        assert attention["rows"][0]["attention"] is True
+
+
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
-    print("4/4 local cockpit tests passed")
+    test_position_monitor_reads_dedupes_and_filters_open_state()
+    print("5/5 local cockpit tests passed")

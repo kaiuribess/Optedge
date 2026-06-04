@@ -86,6 +86,12 @@ OPPORTUNITY_SPECS = {
     },
 }
 
+POSITION_FILES = {
+    "option": "open_positions.json",
+    "share": "open_share_positions.json",
+    "futures": "open_futures_positions.json",
+}
+
 
 def _latest_file(data_dir: Path, pattern: str) -> Path | None:
     files = [p for p in data_dir.glob(pattern) if p.is_file()]
@@ -142,6 +148,122 @@ def _float_value(value: Any, default: float = 0.0) -> float:
     except Exception:
         return default
     return out if math.isfinite(out) else default
+
+
+def _position_identity(row: dict[str, Any]) -> tuple:
+    pid = row.get("position_id")
+    if pid:
+        return ("id", str(pid))
+    return (
+        str(row.get("asset") or ""),
+        str(row.get("ticker") or row.get("symbol") or row.get("ticker_or_symbol") or ""),
+        str(row.get("side") or row.get("direction") or row.get("side_or_direction") or ""),
+        str(row.get("strike") or row.get("contract") or row.get("strike_or_contract") or ""),
+        str(row.get("expiry") or ""),
+        str(row.get("entry_time") or ""),
+        str(row.get("entry_price") or ""),
+    )
+
+
+def _dedupe_position_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen = set()
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = _position_identity(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _position_label(row: dict[str, Any]) -> str:
+    symbol = str(row.get("ticker") or row.get("symbol") or "-").upper()
+    side = str(row.get("side") or row.get("direction") or "").upper()
+    strike = row.get("strike")
+    expiry = str(row.get("expiry") or "")
+    contract = str(row.get("contract") or "")
+    if strike not in (None, "", "-") and expiry:
+        try:
+            strike_txt = f"{float(strike):g}"
+        except Exception:
+            strike_txt = str(strike)
+        return f"{symbol} {side[:1]} {strike_txt} {expiry[-5:]}"
+    if contract:
+        return f"{symbol} {side} {contract}".strip()
+    return f"{symbol} {side}".strip()
+
+
+def _position_age_days(row: dict[str, Any]) -> float:
+    if row.get("age_days") is not None:
+        return _float_value(row.get("age_days"))
+    entry = row.get("entry_time")
+    if not entry:
+        return 0.0
+    try:
+        ts = pd.to_datetime(entry, errors="coerce", utc=True)
+        if pd.isna(ts):
+            return 0.0
+        return max(0.0, float((pd.Timestamp.now(tz="UTC") - ts).total_seconds() / 86400.0))
+    except Exception:
+        return 0.0
+
+
+def _position_pnl_pct(row: dict[str, Any]) -> float:
+    for col in ("unrealized_pct", "current_pnl_pct", "pnl_pct"):
+        if row.get(col) is not None:
+            return _float_value(row.get(col))
+    current = row.get("current_mid", row.get("current_price"))
+    if current is None:
+        current = row.get("last_price")
+    entry = _float_value(row.get("entry_price"))
+    cur = _float_value(current)
+    return (cur - entry) / entry if entry > 0 and cur > 0 else 0.0
+
+
+def _normalize_position(row: dict[str, Any], asset: str) -> dict[str, Any]:
+    out = dict(row)
+    out.setdefault("asset", asset)
+    symbol = out.get("ticker") or out.get("symbol") or "-"
+    current_price = out.get("current_mid", out.get("current_price", out.get("last_price")))
+    pnl_pct = _position_pnl_pct(out)
+    exit_pressure = _float_value(out.get("latest_exit_pressure"), default=0.0)
+    reprice_failed = _float_value(out.get("reprice_failed_count"), default=0.0)
+    attention = exit_pressure >= 60 or reprice_failed >= 2 or pnl_pct <= -0.30
+    return {
+        "asset": out.get("asset"),
+        "position_label": _position_label(out),
+        "ticker_or_symbol": str(symbol).upper(),
+        "side_or_direction": out.get("side") or out.get("direction") or out.get("asset"),
+        "strike_or_contract": out.get("strike", out.get("contract")),
+        "expiry": out.get("expiry"),
+        "trade_status": out.get("trade_status") or "Open",
+        "entry_time": out.get("entry_time"),
+        "age_days": round(_position_age_days(out), 2),
+        "entry_price": _clean_value(out.get("entry_price")),
+        "current_price": _clean_value(current_price),
+        "pnl_pct": pnl_pct,
+        "pnl_dollars": _clean_value(out.get("pnl_dollars")),
+        "confidence": _clean_value(out.get("confidence")),
+        "latest_exit_pressure": _clean_value(out.get("latest_exit_pressure")),
+        "latest_exit_action": out.get("latest_exit_action"),
+        "stop_price": _clean_value(out.get("stop_price")),
+        "target_price": _clean_value(out.get("target_price")),
+        "reprice_failed_count": _clean_value(out.get("reprice_failed_count")),
+        "research_guard_status": out.get("research_guard_status"),
+        "attention": attention,
+    }
+
+
+def _position_sort_key(row: dict[str, Any]) -> tuple:
+    return (
+        1 if row.get("attention") else 0,
+        _float_value(row.get("latest_exit_pressure")),
+        abs(_float_value(row.get("pnl_pct"))),
+        _float_value(row.get("age_days")),
+    )
 
 
 def _opportunity_score(row: pd.Series) -> float:
@@ -251,6 +373,66 @@ def build_opportunities(
         "notes": [
             "Explorer reads the latest local top_* parquet snapshots.",
             "Actionable excludes Watch/Skip where sizing fields are present.",
+            "This is research output only; no orders are placed.",
+        ],
+    }
+
+
+def build_positions(
+    data_dir: Path = DATA_DIR,
+    asset: str = "all",
+    query: str = "",
+    status: str = "all",
+    limit: int = 250,
+) -> dict[str, Any]:
+    selected = list(POSITION_FILES) if asset == "all" else [asset]
+    query_norm = str(query or "").strip().upper()
+    status_norm = str(status or "all").strip().lower()
+    rows: list[dict[str, Any]] = []
+    sources: dict[str, str | None] = {}
+
+    for asset_name in selected:
+        filename = POSITION_FILES.get(asset_name)
+        if not filename:
+            continue
+        path = data_dir / filename
+        raw = _read_json(path)
+        sources[asset_name] = filename if path.exists() else None
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict):
+                rows.append(_normalize_position(item, asset_name))
+
+    rows = _dedupe_position_rows(rows)
+    if query_norm:
+        rows = [
+            row for row in rows
+            if query_norm in str(row.get("ticker_or_symbol") or "").upper()
+            or query_norm in str(row.get("position_label") or "").upper()
+        ]
+    if status_norm == "attention":
+        rows = [row for row in rows if row.get("attention")]
+    elif status_norm != "all":
+        rows = [
+            row for row in rows
+            if str(row.get("trade_status") or "").strip().lower() == status_norm
+            or str(row.get("latest_exit_action") or "").strip().lower() == status_norm
+        ]
+    rows = sorted(rows, key=_position_sort_key, reverse=True)
+    limited = rows[:limit]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "asset": asset,
+        "query": query,
+        "status": status,
+        "count": len(limited),
+        "total_before_limit": len(rows),
+        "sources": sources,
+        "rows": limited,
+        "notes": [
+            "Position monitor reads current open position state only.",
+            "Attention means high exit pressure, repeated repricing trouble, or a large unrealized drawdown.",
             "This is research output only; no orders are placed.",
         ],
     }
@@ -403,6 +585,31 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Open position monitor</h2>
+    <div class="muted">Review current lifecycle positions across options, shares, and futures. Click a row to look it up.</div>
+    <div class="scan-controls">
+      <select id="positions-asset" aria-label="Position asset">
+        <option value="all">All assets</option>
+        <option value="option">Options</option>
+        <option value="share">Shares</option>
+        <option value="futures">Futures</option>
+      </select>
+      <select id="positions-status" aria-label="Position status">
+        <option value="all">All statuses</option>
+        <option value="attention">Needs attention</option>
+        <option value="trade">Trade</option>
+        <option value="watch">Watch</option>
+        <option value="hold">Hold exit action</option>
+        <option value="tighten_stop">Tighten-stop action</option>
+        <option value="close_early">Close-early action</option>
+      </select>
+      <input id="positions-query" placeholder="Filter ticker/contract">
+      <button class="btn" type="button" id="positions-load">Apply filters</button>
+    </div>
+    <div class="status" id="positions-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="positions-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Opportunity explorer</h2>
     <div class="muted">Filter the latest ranked options, shares, futures, and value ideas. Click a row to look it up.</div>
     <div class="scan-controls">
@@ -543,6 +750,20 @@ async function loadExplorer() {
   $('explorer-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('explorer-results'));
 }
+async function loadPositions() {
+  $('positions-status-text').textContent = 'Loading open positions...';
+  const params = new URLSearchParams({
+    asset: $('positions-asset').value,
+    status: $('positions-status').value,
+    query: $('positions-query').value.trim(),
+    limit: '250'
+  });
+  const res = await fetch('/api/positions?' + params.toString());
+  const data = await res.json();
+  $('positions-status-text').textContent = `${data.count || 0} open position row(s).`;
+  $('positions-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('positions-results'));
+}
 async function lookup() {
   const symbol = $('symbol').value.trim();
   if (!symbol) return;
@@ -582,10 +803,13 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('refresh').addEventListener('click', loadSummary);
+$('positions-load').addEventListener('click', loadPositions);
+$('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
+loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
@@ -643,6 +867,19 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(build_opportunities(
                 self.data_dir, asset=asset, query=query, status=status,
                 min_confidence=min_conf, limit=limit,
+            ))
+            return
+        if parsed.path == "/api/positions":
+            params = parse_qs(parsed.query)
+            asset = params.get("asset", ["all"])[0].strip().lower()
+            if asset not in {"all", *POSITION_FILES.keys()}:
+                self._send_json({"error": "invalid asset"}, status=400)
+                return
+            status = params.get("status", ["all"])[0].strip().lower()
+            query = params.get("query", [""])[0]
+            limit = _int_param(params.get("limit", ["250"])[0], 250, 1, 500)
+            self._send_json(build_positions(
+                self.data_dir, asset=asset, query=query, status=status, limit=limit,
             ))
             return
         if parsed.path == "/api/jobs":
