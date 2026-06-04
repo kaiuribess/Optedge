@@ -590,6 +590,80 @@ def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
         plt.savefig(path, dpi=140)
         plt.close()
     except Exception:
+        _write_equity_curve_pil(equity, path)
+
+
+def _write_equity_curve_pil(equity: pd.Series, path: Path) -> None:
+    """Dependency-light PNG chart fallback when matplotlib is unavailable."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        vals = [float(v) for v in equity.dropna().tolist()]
+        if not vals:
+            _write_valid_blank_png(path)
+            return
+        width, height = 1000, 500
+        margin_l, margin_r, margin_t, margin_b = 76, 28, 44, 60
+        plot_w = width - margin_l - margin_r
+        plot_h = height - margin_t - margin_b
+        bg = (8, 11, 16)
+        panel = (15, 23, 42)
+        grid = (35, 48, 68)
+        text = (203, 213, 225)
+        muted = (148, 163, 184)
+        blue = (56, 189, 248)
+        green = (16, 185, 129)
+        red = (239, 68, 68)
+
+        img = Image.new("RGB", (width, height), bg)
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([20, 18, width - 20, height - 20], fill=panel, outline=grid)
+        font = ImageFont.load_default()
+        draw.text((margin_l, 20), "Optedge Closed-Signal Equity Curve", fill=text, font=font)
+
+        lo = min(min(vals), 1.0)
+        hi = max(max(vals), 1.0)
+        pad = max((hi - lo) * 0.08, 0.05)
+        lo -= pad
+        hi += pad
+        if hi <= lo:
+            hi = lo + 1.0
+
+        def xy(idx: int, value: float) -> tuple[int, int]:
+            x = margin_l + int((idx / max(len(vals) - 1, 1)) * plot_w)
+            y = margin_t + int((1.0 - ((value - lo) / (hi - lo))) * plot_h)
+            return x, y
+
+        for i in range(5):
+            y = margin_t + int(i * plot_h / 4)
+            draw.line([(margin_l, y), (margin_l + plot_w, y)], fill=grid)
+        for i in range(6):
+            x = margin_l + int(i * plot_w / 5)
+            draw.line([(x, margin_t), (x, margin_t + plot_h)], fill=grid)
+
+        baseline_y = xy(0, 1.0)[1]
+        draw.line([(margin_l, baseline_y), (margin_l + plot_w, baseline_y)], fill=muted)
+        points = [xy(i, v) for i, v in enumerate(vals)]
+        line_color = green if vals[-1] >= 1.0 else red
+        if len(points) == 1:
+            x, y = points[0]
+            draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=line_color)
+        else:
+            draw.line(points, fill=blue, width=3)
+            x, y = points[-1]
+            draw.ellipse([x - 5, y - 5, x + 5, y + 5], fill=line_color)
+
+        labels = [
+            (f"{hi:.2f}x", margin_t),
+            ("1.00x", baseline_y),
+            (f"{lo:.2f}x", margin_t + plot_h - 10),
+        ]
+        for label, y in labels:
+            draw.text((24, y), label, fill=muted, font=font)
+        draw.text((margin_l, height - 38), f"Closed signals: {len(vals)}", fill=muted, font=font)
+        draw.text((width - 210, height - 38), f"Latest: {vals[-1]:.2f}x", fill=text, font=font)
+        img.save(path, format="PNG")
+    except Exception:
         _write_valid_blank_png(path)
 
 

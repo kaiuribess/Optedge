@@ -107,6 +107,71 @@ def _trade_status_chip(row: pd.Series) -> str:
             f'{label}</span>')
 
 
+def _position_identity(row: Dict[str, Any]) -> tuple:
+    """Stable identity for lifecycle rows that may not have a position_id."""
+    pid = row.get("position_id")
+    if pid:
+        return ("id", str(pid))
+    return (
+        str(row.get("asset") or ""),
+        str(row.get("ticker") or row.get("symbol") or ""),
+        str(row.get("side") or row.get("direction") or ""),
+        str(row.get("strike") or row.get("contract") or ""),
+        str(row.get("expiry") or ""),
+        str(row.get("entry_time") or ""),
+        str(row.get("entry_price") or ""),
+    )
+
+
+def _dedupe_position_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = _position_identity(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _is_win_pnl(value: Any) -> bool:
+    try:
+        return float(value) > 0
+    except Exception:
+        return False
+
+
+def _exit_bucket(row: pd.Series) -> str:
+    reason = str(row.get("exit_reason") or row.get("outcome") or "").strip().lower()
+    if not reason or reason == "nan":
+        return "win" if _is_win_pnl(row.get("pnl_pct")) else "loss"
+    if reason in {"target", "hard_target"}:
+        return "target"
+    if reason in {"stop", "hard_stop"}:
+        return "stop"
+    return reason
+
+
+def _open_position_label(row: Dict[str, Any]) -> str:
+    ticker = str(row.get("ticker") or row.get("symbol") or "-").upper()
+    side = str(row.get("side") or row.get("direction") or "").upper()
+    strike = row.get("strike")
+    expiry = str(row.get("expiry") or "")
+    contract = str(row.get("contract") or "")
+    if strike not in (None, "", "-") and expiry:
+        try:
+            strike_txt = f"{float(strike):g}"
+        except Exception:
+            strike_txt = str(strike)
+        return f"{ticker} {side[:1]} {strike_txt} {expiry[-5:]}"
+    if contract:
+        return f"{ticker} {side} {contract}".strip()
+    return f"{ticker} {side}".strip()
+
+
 # -------- Cards --------------------------------------------------------
 def _option_card(row: pd.Series) -> str:
     side_color = "#10b981" if row["side"] == "call" else "#f87171"
@@ -1560,6 +1625,7 @@ def _build_analytics_html(forward_summary=None) -> str:
         + _load_json_rows("closed_share_positions.json", "share")
         + _load_json_rows("closed_futures_positions.json", "futures")
     )
+    closed_rows = _dedupe_position_rows(closed_rows)
     closed = pd.DataFrame(closed_rows)
     analytics_source = "lifecycle"
     if not closed.empty:
@@ -1577,8 +1643,8 @@ def _build_analytics_html(forward_summary=None) -> str:
             closed["log_time"] = pd.Timestamp.utcnow()
         closed["log_time"] = closed["log_time"].fillna(pd.Timestamp.utcnow())
         closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
-        if "outcome" not in closed.columns:
-            closed["outcome"] = closed.get("exit_reason", pd.Series("closed", index=closed.index)).fillna("closed")
+        closed["is_win"] = closed["pnl_pct"].map(_is_win_pnl)
+        closed["outcome"] = closed.apply(_exit_bucket, axis=1)
         if "bucket" not in closed.columns:
             closed["bucket"] = closed.get("asset", pd.Series("position", index=closed.index)).fillna("position")
         closed = closed.sort_values("log_time")
@@ -1603,6 +1669,7 @@ def _build_analytics_html(forward_summary=None) -> str:
         closed["log_time"] = closed["log_time"].fillna(pd.Timestamp.utcnow())
         closed["date_str"] = closed["log_time"].dt.strftime("%Y-%m-%d")
         closed["outcome"] = closed["pnl_pct"].map(lambda v: "target" if v > 0 else "stop")
+        closed["is_win"] = closed["pnl_pct"].map(_is_win_pnl)
         if "bucket" not in closed.columns:
             if "asset" in closed.columns:
                 closed["bucket"] = closed["asset"]
@@ -1618,6 +1685,7 @@ def _build_analytics_html(forward_summary=None) -> str:
         + _load_json_rows("open_share_positions.json", "share")
         + _load_json_rows("open_futures_positions.json", "futures")
     )
+    op_list = _dedupe_position_rows(op_list)
     df_open = pd.DataFrame(op_list)
     try:
         if not df_open.empty and "entry_time" in df_open.columns:
@@ -1634,7 +1702,7 @@ def _build_analytics_html(forward_summary=None) -> str:
             .agg(cum_pnl=("cum_pnl_pct", "last"),
                  trades=("pnl_pct", "count"),
                  avg_pnl=("pnl_pct", "mean"),
-                 wins=("outcome", lambda x: (x == "target").sum()))
+                 wins=("is_win", "sum"))
             .reset_index()
         )
         daily_pnl["win_rate"] = (daily_pnl["wins"] / daily_pnl["trades"] * 100).round(1)
@@ -1650,7 +1718,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     if not closed.empty:
         bucket_stats = (
             closed.groupby("bucket")
-            .agg(wins=("outcome", lambda x: (x == "target").sum()),
+            .agg(wins=("is_win", "sum"),
                  total=("outcome", "count"),
                  avg_pnl=("pnl_pct", "mean"))
             .reset_index()
@@ -1668,7 +1736,7 @@ def _build_analytics_html(forward_summary=None) -> str:
         conf_wr = (
             closed.groupby(conf_bins, observed=True)
             .apply(lambda g: pd.Series({
-                "win_rate": (g["outcome"] == "target").mean() * 100,
+                "win_rate": g["is_win"].mean() * 100,
                 "n": len(g),
                 "avg_pnl": g["pnl_pct"].mean() * 100
             }))
@@ -1724,6 +1792,7 @@ def _build_analytics_html(forward_summary=None) -> str:
             side = str(r.get("side") or r.get("direction") or r.get("asset") or "-").upper()
             display_open_rows.append({
                 "ticker": r.get("ticker") or r.get("symbol") or "-",
+                "position_label": _open_position_label(r),
                 "asset": r.get("asset") or "position",
                 "side": side,
                 "strike": r.get("strike", r.get("contract", "-")),
@@ -1736,10 +1805,15 @@ def _build_analytics_html(forward_summary=None) -> str:
                 "stop_price": _num(r.get("stop_price")),
                 "target_price": _num(r.get("target_price")),
             })
+        display_open_rows = sorted(
+            display_open_rows,
+            key=lambda row: float(row.get("unrealized_pct") or 0),
+            reverse=True,
+        )
 
     if not df_open.empty and "unrealized_pct" in df_open.columns:
         unr_vals = df_open["unrealized_pct"].dropna().tolist()
-        unr_labels = df_open["ticker"].tolist() if "ticker" in df_open.columns else [str(i) for i in range(len(unr_vals))]
+        unr_labels = [_open_position_label(r) for r in op_list]
         unr_sides = df_open["side"].tolist() if "side" in df_open.columns else ["call"] * len(unr_vals)
         # sort by unrealized_pct desc
         combined = sorted(zip(unr_vals, unr_labels, unr_sides), reverse=True)
@@ -1784,7 +1858,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     #  10. Overall stats 
     total_closed = len(closed) if not closed.empty else 0
-    overall_wr = round((closed["outcome"] == "target").mean() * 100, 1) if not closed.empty else 0
+    overall_wr = round(closed["is_win"].mean() * 100, 1) if not closed.empty and "is_win" in closed.columns else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
     gross_pnl = round(closed["pnl_pct"].sum() * 100, 2) if not closed.empty else 0
     pnl_scope_label = "re-priced" if analytics_source == "forward" else "closed"
@@ -1948,13 +2022,13 @@ def _build_analytics_html(forward_summary=None) -> str:
   <div class="pos-scroll">
   <table class="positions-table">
     <thead><tr>
-      <th>Ticker</th><th>Side</th><th>Strike</th><th>Expiry</th>
+      <th>Position</th><th>Side</th><th>Strike</th><th>Expiry</th>
       <th>Entry $</th><th>Current $</th><th>Unrealized</th><th>Age</th><th>Conf</th><th>Stop</th><th>Target</th>
     </tr></thead>
     <tbody id="pos-tbody">
     {''.join(
       f"""<tr>
-        <td><strong>{html.escape(str(r.get("ticker","-")))}</strong></td>
+        <td><strong>{html.escape(str(r.get("position_label") or r.get("ticker","-")))}</strong></td>
         <td><span style="color:{'#10b981' if str(r.get('side')).lower() in ('call','long','share') else '#f87171'}">{html.escape(str(r.get('side','-')).upper())}</span></td>
         <td>{r.get('strike','-')}</td>
         <td>{r.get('expiry','-')}</td>

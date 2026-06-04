@@ -204,6 +204,22 @@ def test_empty_equity_curve_writes_valid_png():
         _assert_valid_png(out)
 
 
+def test_closed_equity_curve_writes_real_png_without_matplotlib():
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "equity_curve.png"
+        closed = pd.DataFrame({
+            "exit_time": [
+                "2026-06-01T00:00:00+00:00",
+                "2026-06-02T00:00:00+00:00",
+                "2026-06-03T00:00:00+00:00",
+            ],
+            "pnl_pct_after_slippage": [0.10, -0.05, 0.20],
+        })
+        validation_report._write_equity_curve(closed, out)
+        _assert_valid_png(out)
+        assert out.stat().st_size > 1000
+
+
 if __name__ == "__main__":
     test_validation_counts_open_options_and_futures()
     test_validation_current_model_keeps_old_open_positions()
@@ -212,4 +228,5 @@ if __name__ == "__main__":
     test_current_model_uses_latest_archive_reset_before_model_mtime()
     test_total_signals_preserves_existing_count_when_parquet_unreadable()
     test_empty_equity_curve_writes_valid_png()
-    print("7/7 validation report tests passed")
+    test_closed_equity_curve_writes_real_png_without_matplotlib()
+    print("8/8 validation report tests passed")
