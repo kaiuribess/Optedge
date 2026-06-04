@@ -21,6 +21,7 @@ disagreements between VADER and FinBERT are themselves informative.
 """
 from __future__ import annotations
 import logging
+import os
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -157,6 +158,13 @@ def _score_texts(texts: List[str], batch_size: int = 32) -> List[float]:
     return scores
 
 
+def _default_batch_size() -> int:
+    try:
+        return max(1, int(os.environ.get("OPTEDGE_FINBERT_BATCH_SIZE", "")))
+    except ValueError:
+        return 64 if _DEVICE == "cuda" else 32
+
+
 def run(news_df: Optional[pd.DataFrame] = None,
         per_ticker_cap: int = 10) -> pd.DataFrame:
     """Score recent headlines per ticker via FinBERT.
@@ -188,22 +196,36 @@ def run(news_df: Optional[pd.DataFrame] = None,
                        .apply(lambda s: [str(x).strip() for x in s.dropna()
                                           if str(x).strip()][:per_ticker_cap]))
 
-    rows = []
+    ticker_texts: list[tuple[str, str]] = []
     n_skipped = 0
     for tk, headlines in grouped.items():
         if not headlines:
             n_skipped += 1
             continue
-        scores = _score_texts(headlines)
-        if not scores:
+        ticker_texts.extend((tk, text) for text in headlines)
+
+    if not ticker_texts:
+        log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)",
+                  n_skipped)
+        return pd.DataFrame()
+
+    all_scores = _score_texts([text for _, text in ticker_texts], batch_size=_default_batch_size())
+    by_ticker: Dict[str, list[tuple[float, str]]] = {}
+    for (tk, text), score in zip(ticker_texts, all_scores):
+        by_ticker.setdefault(tk, []).append((float(score), text))
+
+    rows = []
+    for tk, scored in by_ticker.items():
+        if not scored:
             continue
+        scores = [score for score, _text in scored]
         mean_score = sum(scores) / len(scores)
         rows.append({
             "ticker": tk,
             "finbert_score": max(-1.0, min(1.0, mean_score)),
-            "finbert_n_headlines": len(headlines),
+            "finbert_n_headlines": len(scored),
             "finbert_device": _DEVICE or "cpu",
-            "finbert_headline_preview": headlines[0][:80] if headlines else "",
+            "finbert_headline_preview": scored[0][1][:80],
         })
     if not rows:
         log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)",

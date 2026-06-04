@@ -22,6 +22,14 @@ log = logging.getLogger("optedge.provider")
 
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+RAM_CACHE_ENABLED = os.environ.get("OPTEDGE_RAM_CACHE", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+try:
+    RAM_CACHE_MAX_ITEMS = max(100, int(os.environ.get("OPTEDGE_RAM_CACHE_MAX_ITEMS", "5000")))
+except ValueError:
+    RAM_CACHE_MAX_ITEMS = 5000
+_RAM_CACHE: Dict[str, tuple[float, Any]] = {}
 
 
 # -------- Disk cache (light) -----------------------------------------
@@ -31,6 +39,13 @@ def _cache_path(key: str) -> Path:
 
 
 def cache_get(key: str, max_age_sec: int = 900) -> Optional[Any]:
+    if RAM_CACHE_ENABLED:
+        entry = _RAM_CACHE.get(key)
+        if entry is not None:
+            ts, value = entry
+            if time.time() - ts <= max_age_sec:
+                return value
+            _RAM_CACHE.pop(key, None)
     fp = _cache_path(key)
     if not fp.exists():
         return None
@@ -38,17 +53,53 @@ def cache_get(key: str, max_age_sec: int = 900) -> Optional[Any]:
     if age > max_age_sec:
         return None
     try:
-        return json.loads(fp.read_text())
+        value = json.loads(fp.read_text())
+        if RAM_CACHE_ENABLED:
+            _cache_put_ram(key, value)
+        return value
     except Exception:
         return None
 
 
 def cache_put(key: str, value: Any) -> None:
+    if RAM_CACHE_ENABLED:
+        _cache_put_ram(key, value)
     fp = _cache_path(key)
     try:
         fp.write_text(json.dumps(value, default=str))
     except Exception as e:
         log.debug("cache_put fail: %s", e)
+
+
+def _cache_put_ram(key: str, value: Any) -> None:
+    _RAM_CACHE[key] = (time.time(), value)
+    if len(_RAM_CACHE) > RAM_CACHE_MAX_ITEMS:
+        oldest = sorted(_RAM_CACHE, key=lambda k: _RAM_CACHE[k][0])[: max(1, len(_RAM_CACHE) // 10)]
+        for old_key in oldest:
+            _RAM_CACHE.pop(old_key, None)
+
+
+def cache_stats() -> Dict[str, Any]:
+    return {
+        "ram_cache_enabled": RAM_CACHE_ENABLED,
+        "ram_cache_items": len(_RAM_CACHE),
+        "ram_cache_max_items": RAM_CACHE_MAX_ITEMS,
+        "disk_cache_dir": str(CACHE_DIR),
+    }
+
+
+def configure_ram_cache(enabled: bool | None = None, max_items: int | None = None) -> Dict[str, Any]:
+    global RAM_CACHE_ENABLED, RAM_CACHE_MAX_ITEMS
+    if enabled is not None:
+        RAM_CACHE_ENABLED = bool(enabled)
+        if not RAM_CACHE_ENABLED:
+            _RAM_CACHE.clear()
+    if max_items is not None:
+        RAM_CACHE_MAX_ITEMS = max(100, int(max_items))
+        if len(_RAM_CACHE) > RAM_CACHE_MAX_ITEMS:
+            for key in sorted(_RAM_CACHE, key=lambda k: _RAM_CACHE[k][0])[: len(_RAM_CACHE) - RAM_CACHE_MAX_ITEMS]:
+                _RAM_CACHE.pop(key, None)
+    return cache_stats()
 
 
 # -------- Session factory ---------------------------------------------

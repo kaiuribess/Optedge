@@ -126,7 +126,8 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
                            skip_insider, skip_fund, skip_news=False, skip_earnings=False,
                            skip_value=False, skip_futures=False, skip_congress=False,
                            skip_social=False, skip_analyst=False,
-                           universe_heavy=None, skip_v20=None):
+                           universe_heavy=None, skip_v20=None,
+                           fast_insider: bool = False):
     """Dispatch all ticker-driven engines in parallel.
 
     v20: universe_heavy is the pre-filtered subset for slow per-ticker engines.
@@ -149,7 +150,7 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
     if not skip_fund:
         tasks["fundamentals"] = lambda: fundamentals.run(universe_heavy)
     if not skip_insider:
-        tasks["insider"] = lambda: insider.run(universe_heavy)
+        tasks["insider"] = lambda: insider.run(universe_heavy, fast_mode=fast_insider)
     if not skip_news:
         tasks["news"] = lambda: news.run(universe_heavy)
     if not skip_earnings:
@@ -389,6 +390,8 @@ def main():
                     help="Skip FinBERT sentiment engine (v20.3, GPU-aware, optional)")
     ap.add_argument("--fast-insider", action="store_true",
                     help="Insider engine: count-only mode (skip XML parsing, ~5x faster)")
+    ap.add_argument("--turbo", action="store_true",
+                    help="Performance preset: RAM cache + batched GPU FinBERT + fast insider parsing")
     ap.add_argument("--demo", action="store_true",
                     help="Force synthetic data (sandbox / first-look mode)")
     ap.add_argument("--no-auto-detect", action="store_true")
@@ -429,6 +432,15 @@ def main():
     run_asof = datetime.now(timezone.utc)
 
     # --minimal preset: stack of skip flags for fast iteration
+    if args.turbo:
+        args.fast_insider = True
+        os.environ.setdefault("OPTEDGE_RAM_CACHE", "1")
+        os.environ.setdefault("OPTEDGE_FINBERT_BATCH_SIZE", "96")
+        try:
+            data_provider.configure_ram_cache(enabled=True)
+        except Exception:
+            pass
+
     if args.minimal:
         args.skip_wsb = True
         args.skip_news = True
@@ -536,7 +548,7 @@ def main():
             log.info("Computing live factor scores …")
             fund_df = fundamentals.run(UNIVERSE)
             sent_df = sentiment.run(UNIVERSE)
-            ins_df = insider.run(UNIVERSE)
+            ins_df = insider.run(UNIVERSE, fast_mode=args.fast_insider)
             val_df = value.run(UNIVERSE)
         result = run_historical_backtest(
             UNIVERSE,
@@ -587,6 +599,14 @@ def main():
     if args.fast_insider:
         import config
         config.INSIDER_FAST_MODE = True
+        log.info("performance: fast insider mode enabled")
+    if args.turbo:
+        try:
+            log.info("performance: turbo mode enabled; cache=%s finbert_batch=%s",
+                     data_provider.cache_stats(),
+                     os.environ.get("OPTEDGE_FINBERT_BATCH_SIZE", "auto"))
+        except Exception:
+            log.info("performance: turbo mode enabled")
 
     universe_static = args.universe or UNIVERSE
     universe_options_static = args.universe or UNIVERSE_OPTIONS
@@ -686,7 +706,7 @@ def main():
         if not skip_insider and status.get("sec", {}).get("ok", False):
             log.info("== Insider (LIVE — SEC EDGAR works from this IP) ==")
             try:
-                ins_df = insider.run(universe_all)
+                ins_df = insider.run(universe_all, fast_mode=args.fast_insider)
             except Exception as e:
                 log.warning("live insider failed: %s — using synthetic", e)
                 ins_df = synthetic_insider(universe_all)
@@ -715,6 +735,7 @@ def main():
                 skip_analyst=args.skip_analyst,
                 universe_heavy=universe_heavy,
                 skip_v20=skip_v20,
+                fast_insider=args.fast_insider,
             )
             macro_state = results.get("macro") or {"regime": "neutral", "macro_tilt": 0.0}
             mp = results.get("mispricing") or {"contracts": pd.DataFrame(), "summary": pd.DataFrame()}
@@ -736,7 +757,9 @@ def main():
             contracts = mp["contracts"]; summary = mp["summary"]
             sent_df = pd.DataFrame() if skip_sentiment else sentiment.run(universe_all)
             fund_df = pd.DataFrame() if args.skip_fundamentals else fundamentals.run(universe_all)
-            ins_df = pd.DataFrame() if skip_insider else insider.run(universe_all)
+            ins_df = pd.DataFrame() if skip_insider else insider.run(
+                universe_all, fast_mode=args.fast_insider
+            )
             news_df = pd.DataFrame() if args.skip_news else news.run(universe_all)
             earn_df = pd.DataFrame() if args.skip_earnings else earnings.run(universe_all)
             value_df = pd.DataFrame() if args.skip_value else value.run(universe_all)

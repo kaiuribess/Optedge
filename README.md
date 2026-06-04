@@ -178,6 +178,14 @@ Faster loop when SEC insider parsing is slow:
 python run.py --aggressive --bankroll 25000 --loop 30 --fast-insider
 ```
 
+Turbo loop using RAM cache, batched GPU FinBERT when CUDA is available, and faster insider parsing:
+
+```bash
+python run.py --aggressive --bankroll 25000 --loop 30 --turbo --no-open
+```
+
+`--turbo` does not place trades. It keeps the normal engine stack, enables the in-process RAM cache, raises FinBERT batch size, and switches insider parsing to the faster count-only mode.
+
 Forward test logged signals:
 
 ```bash
@@ -367,8 +375,14 @@ python tests/test_share_positions.py
 python tests/test_futures_positions.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
+python tests/test_symbol_resolver.py
+python tests/test_research_jobs.py
 python tests/test_lookup_symbol.py
+python tests/test_sec_companyfacts.py
 python tests/test_local_cockpit.py
+python tests/test_fred_public.py
+python tests/test_performance_cache.py
+python tests/test_finbert_batching.py
 python tests/test_ibkr_provider.py
 ```
 
