@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import mimetypes
 import sys
 import webbrowser
@@ -16,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+import pandas as pd
 
 ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
 if str(ROOT_BOOTSTRAP) not in sys.path:
@@ -35,6 +38,52 @@ ARTIFACTS = {
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
     "external-paper-orders": ("external_paper_orders.csv", "text/csv; charset=utf-8"),
+}
+
+OPPORTUNITY_SPECS = {
+    "option": {
+        "pattern": "top_options_*.parquet",
+        "label": "Options",
+        "symbol_col": "ticker",
+        "columns": [
+            "asset", "actionable", "ticker", "side", "strike", "expiry", "dte", "mid", "spot",
+            "confidence", "rank_score", "fused_score", "trade_status",
+            "suggested_contracts", "spread_pct", "ev_pct", "net_edge_pct",
+            "stop_price", "target_price", "top_headline",
+        ],
+    },
+    "share": {
+        "pattern": "top_shares_*.parquet",
+        "label": "Shares",
+        "symbol_col": "ticker",
+        "columns": [
+            "asset", "actionable", "ticker", "spot", "confidence", "rank_score", "fused_score",
+            "trade_status", "suggested_dollars", "ev_pct", "stop_price",
+            "target_price", "top_headline",
+        ],
+    },
+    "futures": {
+        "pattern": "top_futures_*.parquet",
+        "label": "Futures",
+        "symbol_col": "symbol",
+        "columns": [
+            "asset", "actionable", "symbol", "name", "direction", "contract", "using_micro",
+            "futures_score", "rank_score", "confidence", "trade_status",
+            "suggested_contracts", "entry_price", "stop_price", "target_price",
+            "risk_dollars", "reward_dollars", "ret_20d", "hv20", "range_pos",
+            "top_headline",
+        ],
+    },
+    "value": {
+        "pattern": "top_value_*.parquet",
+        "label": "Value",
+        "symbol_col": "ticker",
+        "columns": [
+            "asset", "actionable", "ticker", "value_score", "value_bucket", "pe", "fcf_yield",
+            "earnings_yield", "rev_growth", "op_margin", "insider_score",
+            "n_buys", "n_sells", "top_headline",
+        ],
+    },
 }
 
 
@@ -57,6 +106,156 @@ def _count_json_rows(path: Path) -> int:
     return len(rows) if isinstance(rows, list) else 0
 
 
+def _read_parquet(path: Path | None) -> pd.DataFrame:
+    if path is None:
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out["_source_file"] = path.name
+    return out
+
+
+def _clean_value(value: Any) -> Any:
+    try:
+        if value is None or pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _float_value(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _opportunity_score(row: pd.Series) -> float:
+    for col in ("rank_score", "fused_score", "futures_score", "value_score"):
+        if col in row:
+            score = _float_value(row.get(col), default=math.nan)
+            if math.isfinite(score):
+                return score
+    return _float_value(row.get("confidence"), default=0.0) / 100.0
+
+
+def _is_actionable(row: pd.Series) -> bool:
+    status = str(row.get("trade_status") or "").strip().lower()
+    if status in {"watch", "skip", "blocked"}:
+        return False
+    asset = str(row.get("asset") or "").lower()
+    if asset == "option":
+        return _float_value(row.get("suggested_contracts")) > 0
+    if asset == "futures":
+        return _float_value(row.get("suggested_contracts")) > 0
+    if asset == "share":
+        return _float_value(row.get("suggested_dollars")) > 0
+    return True
+
+
+def _opportunity_records(df: pd.DataFrame, asset: str, limit: int) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+    spec = OPPORTUNITY_SPECS[asset]
+    cols = [c for c in spec["columns"] if c in df.columns]
+    if "asset" not in cols:
+        cols.insert(0, "asset")
+    records: list[dict[str, Any]] = []
+    for _, row in df[cols].head(limit).iterrows():
+        records.append({str(k): _clean_value(v) for k, v in row.to_dict().items()})
+    return records
+
+
+def build_opportunities(
+    data_dir: Path = DATA_DIR,
+    asset: str = "all",
+    query: str = "",
+    status: str = "all",
+    min_confidence: float = 0.0,
+    limit: int = 80,
+) -> dict[str, Any]:
+    selected = list(OPPORTUNITY_SPECS) if asset == "all" else [asset]
+    query_norm = str(query or "").strip().upper()
+    status_norm = str(status or "all").strip().lower()
+    rows: list[pd.DataFrame] = []
+    sources: dict[str, str | None] = {}
+
+    for asset_name in selected:
+        spec = OPPORTUNITY_SPECS.get(asset_name)
+        if spec is None:
+            continue
+        path = _latest_file(data_dir, spec["pattern"])
+        sources[asset_name] = path.name if path else None
+        df = _read_parquet(path)
+        if df.empty:
+            continue
+        out = df.copy()
+        out["asset"] = asset_name
+        out["actionable"] = out.apply(_is_actionable, axis=1)
+        out["_opportunity_score"] = out.apply(_opportunity_score, axis=1)
+        if "confidence" in out.columns:
+            out = out[pd.to_numeric(out["confidence"], errors="coerce").fillna(0.0) >= min_confidence]
+        elif min_confidence > 0:
+            out = out.iloc[0:0]
+        if query_norm:
+            symbol_col = str(spec["symbol_col"])
+            symbol_match = (
+                out[symbol_col].astype(str).str.upper().str.contains(query_norm, na=False, regex=False)
+                if symbol_col in out.columns else pd.Series(False, index=out.index)
+            )
+            headline_match = (
+                out["top_headline"].astype(str).str.upper().str.contains(query_norm, na=False, regex=False)
+                if "top_headline" in out.columns else pd.Series(False, index=out.index)
+            )
+            out = out[symbol_match | headline_match]
+        if status_norm == "actionable":
+            out = out[out["actionable"]]
+        elif status_norm != "all" and "trade_status" in out.columns:
+            out = out[out["trade_status"].astype(str).str.lower() == status_norm]
+        rows.append(out)
+
+    if rows:
+        combined = pd.concat(rows, ignore_index=True, sort=False)
+        combined = combined.sort_values("_opportunity_score", ascending=False, kind="mergesort")
+    else:
+        combined = pd.DataFrame()
+
+    records = []
+    for asset_name in OPPORTUNITY_SPECS:
+        part = combined[combined["asset"] == asset_name] if "asset" in combined.columns else pd.DataFrame()
+        records.extend(_opportunity_records(part, asset_name, limit))
+    records = sorted(records, key=lambda r: _float_value(r.get("rank_score") or r.get("fused_score") or r.get("futures_score") or r.get("value_score")), reverse=True)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "asset": asset,
+        "query": query,
+        "status": status,
+        "min_confidence": min_confidence,
+        "count": len(records[:limit]),
+        "sources": sources,
+        "rows": records[:limit],
+        "notes": [
+            "Explorer reads the latest local top_* parquet snapshots.",
+            "Actionable excludes Watch/Skip where sizing fields are present.",
+            "This is research output only; no orders are placed.",
+        ],
+    }
+
+
 def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
     spec = ARTIFACTS.get(name)
     if spec is None:
@@ -66,6 +265,24 @@ def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
         return _latest_file(data_dir, pattern)
     path = data_dir / pattern
     return path if path.exists() and path.is_file() else None
+
+
+def _int_param(value: str | None, default: int, low: int, high: int) -> int:
+    try:
+        out = int(float(value or default))
+    except Exception:
+        return default
+    return max(low, min(high, out))
+
+
+def _float_param(value: str | None, default: float, low: float, high: float) -> float:
+    try:
+        out = float(value or default)
+    except Exception:
+        return default
+    if not math.isfinite(out):
+        return default
+    return max(low, min(high, out))
 
 
 def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
@@ -148,6 +365,8 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 table { width:100%; border-collapse:collapse; font-size:12px; }
 th, td { padding:8px 10px; border-bottom:1px solid #1d2938; text-align:left; vertical-align:top; }
 th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacing:.4px; }
+tr.clickable-row { cursor:pointer; }
+tr.clickable-row:hover { background:#111c31; }
 .empty { padding:14px; color:var(--muted); font-style:italic; }
 .risk { border-left:4px solid var(--warn); }
 .job-list { display:grid; gap:8px; margin-top:10px; }
@@ -184,6 +403,31 @@ th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacin
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Opportunity explorer</h2>
+    <div class="muted">Filter the latest ranked options, shares, futures, and value ideas. Click a row to look it up.</div>
+    <div class="scan-controls">
+      <select id="explorer-asset" aria-label="Explorer asset">
+        <option value="all">All assets</option>
+        <option value="option">Options</option>
+        <option value="share">Shares</option>
+        <option value="futures">Futures</option>
+        <option value="value">Value</option>
+      </select>
+      <select id="explorer-status" aria-label="Explorer status">
+        <option value="all">All statuses</option>
+        <option value="actionable">Actionable only</option>
+        <option value="trade">Trade</option>
+        <option value="watch">Watch</option>
+        <option value="skip">Skip</option>
+      </select>
+      <input id="explorer-query" placeholder="Filter ticker/headline">
+      <input id="explorer-confidence" type="number" min="0" max="100" step="1" placeholder="Min confidence">
+      <button class="btn" type="button" id="explorer-load">Apply filters</button>
+    </div>
+    <div class="status" id="explorer-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="explorer-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Symbol lookup</h2>
     <div class="muted">Search the latest local scan snapshots and open positions. For a new symbol, run a focused scan first.</div>
     <div class="search">
@@ -217,14 +461,29 @@ th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacin
 </div>
 <script>
 const $ = (id) => document.getElementById(id);
-function cell(v) { return v === null || v === undefined || v === '' ? '-' : String(v).slice(0, 220); }
-function escAttr(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'); }
-function table(rows) {
+function escHtml(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#39;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'); }
+function cell(v) { return v === null || v === undefined || v === '' ? '-' : escHtml(String(v).slice(0, 220)); }
+function escAttr(v) { return escHtml(v); }
+function rowSymbol(r) { return r.ticker || r.symbol || ''; }
+function table(rows, clickRows=false) {
   if (!rows || rows.length === 0) return '<div class="empty">No matching rows.</div>';
   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
-  const head = cols.map(c => `<th>${c}</th>`).join('');
-  const body = rows.map(r => `<tr>${cols.map(c => `<td>${cell(r[c])}</td>`).join('')}</tr>`).join('');
+  const head = cols.map(c => `<th>${escHtml(c)}</th>`).join('');
+  const body = rows.map(r => {
+    const sym = clickRows ? rowSymbol(r) : '';
+    const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
+    return `<tr${attrs}>${cols.map(c => `<td>${cell(r[c])}</td>`).join('')}</tr>`;
+  }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function wireClickableRows(root=document) {
+  root.querySelectorAll('.clickable-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      $('symbol').value = row.dataset.symbol || '';
+      await lookup();
+      window.location.hash = 'lookup';
+    });
+  });
 }
 async function loadSummary() {
   const res = await fetch('/api/summary');
@@ -269,6 +528,21 @@ async function loadJobs() {
     });
   });
 }
+async function loadExplorer() {
+  $('explorer-status-text').textContent = 'Loading ranked opportunities...';
+  const params = new URLSearchParams({
+    asset: $('explorer-asset').value,
+    status: $('explorer-status').value,
+    query: $('explorer-query').value.trim(),
+    min_confidence: $('explorer-confidence').value || '0',
+    limit: '80'
+  });
+  const res = await fetch('/api/opportunities?' + params.toString());
+  const data = await res.json();
+  $('explorer-status-text').textContent = `${data.count || 0} latest local opportunity row(s).`;
+  $('explorer-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('explorer-results'));
+}
 async function lookup() {
   const symbol = $('symbol').value.trim();
   if (!symbol) return;
@@ -308,8 +582,11 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('refresh').addEventListener('click', loadSummary);
+$('explorer-load').addEventListener('click', loadExplorer);
+$('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
+loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
 </body>
@@ -352,6 +629,21 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "symbol is required"}, status=400)
                 return
             self._send_json(lookup_symbol(symbol, self.data_dir))
+            return
+        if parsed.path == "/api/opportunities":
+            params = parse_qs(parsed.query)
+            asset = params.get("asset", ["all"])[0].strip().lower()
+            if asset not in {"all", *OPPORTUNITY_SPECS.keys()}:
+                self._send_json({"error": "invalid asset"}, status=400)
+                return
+            status = params.get("status", ["all"])[0].strip().lower()
+            query = params.get("query", [""])[0]
+            min_conf = _float_param(params.get("min_confidence", ["0"])[0], 0.0, 0.0, 100.0)
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
+            self._send_json(build_opportunities(
+                self.data_dir, asset=asset, query=query, status=status,
+                min_confidence=min_conf, limit=limit,
+            ))
             return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})

@@ -3,11 +3,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.local_cockpit import artifact_path, build_summary, render_cockpit_html
+from scripts.local_cockpit import artifact_path, build_opportunities, build_summary, render_cockpit_html
 
 
 def test_cockpit_summary_counts_open_positions():
@@ -37,6 +39,8 @@ def test_cockpit_artifact_path_finds_latest_dashboard():
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
+    assert "Opportunity explorer" in html
+    assert "/api/opportunities" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "Run focused scan" in html
@@ -48,8 +52,54 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Bankroll override" in html
 
 
+def test_opportunity_explorer_reads_and_filters_latest_snapshots():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+                "confidence": 75,
+                "rank_score": 1.5,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+            },
+            {
+                "ticker": "TSLA",
+                "side": "put",
+                "strike": 300,
+                "expiry": "2026-06-18",
+                "confidence": 50,
+                "rank_score": 3.0,
+                "trade_status": "Watch",
+                "suggested_contracts": 0,
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([
+            {
+                "ticker": "NVDA",
+                "confidence": 90,
+                "rank_score": 2.0,
+                "trade_status": "Trade",
+                "suggested_dollars": 500,
+            },
+        ]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+
+        report = build_opportunities(data_dir, asset="all", status="actionable", limit=10)
+        symbols = {row.get("ticker") or row.get("symbol") for row in report["rows"]}
+        assert symbols == {"AAPL", "NVDA"}
+        assert report["count"] == 2
+
+        filtered = build_opportunities(data_dir, asset="option", query="AAPL", limit=10)
+        assert filtered["rows"][0]["ticker"] == "AAPL"
+        assert filtered["rows"][0]["actionable"] is True
+
+
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
-    print("3/3 local cockpit tests passed")
+    test_opportunity_explorer_reads_and_filters_latest_snapshots()
+    print("4/4 local cockpit tests passed")
