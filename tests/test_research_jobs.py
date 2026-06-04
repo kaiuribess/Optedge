@@ -6,7 +6,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.research_jobs import create_job, job_log_path, list_jobs, read_job, read_job_log
+from scripts.research_jobs import (
+    create_job, job_dashboard_path, job_log_path, list_jobs, read_job, read_job_log, write_job,
+)
 
 
 def test_create_job_resolves_ticker_without_launching():
@@ -49,9 +51,24 @@ def test_create_job_preserves_option_request_and_reads_log_tail():
         assert tail["lines"] == ["line 97", "line 98", "line 99"]
 
 
+def test_job_dashboard_path_allows_only_data_dashboard_file():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        dashboard = data_dir / "dashboard_20260101_000000.html"
+        dashboard.write_text("ok", encoding="utf-8")
+        job = create_job("NVDA", data_dir, launch=False)
+        job["dashboard_path"] = str(dashboard)
+        write_job(job, data_dir)
+        assert job_dashboard_path(job["job_id"], data_dir) == dashboard.resolve()
+        job["dashboard_path"] = str(data_dir / "not_dashboard.html")
+        write_job(job, data_dir)
+        assert job_dashboard_path(job["job_id"], data_dir) is None
+
+
 if __name__ == "__main__":
     test_create_job_resolves_ticker_without_launching()
     test_list_jobs_returns_recent_jobs()
     test_create_job_returns_error_for_empty_query()
     test_create_job_preserves_option_request_and_reads_log_tail()
-    print("4/4 research job tests passed")
+    test_job_dashboard_path_allows_only_data_dashboard_file()
+    print("5/5 research job tests passed")

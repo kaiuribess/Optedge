@@ -42,6 +42,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Run focused scan" in html
     assert "/api/run-symbol" in html
     assert "/api/job-log" in html
+    assert "/job-dashboard" in html
+    assert "Quick scan" in html
+    assert "Bankroll override" in html
 
 
 if __name__ == "__main__":

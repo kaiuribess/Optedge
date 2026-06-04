@@ -17,7 +17,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
-from scripts.research_jobs import create_job, list_jobs, read_job, read_job_log
+from scripts.research_jobs import (
+    create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
+)
 
 
 ARTIFACTS = {
@@ -40,7 +42,7 @@ def _latest_file(data_dir: Path, pattern: str) -> Path | None:
 
 def _read_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 
@@ -126,8 +128,12 @@ a, button { color:var(--text); }
 .btn { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--border); background:var(--panel2); border-radius:999px; padding:8px 12px; text-decoration:none; font-size:13px; cursor:pointer; }
 .btn:hover { border-color:var(--accent); }
 .search { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; margin-top:10px; }
-input { width:100%; background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:15px; }
-input:focus { outline:none; border-color:var(--accent); }
+.scan-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; align-items:center; }
+input, select { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:15px; }
+input { width:100%; }
+input:focus, select:focus { outline:none; border-color:var(--accent); }
+.check { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; }
+.check input { width:auto; }
 .search-actions { display:flex; gap:8px; flex-wrap:wrap; }
 .status { margin-top:8px; font-size:12px; color:var(--muted); min-height:18px; }
 .sections { display:grid; grid-template-columns:1fr; gap:12px; margin-top:14px; }
@@ -182,6 +188,14 @@ th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacin
         <button class="btn" type="button" id="run-symbol">Run focused scan</button>
       </div>
     </div>
+    <div class="scan-controls">
+      <select id="scan-mode" aria-label="Scan mode">
+        <option value="full">Full scan</option>
+        <option value="quick">Quick scan</option>
+      </select>
+      <input id="scan-bankroll" type="number" min="1" step="100" placeholder="Bankroll override">
+      <label class="check"><input id="scan-aggressive" type="checkbox"> aggressive sizing</label>
+    </div>
     <div class="status" id="lookup-status"></div>
     <div class="sections" id="lookup-results"></div>
   </section>
@@ -223,9 +237,10 @@ function jobClass(status) {
   return '';
 }
 function jobHtml(job) {
-  const dash = job.dashboard_path ? `<a class="btn" href="/artifact/latest-dashboard" target="_blank">Dashboard</a>` : '';
+  const dash = job.dashboard_path ? `<a class="btn" href="/job-dashboard?id=${encodeURIComponent(job.job_id)}" target="_blank">Dashboard</a>` : '';
   const req = job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
-  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req} ${job.updated_at || ''}</small></div><div>${dash}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
+  const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
+  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${mode} ${job.updated_at || ''}</small></div><div>${dash}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }
 async function loadJobs() {
   const res = await fetch('/api/jobs');
@@ -260,7 +275,12 @@ async function runSymbol() {
   const res = await fetch('/api/run-symbol', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({query})
+    body: JSON.stringify({
+      query,
+      mode: $('scan-mode').value,
+      bankroll: $('scan-bankroll').value,
+      aggressive: $('scan-aggressive').checked
+    })
   });
   const data = await res.json();
   if (!res.ok || data.ok === false) {
@@ -345,6 +365,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send(200, render_html(lookup_symbol(symbol, self.data_dir)).encode("utf-8"),
                        "text/html; charset=utf-8")
             return
+        if parsed.path == "/job-dashboard":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            path = job_dashboard_path(job_id, self.data_dir) if job_id else None
+            if path is None:
+                self._send(404, b"Job dashboard not found", "text/plain; charset=utf-8")
+                return
+            self._send_file(path, "text/html; charset=utf-8")
+            return
         if parsed.path.startswith("/artifact/"):
             name = parsed.path.rsplit("/", 1)[-1]
             path = artifact_path(name, self.data_dir)
@@ -374,7 +402,18 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if not query:
             self._send_json({"ok": False, "error": "query is required"}, status=400)
             return
-        result = create_job(query, self.data_dir, launch=True)
+        mode = str(body.get("mode") or "full").strip().lower()
+        scan_args = ["--minimal"] if mode == "quick" else []
+        if body.get("aggressive"):
+            scan_args.append("--aggressive")
+        try:
+            bankroll = float(body.get("bankroll") or 0)
+        except Exception:
+            bankroll = 0.0
+        if bankroll > 0:
+            scan_args.extend(["--bankroll", str(bankroll)])
+        result = create_job(query, self.data_dir, launch=True,
+                            extra_scan_args=scan_args, scan_mode=mode or "full")
         self._send_json(result, status=200 if result.get("ok") else 400)
 
     def log_message(self, fmt: str, *args: Any) -> None:

@@ -230,6 +230,7 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 
 - Instant symbol lookup across latest option, share, value, futures, and open-position artifacts.
 - Focused scan launcher: type a ticker, company name, or option idea and click **Run focused scan**.
+- Full/quick focused-scan modes, optional bankroll override, and aggressive sizing toggle.
 - Open option/share/futures counts.
 - Quick links to the latest dashboard, validation report, validation JSON, equity curve, and external paper-order export.
 - A browser UI that does not rerun engines until you choose to run a new scan.
@@ -246,7 +247,7 @@ For a ticker that is not in the latest artifacts, run a focused scan first:
 python run.py --universe NVDA --no-open
 ```
 
-The cockpit run button does this for you in the background. Company-name resolution uses a free Yahoo search endpoint where available, so `Nvidia` can resolve to `NVDA`; direct tickers always work. Option-style requests such as `AAPL 20260618 C 200` are stored with the focused scan job so the cockpit remembers the contract you wanted checked while the scanner researches the underlying.
+The cockpit run button does this for you in the background. Company-name resolution uses a free Yahoo search endpoint where available, so `Nvidia` can resolve to `NVDA`; direct tickers always work. Option-style requests such as `AAPL 20260618 C 200` are stored with the focused scan job so the cockpit remembers the contract you wanted checked while the scanner researches the underlying. Completed jobs link to their own generated dashboard and expose a log tail for review.
 
 ## Archive / Reset
 

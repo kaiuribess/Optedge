@@ -40,10 +40,35 @@ def job_log_path(job_id: str, data_dir: Path = DATA_DIR) -> Path:
     return jobs_dir(data_dir) / f"{safe}.log"
 
 
+def _safe_dashboard_path(raw: Any, data_dir: Path = DATA_DIR) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw))
+    if not path.is_absolute():
+        path = data_dir / path
+    try:
+        resolved = path.resolve()
+        data_root = data_dir.resolve()
+    except Exception:
+        return None
+    if resolved.parent != data_root:
+        return None
+    if not resolved.name.startswith("dashboard_") or resolved.suffix.lower() != ".html":
+        return None
+    return resolved if resolved.exists() and resolved.is_file() else None
+
+
+def job_dashboard_path(job_id: str, data_dir: Path = DATA_DIR) -> Path | None:
+    job = read_job(job_id, data_dir)
+    if not job:
+        return None
+    return _safe_dashboard_path(job.get("dashboard_path"), data_dir)
+
+
 def read_job(job_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
     path = job_path(job_id, data_dir)
     try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
+        obj = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     return obj if isinstance(obj, dict) else None
@@ -72,7 +97,7 @@ def list_jobs(data_dir: Path = DATA_DIR, limit: int = 20) -> list[dict[str, Any]
     for path in sorted(jobs_dir(data_dir).glob("*.json"), key=lambda p: p.stat().st_mtime,
                        reverse=True):
         try:
-            obj = json.loads(path.read_text(encoding="utf-8"))
+            obj = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         if isinstance(obj, dict):
@@ -91,7 +116,8 @@ def _latest_dashboard_after(started_at: datetime, data_dir: Path) -> str | None:
 
 
 def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
-               extra_scan_args: list[str] | None = None) -> dict[str, Any]:
+               extra_scan_args: list[str] | None = None,
+               scan_mode: str = "full") -> dict[str, Any]:
     resolution = resolve_symbol(query)
     if not resolution.get("symbol"):
         return {
@@ -110,6 +136,8 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
         "name": resolution.get("name"),
         "resolution": resolution,
         "request": resolution.get("request"),
+        "scan_mode": scan_mode,
+        "scan_args": extra_scan_args or [],
         "status": "queued",
         "created_at": _now(),
         "updated_at": _now(),
@@ -203,11 +231,16 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("query")
     create.add_argument("--data-dir", default=str(DATA_DIR))
     create.add_argument("--no-launch", action="store_true")
+    create.add_argument("--scan-arg", action="append", default=[])
+    create.add_argument("--scan-mode", default="full")
     args = parser.parse_args(argv)
     if args.cmd == "run-job":
         return run_job(args.job_id, args.symbol, Path(args.data_dir), args.scan_arg)
     if args.cmd == "create":
-        print(json.dumps(create_job(args.query, Path(args.data_dir), launch=not args.no_launch),
+        print(json.dumps(create_job(
+            args.query, Path(args.data_dir), launch=not args.no_launch,
+            extra_scan_args=args.scan_arg, scan_mode=args.scan_mode,
+        ),
                          indent=2, default=str))
         return 0
     return 1
