@@ -9,12 +9,17 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import sys
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
+if str(ROOT_BOOTSTRAP) not in sys.path:
+    sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.research_jobs import (
@@ -213,6 +218,7 @@ th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacin
 <script>
 const $ = (id) => document.getElementById(id);
 function cell(v) { return v === null || v === undefined || v === '' ? '-' : String(v).slice(0, 220); }
+function escAttr(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'); }
 function table(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No matching rows.</div>';
   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
@@ -238,9 +244,10 @@ function jobClass(status) {
 }
 function jobHtml(job) {
   const dash = job.dashboard_path ? `<a class="btn" href="/job-dashboard?id=${encodeURIComponent(job.job_id)}" target="_blank">Dashboard</a>` : '';
+  const match = job.request ? `<button class="btn job-match-btn" type="button" data-query="${escAttr(job.query)}">Match</button>` : '';
   const req = job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
   const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
-  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${mode} ${job.updated_at || ''}</small></div><div>${dash}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
+  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${mode} ${job.updated_at || ''}</small></div><div>${dash}${match}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }
 async function loadJobs() {
   const res = await fetch('/api/jobs');
@@ -255,6 +262,12 @@ async function loadJobs() {
       $('job-log').classList.add('active');
     });
   });
+  document.querySelectorAll('.job-match-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $('symbol').value = btn.dataset.query || '';
+      await lookup();
+    });
+  });
 }
 async function lookup() {
   const symbol = $('symbol').value.trim();
@@ -263,7 +276,8 @@ async function lookup() {
   $('lookup-results').innerHTML = '';
   const res = await fetch('/api/lookup?symbol=' + encodeURIComponent(symbol));
   const data = await res.json();
-  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}.`;
+  const resolved = data.lookup_symbol && data.lookup_symbol !== data.query ? ` (${data.lookup_symbol})` : '';
+  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.`;
   $('lookup-results').innerHTML = Object.entries(data.sections).map(([name, rows]) => {
     return `<div class="section"><h3><span>${name.replaceAll('_', ' ')}</span><span>${rows.length}</span></h3>${table(rows)}</div>`;
   }).join('');

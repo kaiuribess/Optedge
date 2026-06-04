@@ -9,13 +9,19 @@ import argparse
 import html
 import json
 import math
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parent.parent
+from scripts.symbol_resolver import resolve_symbol
+
 DATA_DIR = ROOT / "data"
 
 SNAPSHOTS = {
@@ -64,6 +70,13 @@ DISPLAY_COLUMNS = {
         "symbol", "direction", "entry_time", "entry_price", "current_price",
         "pnl_pct", "pnl_dollars", "trade_status", "stop_price", "target_price",
         "latest_exit_action",
+    ],
+    "requested_option_matches": [
+        "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
+        "rank_score", "fused_score", "trade_status", "suggested_contracts",
+        "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
+        "match_quality", "strike_diff", "requested_side", "requested_expiry",
+        "requested_strike", "top_headline",
     ],
 }
 
@@ -135,8 +148,114 @@ def _match(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
     return df[values == q].copy()
 
 
+def _norm_side(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"c", "call", "calls"}:
+        return "call"
+    if raw in {"p", "put", "puts"}:
+        return "put"
+    return raw
+
+
+def _norm_expiry(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if not pd.isna(ts):
+            return ts.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return str(value).strip()[:10]
+
+
+def _sort_option_matches(df: pd.DataFrame) -> pd.DataFrame:
+    sort_cols: list[str] = []
+    ascending: list[bool] = []
+    for col, asc in [
+        ("_side_match", False),
+        ("_expiry_match", False),
+        ("strike_diff", True),
+        ("rank_score", False),
+        ("confidence", False),
+        ("fused_score", False),
+    ]:
+        if col in df.columns:
+            sort_cols.append(col)
+            ascending.append(asc)
+    if not sort_cols:
+        return df
+    return df.sort_values(sort_cols, ascending=ascending, kind="mergesort")
+
+
+def match_option_request(
+    request: dict[str, Any] | None,
+    data_dir: Path = DATA_DIR,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Find the exact or closest latest option rows for an option-style query."""
+    if not request or request.get("asset") != "option":
+        return []
+    path = _latest_file(data_dir, "top_options_*.parquet")
+    df = _read_parquet(path)
+    if df.empty or "ticker" not in df.columns:
+        return []
+
+    ticker = str(request.get("ticker") or "").upper().strip()
+    side = _norm_side(request.get("side"))
+    expiry = _norm_expiry(request.get("expiry"))
+    try:
+        strike = float(request.get("strike"))
+    except Exception:
+        strike = math.nan
+
+    candidates = _match(df, "ticker", ticker)
+    if candidates.empty:
+        return []
+
+    out = candidates.copy()
+    if "side" in out.columns:
+        out["_side_norm"] = out["side"].map(_norm_side)
+        out["_side_match"] = out["_side_norm"] == side
+    else:
+        out["_side_match"] = False
+    if "expiry" in out.columns:
+        out["_expiry_norm"] = out["expiry"].map(_norm_expiry)
+        out["_expiry_match"] = out["_expiry_norm"] == expiry
+    else:
+        out["_expiry_match"] = False
+    if "strike" in out.columns and math.isfinite(strike):
+        out["strike_diff"] = (pd.to_numeric(out["strike"], errors="coerce") - strike).abs()
+    else:
+        out["strike_diff"] = math.nan
+
+    exact = out[out["_side_match"] & out["_expiry_match"]].copy()
+    if exact.empty:
+        exact = out[out["_side_match"]].copy()
+    if exact.empty:
+        exact = out
+    exact = _sort_option_matches(exact).head(limit).copy()
+    exact["requested_side"] = side
+    exact["requested_expiry"] = expiry
+    exact["requested_strike"] = strike if math.isfinite(strike) else None
+    exact["match_quality"] = exact.apply(
+        lambda row: (
+            "exact"
+            if bool(row.get("_side_match")) and bool(row.get("_expiry_match"))
+            and float(row.get("strike_diff") or 0) == 0
+            else "closest"
+            if bool(row.get("_side_match")) or bool(row.get("_expiry_match"))
+            else "ticker_only"
+        ),
+        axis=1,
+    )
+    return _frame_records(exact, "requested_option_matches")
+
+
 def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
-    q = query.strip().upper()
+    original_query = query.strip()
+    resolution = resolve_symbol(original_query)
+    q = str(resolution.get("symbol") or original_query).strip().upper()
     generated_at = datetime.now(timezone.utc).isoformat()
     sections: dict[str, list[dict[str, Any]]] = {}
     sources: dict[str, str | None] = {}
@@ -151,10 +270,18 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
         sources[section] = filename if path.exists() else None
         sections[section] = _frame_records(_match(_read_json_rows(path), column, q), section)
 
+    if resolution.get("request"):
+        sections["requested_option_matches"] = match_option_request(
+            resolution.get("request"), data_dir
+        )
+        sources["requested_option_matches"] = sources.get("options")
+
     total_hits = sum(len(rows) for rows in sections.values())
     return {
         "generated_at": generated_at,
-        "query": q,
+        "query": original_query.upper(),
+        "lookup_symbol": q,
+        "resolution": resolution,
         "total_hits": total_hits,
         "sources": sources,
         "sections": sections,
