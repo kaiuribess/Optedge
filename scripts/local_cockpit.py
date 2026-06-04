@@ -210,7 +210,40 @@ def _watchlist_entry_id(resolution: dict[str, Any], query: str) -> str:
     return _safe_id(raw)
 
 
-def load_watchlist(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+def _watchlist_lookup_query(entry: dict[str, Any]) -> str:
+    if entry.get("request"):
+        return str(entry.get("query") or entry.get("symbol") or "").strip()
+    return str(entry.get("symbol") or entry.get("query") or "").strip()
+
+
+def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    out = dict(entry)
+    query = _watchlist_lookup_query(entry)
+    if not query:
+        return out
+    try:
+        report = lookup_symbol(query, data_dir)
+        brief = report.get("brief") or {}
+        best = brief.get("best_idea") or {}
+        open_pos = brief.get("open_positions") or {}
+        out.update({
+            "local_hits": _clean_value(report.get("total_hits")),
+            "best_idea": _clean_value(best.get("label")),
+            "best_status": _clean_value(best.get("trade_status")),
+            "best_confidence": _clean_value(best.get("confidence")),
+            "best_score": _clean_value(best.get("score")),
+            "open_count": _clean_value(open_pos.get("count")),
+            "avg_unrealized_pct": _clean_value(open_pos.get("avg_unrealized_pct")),
+            "max_exit_pressure": _clean_value(open_pos.get("max_exit_pressure")),
+            "warning_count": len(brief.get("risk_warnings") or []),
+            "last_enriched_at": _now_iso(),
+        })
+    except Exception as exc:
+        out["enrichment_error"] = str(exc)[:180]
+    return out
+
+
+def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str, Any]:
     rows = _read_json(_watchlist_file(data_dir))
     if not isinstance(rows, list):
         rows = []
@@ -224,13 +257,16 @@ def load_watchlist(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             continue
         seen.add(item_id)
         cleaned.append(row)
+    entries = [_enrich_watchlist_entry(row, Path(data_dir)) for row in cleaned] if enrich else cleaned
     return {
         "generated_at": _now_iso(),
-        "count": len(cleaned),
-        "entries": cleaned,
+        "count": len(entries),
+        "enriched": enrich,
+        "entries": entries,
         "path": str(_watchlist_file(data_dir)),
         "notes": [
             "Watchlist entries are local research targets only.",
+            "Enriched watchlists read the latest local scan snapshots and open positions.",
             "Run all launches focused scans for resolved symbols; no trades are placed.",
         ],
     }
@@ -1005,14 +1041,18 @@ function watchlistTable(rows) {
       <td><button class="btn watch-lookup-btn" type="button" data-query="${escAttr(r.query || r.symbol || '')}">Lookup</button></td>
       <td><strong>${cell(r.symbol)}</strong></td>
       <td>${cell(r.query)}</td>
-      <td>${cell(r.name)}</td>
-      <td>${cell(r.source)}</td>
+      <td>${cell(r.best_idea || '-')}</td>
+      <td>${cell(r.best_status || '-')}</td>
+      <td>${cell(r.best_confidence || '-')}</td>
+      <td>${cell(r.open_count || 0)}</td>
+      <td>${pct(r.avg_unrealized_pct)}</td>
+      <td>${cell(r.warning_count || 0)}</td>
       <td>${cell(request)}</td>
       <td><button class="btn watch-remove-btn" type="button" data-id="${escAttr(r.id)}">Remove</button></td>
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Query</th><th>Name</th><th>Source</th><th>Request</th><th></th>
+    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {
@@ -1096,9 +1136,10 @@ async function loadExplorer() {
   wireClickableRows($('explorer-results'));
 }
 async function loadWatchlist() {
-  const res = await fetch('/api/watchlist');
+  const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
-  $('watchlist-status-text').textContent = `${data.count || 0} saved research target(s).`;
+  const suffix = data.enriched ? ' with latest local context' : '';
+  $('watchlist-status-text').textContent = `${data.count || 0} saved research target(s)${suffix}.`;
   $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
   wireWatchlistRows();
 }
@@ -1118,8 +1159,7 @@ async function addWatchlist() {
   }
   $('watchlist-query').value = '';
   $('watchlist-status-text').textContent = `${data.entry.symbol} saved to watchlist.`;
-  $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
-  wireWatchlistRows();
+  await loadWatchlist();
 }
 async function removeWatchlist(id) {
   if (!id) return;
@@ -1130,8 +1170,7 @@ async function removeWatchlist(id) {
   });
   const data = await res.json();
   $('watchlist-status-text').textContent = data.removed ? 'Removed watchlist target.' : 'Target was not found.';
-  $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
-  wireWatchlistRows();
+  await loadWatchlist();
 }
 async function runWatchlist() {
   $('watchlist-status-text').textContent = 'Starting focused scans for saved targets...';
@@ -1345,7 +1384,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             ))
             return
         if parsed.path == "/api/watchlist":
-            self._send_json(load_watchlist(self.data_dir))
+            params = parse_qs(parsed.query)
+            enrich = _bool_param(params.get("enrich", ["false"])[0])
+            self._send_json(load_watchlist(self.data_dir, enrich=enrich))
             return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})

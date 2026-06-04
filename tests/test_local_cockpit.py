@@ -271,6 +271,33 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
         assert opt["count"] == 2
         assert opt["entry"]["request"]["ticker"] == "NVDA"
 
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "entry_price": 3.0,
+            "current_mid": 4.5,
+            "unrealized_pct": 0.5,
+        }]), encoding="utf-8")
+        enriched = load_watchlist(data_dir, enrich=True)
+        nvda = [row for row in enriched["entries"] if row["symbol"] == "NVDA"][0]
+        assert nvda["local_hits"] >= 2
+        assert nvda["best_idea"] == "NVDA C 200.0 2026-06-18"
+        assert nvda["best_status"] == "Trade"
+        assert nvda["open_count"] == 1
+        assert nvda["avg_unrealized_pct"] == 0.5
+
         jobs = run_watchlist_scans(data_dir, mode="quick", bankroll=25000, aggressive=True, launch=False)
         assert jobs["count"] == 2
         assert jobs["scan_args"] == ["--minimal", "--aggressive", "--bankroll", "25000.0"]
