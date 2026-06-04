@@ -140,17 +140,30 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
             json.dumps({"open_count": 1}), encoding="utf-8",
         )
         (data_dir / "equity_curve.png").write_bytes(b"bad png")
-        (data_dir / "open_positions.json").write_text(json.dumps([{
-            "ticker": "AAPL",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "entry_price": 2.0,
-            "current_mid": 1.0,
-            "unrealized_pct": -0.50,
-            "latest_exit_pressure": 85,
-            "trade_status": "Trade",
-        }]), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+                "entry_price": 2.0,
+                "current_mid": 1.0,
+                "unrealized_pct": -0.50,
+                "latest_exit_pressure": 85,
+                "trade_status": "Trade",
+            },
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 210,
+                "expiry": "2026-06-18",
+                "entry_price": 1.5,
+                "current_mid": 0.9,
+                "unrealized_pct": -0.40,
+                "latest_exit_pressure": 82,
+                "trade_status": "Trade",
+            },
+        ]), encoding="utf-8")
         (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
         (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
         pd.DataFrame([{
@@ -176,6 +189,12 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         assert queue["rows"][0]["category"] == "data_health"
         assert queue["rows"][0]["priority"] == 100
         assert any(row["category"] == "open_position" and row["symbol"] == "AAPL" for row in queue["rows"])
+        aapl_rows = [
+            row for row in queue["rows"]
+            if row["category"] == "open_position" and row["symbol"] == "AAPL"
+        ]
+        assert len(aapl_rows) == 1
+        assert aapl_rows[0]["grouped_count"] == 2
         assert any(row["category"] == "paper_candidate" and row["symbol"] == "NVDA" for row in queue["rows"])
 
 

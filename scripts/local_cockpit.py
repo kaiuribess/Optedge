@@ -923,6 +923,36 @@ def _queue_item(priority: int, category: str, label: str, detail: str,
     }
 
 
+def _queue_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    category = str(item.get("category") or "")
+    action = str(item.get("action") or "")
+    symbol = str(item.get("symbol") or item.get("query") or "").upper()
+    if symbol:
+        return category, action, symbol
+    return category, action, str(item.get("label") or item.get("detail") or "")
+
+
+def _dedupe_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    counts: dict[tuple[str, str, str], int] = {}
+    for item in items:
+        key = _queue_dedupe_key(item)
+        counts[key] = counts.get(key, 0) + 1
+        current = grouped.get(key)
+        if current is None or int(item.get("priority") or 0) > int(current.get("priority") or 0):
+            grouped[key] = dict(item)
+    out = []
+    for key, item in grouped.items():
+        count = counts.get(key, 1)
+        if count > 1:
+            item["grouped_count"] = count
+            item["detail"] = f"{item.get('detail', '')} ({count} related items grouped.)"
+        else:
+            item["grouped_count"] = 1
+        out.append(item)
+    return out
+
+
 def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, Any]:
     """Prioritize the next research actions from local cockpit state."""
     items: list[dict[str, Any]] = []
@@ -1005,7 +1035,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "continue_monitoring",
         ))
 
-    items = sorted(items, key=lambda item: item["priority"], reverse=True)[:limit]
+    items = sorted(_dedupe_queue_items(items), key=lambda item: item["priority"], reverse=True)[:limit]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(items),
