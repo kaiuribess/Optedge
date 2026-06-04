@@ -7,9 +7,11 @@ dashboard services.
 from __future__ import annotations
 
 import argparse
+import binascii
 import json
 import math
 import mimetypes
+import struct
 import sys
 import webbrowser
 from datetime import datetime, timezone
@@ -116,6 +118,14 @@ def _count_json_rows(path: Path) -> int:
     return len(rows) if isinstance(rows, list) else 0
 
 
+def _direct_open_counts(data_dir: Path) -> dict[str, int]:
+    return {
+        "options": _count_json_rows(data_dir / "open_positions.json"),
+        "shares": _count_json_rows(data_dir / "open_share_positions.json"),
+        "futures": _count_json_rows(data_dir / "open_futures_positions.json"),
+    }
+
+
 def _read_parquet(path: Path | None) -> pd.DataFrame:
     if path is None:
         return pd.DataFrame()
@@ -128,6 +138,59 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
     out = df.copy()
     out["_source_file"] = path.name
     return out
+
+
+def _file_meta(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    stat = path.stat()
+    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+    age_minutes = max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+    return {
+        "name": path.name,
+        "path": str(path),
+        "size_bytes": int(stat.st_size),
+        "modified_at": modified.isoformat(),
+        "age_minutes": round(age_minutes, 1),
+    }
+
+
+def _png_validation_error(path: Path | None) -> str | None:
+    """Return a short error if a PNG is missing/corrupt, otherwise None."""
+    if path is None or not path.exists() or not path.is_file():
+        return "missing"
+    try:
+        data = path.read_bytes()
+    except Exception as exc:
+        return f"could not read: {exc}"
+    if len(data) < 12 or not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "not a PNG"
+    offset = 8
+    saw_iend = False
+    while offset + 8 <= len(data):
+        try:
+            length = struct.unpack(">I", data[offset:offset + 4])[0]
+        except Exception:
+            return "invalid chunk length"
+        chunk_type = data[offset + 4:offset + 8]
+        offset += 8
+        chunk_end = offset + length
+        crc_end = chunk_end + 4
+        if crc_end > len(data):
+            return f"truncated {chunk_type.decode('ascii', errors='replace')} chunk"
+        chunk = data[offset:chunk_end]
+        expected = struct.unpack(">I", data[chunk_end:crc_end])[0]
+        actual = binascii.crc32(chunk_type + chunk) & 0xFFFFFFFF
+        if actual != expected:
+            name = chunk_type.decode("ascii", errors="replace")
+            return f"{name} CRC mismatch"
+        offset = crc_end
+        if chunk_type == b"IEND":
+            saw_iend = True
+            break
+    if not saw_iend:
+        return "missing IEND chunk"
+    return None
 
 
 def _clean_value(value: Any) -> Any:
@@ -731,14 +794,168 @@ def _bool_param(value: Any, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "y", "on"}
 
 
+def _health_check(level: str, label: str, detail: str) -> dict[str, str]:
+    return {"level": level, "label": label, "detail": detail}
+
+
+def _health_status(checks: list[dict[str, str]]) -> str:
+    order = {"ok": 0, "warn": 1, "bad": 2}
+    worst = max((order.get(row.get("level", "ok"), 0) for row in checks), default=0)
+    return {0: "ok", 1: "warn", 2: "bad"}[worst]
+
+
+def _count_duplicate_open_positions(data_dir: Path) -> tuple[int, int]:
+    raw_count = 0
+    deduped_count = 0
+    for filename in POSITION_FILES.values():
+        rows = _read_json(data_dir / filename)
+        if not isinstance(rows, list):
+            continue
+        dict_rows = [row for row in rows if isinstance(row, dict)]
+        raw_count += len(dict_rows)
+        deduped_count += len(_dedupe_position_rows(dict_rows))
+    return raw_count, deduped_count
+
+
+def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Check whether the dashboard-facing artifacts agree with current state."""
+    open_counts = _direct_open_counts(data_dir)
+    total_open = sum(open_counts.values())
+    validation = _read_json(data_dir / "validation_summary.json")
+    aging = _read_json(data_dir / "position_aging_summary.json")
+    checks: list[dict[str, str]] = []
+
+    if isinstance(validation, dict):
+        reported_open = int(_float_value(validation.get("open_positions")))
+        if reported_open == total_open:
+            checks.append(_health_check(
+                "ok", "Validation open count",
+                f"Validation and current open files both show {total_open} open position(s).",
+            ))
+        else:
+            checks.append(_health_check(
+                "bad", "Validation open count mismatch",
+                f"Validation shows {reported_open}, but current open files show {total_open}.",
+            ))
+        asset_map = {"option": "options", "share": "shares", "futures": "futures"}
+        assets = validation.get("assets") if isinstance(validation.get("assets"), dict) else {}
+        for asset_name, count_key in asset_map.items():
+            reported = assets.get(asset_name, {}) if isinstance(assets.get(asset_name), dict) else {}
+            reported_count = int(_float_value(reported.get("open_positions")))
+            direct_count = open_counts[count_key]
+            if reported_count != direct_count:
+                checks.append(_health_check(
+                    "warn", f"{asset_name} open count mismatch",
+                    f"Validation shows {reported_count}; current {count_key} state shows {direct_count}.",
+                ))
+    else:
+        checks.append(_health_check(
+            "warn", "Validation summary missing",
+            "Run python run.py --validation-report to refresh validation_summary.json.",
+        ))
+
+    if isinstance(aging, dict):
+        aging_open = int(_float_value(aging.get("open_count")))
+        level = "ok" if aging_open == total_open else "warn"
+        detail = (
+            f"Position aging and current open files both show {total_open} open position(s)."
+            if aging_open == total_open
+            else f"Position aging shows {aging_open}, but current open files show {total_open}."
+        )
+        checks.append(_health_check(level, "Position aging count", detail))
+    else:
+        checks.append(_health_check(
+            "warn", "Position aging missing",
+            "position_aging_summary.json was not found or could not be read.",
+        ))
+
+    raw_open, deduped_open = _count_duplicate_open_positions(data_dir)
+    duplicate_count = max(0, raw_open - deduped_open)
+    if duplicate_count:
+        checks.append(_health_check(
+            "warn", "Duplicate open positions",
+            f"{duplicate_count} duplicate open position row(s) were detected across lifecycle files.",
+        ))
+    else:
+        checks.append(_health_check(
+            "ok", "Duplicate open positions",
+            f"No duplicate open rows detected across {raw_open} current position row(s).",
+        ))
+
+    equity_curve = artifact_path("equity-curve", data_dir)
+    png_error = _png_validation_error(equity_curve)
+    if png_error is None:
+        checks.append(_health_check("ok", "Equity curve image", "equity_curve.png passed PNG integrity checks."))
+    elif png_error == "missing":
+        checks.append(_health_check("warn", "Equity curve image missing", "No equity curve image is available yet."))
+    else:
+        checks.append(_health_check("bad", "Equity curve image corrupt", f"equity_curve.png appears invalid: {png_error}."))
+
+    latest_dashboard = artifact_path("latest-dashboard", data_dir)
+    validation_path = artifact_path("validation-summary", data_dir)
+    dashboard_meta = _file_meta(latest_dashboard)
+    validation_meta = _file_meta(validation_path)
+    if dashboard_meta:
+        if _float_value(dashboard_meta.get("age_minutes")) > 24 * 60:
+            checks.append(_health_check(
+                "warn", "Dashboard is old",
+                f"Latest dashboard is {dashboard_meta['age_minutes']} minutes old.",
+            ))
+        else:
+            checks.append(_health_check("ok", "Dashboard freshness", f"Latest dashboard: {dashboard_meta['name']}."))
+    else:
+        checks.append(_health_check("warn", "Dashboard missing", "No dashboard_*.html file was found."))
+
+    if dashboard_meta and validation_meta:
+        dash_mtime = Path(dashboard_meta["path"]).stat().st_mtime
+        val_mtime = Path(validation_meta["path"]).stat().st_mtime
+        if dash_mtime - val_mtime > 3600:
+            checks.append(_health_check(
+                "warn", "Validation older than dashboard",
+                "validation_summary.json is more than 60 minutes older than the latest dashboard.",
+            ))
+
+    snapshot_meta: dict[str, Any] = {}
+    for asset_name, pattern in {
+        "options": "top_options_*.parquet",
+        "shares": "top_shares_*.parquet",
+        "futures": "top_futures_*.parquet",
+        "value": "top_value_*.parquet",
+    }.items():
+        meta = _file_meta(_latest_file(data_dir, pattern))
+        snapshot_meta[asset_name] = meta
+        if meta is None:
+            checks.append(_health_check("warn", f"{asset_name} snapshot missing", f"No {pattern} file was found."))
+        elif _float_value(meta.get("age_minutes")) > 24 * 60:
+            checks.append(_health_check("warn", f"{asset_name} snapshot old", f"{meta['name']} is more than 24 hours old."))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": _health_status(checks),
+        "open_counts": open_counts,
+        "total_open": total_open,
+        "duplicate_open_rows": duplicate_count,
+        "checks": checks,
+        "artifacts": {
+            "dashboard": dashboard_meta,
+            "validation_summary": validation_meta,
+            "validation_report": _file_meta(artifact_path("validation-report", data_dir)),
+            "equity_curve": _file_meta(equity_curve),
+        },
+        "snapshots": snapshot_meta,
+        "notes": [
+            "Data health reads the same local files used by the cockpit.",
+            "Open-position counts come directly from current open position JSON files.",
+            "Warnings mean review the artifacts before trusting the displayed analytics.",
+        ],
+    }
+
+
 def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     validation = _read_json(data_dir / "validation_summary.json")
     aging = _read_json(data_dir / "position_aging_summary.json")
-    open_counts = {
-        "options": _count_json_rows(data_dir / "open_positions.json"),
-        "shares": _count_json_rows(data_dir / "open_share_positions.json"),
-        "futures": _count_json_rows(data_dir / "open_futures_positions.json"),
-    }
+    open_counts = _direct_open_counts(data_dir)
+    data_health = build_data_health(data_dir)
     latest = {
         "dashboard": artifact_path("latest-dashboard", data_dir),
         "validation_report": artifact_path("validation-report", data_dir),
@@ -758,6 +975,7 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "total_open": sum(open_counts.values()),
         "validation": validation if isinstance(validation, dict) else {},
         "position_aging": aging if isinstance(aging, dict) else {},
+        "data_health": data_health,
         "latest_artifacts": {k: (str(v) if v else None) for k, v in latest.items()},
         "snapshots": {k: (v.name if v else None) for k, v in snapshots.items()},
         "notes": [
@@ -847,6 +1065,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="tile"><span>Open shares</span><strong id="open-shares">-</strong></div>
     <div class="tile"><span>Open futures</span><strong id="open-futures">-</strong></div>
     <div class="tile risk"><span>Total open</span><strong id="total-open">-</strong></div>
+    <div class="tile"><span>Data health</span><strong id="data-health">-</strong></div>
   </div>
   <div class="actions">
     <a class="btn" href="/artifact/latest-dashboard" target="_blank">Latest dashboard</a>
@@ -856,6 +1075,11 @@ tr.clickable-row:hover { background:#111c31; }
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
+  <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Data health</h2>
+    <div class="muted">Checks whether validation, open positions, snapshots, and images line up before you trust the screen.</div>
+    <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
+  </section>
   <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Open position monitor</h2>
     <div class="muted">Review current lifecycle positions across options, shares, and futures. Click a row to look it up.</div>
@@ -1033,6 +1257,17 @@ function table(rows, clickRows=false) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function healthClass(level) {
+  if (level === 'bad') return 'bad';
+  if (level === 'warn') return 'warn';
+  return 'good';
+}
+function healthTable(health) {
+  const checks = (health && health.checks) || [];
+  if (!checks.length) return '<div class="empty">No health checks available.</div>';
+  const body = checks.map(c => `<tr><td><strong class="${healthClass(c.level)}">${cell(c.level)}</strong></td><td>${cell(c.label)}</td><td>${cell(c.detail)}</td></tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function watchlistTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved research targets yet.</div>';
   const body = rows.map(r => {
@@ -1085,6 +1320,9 @@ async function loadSummary() {
   $('open-shares').textContent = data.open_counts.shares;
   $('open-futures').textContent = data.open_counts.futures;
   $('total-open').textContent = data.total_open;
+  $('data-health').textContent = (data.data_health && data.data_health.status) || '-';
+  $('data-health').className = healthClass((data.data_health && data.data_health.status) || 'ok');
+  $('health-results').innerHTML = healthTable(data.data_health);
   $('notes').innerHTML = (data.notes || []).map(n => `<li>${n}</li>`).join('');
 }
 function jobClass(status) {
@@ -1325,6 +1563,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/summary":
             self._send_json(build_summary(self.data_dir))
+            return
+        if parsed.path == "/api/data-health":
+            self._send_json(build_data_health(self.data_dir))
             return
         if parsed.path == "/api/lookup":
             symbol = parse_qs(parsed.query).get("symbol", [""])[0]

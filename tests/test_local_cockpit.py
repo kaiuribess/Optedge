@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_positions, build_summary, load_watchlist, remove_watchlist_entry,
+    build_data_health, build_positions, build_summary, load_watchlist, remove_watchlist_entry,
     render_cockpit_html, run_watchlist_scans,
 )
 
@@ -43,6 +43,7 @@ def test_cockpit_artifact_path_finds_latest_dashboard():
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
+    assert "Data health" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -66,6 +67,56 @@ def test_cockpit_html_contains_lookup_controls():
     assert "job-match-btn" in html
     assert "Quick scan" in html
     assert "Bankroll override" in html
+
+
+def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        rows = [
+            {
+                "position_id": "opt-1",
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+            },
+            {
+                "position_id": "opt-1",
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+            },
+        ]
+        (data_dir / "open_positions.json").write_text(json.dumps(rows), encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text(
+            json.dumps([{"position_id": "fut-1", "symbol": "CL=F"}]), encoding="utf-8",
+        )
+        (data_dir / "validation_summary.json").write_text(
+            json.dumps({
+                "open_positions": 0,
+                "assets": {
+                    "option": {"open_positions": 0},
+                    "share": {"open_positions": 0},
+                    "futures": {"open_positions": 0},
+                },
+            }),
+            encoding="utf-8",
+        )
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 1}), encoding="utf-8",
+        )
+        (data_dir / "equity_curve.png").write_bytes(b"not a real png")
+
+        health = build_data_health(data_dir)
+        labels = {row["label"]: row for row in health["checks"]}
+        assert health["status"] == "bad"
+        assert health["total_open"] == 3
+        assert labels["Validation open count mismatch"]["level"] == "bad"
+        assert labels["Position aging count"]["level"] == "warn"
+        assert labels["Duplicate open positions"]["level"] == "warn"
+        assert labels["Equity curve image corrupt"]["level"] == "bad"
 
 
 def test_opportunity_explorer_reads_and_filters_latest_snapshots():
@@ -314,8 +365,9 @@ if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
+    test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("7/7 local cockpit tests passed")
+    print("8/8 local cockpit tests passed")
