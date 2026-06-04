@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from engines.fred_public import fred_csv_history
 
 log = logging.getLogger("optedge.yield_curve")
 
@@ -62,7 +63,7 @@ def _fred_series_history(series_id: str, days: int = 90) -> List[Dict]:
     """Fetch daily history for a FRED series."""
     api_key = _get_fred_key()
     if not api_key:
-        return []
+        return fred_csv_history(series_id, days=days, cache_hours=12)
     cache_key = f"fred_curve:{series_id}"
     cached = data_provider.cache_get(cache_key, max_age_sec=12 * 3600)
     if cached is not None:
@@ -92,7 +93,7 @@ def _fred_series_history(series_id: str, days: int = 90) -> List[Dict]:
         return out
     except Exception as e:
         log.debug("FRED curve %s: %s", series_id, e)
-        return []
+        return fred_csv_history(series_id, days=days, cache_hours=12)
 
 
 def _build_curve_panel(days: int = 60) -> pd.DataFrame:

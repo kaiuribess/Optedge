@@ -52,7 +52,7 @@ Optedge is intentionally broad. Each scan can combine many independent signals, 
 | News, earnings, and catalysts | Recent headlines, headline sentiment, news momentum, earnings calendar, days-to-earnings, whisper signals, IV-crush risk, FDA/biotech catalysts, and event proximity |
 | Fundamentals and value | Market cap, valuation, quality, P/E, FCF yield, earnings yield, EV/EBITDA, margin/ROIC proxies, deep value buckets, Graham-style score, and Magic Formula-style quality/value composite |
 | Insider, filings, and Congress | SEC Form 4 parsing, insider buys/sells, officer/director weighting, Finnhub MSPR aggregate insider sentiment, Form 144 planned sales, buybacks, 13F context, cluster-buy detection, and STOCK Act disclosures |
-| Macro, rates, credit, and volatility | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads, FRED data when configured, and volatility regime context |
+| Macro, rates, credit, and volatility | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads, keyless FRED CSV fallback, and volatility regime context |
 | Futures, commodities, and crypto | Equity index, rates, energy, metals, agriculture, crypto futures, trend/range/volatility features, CFTC CoT, EIA energy data, USDA WASDE, and Hyperliquid-style crypto context |
 | Market structure and technicals | Dark-pool/FINRA short-volume proxy, short interest, squeeze setups, sector ETF flows, trend, momentum, RSI, MACD, relative strength, 52-week range position, and volatility regime |
 | Risk, portfolio, and telemetry | Sector concentration, portfolio Greeks, drawdown breaker, research guard report, engine health, empty-engine diagnostics, and engine latency telemetry |

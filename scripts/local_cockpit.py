@@ -910,6 +910,140 @@ def build_positions(
     }
 
 
+def _avg(values: list[float]) -> float | None:
+    clean = [v for v in values if math.isfinite(v)]
+    return (sum(clean) / len(clean)) if clean else None
+
+
+def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Summarize current open-position risk from local lifecycle state."""
+    positions = build_positions(data_dir, asset="all", status="all", limit=2000).get("rows", [])
+    by_asset: dict[str, dict[str, Any]] = {}
+    by_symbol: dict[str, dict[str, Any]] = {}
+    pnl_values: list[float] = []
+    pressure_values: list[float] = []
+    high_pressure = 0
+    attention = 0
+    reprice_trouble = 0
+
+    for row in positions:
+        asset = str(row.get("asset") or "unknown")
+        symbol = str(row.get("ticker_or_symbol") or "-").upper()
+        pnl = _float_value(row.get("pnl_pct"), default=math.nan)
+        pressure = _float_value(row.get("latest_exit_pressure"), default=math.nan)
+        reprice_failed = _float_value(row.get("reprice_failed_count"))
+        has_pnl = math.isfinite(pnl)
+        has_pressure = math.isfinite(pressure)
+        if has_pnl:
+            pnl_values.append(pnl)
+        if has_pressure:
+            pressure_values.append(pressure)
+        if has_pressure and pressure >= 80:
+            high_pressure += 1
+        if row.get("attention"):
+            attention += 1
+        if reprice_failed >= 2:
+            reprice_trouble += 1
+
+        asset_row = by_asset.setdefault(asset, {
+            "asset": asset, "count": 0, "attention_count": 0, "high_pressure_count": 0,
+            "avg_pnl_pct": None, "_pnls": [],
+        })
+        asset_row["count"] += 1
+        if row.get("attention"):
+            asset_row["attention_count"] += 1
+        if has_pressure and pressure >= 80:
+            asset_row["high_pressure_count"] += 1
+        if has_pnl:
+            asset_row["_pnls"].append(pnl)
+
+        sym_row = by_symbol.setdefault(symbol, {
+            "symbol": symbol, "count": 0, "attention_count": 0,
+            "worst_pnl_pct": pnl if has_pnl else None,
+            "max_exit_pressure": pressure if has_pressure else None,
+        })
+        sym_row["count"] += 1
+        if row.get("attention"):
+            sym_row["attention_count"] += 1
+        if has_pnl:
+            current_worst = sym_row.get("worst_pnl_pct")
+            sym_row["worst_pnl_pct"] = pnl if current_worst is None else min(current_worst, pnl)
+        if has_pressure:
+            current_max = sym_row.get("max_exit_pressure")
+            sym_row["max_exit_pressure"] = pressure if current_max is None else max(current_max, pressure)
+
+    asset_rows = []
+    for row in by_asset.values():
+        pnls = row.pop("_pnls", [])
+        row["avg_pnl_pct"] = _avg(pnls)
+        asset_rows.append({k: _clean_value(v) for k, v in row.items()})
+    asset_rows = sorted(asset_rows, key=lambda r: (int(r.get("attention_count") or 0), int(r.get("count") or 0)), reverse=True)
+
+    total = len(positions)
+    concentration = []
+    for row in by_symbol.values():
+        item = dict(row)
+        item["share_of_open_positions"] = (item["count"] / total) if total else 0.0
+        concentration.append({k: _clean_value(v) for k, v in item.items()})
+    concentration = sorted(
+        concentration,
+        key=lambda r: (
+            int(r.get("count") or 0),
+            _float_value(r.get("max_exit_pressure")),
+            abs(_float_value(r.get("worst_pnl_pct"))),
+        ),
+        reverse=True,
+    )[:12]
+
+    worst_positions = sorted(
+        positions,
+        key=lambda r: _float_value(r.get("pnl_pct")),
+    )[:12]
+    exit_pressure_rows = sorted(
+        [row for row in positions if _float_value(row.get("latest_exit_pressure")) > 0],
+        key=lambda r: _float_value(r.get("latest_exit_pressure")),
+        reverse=True,
+    )[:12]
+
+    risk_level = "low"
+    warnings: list[str] = []
+    if high_pressure:
+        risk_level = "high"
+        warnings.append(f"{high_pressure} open position(s) have exit pressure >= 80.")
+    elif attention:
+        risk_level = "medium"
+        warnings.append(f"{attention} open position(s) need attention.")
+    if concentration and _float_value(concentration[0].get("share_of_open_positions")) >= 0.10:
+        risk_level = "high" if risk_level == "high" else "medium"
+        warnings.append(
+            f"{concentration[0]['symbol']} is {concentration[0]['share_of_open_positions'] * 100:.1f}% of open position count."
+        )
+    if reprice_trouble:
+        risk_level = "high" if risk_level == "high" else "medium"
+        warnings.append(f"{reprice_trouble} open position(s) have repeated repricing trouble.")
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "risk_level": risk_level,
+        "total_open": total,
+        "attention_count": attention,
+        "high_exit_pressure_count": high_pressure,
+        "reprice_trouble_count": reprice_trouble,
+        "avg_open_pnl_pct": _clean_value(_avg(pnl_values)),
+        "max_exit_pressure": _clean_value(max(pressure_values) if pressure_values else None),
+        "asset_breakdown": asset_rows,
+        "concentration": concentration,
+        "worst_positions": worst_positions,
+        "highest_exit_pressure": exit_pressure_rows,
+        "warnings": warnings,
+        "notes": [
+            "Risk summary uses current local open position state only.",
+            "Concentration is position-count based when dollar exposure is unavailable.",
+            "This is decision support only; no trades are placed.",
+        ],
+    }
+
+
 def _queue_item(priority: int, category: str, label: str, detail: str,
                 action: str, symbol: Any = None, query: Any = None) -> dict[str, Any]:
     return {
@@ -1380,6 +1514,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="queue-results" class="table-wrap"></div></div>
   </section>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
+    <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
+    <div class="status" id="risk-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="risk-results"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Data health</h2>
     <div class="muted">Checks whether validation, open positions, snapshots, and images line up before you trust the screen.</div>
     <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
@@ -1577,6 +1717,29 @@ function actionQueueTable(rows) {
     return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function riskSummaryHtml(risk) {
+  if (!risk) return '<div class="empty">No risk summary available.</div>';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Risk level</span><strong>${cell(risk.risk_level)}</strong></div>
+    <div class="brief-tile"><span>Total open</span><strong>${cell(risk.total_open)}</strong></div>
+    <div class="brief-tile"><span>Needs attention</span><strong>${cell(risk.attention_count)}</strong></div>
+    <div class="brief-tile"><span>High exit pressure</span><strong>${cell(risk.high_exit_pressure_count)}</strong></div>
+    <div class="brief-tile"><span>Reprice trouble</span><strong>${cell(risk.reprice_trouble_count)}</strong></div>
+    <div class="brief-tile"><span>Avg open P&amp;L</span><strong>${pct(risk.avg_open_pnl_pct)}</strong></div>
+  </div>`;
+  const warnings = (risk.warnings && risk.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Warnings</h4><ul>${risk.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '<div class="empty">No concentration or exit-pressure warnings surfaced.</div>';
+  return `${tiles}${warnings}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Asset breakdown</h4>${table(risk.asset_breakdown || [])}</div>
+      <div class="brief-list"><h4>Concentration</h4>${table(risk.concentration || [], true)}</div>
+    </div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Worst open P&amp;L</h4>${table(risk.worst_positions || [], true)}</div>
+      <div class="brief-list"><h4>Highest exit pressure</h4>${table(risk.highest_exit_pressure || [], true)}</div>
+    </div>`;
 }
 function healthClass(level) {
   if (level === 'bad') return 'bad';
@@ -1786,6 +1949,14 @@ async function loadActionQueue() {
   wireClickableRows($('queue-results'));
   wireActionQueueRows();
 }
+async function loadRiskSummary() {
+  $('risk-status-text').textContent = 'Loading portfolio risk...';
+  const res = await fetch('/api/risk-summary');
+  const data = await res.json();
+  $('risk-status-text').textContent = `Risk level: ${data.risk_level || 'unknown'} across ${data.total_open || 0} open position(s).`;
+  $('risk-results').innerHTML = riskSummaryHtml(data);
+  wireClickableRows($('risk-results'));
+}
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
@@ -1926,7 +2097,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); loadRiskSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -1941,6 +2112,7 @@ loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.er
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
+loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
@@ -1987,6 +2159,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["20"])[0], 20, 1, 100)
             self._send_json(build_action_queue(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/risk-summary":
+            self._send_json(build_risk_summary(self.data_dir))
             return
         if parsed.path == "/api/lookup":
             symbol = parse_qs(parsed.query).get("symbol", [""])[0]

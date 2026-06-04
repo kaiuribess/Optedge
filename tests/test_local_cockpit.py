@@ -11,7 +11,8 @@ if str(ROOT) not in sys.path:
 
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_action_queue, build_data_health, build_positions, build_summary, build_symbol_suggestions,
+    build_action_queue, build_data_health, build_positions, build_risk_summary, build_summary,
+    build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
 )
 
@@ -48,6 +49,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
     assert "routeQueueAction" in html
+    assert "Portfolio risk" in html
+    assert "/api/risk-summary" in html
+    assert "riskSummaryHtml" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -361,6 +365,65 @@ def test_position_monitor_reads_dedupes_and_filters_open_state():
         assert attention["rows"][0]["attention"] is True
 
 
+def test_risk_summary_surfaces_concentration_and_exit_pressure():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 280,
+                "expiry": "2026-06-18",
+                "entry_price": 2.0,
+                "current_mid": 1.0,
+                "latest_exit_pressure": 85,
+                "trade_status": "Trade",
+            },
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 300,
+                "expiry": "2026-06-18",
+                "entry_price": 1.5,
+                "current_mid": 1.8,
+                "latest_exit_pressure": 20,
+                "trade_status": "Trade",
+            },
+        ]), encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text(json.dumps([{
+            "ticker": "NVDA",
+            "entry_price": 100.0,
+            "current_price": 90.0,
+            "latest_exit_pressure": 65,
+            "reprice_failed_count": 2,
+            "trade_status": "Watch",
+        }]), encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text(json.dumps([{
+            "symbol": "CL=F",
+            "direction": "long",
+            "contract": "/MCL",
+            "entry_price": 70.0,
+            "current_price": 73.5,
+            "latest_exit_pressure": 10,
+            "trade_status": "Trade",
+        }]), encoding="utf-8")
+
+        risk = build_risk_summary(data_dir)
+
+        assert risk["total_open"] == 4
+        assert risk["risk_level"] == "high"
+        assert risk["high_exit_pressure_count"] == 1
+        assert risk["reprice_trouble_count"] == 1
+        assert {row["asset"]: row["count"] for row in risk["asset_breakdown"]} == {
+            "option": 2,
+            "share": 1,
+            "futures": 1,
+        }
+        assert risk["concentration"][0]["symbol"] == "AAPL"
+        assert risk["concentration"][0]["count"] == 2
+        assert risk["worst_positions"][0]["ticker_or_symbol"] == "AAPL"
+
+
 def test_paper_candidate_panel_builds_and_writes_filtered_exports():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -496,6 +559,7 @@ if __name__ == "__main__":
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
+    test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("10/10 local cockpit tests passed")
+    print("11/11 local cockpit tests passed")

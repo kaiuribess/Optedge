@@ -4,6 +4,18 @@ Optedge should prefer sources that are free, stable, documented, and allowed for
 
 ## Added Now
 
+### Keyless FRED macro/rates/credit fallback
+
+Status: implemented in `engines/fred_public.py` and used by macro, credit-spread, and yield-curve engines when `FRED_API_KEY` is not configured or the keyed API path fails.
+
+Source:
+- https://fred.stlouisfed.org/graph/fredgraph.csv
+
+Why it helps:
+- Keeps CPI, unemployment, Fed funds, Treasury curve, and HY/IG credit spread context available without another account.
+- Improves futures, shares, value, and risk-regime scoring because macro context no longer disappears when a FRED key is missing.
+- Uses FRED as context and factor evidence, not as a standalone trade trigger.
+
 ### SEC EDGAR recent filings
 
 Status: implemented in `scripts/sec_filings.py` and surfaced in ticker lookup.
@@ -24,6 +36,7 @@ Notes:
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
+- Keyless FRED CSV macro/rates/credit series.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.

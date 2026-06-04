@@ -1,7 +1,7 @@
 """Macro / economic context engine — uses data_provider for hardened sessions.
 
 VIX, ^TNX (10y yield), ^IRX (3m yield), SPY 3M return — all via yfinance.
-Optional FRED for CPI/UNRATE if FRED_API_KEY env var is set.
+Optional FRED API key is preferred, with a keyless FRED CSV fallback for public series.
 """
 from __future__ import annotations
 import logging
@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 import data_provider
 from config import VIX_RISK_OFF, VIX_RISK_ON
+from engines.fred_public import fred_csv_history
 
 log = logging.getLogger("optedge.macro")
 
@@ -50,7 +51,7 @@ def _fred_obs(series_id: str, limit: int = 1) -> List[Dict[str, str]]:
     """Fetch latest N observations for a FRED series. Cached 6h."""
     key = _get_fred_key()
     if not key:
-        return []
+        return fred_csv_history(series_id, days=limit, cache_hours=6)
     cache_key = f"fred:{series_id}:{limit}"
     cached = data_provider.cache_get(cache_key, max_age_sec=6 * 3600)
     if cached is not None:
@@ -66,7 +67,7 @@ def _fred_obs(series_id: str, limit: int = 1) -> List[Dict[str, str]]:
         return obs
     except Exception as e:
         log.debug("FRED %s failed: %s", series_id, e)
-        return []
+        return fred_csv_history(series_id, days=limit, cache_hours=6)
 
 
 def _fred_latest(series_id: str) -> Optional[float]:
