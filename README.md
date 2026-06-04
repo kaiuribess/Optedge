@@ -7,7 +7,7 @@
 
 Optedge is a local research cockpit for options, shares, futures, and value ideas. It combines options-chain analytics, market data, retail attention, news, fundamentals, filings, macro context, sizing rules, lifecycle tracking, validation reports, and guardrails into one local dashboard.
 
-Optedge is built for research and decision support. It does not place trades, connect to a broker, or promise future returns.
+Optedge is built for research and decision support. It does not place trades, store broker credentials, or promise future returns. Broker connectivity, when enabled, is read-only market data.
 
 ## What Optedge Is
 
@@ -37,6 +37,7 @@ Optedge is built for research and decision support. It does not place trades, co
 - Conservative self-learning exit policy that stays inactive until enough evidence exists.
 - Validation report, factor IC summary, equity curve, and position aging output.
 - Interactive local HTML dashboard.
+- Free local cockpit server with symbol lookup across latest scan artifacts.
 - Safe archive/reset tool for generated research artifacts.
 - Research guardrails for sample size, drawdown, spreads, stale models, and data health.
 
@@ -195,6 +196,12 @@ Heston pricing stability check:
 python run.py --heston-stability
 ```
 
+Instant local lookup from the latest scan artifacts:
+
+```bash
+python run.py --lookup NVDA
+```
+
 ## Dashboard
 
 Each scan writes a local dashboard to `data/dashboard_*.html` and opens it in the browser by default unless `--no-open` is used.
@@ -210,6 +217,36 @@ The dashboard includes:
 - TradingView watchlist export.
 
 Generated dashboards are ignored by Git so local research output stays private.
+
+## Local Cockpit
+
+Run a small local browser cockpit without paid services or extra dashboard hosting:
+
+```bash
+python run.py --cockpit
+```
+
+The cockpit opens at `http://127.0.0.1:8765` by default and reads local files from `data/`. It gives you:
+
+- Instant symbol lookup across latest option, share, value, futures, and open-position artifacts.
+- Focused scan launcher: type a ticker, company name, or option idea and click **Run focused scan**.
+- Open option/share/futures counts.
+- Quick links to the latest dashboard, validation report, validation JSON, equity curve, and external paper-order export.
+- A browser UI that does not rerun engines until you choose to run a new scan.
+
+Use another port or keep it from opening a browser:
+
+```bash
+python run.py --cockpit --port 8777 --no-open
+```
+
+For a ticker that is not in the latest artifacts, run a focused scan first:
+
+```bash
+python run.py --universe NVDA --no-open
+```
+
+The cockpit run button does this for you in the background. Company-name resolution uses a free Yahoo search endpoint where available, so `Nvidia` can resolve to `NVDA`; direct tickers always work. Option-style requests such as `AAPL 20260618 C 200` are stored with the focused scan job so the cockpit remembers the contract you wanted checked while the scanner researches the underlying.
 
 ## Archive / Reset
 
@@ -324,10 +361,14 @@ python tests/test_archive.py
 python tests/test_exit_rules.py
 python tests/test_exit_learning.py
 python tests/test_futures_sizing.py
+python tests/test_option_positions.py
 python tests/test_share_positions.py
 python tests/test_futures_positions.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
+python tests/test_lookup_symbol.py
+python tests/test_local_cockpit.py
+python tests/test_ibkr_provider.py
 ```
 
 If `pytest` and `ruff` are installed:

@@ -990,6 +990,23 @@ body.compact .grid { padding: 8px 0; gap: 4px 12px; }
   margin-left: auto; font-size: 12px; color: var(--muted);
   font-family: "JetBrains Mono", monospace;
 }
+.lookup-panel {
+  display: none; margin: -4px 0 16px; padding: 12px 14px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+}
+.lookup-panel.active { display: block; }
+.lookup-title {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  margin-bottom: 8px;
+}
+.lookup-title strong { font-size: 13px; }
+.lookup-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.lookup-hit {
+  border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px;
+  background: var(--panel-2); font-size: 12px; color: var(--text);
+}
+.lookup-hit b { color: var(--accent); }
+.lookup-hit span { color: var(--muted); margin-left: 6px; }
 .control-button {
   cursor: pointer; border: 1px solid var(--border); background: var(--panel-2);
   color: var(--text); border-radius: 6px; padding: 8px 10px;
@@ -1074,6 +1091,7 @@ table.ranked th {
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 table.ranked tbody tr:hover { background: var(--panel-2); }
+table.ranked tbody tr.hidden { display: none; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 
 .appendix {
@@ -1197,10 +1215,11 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
 
         def _asset_row(asset: str, label: str) -> str:
             row = assets.get(asset, {}) or {}
+            overall_row = row.get("overall", {}) or {}
             c = int(row.get("closed_positions") or 0)
             o = int(row.get("open_positions") or 0)
-            wr = row.get("win_rate")
-            ar = row.get("avg_return")
+            wr = row.get("win_rate", overall_row.get("win_rate"))
+            ar = row.get("avg_return", overall_row.get("avg_return"))
             wr_txt = "n/a" if wr is None else f"{float(wr) * 100:.1f}%"
             ar_txt = _fmt_pct(ar, "n/a")
             color = "#10b981" if (ar or 0) >= 0 else "#ef4444"
@@ -2229,6 +2248,13 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     <button class="control-button" type="button" id="reset-filters">Reset</button>
     <span class="stats" id="card-counter">- cards visible</span>
   </div>
+  <div class="lookup-panel" id="lookup-panel" aria-live="polite">
+    <div class="lookup-title">
+      <strong id="lookup-heading">Lookup</strong>
+      <span class="muted" id="lookup-subtitle">Current scan snapshot only</span>
+    </div>
+    <div class="lookup-grid" id="lookup-results"></div>
+  </div>
   <div class="muted" style="font-size:11px; margin-bottom:16px; font-family:'JetBrains Mono', monospace;">
     Bankroll: <strong>${bankroll:,.0f}</strong>  - 
     {'<strong style="color:#f87171">AGGRESSIVE MODE</strong>  -  1/2 Kelly  -  Cap 10% per option / 15% per share' if aggressive else '1/4 Kelly  -  Cap 5% per option / 8% per share'}
@@ -2555,10 +2581,15 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
 _INTERACTIVE_JS = r"""<script>
 (() => {
   const allCards = Array.from(document.querySelectorAll('article.card'));
+  const tableRows = Array.from(document.querySelectorAll('table.ranked tbody tr, table.positions-table tbody tr'));
   const searchBox = document.getElementById('search-box');
   const sortBy = document.getElementById('sort-by');
   const chips = Array.from(document.querySelectorAll('.filter-chip'));
   const counter = document.getElementById('card-counter');
+  const lookupPanel = document.getElementById('lookup-panel');
+  const lookupHeading = document.getElementById('lookup-heading');
+  const lookupSubtitle = document.getElementById('lookup-subtitle');
+  const lookupResults = document.getElementById('lookup-results');
   const densityToggle = document.getElementById('density-toggle');
   const expandAll = document.getElementById('expand-all');
   const collapseAll = document.getElementById('collapse-all');
@@ -2571,9 +2602,49 @@ _INTERACTIVE_JS = r"""<script>
     return isFinite(v) ? v : def;
   }
 
+  function cardLabel(card) {
+    const ticker = (card.dataset.ticker || '').toUpperCase();
+    const side = card.dataset.side || 'idea';
+    const status = (card.dataset.status || 'watch').toLowerCase();
+    const conf = num(card, 'conf', null);
+    const confText = conf === null ? '' : ` conf ${Math.round(conf)}`;
+    return { ticker, side, status, confText };
+  }
+
+  function updateLookup(q, visibleCards, visibleRows) {
+    if (!lookupPanel || !lookupResults) return;
+    if (!q) {
+      lookupPanel.classList.remove('active');
+      lookupResults.innerHTML = '';
+      return;
+    }
+    const cardHits = visibleCards.slice(0, 10).map(card => {
+      const meta = cardLabel(card);
+      return `<button class="lookup-hit" type="button" data-jump="${meta.ticker}"><b>${meta.ticker}</b><span>${meta.side} / ${meta.status}${meta.confText}</span></button>`;
+    });
+    const rowHits = visibleRows.slice(0, Math.max(0, 10 - cardHits.length)).map(row => {
+      const label = (row.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 90);
+      return `<span class="lookup-hit"><b>row</b><span>${label}</span></span>`;
+    });
+    lookupHeading.textContent = `Lookup: ${q}`;
+    lookupSubtitle.textContent = `${visibleCards.length} cards and ${visibleRows.length} table rows matched this scan`;
+    lookupResults.innerHTML = cardHits.concat(rowHits).join('') || '<span class="muted">No matches in this generated dashboard. Run a fresh scan if this ticker is not in the current universe.</span>';
+    lookupPanel.classList.add('active');
+    lookupResults.querySelectorAll('[data-jump]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ticker = btn.dataset.jump;
+        const card = allCards.find(c => (c.dataset.ticker || '').toUpperCase() === ticker && !c.classList.contains('hidden'));
+        if (!card) return;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.animate([{ outlineColor: '#3b82f6' }, { outlineColor: 'transparent' }], { duration: 900 });
+      });
+    });
+  }
+
   function applyFilters() {
     const q = (searchBox.value || '').trim().toUpperCase();
     let visible = 0;
+    const visibleCards = [];
     allCards.forEach(card => {
       const ticker = (card.dataset.ticker || '').toUpperCase();
       const side = card.dataset.side;
@@ -2596,9 +2667,22 @@ _INTERACTIVE_JS = r"""<script>
       if (activeFilter === 'positive-kelly' && kelly <= 0) show = false;
 
       card.classList.toggle('hidden', !show);
-      if (show) visible++;
+      if (show) {
+        visible++;
+        visibleCards.push(card);
+      }
     });
-    counter.textContent = visible + ' card' + (visible !== 1 ? 's' : '') + ' visible';
+    const visibleRows = [];
+    tableRows.forEach(row => {
+      const text = (row.innerText || '').toUpperCase();
+      const show = !q || text.includes(q);
+      row.classList.toggle('hidden', !show);
+      if (show && q) visibleRows.push(row);
+    });
+    counter.textContent = visible + ' card' + (visible !== 1 ? 's' : '') +
+      ' / ' + (q ? visibleRows.length : tableRows.length) + ' row' +
+      ((q ? visibleRows.length : tableRows.length) !== 1 ? 's' : '') + ' visible';
+    updateLookup(q, visibleCards, visibleRows);
   }
 
   function applySort() {

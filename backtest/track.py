@@ -35,6 +35,44 @@ def _ensure_entry_time(df: pd.DataFrame, asof: datetime) -> pd.DataFrame:
     return out
 
 
+def _latest_share_price(ticker: str) -> float:
+    try:
+        import data_provider
+
+        hist = data_provider.get_history(ticker, period="5d")
+        if hist is None or hist.empty or "Close" not in hist.columns:
+            return 0.0
+        close = hist["Close"].dropna()
+        return float(close.iloc[-1]) if not close.empty else 0.0
+    except Exception:
+        return 0.0
+
+
+def _backfill_share_prices(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "ticker" not in df.columns:
+        return df
+    out = df.copy()
+    if "spot" not in out.columns:
+        out["spot"] = 0.0
+    for idx, row in out.iterrows():
+        spot = row.get("spot")
+        try:
+            spot_val = float(spot) if spot is not None and not pd.isna(spot) else 0.0
+        except Exception:
+            spot_val = 0.0
+        if spot_val <= 0:
+            spot_val = _latest_share_price(str(row.get("ticker") or ""))
+            if spot_val > 0:
+                out.at[idx, "spot"] = spot_val
+        if spot_val > 0 and "entry_price" not in out.columns:
+            out["entry_price"] = out["spot"]
+    if "entry_price" not in out.columns:
+        out["entry_price"] = out["spot"]
+    else:
+        out["entry_price"] = out["entry_price"].fillna(out["spot"])
+    return out
+
+
 def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     """Log option signals (calls + puts mixed) to logs/signals_<asof>.parquet."""
     if df is None or df.empty:
@@ -69,19 +107,22 @@ def log_signals_shares(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     LOG_DIR.mkdir(exist_ok=True)
     fp = LOG_DIR / f"shares_signals_{asof.strftime('%Y%m%d_%H%M%S')}.parquet"
     cols = [
-        "ticker", "spot", "share_score", "confidence", "classification", "market_cap",
+        "ticker", "asset", "spot", "entry_price", "share_score", "confidence", "classification", "market_cap",
         "regime", "macro_tilt",
         "stop_pct", "target_pct", "suggested_dollars", "kelly_pct", "ev_pct",
-        "trade_status", "trade_score", "setup_quality_mult",
+        "trade_status", "is_actionable", "trade_score", "setup_quality_mult",
         "research_guard_status", "research_guard_warnings",
+        "rank_score", "fused_score",
         "z_sent", "z_fund", "z_insider", "z_news", "z_earnings", "z_value",
         "z_congress", "z_social", "z_analyst",
         "sentiment_delta", "fund_score", "insider_score", "news_delta", "n_24h",
         "top_headline", "reasoning", "risks", "pred_stock_return_pct",
         "side", "entry_time",
     ]
-    out = _ensure_entry_time(df, asof)
+    out = _backfill_share_prices(_ensure_entry_time(df, asof))
     out["side"] = "shares"
+    if "asset" not in out.columns:
+        out["asset"] = "share"
     keep = [c for c in cols if c in out.columns]
     out[keep].to_parquet(fp, index=False)
     log.info("logged %d share signals to %s", len(out), fp.name)

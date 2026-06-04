@@ -58,6 +58,23 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def market_data_types() -> list[int]:
+    raw = _config("IBKR_MARKET_DATA_TYPES", "1,3,4")
+    if isinstance(raw, (list, tuple)):
+        values = raw
+    else:
+        values = str(raw).replace(";", ",").split(",")
+    out: list[int] = []
+    for value in values:
+        try:
+            data_type = int(str(value).strip())
+        except Exception:
+            continue
+        if data_type in {1, 2, 3, 4} and data_type not in out:
+            out.append(data_type)
+    return out or [1]
+
+
 def _load_ib_insync():
     global _OPTION
     try:
@@ -126,37 +143,46 @@ def quote_option_position(position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         qualified = ib.qualifyContracts(contract)
         if qualified:
             contract = qualified[0]
-        ticker = ib.reqMktData(contract, "", False, False)
-        ib.sleep(float(_config("IBKR_QUOTE_TIMEOUT", 1.5)))
-        bid = _safe_float(getattr(ticker, "bid", None))
-        ask = _safe_float(getattr(ticker, "ask", None))
-        last = _safe_float(getattr(ticker, "last", None))
-        close = _safe_float(getattr(ticker, "close", None))
-        market = _safe_float(ticker.marketPrice()) if hasattr(ticker, "marketPrice") else None
-        try:
-            ib.cancelMktData(contract)
-        except Exception:
-            pass
-        mid = None
-        if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
-            mid = (bid + ask) / 2.0
-        elif market is not None and market > 0:
-            mid = market
-        elif last is not None and last > 0:
-            mid = last
-        elif close is not None and close > 0:
-            mid = close
-        if mid is None or mid <= 0:
-            return None
-        return {
-            "mid": float(mid),
-            "bid": bid,
-            "ask": ask,
-            "last": last,
-            "close": close,
-            "source": "ibkr",
-            "conId": getattr(contract, "conId", None),
-        }
+        timeout = float(_config("IBKR_QUOTE_TIMEOUT", 1.5))
+        for data_type in market_data_types():
+            try:
+                ib.reqMarketDataType(data_type)
+            except Exception:
+                pass
+            ticker = ib.reqMktData(contract, "", False, False)
+            ib.sleep(timeout)
+            bid = _safe_float(getattr(ticker, "bid", None))
+            ask = _safe_float(getattr(ticker, "ask", None))
+            last = _safe_float(getattr(ticker, "last", None))
+            close = _safe_float(getattr(ticker, "close", None))
+            market = _safe_float(ticker.marketPrice()) if hasattr(ticker, "marketPrice") else None
+            try:
+                ib.cancelMktData(contract)
+            except Exception:
+                pass
+            mid = None
+            if bid is not None and ask is not None and bid > 0 and ask > 0 and ask >= bid:
+                mid = (bid + ask) / 2.0
+            elif market is not None and market > 0:
+                mid = market
+            elif last is not None and last > 0:
+                mid = last
+            elif close is not None and close > 0:
+                mid = close
+            if mid is None or mid <= 0:
+                continue
+            source = "ibkr" if data_type == 1 else "ibkr_delayed"
+            return {
+                "mid": float(mid),
+                "bid": bid,
+                "ask": ask,
+                "last": last,
+                "close": close,
+                "source": source,
+                "market_data_type": data_type,
+                "conId": getattr(contract, "conId", None),
+            }
+        return None
     except Exception as exc:
         log.debug("IBKR option quote failed for %s: %s", params, exc)
         return None

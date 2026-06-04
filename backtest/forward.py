@@ -173,7 +173,7 @@ def _process_share(row: pd.Series) -> Dict[str, Any]:
     spot_now = float(hist["Close"].iloc[-1])
     pnl_pct = (spot_now / entry_spot) - 1
     out = {
-        "asset": "shares",
+        "asset": "share",
         "ticker": ticker,
         "contract": ticker,
         "side": "shares",
@@ -183,7 +183,7 @@ def _process_share(row: pd.Series) -> Dict[str, Any]:
         "current_price": round(spot_now, 3),
         "spot_now": round(spot_now, 3),
         "pnl_pct": round(pnl_pct, 4),
-        "pnl_pct_after_slippage": round(_slippage_adjusted_pnl(row, pnl_pct, "shares"), 4),
+        "pnl_pct_after_slippage": round(_slippage_adjusted_pnl(row, pnl_pct, "share"), 4),
         "classification": row.get("classification"),
     }
     return _carry_features(row, out)
@@ -299,7 +299,7 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
         "overall": dict of win_rate, avg_pnl, etc.,
         "by_confidence": DataFrame stratified by conf bucket,
         "by_type": DataFrame stratified by side (call/put/shares/futures),
-        "by_asset": DataFrame stratified by asset class (option/shares/futures),
+        "by_asset": DataFrame stratified by asset class (option/share/futures),
         "risk": dict with sharpe + sortino + drawdown,
         "dropped": {reason: count} for surfacing why signals weren't re-priced,
       }
@@ -371,7 +371,7 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
 
     # Per-asset breakdown
     by_asset = []
-    for asset in ("option", "shares", "futures"):
+    for asset in ("option", "share", "futures"):
         sub = pnl[pnl["asset"] == asset]
         if sub.empty:
             continue

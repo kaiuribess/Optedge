@@ -5,6 +5,7 @@ config_runtime.py
 
 # Caches & outputs
 data/_cache/
+data/cockpit_jobs/
 data/*.parquet
 data/*.json
 data/*.html

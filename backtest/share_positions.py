@@ -68,6 +68,15 @@ def _json_value(value):
     return value
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
 def _latest_price(ticker: str) -> Optional[float]:
     try:
         import data_provider
@@ -100,7 +109,14 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
         ticker = str(s.get("ticker") or "").upper()
         if not ticker or ticker in existing:
             continue
-        entry = float(s.get("spot") or s.get("entry_price") or 0)
+        status = str(s.get("trade_status") or "").strip().lower()
+        if status and status not in {"trade", "buy", "long"}:
+            continue
+        if "is_actionable" in s.index and not bool(s.get("is_actionable")):
+            continue
+        entry = _safe_float(s.get("spot") or s.get("entry_price") or s.get("current_price"), 0.0)
+        if entry <= 0:
+            entry = _safe_float(_latest_price(ticker), 0.0)
         if entry <= 0:
             continue
         stop_pct = float(s.get("stop_pct") if s.get("stop_pct") is not None else -0.08)

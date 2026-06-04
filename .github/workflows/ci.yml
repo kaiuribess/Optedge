@@ -38,10 +38,15 @@ jobs:
           python tests/test_exit_rules.py
           python tests/test_exit_learning.py
           python tests/test_futures_sizing.py
+          python tests/test_option_positions.py
           python tests/test_share_positions.py
           python tests/test_futures_positions.py
           python tests/test_validation_report.py
           python tests/test_external_paper_track.py
+          python tests/test_symbol_resolver.py
+          python tests/test_research_jobs.py
+          python tests/test_lookup_symbol.py
+          python tests/test_local_cockpit.py
           python tests/test_ibkr_provider.py
 
       - name: Lint

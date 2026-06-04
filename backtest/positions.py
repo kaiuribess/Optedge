@@ -49,6 +49,56 @@ TRACKED_SIGNAL_COLS = {
 }
 
 
+def _truthy(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "trade", "actionable"}
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    return bool(value)
+
+
+def _positive_float(value) -> bool:
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    try:
+        return float(value) > 0
+    except Exception:
+        return False
+
+
+def _is_actionable_signal(s: pd.Series) -> bool:
+    """Only promote executable option recommendations into lifecycle tracking."""
+    status = str(s.get("trade_status") or "").strip().lower()
+    if status and status not in {"trade", "buy", "long"}:
+        return False
+
+    guard = str(s.get("research_guard_status") or "").strip().lower()
+    if guard == "blocked" or guard.startswith("blocked"):
+        return False
+
+    if "is_actionable" in s.index and not _truthy(s.get("is_actionable")):
+        return False
+
+    if not _positive_float(s.get("suggested_contracts")):
+        return False
+
+    price = s.get("mid")
+    if price is None:
+        price = s.get("entry_price")
+    if not _positive_float(price):
+        return False
+
+    return _positive_float(s.get("stop_price")) and _positive_float(s.get("target_price"))
+
+
 def _load(path: Path) -> List[Dict]:
     if not path.exists():
         return []
@@ -89,6 +139,8 @@ def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
     existing = {_option_key(r) for r in open_rows}
     added = 0
     for _, s in new_signals.iterrows():
+        if not _is_actionable_signal(s):
+            continue
         key = (s.get("ticker"), s.get("side"), s.get("strike"), s.get("expiry"))
         if key in existing or any(v is None for v in key):
             continue
@@ -107,7 +159,7 @@ def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "entry_time":  asof.isoformat(),
             "fused_score": float(s.get("fused_score") or 0),
             "confidence":  float(s.get("confidence") or 0),
-            "suggested_contracts": int(s.get("suggested_contracts") or 0),
+            "suggested_contracts": int(float(s.get("suggested_contracts") or 0)),
             "trade_status": s.get("trade_status"),
             "research_guard_status": s.get("research_guard_status"),
             "research_guard_warnings": s.get("research_guard_warnings"),
@@ -204,7 +256,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                        if r.get("ticker")})
     if len(tickers) > max_chain_fetch:
         # Prioritize the freshest entries (most recent entry_time)
-        recent_tk = (pd.DataFrame(open_rows)
+        recent_tk = (pd.DataFrame(needs_chain)
                        .sort_values("entry_time", ascending=False)
                        .head(max_chain_fetch)["ticker"].astype(str).str.upper().tolist())
         tickers = list(dict.fromkeys(recent_tk))

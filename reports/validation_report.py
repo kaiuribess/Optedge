@@ -150,7 +150,7 @@ def load_signal_logs() -> pd.DataFrame:
         opts["asset"] = "option"
     shares = _load_parquets(LOGS_DIR / "shares_signals_*.parquet")
     if not shares.empty:
-        shares["asset"] = "shares"
+        shares["asset"] = "share"
         shares["side"] = "shares"
     futures = _load_parquets(LOGS_DIR / "futures_signals_*.parquet")
     if not futures.empty:

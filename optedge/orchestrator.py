@@ -404,6 +404,8 @@ def main():
                     help="Validation report: include stale historical data instead of current model era only")
     ap.add_argument("--heston-stability", action="store_true",
                     help="Run a Heston numerical stability report without enabling Heston")
+    ap.add_argument("--lookup", metavar="SYMBOL",
+                    help="Look up one ticker/symbol in latest local Optedge outputs without rerunning engines")
     ap.add_argument("--bankroll", type=float, default=10000,
                     help="Account size used for Kelly position sizing (default $10K)")
     ap.add_argument("--aggressive", action="store_true",
@@ -436,6 +438,18 @@ def main():
         args.fast_insider = True
 
     # Standalone modes — validation / forward / backtest only
+    if args.lookup:
+        from scripts.lookup_symbol import lookup_symbol, save_lookup
+        log.info("== LOCAL LOOKUP: %s ==", args.lookup.upper())
+        report = lookup_symbol(args.lookup, Path(args.out_dir))
+        paths = save_lookup(report, Path(args.out_dir))
+        print(f"\nLookup report: {paths['html']}")
+        print(f"Lookup JSON: {paths['json']}")
+        print(f"Hits: {report['total_hits']}")
+        if report["total_hits"] == 0:
+            print(f"Tip: run a focused scan with: python run.py --universe {args.lookup.upper()} --no-open")
+        return 0
+
     if args.validation_report:
         from reports.validation_report import (
             EQUITY_PNG, FACTOR_IC_JSON, POSITION_AGING_JSON, REPORT_HTML,
