@@ -127,7 +127,37 @@ def test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels():
             dashboard_build.ROOT = old_root
 
 
+def test_dashboard_performance_prefers_validation_over_forward_telemetry():
+    validation = {
+        "open_positions": 4,
+        "closed_positions": 2,
+        "overall": {
+            "win_rate": 0.5,
+            "avg_return": 0.1,
+            "median_return": 0.05,
+            "profit_factor": 1.2,
+            "max_drawdown": -0.03,
+        },
+        "assets": {
+            "option": {"open_positions": 3, "closed_positions": 2, "win_rate": 0.5, "avg_return": 0.1},
+            "share": {"open_positions": 1, "closed_positions": 0},
+            "futures": {"open_positions": 0, "closed_positions": 0},
+        },
+    }
+    forward = {
+        "signals": object(),
+        "overall": {"n_signals": 999, "win_rate": 0.99, "avg_pnl_pct": 9.99},
+    }
+
+    html = dashboard_build._performance_panel(forward, validation)
+    assert "lifecycle validation" in html
+    assert "<span class=\"val\">4</span>" in html
+    assert "<span class=\"val\">2</span>" in html
+    assert "999" not in html
+
+
 if __name__ == "__main__":
     test_dashboard_helpers_dedupe_and_label_positions()
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
-    print("2/2 dashboard data tests passed")
+    test_dashboard_performance_prefers_validation_over_forward_telemetry()
+    print("3/3 dashboard data tests passed")

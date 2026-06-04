@@ -1259,7 +1259,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     panel aligned with the lifecycle dashboard so a fresh archive/reset does not
     display stale forward-test P&L next to current open positions.
     """
-    if validation_summary and (not forward_summary or forward_summary.get("signals", pd.DataFrame()).empty):
+    if validation_summary:
         assets = validation_summary.get("assets", {}) or {}
         closed = int(validation_summary.get("closed_positions") or 0)
         open_count = int(validation_summary.get("open_positions") or 0)
