@@ -11,8 +11,8 @@ if str(ROOT) not in sys.path:
 
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_data_health, build_positions, build_summary, load_watchlist, remove_watchlist_entry,
-    render_cockpit_html, run_watchlist_scans,
+    build_data_health, build_positions, build_summary, build_symbol_suggestions,
+    load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
 )
 
 
@@ -60,6 +60,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Research brief" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
+    assert "/api/suggestions" in html
+    assert "symbol-suggestions" in html
     assert "Run focused scan" in html
     assert "/api/run-symbol" in html
     assert "/api/job-log" in html
@@ -117,6 +119,51 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["Position aging count"]["level"] == "warn"
         assert labels["Duplicate open positions"]["level"] == "warn"
         assert labels["Equity curve image corrupt"]["level"] == "bad"
+
+
+def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "confidence": 70,
+            "rank_score": 1.0,
+            "trade_status": "Trade",
+            "suggested_dollars": 500,
+        }]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame([{
+            "symbol": "CL=F",
+            "name": "Crude Oil WTI",
+            "direction": "long",
+            "contract": "/MCL",
+            "futures_score": 1.4,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+        (data_dir / "open_futures_positions.json").write_text(
+            json.dumps([{"symbol": "NG=F", "direction": "long", "contract": "/MNG"}]),
+            encoding="utf-8",
+        )
+
+        nvda = build_symbol_suggestions(data_dir, query="nvda")
+        assert any(row["query"] == "NVDA 2026-06-18 C 200" for row in nvda["rows"])
+
+        oil = build_symbol_suggestions(data_dir, query="oil")
+        assert any(row["symbol"] == "CL=F" for row in oil["rows"])
+
+        apple = build_symbol_suggestions(data_dir, query="apple")
+        assert any(row["symbol"] == "AAPL" and row["kind"] == "alias" for row in apple["rows"])
+
+        gas = build_symbol_suggestions(data_dir, query="NG")
+        assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
 
 
 def test_opportunity_explorer_reads_and_filters_latest_snapshots():
@@ -366,8 +413,9 @@ if __name__ == "__main__":
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
+    test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("8/8 local cockpit tests passed")
+    print("9/9 local cockpit tests passed")

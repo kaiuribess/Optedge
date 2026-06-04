@@ -31,7 +31,7 @@ from scripts.export_external_paper_track import build_external_orders, write_out
 from scripts.research_jobs import (
     create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
 )
-from scripts.symbol_resolver import resolve_symbol
+from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol
 
 
 ARTIFACTS = {
@@ -555,6 +555,162 @@ def _opportunity_records(df: pd.DataFrame, asset: str, limit: int) -> list[dict[
     return records
 
 
+def _suggestion_text(row: dict[str, Any]) -> str:
+    return " ".join(str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")).lower()
+
+
+def _add_suggestion(
+    rows: list[dict[str, Any]],
+    seen: set[tuple[str, str, str]],
+    symbol: Any,
+    label: str,
+    kind: str,
+    source: str,
+    query: str | None = None,
+    name: Any = None,
+    score: Any = None,
+    trade_status: Any = None,
+) -> None:
+    clean_symbol = str(symbol or "").strip().upper()
+    clean_label = str(label or clean_symbol).strip()
+    clean_query = str(query or clean_symbol).strip()
+    if not clean_symbol or not clean_query:
+        return
+    key = (kind, clean_symbol, clean_query.upper())
+    if key in seen:
+        return
+    seen.add(key)
+    rows.append({
+        "symbol": clean_symbol,
+        "label": clean_label,
+        "kind": kind,
+        "source": source,
+        "query": clean_query,
+        "name": _clean_value(name),
+        "score": _clean_value(score),
+        "trade_status": _clean_value(trade_status),
+    })
+
+
+def _option_query_from_row(row: pd.Series) -> str:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    expiry = str(row.get("expiry") or "").strip()
+    side_raw = str(row.get("side") or "").strip().upper()
+    side = "C" if side_raw.startswith("C") else "P" if side_raw.startswith("P") else side_raw[:1]
+    strike = row.get("strike")
+    if not ticker or not expiry or not side or strike in (None, ""):
+        return ticker
+    try:
+        strike_text = f"{float(strike):g}"
+    except Exception:
+        strike_text = str(strike)
+    return f"{ticker} {expiry} {side} {strike_text}"
+
+
+def build_symbol_suggestions(
+    data_dir: Path = DATA_DIR,
+    query: str = "",
+    limit: int = 16,
+) -> dict[str, Any]:
+    """Suggest local tickers/contracts from current Optedge artifacts."""
+    query_norm = str(query or "").strip().lower()
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for alias, (symbol, name) in sorted(COMMON_ALIASES.items()):
+        _add_suggestion(
+            rows, seen, symbol, f"{symbol} - {name}", "alias", "built-in aliases",
+            query=symbol, name=name, score=0.25,
+        )
+        if alias != symbol.lower():
+            _add_suggestion(
+                rows, seen, symbol, f"{alias.title()} -> {symbol}", "alias",
+                "built-in aliases", query=alias, name=name, score=0.2,
+            )
+
+    for asset_name, spec in OPPORTUNITY_SPECS.items():
+        df = _read_parquet(_latest_file(data_dir, spec["pattern"]))
+        if df.empty:
+            continue
+        symbol_col = str(spec["symbol_col"])
+        if symbol_col not in df.columns:
+            continue
+        for _, row in df.head(600).iterrows():
+            symbol = row.get(symbol_col)
+            status = row.get("trade_status")
+            score = _opportunity_score(row)
+            if asset_name == "option":
+                option_query = _option_query_from_row(row)
+                side = str(row.get("side") or "").upper()[:1]
+                label = f"{symbol} {side} {row.get('strike', '-')} {row.get('expiry', '-')}"
+                _add_suggestion(
+                    rows, seen, symbol, label, "option", "latest options",
+                    query=option_query, score=score, trade_status=status,
+                )
+            elif asset_name == "futures":
+                name = row.get("name")
+                direction = str(row.get("direction") or "").upper()
+                contract = str(row.get("contract") or "")
+                label = f"{symbol} {direction} {contract}".strip()
+                if name:
+                    label = f"{label} - {name}"
+                _add_suggestion(
+                    rows, seen, symbol, label, "futures", "latest futures",
+                    query=str(symbol or ""), name=name, score=score, trade_status=status,
+                )
+            else:
+                label = f"{symbol} {asset_name}"
+                _add_suggestion(
+                    rows, seen, symbol, label, asset_name, f"latest {asset_name}",
+                    query=str(symbol or ""), score=score, trade_status=status,
+                )
+
+    for asset_name, filename in POSITION_FILES.items():
+        raw = _read_json(data_dir / filename)
+        if not isinstance(raw, list):
+            continue
+        for item in raw[:800]:
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_position(item, asset_name)
+            symbol = normalized.get("ticker_or_symbol")
+            label = normalized.get("position_label") or str(symbol or "")
+            _add_suggestion(
+                rows, seen, symbol, label, f"open_{asset_name}",
+                "open positions", query=str(symbol or ""), score=0.5,
+                trade_status=normalized.get("trade_status"),
+            )
+
+    for item in load_watchlist(data_dir).get("entries", []):
+        _add_suggestion(
+            rows, seen, item.get("symbol"), str(item.get("query") or item.get("symbol") or ""),
+            "watchlist", "research watchlist", query=str(item.get("query") or item.get("symbol") or ""),
+            name=item.get("name"), score=0.75,
+        )
+
+    if query_norm:
+        rows = [row for row in rows if query_norm in _suggestion_text(row)]
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, int, float, str]:
+        text = _suggestion_text(row)
+        symbol = str(row.get("symbol") or "").lower()
+        prefix = 1 if query_norm and (symbol.startswith(query_norm) or text.startswith(query_norm)) else 0
+        exact = 1 if query_norm and (symbol == query_norm or str(row.get("query") or "").lower() == query_norm) else 0
+        return (exact, prefix, _float_value(row.get("score")), str(row.get("symbol") or ""))
+
+    rows = sorted(rows, key=sort_key, reverse=True)[:limit]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "query": query,
+        "count": len(rows),
+        "rows": rows,
+        "notes": [
+            "Suggestions are built from local scan snapshots, open positions, watchlist entries, and built-in aliases.",
+            "Selecting a suggestion only fills or runs local research; it does not place trades.",
+        ],
+    }
+
+
 def _records_from_frame(df: pd.DataFrame, limit: int = 100) -> list[dict[str, Any]]:
     if df is None or df.empty:
         return []
@@ -1047,6 +1203,10 @@ tr.clickable-row:hover { background:#111c31; }
 .job small { color:var(--muted); display:block; margin-top:3px; }
 .logbox { display:none; white-space:pre-wrap; overflow:auto; max-height:280px; border:1px solid var(--border); background:#050812; border-radius:8px; padding:12px; margin-top:10px; font:12px/1.45 Consolas,monospace; color:#cbd5e1; }
 .logbox.active { display:block; }
+.suggestions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; min-height:30px; }
+.suggestion { border:1px solid var(--border); background:#0b1220; border-radius:999px; padding:7px 10px; cursor:pointer; font-size:12px; color:var(--text); }
+.suggestion:hover { border-color:var(--accent); }
+.suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
 @media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } }
 </style>
@@ -1161,6 +1321,7 @@ tr.clickable-row:hover { background:#111c31; }
         <button class="btn" type="button" id="watchlist-run">Run watchlist scans</button>
       </div>
     </div>
+    <div class="suggestions" id="watchlist-suggestions"></div>
     <div class="scan-controls">
       <select id="watchlist-scan-mode" aria-label="Watchlist scan mode">
         <option value="full">Full scan</option>
@@ -1182,6 +1343,7 @@ tr.clickable-row:hover { background:#111c31; }
         <button class="btn" type="button" id="run-symbol">Run focused scan</button>
       </div>
     </div>
+    <div class="suggestions" id="symbol-suggestions"></div>
     <div class="scan-controls">
       <select id="scan-mode" aria-label="Scan mode">
         <option value="full">Full scan</option>
@@ -1267,6 +1429,36 @@ function healthTable(health) {
   if (!checks.length) return '<div class="empty">No health checks available.</div>';
   const body = checks.map(c => `<tr><td><strong class="${healthClass(c.level)}">${cell(c.level)}</strong></td><td>${cell(c.label)}</td><td>${cell(c.detail)}</td></tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function suggestionHtml(rows) {
+  if (!rows || rows.length === 0) return '';
+  return rows.slice(0, 10).map(r => `<button class="suggestion" type="button" data-query="${escAttr(r.query || r.symbol || '')}"><b>${cell(r.symbol)}</b><span>${cell(r.kind)} - ${cell(r.source)}</span></button>`).join('');
+}
+let suggestionTimer = null;
+async function loadSuggestions(inputId, targetId, autoLookup=false) {
+  const q = $(inputId).value.trim();
+  const target = $(targetId);
+  if (!target) return;
+  if (q.length < 1) {
+    target.innerHTML = '';
+    return;
+  }
+  const res = await fetch('/api/suggestions?query=' + encodeURIComponent(q) + '&limit=10');
+  const data = await res.json();
+  target.innerHTML = suggestionHtml(data.rows || []);
+  target.querySelectorAll('.suggestion').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $(inputId).value = btn.dataset.query || '';
+      target.innerHTML = '';
+      if (autoLookup) await lookup();
+    });
+  });
+}
+function scheduleSuggestions(inputId, targetId, autoLookup=false) {
+  clearTimeout(suggestionTimer);
+  suggestionTimer = setTimeout(() => {
+    loadSuggestions(inputId, targetId, autoLookup).catch(() => {});
+  }, 160);
 }
 function watchlistTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved research targets yet.</div>';
@@ -1512,6 +1704,7 @@ async function runSymbol() {
 $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
+$('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
 $('refresh').addEventListener('click', loadSummary);
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
@@ -1522,6 +1715,7 @@ $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 $('watchlist-add').addEventListener('click', addWatchlist);
 $('watchlist-run').addEventListener('click', runWatchlist);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
+$('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchlist-query', 'watchlist-suggestions', false));
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
@@ -1573,6 +1767,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "symbol is required"}, status=400)
                 return
             self._send_json(lookup_symbol(symbol, self.data_dir))
+            return
+        if parsed.path == "/api/suggestions":
+            params = parse_qs(parsed.query)
+            query = params.get("query", [""])[0]
+            limit = _int_param(params.get("limit", ["16"])[0], 16, 1, 50)
+            self._send_json(build_symbol_suggestions(self.data_dir, query=query, limit=limit))
             return
         if parsed.path == "/api/opportunities":
             params = parse_qs(parsed.query)
