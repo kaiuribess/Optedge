@@ -831,6 +831,7 @@ _CSS = """
   --good: #10b981; --warn: #f59e0b; --bad: #ef4444;
 }
 * { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
   margin: 0; background: radial-gradient(circle at 50% -20%, #182230 0, var(--bg) 38%);
   color: var(--text);
@@ -1031,6 +1032,7 @@ body.compact .grid { padding: 8px 0; gap: 4px 12px; }
   background: rgba(9,11,16,.92); backdrop-filter: blur(12px);
   padding: 12px 0; margin-bottom: 16px;
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 12px 28px rgba(0,0,0,.24);
   display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
 }
 .controls input, .controls select {
@@ -1077,7 +1079,17 @@ body.compact .grid { padding: 8px 0; gap: 4px 12px; }
   color: var(--text); border-radius: 6px; padding: 8px 10px;
   font-size: 12px; font-family: inherit;
 }
-.control-button:hover { border-color: var(--focus); }
+.control-button:hover, .control-button.active { border-color: var(--focus); color: #fff; }
+.control-button.primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+.control-separator { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
+.toast {
+  position: fixed; right: 22px; bottom: 22px; z-index: 200;
+  background: #0f172a; border: 1px solid #334155; color: var(--text);
+  border-radius: 8px; padding: 10px 12px; box-shadow: 0 18px 40px rgba(0,0,0,.35);
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease; font-size: 12px;
+}
+.toast.active { opacity: 1; transform: translateY(0); }
 .section-nav {
   display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 14px;
 }
@@ -1185,6 +1197,16 @@ table.ranked tbody tr.hidden { display: none; }
   .controls { top: 0; gap: 8px; }
   .controls input, .controls select { width: 100%; min-width: 0; }
   .controls .stats { margin-left: 0; width: 100%; }
+  .control-separator { display: none; }
+}
+@media print {
+  body { background: #fff; color: #111827; }
+  .wrap { max-width: none; padding: 12px; }
+  .controls, .section-nav, .lookup-panel, .tv-export, .toast { display: none !important; }
+  .card, .panel, section.macro, .stats-panel, .chart-box {
+    break-inside: avoid; box-shadow: none; border-color: #cbd5e1; background: #fff; color: #111827;
+  }
+  .muted, .stat-lab, table.ranked th { color: #475569; }
 }
 .tv-export {
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -2319,12 +2341,20 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     <span class="filter-chip" data-filter="high-conf">conf >= 70</span>
     <span class="filter-chip" data-filter="positive-ev">EV &gt; 0</span>
     <span class="filter-chip" data-filter="positive-kelly">Kelly &gt; 0</span>
+    <span class="control-separator" aria-hidden="true"></span>
+    <button class="control-button" type="button" id="top-only">Top 10</button>
     <button class="control-button" type="button" id="density-toggle">Compact</button>
     <button class="control-button" type="button" id="expand-all">Expand</button>
     <button class="control-button" type="button" id="collapse-all">Collapse</button>
     <button class="control-button" type="button" id="reset-filters">Reset</button>
+    <span class="control-separator" aria-hidden="true"></span>
+    <button class="control-button primary" type="button" id="download-csv">CSV</button>
+    <button class="control-button" type="button" id="download-json">JSON</button>
+    <button class="control-button" type="button" id="copy-visible">Copy tickers</button>
+    <button class="control-button" type="button" id="print-dashboard">Print</button>
     <span class="stats" id="card-counter">- cards visible</span>
   </div>
+  <div class="toast" id="dashboard-toast" role="status" aria-live="polite"></div>
   <div class="lookup-panel" id="lookup-panel" aria-live="polite">
     <div class="lookup-title">
       <strong id="lookup-heading">Lookup</strong>
@@ -2677,10 +2707,32 @@ _INTERACTIVE_JS = r"""<script>
   const lookupSubtitle = document.getElementById('lookup-subtitle');
   const lookupResults = document.getElementById('lookup-results');
   const densityToggle = document.getElementById('density-toggle');
+  const topOnly = document.getElementById('top-only');
   const expandAll = document.getElementById('expand-all');
   const collapseAll = document.getElementById('collapse-all');
   const resetFilters = document.getElementById('reset-filters');
+  const downloadCsv = document.getElementById('download-csv');
+  const downloadJson = document.getElementById('download-json');
+  const copyVisible = document.getElementById('copy-visible');
+  const printDashboard = document.getElementById('print-dashboard');
+  const toastEl = document.getElementById('dashboard-toast');
   let activeFilter = 'all';
+  let limitTop = false;
+
+  try {
+    if (localStorage.getItem('optedge_compact') === '1') {
+      document.body.classList.add('compact');
+      if (densityToggle) densityToggle.textContent = 'Comfortable';
+    }
+  } catch (e) {}
+
+  function toast(message) {
+    if (!toastEl) return;
+    toastEl.textContent = message;
+    toastEl.classList.add('active');
+    clearTimeout(toastEl._timer);
+    toastEl._timer = setTimeout(() => toastEl.classList.remove('active'), 1800);
+  }
 
   function num(card, attr, def) {
     if (def === undefined) def = 0;
@@ -2695,6 +2747,66 @@ _INTERACTIVE_JS = r"""<script>
     const conf = num(card, 'conf', null);
     const confText = conf === null ? '' : ` conf ${Math.round(conf)}`;
     return { ticker, side, status, confText };
+  }
+
+  function visibleCards() {
+    return allCards.filter(card => !card.classList.contains('hidden'));
+  }
+
+  function cardRecord(card) {
+    const ticker = (card.dataset.ticker || '').toUpperCase();
+    const contract = (card.querySelector('.contract-line')?.innerText || '').trim();
+    const title = (card.querySelector('.ticker')?.innerText || ticker).trim();
+    return {
+      ticker,
+      title,
+      asset: card.dataset.side || '',
+      status: card.dataset.status || '',
+      confidence: num(card, 'conf', 0),
+      predicted_return_pct: num(card, 'pred', 0),
+      ev_pct: num(card, 'ev', 0),
+      kelly_pct: num(card, 'kelly', 0),
+      dte: num(card, 'dte', 0),
+      contract,
+      text: (card.innerText || '').replace(/\s+/g, ' ').trim()
+    };
+  }
+
+  function downloadText(filename, mime, text) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function csvEscape(value) {
+    const text = String(value ?? '');
+    return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+  }
+
+  function exportRows(format) {
+    const rows = visibleCards().map(cardRecord);
+    if (!rows.length) {
+      toast('No visible cards to export.');
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    if (format === 'json') {
+      downloadText(`optedge-visible-${stamp}.json`, 'application/json', JSON.stringify(rows, null, 2));
+      toast(`Downloaded ${rows.length} visible ideas as JSON.`);
+      return;
+    }
+    const columns = ['ticker','asset','status','confidence','predicted_return_pct','ev_pct','kelly_pct','dte','contract','title'];
+    const csv = [columns.join(',')]
+      .concat(rows.map(row => columns.map(col => csvEscape(row[col])).join(',')))
+      .join('\n');
+    downloadText(`optedge-visible-${stamp}.csv`, 'text/csv', csv);
+    toast(`Downloaded ${rows.length} visible ideas as CSV.`);
   }
 
   function updateLookup(q, visibleCards, visibleRows) {
@@ -2730,6 +2842,7 @@ _INTERACTIVE_JS = r"""<script>
   function applyFilters() {
     const q = (searchBox.value || '').trim().toUpperCase();
     let visible = 0;
+    let filtered = 0;
     const visibleCards = [];
     allCards.forEach(card => {
       const ticker = (card.dataset.ticker || '').toUpperCase();
@@ -2752,6 +2865,10 @@ _INTERACTIVE_JS = r"""<script>
       if (activeFilter === 'positive-ev' && ev <= 0) show = false;
       if (activeFilter === 'positive-kelly' && kelly <= 0) show = false;
 
+      if (show) {
+        filtered++;
+        if (limitTop && filtered > 10) show = false;
+      }
       card.classList.toggle('hidden', !show);
       if (show) {
         visible++;
@@ -2767,7 +2884,8 @@ _INTERACTIVE_JS = r"""<script>
     });
     counter.textContent = visible + ' card' + (visible !== 1 ? 's' : '') +
       ' / ' + (q ? visibleRows.length : tableRows.length) + ' row' +
-      ((q ? visibleRows.length : tableRows.length) !== 1 ? 's' : '') + ' visible';
+      ((q ? visibleRows.length : tableRows.length) !== 1 ? 's' : '') + ' visible' +
+      (limitTop && filtered > visible ? ` (${filtered - visible} hidden by Top 10)` : '');
     updateLookup(q, visibleCards, visibleRows);
   }
 
@@ -2808,6 +2926,13 @@ _INTERACTIVE_JS = r"""<script>
   densityToggle.addEventListener('click', () => {
     document.body.classList.toggle('compact');
     densityToggle.textContent = document.body.classList.contains('compact') ? 'Comfortable' : 'Compact';
+    try { localStorage.setItem('optedge_compact', document.body.classList.contains('compact') ? '1' : '0'); } catch (e) {}
+  });
+  topOnly.addEventListener('click', () => {
+    limitTop = !limitTop;
+    topOnly.classList.toggle('active', limitTop);
+    topOnly.textContent = limitTop ? 'All visible' : 'Top 10';
+    applyFilters();
   });
   expandAll.addEventListener('click', () => {
     document.querySelectorAll('details.dash-section').forEach(d => d.setAttribute('open', ''));
@@ -2821,8 +2946,46 @@ _INTERACTIVE_JS = r"""<script>
     searchBox.value = '';
     sortBy.value = 'default';
     activeFilter = 'all';
+    limitTop = false;
+    topOnly.classList.remove('active');
+    topOnly.textContent = 'Top 10';
     chips.forEach(c => c.classList.toggle('active', c.dataset.filter === 'all'));
     applyFilters();
+  });
+  downloadCsv.addEventListener('click', () => exportRows('csv'));
+  downloadJson.addEventListener('click', () => exportRows('json'));
+  copyVisible.addEventListener('click', async () => {
+    const tickers = Array.from(new Set(visibleCards().map(c => (c.dataset.ticker || '').toUpperCase()).filter(Boolean)));
+    if (!tickers.length) {
+      toast('No visible tickers to copy.');
+      return;
+    }
+    const text = tickers.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(`Copied ${tickers.length} tickers.`);
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      toast(`Copied ${tickers.length} tickers.`);
+    }
+  });
+  printDashboard.addEventListener('click', () => window.print());
+  window.addEventListener('keydown', (event) => {
+    if (event.key === '/' && document.activeElement !== searchBox) {
+      event.preventDefault();
+      searchBox.focus();
+      searchBox.select();
+    }
+    if (event.key === 'Escape' && document.activeElement === searchBox) {
+      searchBox.value = '';
+      applyFilters();
+      searchBox.blur();
+    }
   });
 
   applyFilters();

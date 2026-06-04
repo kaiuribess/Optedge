@@ -186,9 +186,40 @@ def test_dashboard_engine_panels_are_merged_into_one_section():
     assert "Rolling health" in html
 
 
+def test_dashboard_includes_export_and_workflow_controls():
+    old_root = dashboard_build.ROOT
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "data").mkdir()
+        dashboard_build.ROOT = root
+        try:
+            empty = dashboard_build.pd.DataFrame()
+            html = dashboard_build.render(
+                calls=empty,
+                puts=empty,
+                shares=empty,
+                ranked_options=empty,
+                ranked_shares=empty,
+                macro={},
+                asof=__import__("datetime").datetime(2026, 6, 1),
+                value_plays=empty,
+                futures_plays=empty,
+            ).read_text(encoding="utf-8")
+        finally:
+            dashboard_build.ROOT = old_root
+
+    assert 'id="download-csv"' in html
+    assert 'id="download-json"' in html
+    assert 'id="copy-visible"' in html
+    assert 'id="print-dashboard"' in html
+    assert 'id="top-only"' in html
+    assert "optedge-visible-" in html
+
+
 if __name__ == "__main__":
     test_dashboard_helpers_dedupe_and_label_positions()
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
     test_dashboard_performance_prefers_validation_over_forward_telemetry()
     test_dashboard_engine_panels_are_merged_into_one_section()
-    print("4/4 dashboard data tests passed")
+    test_dashboard_includes_export_and_workflow_controls()
+    print("5/5 dashboard data tests passed")
