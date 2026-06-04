@@ -26,12 +26,15 @@ Source:
 
 Why it helps:
 - Shows recent 8-K, 10-Q, 10-K, S-3, S-1, 424B, ownership, and insider forms during ticker lookup.
+- Adds SEC companyfacts balance-sheet and income/cash-flow context during ticker lookup.
+- Surfaces cash, debt, leverage, margin, and official filing-derived risk flags.
 - Adds filing context without requiring an API key.
 - Keeps SEC filings as context first, not an automatic trade signal.
 
 Notes:
 - Set `SEC_USER_AGENT` if you want a custom SEC-compliant user agent.
 - SEC filings do not replace a fresh Optedge scan; if SEC filings are the only hit, lookup still recommends a focused scan.
+- SEC companyfacts are standardized XBRL facts, so some metrics can be missing or use company-specific reporting choices.
 
 ## Safe Free Sources Already In The Project
 

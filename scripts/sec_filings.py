@@ -14,6 +14,7 @@ import data_provider
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/{doc}"
 SEC_HEADERS = {
     "User-Agent": os.environ.get(
@@ -26,6 +27,63 @@ SEC_HEADERS = {
 IMPORTANT_FORMS = {
     "8-K", "10-Q", "10-K", "S-1", "S-3", "S-8", "424B5", "424B2",
     "DEF 14A", "SC 13D", "SC 13G", "4",
+}
+
+FACT_DEFS = {
+    "cash": {
+        "label": "Cash and equivalents",
+        "concepts": [
+            ("us-gaap", "CashAndCashEquivalentsAtCarryingValue", "USD"),
+            ("us-gaap", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents", "USD"),
+            ("us-gaap", "CashAndCashEquivalentsAndShortTermInvestments", "USD"),
+        ],
+    },
+    "assets": {
+        "label": "Assets",
+        "concepts": [("us-gaap", "Assets", "USD")],
+    },
+    "liabilities": {
+        "label": "Liabilities",
+        "concepts": [("us-gaap", "Liabilities", "USD")],
+    },
+    "equity": {
+        "label": "Stockholders equity",
+        "concepts": [
+            ("us-gaap", "StockholdersEquity", "USD"),
+            ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "USD"),
+        ],
+    },
+    "debt": {
+        "label": "Debt",
+        "concepts": [
+            ("us-gaap", "LongTermDebtAndFinanceLeaseObligationsCurrentAndNoncurrent", "USD"),
+            ("us-gaap", "LongTermDebtCurrent", "USD"),
+            ("us-gaap", "LongTermDebtNoncurrent", "USD"),
+            ("us-gaap", "LongTermDebt", "USD"),
+        ],
+    },
+    "revenue": {
+        "label": "Revenue",
+        "concepts": [
+            ("us-gaap", "Revenues", "USD"),
+            ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax", "USD"),
+            ("us-gaap", "SalesRevenueNet", "USD"),
+        ],
+    },
+    "net_income": {
+        "label": "Net income",
+        "concepts": [("us-gaap", "NetIncomeLoss", "USD")],
+    },
+    "operating_cash_flow": {
+        "label": "Operating cash flow",
+        "concepts": [("us-gaap", "NetCashProvidedByUsedInOperatingActivities", "USD")],
+    },
+    "shares_outstanding": {
+        "label": "Shares outstanding",
+        "concepts": [
+            ("dei", "EntityCommonStockSharesOutstanding", "shares"),
+        ],
+    },
 }
 
 
@@ -98,6 +156,69 @@ def _filing_signal(form: str) -> str:
     return "filing_review"
 
 
+def _as_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out else None
+
+
+def _latest_fact(companyfacts: dict[str, Any], concepts: list[tuple[str, str, str]]) -> dict[str, Any] | None:
+    facts = companyfacts.get("facts", {}) if isinstance(companyfacts, dict) else {}
+    candidates = []
+    for taxonomy, concept, unit in concepts:
+        concept_obj = ((facts.get(taxonomy) or {}).get(concept) or {})
+        units = concept_obj.get("units") or {}
+        rows = units.get(unit) or []
+        for row in rows:
+            value = _as_float(row.get("val"))
+            if value is None:
+                continue
+            candidates.append({
+                "value": value,
+                "period_end": row.get("end"),
+                "filed": row.get("filed"),
+                "form": row.get("form"),
+                "fy": row.get("fy"),
+                "fp": row.get("fp"),
+                "unit": unit,
+                "taxonomy": taxonomy,
+                "concept": concept,
+            })
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda row: (str(row.get("filed") or ""), str(row.get("period_end") or "")),
+        reverse=True,
+    )[0]
+
+
+def _ratio(num: float | None, denom: float | None) -> float | None:
+    if num is None or denom is None or denom == 0:
+        return None
+    return num / denom
+
+
+def _companyfacts_watch_signals(metrics: dict[str, float | None]) -> list[str]:
+    signals = []
+    if (metrics.get("liabilities_to_assets") or 0.0) >= 0.85:
+        signals.append("high_liabilities_to_assets_watch")
+    if (metrics.get("debt_to_assets") or 0.0) >= 0.60:
+        signals.append("high_debt_load_watch")
+    cash_to_debt = metrics.get("cash_to_debt")
+    if cash_to_debt is not None and cash_to_debt < 0.25:
+        signals.append("low_cash_vs_debt_watch")
+    net_income = metrics.get("net_income")
+    if net_income is not None and net_income < 0:
+        signals.append("unprofitable_watch")
+    op_cf = metrics.get("operating_cash_flow")
+    if op_cf is not None and op_cf < 0:
+        signals.append("negative_operating_cash_flow_watch")
+    return signals
+
+
 def recent_filings_for_symbol(symbol: str, limit: int = 8) -> dict[str, Any]:
     ticker = str(symbol or "").upper().strip()
     mapping = _ticker_map().get(ticker)
@@ -151,4 +272,66 @@ def recent_filings_for_symbol(symbol: str, limit: int = 8) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(rows),
         "rows": rows,
+    }
+
+
+def companyfacts_for_symbol(symbol: str, limit: int = 12) -> dict[str, Any]:
+    ticker = str(symbol or "").upper().strip()
+    mapping = _ticker_map().get(ticker)
+    if not mapping:
+        return {
+            "symbol": ticker,
+            "source": "sec_companyfacts",
+            "count": 0,
+            "rows": [],
+            "metrics": {},
+            "watch_signals": [],
+            "error": "ticker not found in SEC company_tickers.json",
+        }
+
+    cik = str(mapping["cik"])
+    data = _sec_get_json(
+        SEC_COMPANYFACTS_URL.format(cik=cik),
+        f"sec_companyfacts:{cik}",
+        12 * 3600,
+        timeout=12.0,
+    )
+    rows = []
+    metrics: dict[str, float | None] = {}
+    for key, spec in FACT_DEFS.items():
+        fact = _latest_fact(data, spec["concepts"])
+        if not fact:
+            metrics[key] = None
+            continue
+        metrics[key] = fact["value"]
+        rows.append({
+            "ticker": ticker,
+            "company_name": mapping.get("name"),
+            "metric": key,
+            "label": spec["label"],
+            "value": fact["value"],
+            "unit": fact.get("unit"),
+            "period_end": fact.get("period_end"),
+            "filed": fact.get("filed"),
+            "form": fact.get("form"),
+            "concept": fact.get("concept"),
+        })
+
+    metrics["liabilities_to_assets"] = _ratio(metrics.get("liabilities"), metrics.get("assets"))
+    metrics["debt_to_assets"] = _ratio(metrics.get("debt"), metrics.get("assets"))
+    metrics["cash_to_debt"] = _ratio(metrics.get("cash"), metrics.get("debt"))
+    metrics["net_margin"] = _ratio(metrics.get("net_income"), metrics.get("revenue"))
+    metrics["cash_per_share"] = _ratio(metrics.get("cash"), metrics.get("shares_outstanding"))
+    watch_signals = _companyfacts_watch_signals(metrics)
+
+    return {
+        "symbol": ticker,
+        "cik": cik,
+        "company_name": mapping.get("name"),
+        "source": "sec_companyfacts",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(rows[:limit]),
+        "rows": rows[:limit],
+        "metrics": metrics,
+        "watch_signals": watch_signals,
     }

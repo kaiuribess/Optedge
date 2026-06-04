@@ -19,6 +19,14 @@ lookup_module.recent_filings_for_symbol = lambda symbol, limit=8: {
     "count": 0,
     "rows": [],
 }
+lookup_module.companyfacts_for_symbol = lambda symbol, limit=12: {
+    "symbol": symbol,
+    "source": "sec_companyfacts",
+    "count": 0,
+    "rows": [],
+    "metrics": {},
+    "watch_signals": [],
+}
 
 
 def test_resolver_prefers_local_aliases_for_common_company_names_and_futures():
@@ -258,6 +266,75 @@ def test_lookup_includes_recent_sec_filings_when_available():
         assert "Recent SEC filings" in render_html(report)
 
 
+def test_lookup_includes_sec_companyfacts_when_available():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old = lookup_module.companyfacts_for_symbol
+        try:
+            lookup_module.companyfacts_for_symbol = lambda symbol, limit=12: {
+                "symbol": symbol,
+                "source": "sec_companyfacts",
+                "count": 3,
+                "rows": [
+                    {
+                        "ticker": symbol,
+                        "company_name": "NVIDIA CORP",
+                        "metric": "cash",
+                        "label": "Cash and equivalents",
+                        "value": 10_000_000_000,
+                        "unit": "USD",
+                        "period_end": "2026-04-30",
+                        "filed": "2026-05-20",
+                        "form": "10-Q",
+                    },
+                    {
+                        "ticker": symbol,
+                        "company_name": "NVIDIA CORP",
+                        "metric": "debt",
+                        "label": "Debt",
+                        "value": 5_000_000_000,
+                        "unit": "USD",
+                        "period_end": "2026-04-30",
+                        "filed": "2026-05-20",
+                        "form": "10-Q",
+                    },
+                    {
+                        "ticker": symbol,
+                        "company_name": "NVIDIA CORP",
+                        "metric": "net_income",
+                        "label": "Net income",
+                        "value": -100_000_000,
+                        "unit": "USD",
+                        "period_end": "2026-04-30",
+                        "filed": "2026-05-20",
+                        "form": "10-Q",
+                    },
+                ],
+                "metrics": {
+                    "cash": 10_000_000_000,
+                    "debt": 5_000_000_000,
+                    "assets": 50_000_000_000,
+                    "cash_to_debt": 2.0,
+                    "debt_to_assets": 0.10,
+                    "net_margin": -0.05,
+                },
+                "watch_signals": ["unprofitable_watch"],
+            }
+            report = lookup_symbol("NVDA", data_dir)
+        finally:
+            lookup_module.companyfacts_for_symbol = old
+
+        facts = report["sections"]["sec_companyfacts"]
+        assert len(facts) == 3
+        assert report["sources"]["sec_companyfacts"] == "SEC EDGAR companyfacts API"
+        assert report["brief"]["sec_fundamentals"]["cash_to_debt"] == 2.0
+        assert "unprofitable_watch" in report["brief"]["sec_fundamentals"]["watch_signals"]
+        assert "SEC companyfacts: unprofitable_watch" in report["brief"]["risk_warnings"]
+        html = render_html(report)
+        assert "SEC cash/debt" in html
+        assert "2.00x" in html
+
+
 def test_lookup_action_prioritizes_open_exit_pressure():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -297,5 +374,6 @@ if __name__ == "__main__":
     test_option_request_falls_back_to_closest_strike()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
     test_lookup_includes_recent_sec_filings_when_available()
+    test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
-    print("10/10 lookup tests passed")
+    print("11/11 lookup tests passed")

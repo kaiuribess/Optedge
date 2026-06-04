@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from scripts.sec_filings import recent_filings_for_symbol
+from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
 
 DATA_DIR = ROOT / "data"
@@ -83,6 +83,10 @@ DISPLAY_COLUMNS = {
     "recent_sec_filings": [
         "ticker", "company_name", "form", "filing_date", "report_date",
         "filing_signal", "description", "url",
+    ],
+    "sec_companyfacts": [
+        "ticker", "company_name", "metric", "label", "value", "unit",
+        "period_end", "filed", "form", "concept",
     ],
 }
 
@@ -370,6 +374,10 @@ def _research_brief(
         + sections.get("open_futures", [])
     )
     sec_rows = sections.get("recent_sec_filings", [])
+    sec_facts = sections.get("sec_companyfacts", [])
+    sec_fact_report = sections.get("_sec_companyfacts_report", [])
+    sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
+    sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
     validation = _load_json_obj(data_dir / "validation_summary.json")
     guard = _load_json_obj(data_dir / "research_guard_report.json") or _load_json_obj(data_dir / "research_guard.json")
     warnings = []
@@ -378,6 +386,7 @@ def _research_brief(
         str(w.get("message", w)) for w in (guard.get("warnings") or [])[:3]
         if isinstance(w, (dict, str))
     )
+    warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     best_idea = _best_idea_dict(best_section, best)
     open_summary = _open_position_summary(open_rows)
@@ -395,6 +404,18 @@ def _research_brief(
                 str(row.get("filing_signal")) for row in sec_rows
                 if row.get("filing_signal")
             ))[:5],
+        },
+        "sec_fundamentals": {
+            "count": len(sec_facts),
+            "watch_signals": sec_fact_signals[:5],
+            "cash": sec_metrics.get("cash"),
+            "debt": sec_metrics.get("debt"),
+            "assets": sec_metrics.get("assets"),
+            "liabilities_to_assets": sec_metrics.get("liabilities_to_assets"),
+            "debt_to_assets": sec_metrics.get("debt_to_assets"),
+            "cash_to_debt": sec_metrics.get("cash_to_debt"),
+            "net_margin": sec_metrics.get("net_margin"),
+            "cash_per_share": sec_metrics.get("cash_per_share"),
         },
         "top_positive_factors": drivers["positive"],
         "top_negative_factors": drivers["negative"],
@@ -546,6 +567,15 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         except Exception as exc:
             sections["recent_sec_filings"] = []
             sources["recent_sec_filings"] = f"SEC EDGAR unavailable: {str(exc)[:120]}"
+        try:
+            facts_report = companyfacts_for_symbol(q, limit=12)
+            sections["sec_companyfacts"] = facts_report.get("rows", [])
+            sections["_sec_companyfacts_report"] = [facts_report]
+            sources["sec_companyfacts"] = "SEC EDGAR companyfacts API"
+        except Exception as exc:
+            sections["sec_companyfacts"] = []
+            sections["_sec_companyfacts_report"] = []
+            sources["sec_companyfacts"] = f"SEC companyfacts unavailable: {str(exc)[:120]}"
 
     if resolution.get("request"):
         sections["requested_option_matches"] = match_option_request(
@@ -553,11 +583,12 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         )
         sources["requested_option_matches"] = sources.get("options")
 
+    public_sections = {name: rows for name, rows in sections.items() if not name.startswith("_")}
     local_hit_count = sum(
-        len(rows) for name, rows in sections.items()
-        if name != "recent_sec_filings"
+        len(rows) for name, rows in public_sections.items()
+        if not name.startswith("sec_") and name != "recent_sec_filings"
     )
-    total_hits = sum(len(rows) for rows in sections.values())
+    total_hits = sum(len(rows) for rows in public_sections.values())
     brief = _research_brief(q, resolution, raw_matches, sections, data_dir, local_hit_count)
     return {
         "generated_at": generated_at,
@@ -567,7 +598,7 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         "brief": brief,
         "total_hits": total_hits,
         "sources": sources,
-        "sections": sections,
+        "sections": public_sections,
         "notes": [
             "Lookup uses latest local Optedge snapshots only.",
             "Run a fresh scan with --universe TICKER if the ticker is missing or stale.",
@@ -597,6 +628,25 @@ def _fmt_brief_pct(value: Any) -> str:
     return "-" if val is None else f"{val * 100:+.1f}%"
 
 
+def _fmt_brief_ratio(value: Any) -> str:
+    val = _float_value(value)
+    return "-" if val is None else f"{val:.2f}x"
+
+
+def _fmt_brief_money(value: Any) -> str:
+    val = _float_value(value)
+    if val is None:
+        return "-"
+    abs_val = abs(val)
+    if abs_val >= 1_000_000_000:
+        return f"${val / 1_000_000_000:.1f}B"
+    if abs_val >= 1_000_000:
+        return f"${val / 1_000_000:.1f}M"
+    if abs_val >= 1_000:
+        return f"${val / 1_000:.1f}K"
+    return f"${val:.0f}"
+
+
 def _render_brief(brief: dict[str, Any]) -> str:
     if not brief:
         return ""
@@ -605,6 +655,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
+    sec_fund = brief.get("sec_fundamentals") or {}
     positives = "".join(
         f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
         for x in brief.get("top_positive_factors", [])[:5]
@@ -623,6 +674,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
         f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6]
     ) or "<li>No action-specific reasons surfaced.</li>"
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
+    sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
     return f"""
 <section>
   <h2>Research Brief</h2>
@@ -635,6 +687,11 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
     <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get('count') or 0)}</strong></div>
     <div><span class="muted">SEC watch signals</span><strong>{html.escape(sec_signals)}</strong></div>
+    <div><span class="muted">SEC cash</span><strong>{_fmt_brief_money(sec_fund.get('cash'))}</strong></div>
+    <div><span class="muted">SEC cash/debt</span><strong>{_fmt_brief_ratio(sec_fund.get('cash_to_debt'))}</strong></div>
+    <div><span class="muted">SEC debt/assets</span><strong>{_fmt_brief_pct(sec_fund.get('debt_to_assets'))}</strong></div>
+    <div><span class="muted">SEC net margin</span><strong>{_fmt_brief_pct(sec_fund.get('net_margin'))}</strong></div>
+    <div><span class="muted">SEC fact flags</span><strong>{html.escape(sec_fund_signals)}</strong></div>
     <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get('avg_unrealized_pct'))}</strong></div>
     <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
     <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get('avg_return'))}</strong></div>

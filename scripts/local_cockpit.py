@@ -1661,6 +1661,19 @@ function pct(v) {
   const n = Number(v);
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '-';
 }
+function ratio(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? `${n.toFixed(2)}x` : '-';
+}
+function moneyShort(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '-';
+  const a = Math.abs(n);
+  if (a >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  if (a >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (a >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
+  return `$${n.toFixed(0)}`;
+}
 function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
@@ -1668,6 +1681,7 @@ function briefHtml(brief) {
   const val = brief.validation || {};
   const action = brief.research_action || {};
   const sec = brief.recent_sec_filings || {};
+  const secFund = brief.sec_fundamentals || {};
   const source = brief.resolution_source || '-';
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
@@ -1685,6 +1699,10 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
         <div class="brief-tile"><span>Recent SEC filings</span><strong>${cell(sec.count || 0)}</strong></div>
+        <div class="brief-tile"><span>SEC cash</span><strong>${moneyShort(secFund.cash)}</strong></div>
+        <div class="brief-tile"><span>SEC cash/debt</span><strong>${ratio(secFund.cash_to_debt)}</strong></div>
+        <div class="brief-tile"><span>SEC debt/assets</span><strong>${pct(secFund.debt_to_assets)}</strong></div>
+        <div class="brief-tile"><span>SEC net margin</span><strong>${pct(secFund.net_margin)}</strong></div>
         <div class="brief-tile"><span>Avg unrealized</span><strong>${pct(open.avg_unrealized_pct)}</strong></div>
         <div class="brief-tile"><span>Validation win rate</span><strong>${pct(val.win_rate)}</strong></div>
         <div class="brief-tile"><span>Validation avg return</span><strong>${pct(val.avg_return)}</strong></div>
