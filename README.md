@@ -384,6 +384,7 @@ ruff check . --select E9,F63,F7,F82
 - [Architecture](docs/ARCHITECTURE.md)
 - [Validation](docs/VALIDATION.md)
 - [Data Sources](docs/DATA_SOURCES.md)
+- [Free Data Roadmap](docs/FREE_DATA_ROADMAP.md)
 - [Risk Model](docs/RISK_MODEL.md)
 - [Factor Library](docs/FACTOR_LIBRARY.md)
 - [Third-Party Forward Testing](docs/THIRD_PARTY_FORWARD_TESTING.md)

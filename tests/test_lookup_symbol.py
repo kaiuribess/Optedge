@@ -9,8 +9,16 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import scripts.lookup_symbol as lookup_module
 from scripts.lookup_symbol import lookup_symbol, match_option_request, render_html, save_lookup
 from scripts.symbol_resolver import resolve_symbol
+
+lookup_module.recent_filings_for_symbol = lambda symbol, limit=8: {
+    "symbol": symbol,
+    "source": "sec_edgar_submissions",
+    "count": 0,
+    "rows": [],
+}
 
 
 def test_resolver_prefers_local_aliases_for_common_company_names_and_futures():
@@ -204,6 +212,52 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert "Research Brief" in render_html(report)
 
 
+def test_lookup_includes_recent_sec_filings_when_available():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old = lookup_module.recent_filings_for_symbol
+        try:
+            lookup_module.recent_filings_for_symbol = lambda symbol, limit=8: {
+                "symbol": symbol,
+                "source": "sec_edgar_submissions",
+                "count": 2,
+                "rows": [
+                    {
+                        "ticker": symbol,
+                        "company_name": "NVIDIA CORP",
+                        "form": "8-K",
+                        "filing_date": "2026-06-01",
+                        "report_date": "2026-06-01",
+                        "filing_signal": "material_event_review",
+                        "description": "Current report",
+                        "url": "https://www.sec.gov/example",
+                    },
+                    {
+                        "ticker": symbol,
+                        "company_name": "NVIDIA CORP",
+                        "form": "10-Q",
+                        "filing_date": "2026-05-20",
+                        "report_date": "2026-04-30",
+                        "filing_signal": "fundamental_update_review",
+                        "description": "Quarterly report",
+                        "url": "https://www.sec.gov/example2",
+                    },
+                ],
+            }
+            report = lookup_symbol("NVDA", data_dir)
+        finally:
+            lookup_module.recent_filings_for_symbol = old
+
+        filings = report["sections"]["recent_sec_filings"]
+        assert len(filings) == 2
+        assert filings[0]["form"] == "8-K"
+        assert report["sources"]["recent_sec_filings"] == "SEC EDGAR submissions API"
+        assert report["brief"]["recent_sec_filings"]["count"] == 2
+        assert "material_event_review" in report["brief"]["recent_sec_filings"]["watch_signals"]
+        assert report["brief"]["research_action"]["action"] == "run_focused_scan"
+        assert "Recent SEC filings" in render_html(report)
+
+
 def test_lookup_action_prioritizes_open_exit_pressure():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -242,5 +296,6 @@ if __name__ == "__main__":
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
+    test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
-    print("9/9 lookup tests passed")
+    print("10/10 lookup tests passed")

@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
+from scripts.sec_filings import recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
 
 DATA_DIR = ROOT / "data"
@@ -78,6 +79,10 @@ DISPLAY_COLUMNS = {
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
         "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "top_headline",
+    ],
+    "recent_sec_filings": [
+        "ticker", "company_name", "form", "filing_date", "report_date",
+        "filing_signal", "description", "url",
     ],
 }
 
@@ -355,6 +360,7 @@ def _research_brief(
     raw_matches: dict[str, pd.DataFrame],
     sections: dict[str, list[dict[str, Any]]],
     data_dir: Path,
+    local_hit_count: int,
 ) -> dict[str, Any]:
     best_section, best = _best_row(raw_matches)
     drivers = _factor_drivers(best)
@@ -363,6 +369,7 @@ def _research_brief(
         + sections.get("open_shares", [])
         + sections.get("open_futures", [])
     )
+    sec_rows = sections.get("recent_sec_filings", [])
     validation = _load_json_obj(data_dir / "validation_summary.json")
     guard = _load_json_obj(data_dir / "research_guard_report.json") or _load_json_obj(data_dir / "research_guard.json")
     warnings = []
@@ -374,7 +381,6 @@ def _research_brief(
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     best_idea = _best_idea_dict(best_section, best)
     open_summary = _open_position_summary(open_rows)
-    total_hits = sum(len(rows) for rows in sections.values())
     brief = {
         "symbol": symbol,
         "resolved_from": resolution.get("query"),
@@ -382,11 +388,19 @@ def _research_brief(
         "request": resolution.get("request"),
         "best_idea": best_idea,
         "open_positions": open_summary,
+        "recent_sec_filings": {
+            "count": len(sec_rows),
+            "latest_forms": [row.get("form") for row in sec_rows[:5]],
+            "watch_signals": list(dict.fromkeys(
+                str(row.get("filing_signal")) for row in sec_rows
+                if row.get("filing_signal")
+            ))[:5],
+        },
         "top_positive_factors": drivers["positive"],
         "top_negative_factors": drivers["negative"],
         "risk_warnings": deduped_warnings,
         "research_action": _research_action(
-            symbol, best_idea, open_summary, deduped_warnings, total_hits
+            symbol, best_idea, open_summary, deduped_warnings, local_hit_count
         ),
         "validation": {
             "scope": validation.get("validation_scope"),
@@ -503,7 +517,7 @@ def match_option_request(
     return _frame_records(exact, "requested_option_matches")
 
 
-def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
+def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = True) -> dict[str, Any]:
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
     q = str(resolution.get("symbol") or original_query).strip().upper()
@@ -524,14 +538,27 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
         sources[section] = filename if path.exists() else None
         sections[section] = _frame_records(_match(_read_json_rows(path), column, q), section)
 
+    if include_sec and not q.endswith("=F") and not q.startswith("^"):
+        try:
+            sec_report = recent_filings_for_symbol(q, limit=8)
+            sections["recent_sec_filings"] = sec_report.get("rows", [])
+            sources["recent_sec_filings"] = "SEC EDGAR submissions API"
+        except Exception as exc:
+            sections["recent_sec_filings"] = []
+            sources["recent_sec_filings"] = f"SEC EDGAR unavailable: {str(exc)[:120]}"
+
     if resolution.get("request"):
         sections["requested_option_matches"] = match_option_request(
             resolution.get("request"), data_dir
         )
         sources["requested_option_matches"] = sources.get("options")
 
+    local_hit_count = sum(
+        len(rows) for name, rows in sections.items()
+        if name != "recent_sec_filings"
+    )
     total_hits = sum(len(rows) for rows in sections.values())
-    brief = _research_brief(q, resolution, raw_matches, sections, data_dir)
+    brief = _research_brief(q, resolution, raw_matches, sections, data_dir, local_hit_count)
     return {
         "generated_at": generated_at,
         "query": original_query.upper(),
@@ -577,6 +604,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     open_pos = brief.get("open_positions") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
+    sec = brief.get("recent_sec_filings") or {}
     positives = "".join(
         f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
         for x in brief.get("top_positive_factors", [])[:5]
@@ -594,6 +622,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     action_reasons = "".join(
         f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6]
     ) or "<li>No action-specific reasons surfaced.</li>"
+    sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     return f"""
 <section>
   <h2>Research Brief</h2>
@@ -604,6 +633,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
     <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
+    <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get('count') or 0)}</strong></div>
+    <div><span class="muted">SEC watch signals</span><strong>{html.escape(sec_signals)}</strong></div>
     <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get('avg_unrealized_pct'))}</strong></div>
     <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
     <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get('avg_return'))}</strong></div>

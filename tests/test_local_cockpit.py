@@ -59,6 +59,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "briefHtml" in html
     assert "Research brief" in html
     assert "Research action" in html
+    assert "Recent SEC filings" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "/api/suggestions" in html

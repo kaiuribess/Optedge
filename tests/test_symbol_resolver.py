@@ -29,6 +29,8 @@ def test_resolver_extracts_underlying_from_option_text():
         "side": "call",
         "strike": 200.0,
         "raw": "AAPL 20260618 C 200",
+        "ticker_source": "direct",
+        "ticker_name": None,
     }
 
 
@@ -39,22 +41,14 @@ def test_resolver_reports_empty_query():
 
 
 def test_resolver_uses_yahoo_for_company_name():
-    old = resolver.yahoo_search
-    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
-        "symbol": "NVDA",
-        "name": "NVIDIA Corporation",
-        "exchange": "NMS",
-        "type": "EQUITY",
-    }]
-    try:
-        res = resolve_symbol("Nvidia")
-        assert res["symbol"] == "NVDA"
-        assert res["source"] == "yahoo"
-    finally:
-        resolver.yahoo_search = old
+    res = resolve_symbol("Nvidia")
+    assert res["symbol"] == "NVDA"
+    assert res["source"] == "alias"
 
 
 def test_resolver_uses_yahoo_for_long_uppercase_company_name():
+    old_aliases = resolver.COMMON_ALIASES
+    resolver.COMMON_ALIASES = {}
     old = resolver.yahoo_search
     resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
         "symbol": "NVDA",
@@ -68,6 +62,7 @@ def test_resolver_uses_yahoo_for_long_uppercase_company_name():
         assert res["source"] == "yahoo"
     finally:
         resolver.yahoo_search = old
+        resolver.COMMON_ALIASES = old_aliases
 
 
 if __name__ == "__main__":

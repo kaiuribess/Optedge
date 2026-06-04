@@ -285,7 +285,7 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
     if not query:
         return out
     try:
-        report = lookup_symbol(query, data_dir)
+        report = lookup_symbol(query, data_dir, include_sec=False)
         brief = report.get("brief") or {}
         best = brief.get("best_idea") or {}
         open_pos = brief.get("open_positions") or {}
@@ -1383,6 +1383,7 @@ function briefHtml(brief) {
   const open = brief.open_positions || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
+  const sec = brief.recent_sec_filings || {};
   const source = brief.resolution_source || '-';
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
@@ -1399,6 +1400,7 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
+        <div class="brief-tile"><span>Recent SEC filings</span><strong>${cell(sec.count || 0)}</strong></div>
         <div class="brief-tile"><span>Avg unrealized</span><strong>${pct(open.avg_unrealized_pct)}</strong></div>
         <div class="brief-tile"><span>Validation win rate</span><strong>${pct(val.win_rate)}</strong></div>
         <div class="brief-tile"><span>Validation avg return</span><strong>${pct(val.avg_return)}</strong></div>
