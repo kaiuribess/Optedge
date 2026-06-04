@@ -910,6 +910,114 @@ def build_positions(
     }
 
 
+def _queue_item(priority: int, category: str, label: str, detail: str,
+                action: str, symbol: Any = None, query: Any = None) -> dict[str, Any]:
+    return {
+        "priority": int(priority),
+        "category": category,
+        "label": label,
+        "detail": detail,
+        "action": action,
+        "symbol": _clean_value(symbol),
+        "query": _clean_value(query or symbol),
+    }
+
+
+def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, Any]:
+    """Prioritize the next research actions from local cockpit state."""
+    items: list[dict[str, Any]] = []
+
+    health = build_data_health(data_dir)
+    for check in health.get("checks", []):
+        level = str(check.get("level") or "ok")
+        if level == "bad":
+            items.append(_queue_item(
+                100, "data_health", check.get("label") or "Data health issue",
+                check.get("detail") or "A dashboard data-health check failed.",
+                "refresh_or_fix_artifact",
+            ))
+        elif level == "warn":
+            items.append(_queue_item(
+                70, "data_health", check.get("label") or "Data health warning",
+                check.get("detail") or "A dashboard data-health warning is active.",
+                "review_data_health",
+            ))
+
+    attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
+    for row in attention:
+        pressure = _float_value(row.get("latest_exit_pressure"))
+        pnl = _float_value(row.get("pnl_pct"))
+        priority = 95 if pressure >= 80 else 85 if pressure >= 60 else 75
+        if pnl <= -0.30:
+            priority = max(priority, 90)
+        symbol = row.get("ticker_or_symbol")
+        detail = (
+            f"{row.get('position_label')} has exit pressure "
+            f"{row.get('latest_exit_pressure') or 0} and open P&L {pnl * 100:+.1f}%."
+        )
+        items.append(_queue_item(
+            priority, "open_position", "Review open position",
+            detail, "open_position_monitor", symbol=symbol, query=symbol,
+        ))
+
+    try:
+        paper = build_paper_candidates(data_dir, max_new=5, dry_run=False)
+        for row in paper.get("rows", [])[:5]:
+            symbol = row.get("ticker_or_symbol")
+            asset = row.get("asset")
+            confidence = row.get("confidence")
+            detail = f"{asset} candidate {symbol} is eligible for manual paper review"
+            if confidence not in (None, ""):
+                detail += f" at confidence {confidence}"
+            detail += "."
+            items.append(_queue_item(
+                55, "paper_candidate", "Review paper candidate",
+                detail, "preview_paper_candidate", symbol=symbol, query=symbol,
+            ))
+    except Exception as exc:
+        items.append(_queue_item(
+            65, "paper_candidate", "Paper candidate build failed",
+            f"Could not build paper candidates: {str(exc)[:160]}",
+            "review_paper_export",
+        ))
+
+    try:
+        watchlist = load_watchlist(data_dir, enrich=True).get("entries", [])
+        for row in watchlist:
+            local_hits = int(_float_value(row.get("local_hits"), 0.0))
+            if local_hits == 0:
+                items.append(_queue_item(
+                    45, "watchlist", "Run focused watchlist scan",
+                    f"{row.get('query') or row.get('symbol')} has no current local scan rows.",
+                    "run_focused_scan", symbol=row.get("symbol"), query=row.get("query") or row.get("symbol"),
+                ))
+    except Exception as exc:
+        items.append(_queue_item(
+            40, "watchlist", "Watchlist enrichment failed",
+            f"Could not enrich watchlist: {str(exc)[:160]}",
+            "review_watchlist",
+        ))
+
+    if not items:
+        items.append(_queue_item(
+            10, "system", "No urgent local actions",
+            "Data health is clean and no high-priority open-position or paper-candidate items surfaced.",
+            "continue_monitoring",
+        ))
+
+    items = sorted(items, key=lambda item: item["priority"], reverse=True)[:limit]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items),
+        "rows": items,
+        "notes": [
+            "Action queue is local decision support only; it does not place trades.",
+            "Highest priority goes to bad data health and open-position exit risk.",
+            "Paper candidates remain manual review items.",
+        ],
+    }
+
+
 def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
     spec = ARTIFACTS.get(name)
     if spec is None:
@@ -1236,6 +1344,12 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Action queue</h2>
+    <div class="muted">Highest-priority local research items from data health, open positions, paper candidates, and watchlist context.</div>
+    <div class="status" id="queue-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="queue-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Data health</h2>
     <div class="muted">Checks whether validation, open positions, snapshots, and images line up before you trust the screen.</div>
     <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
@@ -1425,6 +1539,15 @@ function table(rows, clickRows=false) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function actionQueueTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
+  const body = rows.map(r => {
+    const sym = r.query || r.symbol || '';
+    const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
+    return `<tr${attrs}><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table><thead><tr><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function healthClass(level) {
   if (level === 'bad') return 'bad';
   if (level === 'warn') return 'warn';
@@ -1571,6 +1694,14 @@ async function loadExplorer() {
   $('explorer-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('explorer-results'));
 }
+async function loadActionQueue() {
+  $('queue-status-text').textContent = 'Building local action queue...';
+  const res = await fetch('/api/action-queue?limit=20');
+  const data = await res.json();
+  $('queue-status-text').textContent = `${data.count || 0} prioritized local action item(s).`;
+  $('queue-results').innerHTML = actionQueueTable(data.rows || []);
+  wireClickableRows($('queue-results'));
+}
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
@@ -1711,7 +1842,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', loadSummary);
+$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -1725,6 +1856,7 @@ $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchl
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
+loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
@@ -1766,6 +1898,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/data-health":
             self._send_json(build_data_health(self.data_dir))
+            return
+        if parsed.path == "/api/action-queue":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["20"])[0], 20, 1, 100)
+            self._send_json(build_action_queue(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/lookup":
             symbol = parse_qs(parsed.query).get("symbol", [""])[0]

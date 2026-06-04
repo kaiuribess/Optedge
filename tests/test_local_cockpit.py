@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_data_health, build_positions, build_summary, build_symbol_suggestions,
+    build_action_queue, build_data_health, build_positions, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
 )
 
@@ -44,6 +44,8 @@ def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
     assert "Data health" in html
+    assert "Action queue" in html
+    assert "/api/action-queue" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -121,6 +123,60 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["Position aging count"]["level"] == "warn"
         assert labels["Duplicate open positions"]["level"] == "warn"
         assert labels["Equity curve image corrupt"]["level"] == "bad"
+
+
+def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "open_positions": 0,
+            "assets": {
+                "option": {"open_positions": 0},
+                "share": {"open_positions": 0},
+                "futures": {"open_positions": 0},
+            },
+        }), encoding="utf-8")
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 1}), encoding="utf-8",
+        )
+        (data_dir / "equity_curve.png").write_bytes(b"bad png")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "entry_price": 2.0,
+            "current_mid": 1.0,
+            "unrealized_pct": -0.50,
+            "latest_exit_pressure": 85,
+            "trade_status": "Trade",
+        }]), encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "contract": "NVDA 2026-06-18 C 200",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "mid": 2.5,
+            "suggested_contracts": 1,
+            "actual_dollars": 250,
+            "stop_price": 1.25,
+            "target_price": 5.0,
+            "confidence": 80,
+            "rank_score": 2.0,
+            "trade_status": "Trade",
+            "spread_pct": 0.04,
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame().to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame().to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+
+        queue = build_action_queue(data_dir)
+        assert queue["rows"][0]["category"] == "data_health"
+        assert queue["rows"][0]["priority"] == 100
+        assert any(row["category"] == "open_position" and row["symbol"] == "AAPL" for row in queue["rows"])
+        assert any(row["category"] == "paper_candidate" and row["symbol"] == "NVDA" for row in queue["rows"])
 
 
 def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
@@ -415,9 +471,10 @@ if __name__ == "__main__":
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
+    test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("9/9 local cockpit tests passed")
+    print("10/10 local cockpit tests passed")
