@@ -10,7 +10,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.local_cockpit import (
-    artifact_path, build_opportunities, build_positions, build_summary, render_cockpit_html,
+    artifact_path, build_opportunities, build_paper_candidates, build_positions,
+    build_summary, render_cockpit_html,
 )
 
 
@@ -43,6 +44,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Optedge Local Cockpit" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
+    assert "External paper candidates" in html
+    assert "/api/paper-candidates" in html
+    assert "/api/export-paper" in html
+    assert "Write export files" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
@@ -174,10 +179,80 @@ def test_position_monitor_reads_dedupes_and_filters_open_state():
         assert attention["rows"][0]["attention"] is True
 
 
+def test_paper_candidate_panel_builds_and_writes_filtered_exports():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "contract": "AAPL 2026-06-18 C 200",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+                "mid": 2.5,
+                "suggested_contracts": 1,
+                "actual_dollars": 250,
+                "stop_price": 1.25,
+                "target_price": 5.0,
+                "confidence": 70,
+                "rank_score": 2.0,
+                "fused_score": 1.5,
+                "trade_status": "Trade",
+                "spread_pct": 0.04,
+            },
+            {
+                "ticker": "MSFT",
+                "contract": "MSFT 2026-06-18 C 500",
+                "side": "call",
+                "strike": 500,
+                "expiry": "2026-06-18",
+                "mid": 1.0,
+                "suggested_contracts": 0,
+                "stop_price": 0.5,
+                "target_price": 2.0,
+                "confidence": 60,
+                "rank_score": 1.0,
+                "trade_status": "Trade",
+                "spread_pct": 0.04,
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([
+            {
+                "ticker": "NVDA",
+                "spot": 100.0,
+                "suggested_dollars": 500,
+                "stop_pct": -0.08,
+                "target_pct": 0.18,
+                "confidence": 75,
+                "rank_score": 1.5,
+                "trade_status": "Trade",
+            }
+        ]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame().to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+
+        preview = build_paper_candidates(data_dir, max_new=5)
+        assert preview["selected_count"] == 2
+        symbols = {row["ticker_or_symbol"] for row in preview["rows"]}
+        assert symbols == {"AAPL", "NVDA"}
+
+        dry = build_paper_candidates(data_dir, dry_run=True)
+        assert dry["excluded_count"] == 1
+        assert any("suggested_contracts <= 0" in row["reason_excluded"] for row in dry["rows"])
+
+        written = build_paper_candidates(data_dir, max_new=5, write=True)
+        assert written["wrote_files"] is True
+        assert (data_dir / "external_paper_orders.csv").exists()
+        assert (data_dir / "external_paper_orders.json").exists()
+
+
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
-    print("5/5 local cockpit tests passed")
+    test_paper_candidate_panel_builds_and_writes_filtered_exports()
+    print("6/6 local cockpit tests passed")

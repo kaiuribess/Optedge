@@ -25,6 +25,7 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
+from scripts.export_external_paper_track import build_external_orders, write_outputs
 from scripts.research_jobs import (
     create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
 )
@@ -302,6 +303,69 @@ def _opportunity_records(df: pd.DataFrame, asset: str, limit: int) -> list[dict[
     return records
 
 
+def _records_from_frame(df: pd.DataFrame, limit: int = 100) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    records: list[dict[str, Any]] = []
+    for _, row in df.head(limit).iterrows():
+        records.append({str(k): _clean_value(v) for k, v in row.to_dict().items()})
+    return records
+
+
+def build_paper_candidates(
+    data_dir: Path = DATA_DIR,
+    max_new: int = 5,
+    max_open: int = 30,
+    include_watch: bool = False,
+    allow_zero_size_placeholder: bool = False,
+    asset: str = "all",
+    dry_run: bool = False,
+    write: bool = False,
+) -> dict[str, Any]:
+    """Build or write the compact external paper tracking candidate list."""
+    df = build_external_orders(
+        data_dir=data_dir,
+        max_new=max_new,
+        max_open=max_open,
+        include_watch=include_watch,
+        allow_zero_size_placeholder=allow_zero_size_placeholder,
+        asset=asset,
+        dry_run=dry_run,
+    )
+    paths: dict[str, str] = {}
+    if write and not dry_run:
+        csv_path, json_path = write_outputs(df, data_dir)
+        paths = {"csv": str(csv_path), "json": str(json_path)}
+    selected_count = 0
+    excluded_count = 0
+    if not df.empty and "reason_excluded" in df.columns:
+        excluded_mask = df["reason_excluded"].astype(str).str.len() > 0
+        excluded_count = int(excluded_mask.sum())
+        selected_count = int((~excluded_mask).sum())
+    else:
+        selected_count = int(len(df))
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "asset": asset,
+        "max_new": max_new,
+        "max_open": max_open,
+        "include_watch": include_watch,
+        "allow_zero_size_placeholder": allow_zero_size_placeholder,
+        "dry_run": dry_run,
+        "wrote_files": bool(paths),
+        "paths": paths,
+        "count": int(len(df)),
+        "selected_count": selected_count,
+        "excluded_count": excluded_count,
+        "rows": _records_from_frame(df, limit=150),
+        "notes": [
+            "External paper candidates are a small filtered subset, not every internal signal.",
+            "This creates manual paper-tracking files only; no trades are placed.",
+            "Dry-run review includes rejected rows and exclusion reasons.",
+        ],
+    }
+
+
 def build_opportunities(
     data_dir: Path = DATA_DIR,
     asset: str = "all",
@@ -465,6 +529,17 @@ def _float_param(value: str | None, default: float, low: float, high: float) -> 
     if not math.isfinite(out):
         return default
     return max(low, min(high, out))
+
+
+def _bool_param(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "on"}
 
 
 def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
@@ -643,6 +718,27 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="explorer-results" class="table-wrap"></div></div>
   </section>
   <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">External paper candidates</h2>
+    <div class="muted">Create a small executable candidate list for manual paper tracking. This is intentionally filtered down from the full internal signal stream.</div>
+    <div class="scan-controls">
+      <select id="paper-asset" aria-label="Paper asset">
+        <option value="all">All assets</option>
+        <option value="option">Options</option>
+        <option value="share">Shares</option>
+        <option value="futures">Futures</option>
+      </select>
+      <input id="paper-max-new" type="number" min="1" max="30" step="1" value="5" aria-label="Max new orders">
+      <input id="paper-max-open" type="number" min="1" max="200" step="1" value="30" aria-label="Max open positions">
+      <label class="check"><input id="paper-include-watch" type="checkbox"> include Watch</label>
+      <label class="check"><input id="paper-zero-size" type="checkbox"> allow zero-size placeholders</label>
+      <label class="check"><input id="paper-dry-run" type="checkbox"> review exclusions</label>
+      <button class="btn" type="button" id="paper-preview">Preview candidates</button>
+      <button class="btn" type="button" id="paper-export">Write export files</button>
+    </div>
+    <div class="status" id="paper-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="paper-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Symbol lookup</h2>
     <div class="muted">Search the latest local scan snapshots and open positions. For a new symbol, run a focused scan first.</div>
     <div class="search">
@@ -680,6 +776,7 @@ function escHtml(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll
 function cell(v) { return v === null || v === undefined || v === '' ? '-' : escHtml(String(v).slice(0, 220)); }
 function escAttr(v) { return escHtml(v); }
 function rowSymbol(r) { return r.ticker || r.symbol || ''; }
+function rowLookupSymbol(r) { return r.ticker || r.symbol || r.ticker_or_symbol || ''; }
 function pct(v) {
   const n = Number(v);
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '-';
@@ -716,7 +813,7 @@ function table(rows, clickRows=false) {
   const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
   const head = cols.map(c => `<th>${escHtml(c)}</th>`).join('');
   const body = rows.map(r => {
-    const sym = clickRows ? rowSymbol(r) : '';
+    const sym = clickRows ? rowLookupSymbol(r) : '';
     const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
     return `<tr${attrs}>${cols.map(c => `<td>${cell(r[c])}</td>`).join('')}</tr>`;
   }).join('');
@@ -763,7 +860,7 @@ async function loadJobs() {
       const id = btn.dataset.job;
       const res = await fetch('/api/job-log?id=' + encodeURIComponent(id));
       const data = await res.json();
-      $('job-log').textContent = (data.lines || []).join('\n') || 'No log output yet.';
+      $('job-log').textContent = (data.lines || []).join('\\n') || 'No log output yet.';
       $('job-log').classList.add('active');
     });
   });
@@ -788,6 +885,35 @@ async function loadExplorer() {
   $('explorer-status-text').textContent = `${data.count || 0} latest local opportunity row(s).`;
   $('explorer-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('explorer-results'));
+}
+async function loadPaperCandidates(write=false) {
+  $('paper-status-text').textContent = write ? 'Writing export files...' : 'Building paper candidate preview...';
+  const dryRun = $('paper-dry-run').checked;
+  const payload = {
+    asset: $('paper-asset').value,
+    max_new: $('paper-max-new').value || 5,
+    max_open: $('paper-max-open').value || 30,
+    include_watch: $('paper-include-watch').checked,
+    allow_zero_size_placeholder: $('paper-zero-size').checked,
+    dry_run: dryRun
+  };
+  const res = write
+    ? await fetch('/api/export-paper', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      })
+    : await fetch('/api/paper-candidates?' + new URLSearchParams(payload).toString());
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('paper-status-text').textContent = 'Paper candidate export failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const fileNote = data.wrote_files ? ` Files written: ${data.paths.csv || ''}` : '';
+  const dryNote = data.dry_run ? `, ${data.excluded_count || 0} excluded rows reviewed` : '';
+  $('paper-status-text').textContent = `${data.selected_count || 0} selected candidate(s)${dryNote}.${fileNote}`;
+  $('paper-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('paper-results'));
 }
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';
@@ -848,10 +974,13 @@ $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
+$('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
+$('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
+loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
 </body>
@@ -923,6 +1052,28 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self.data_dir, asset=asset, query=query, status=status, limit=limit,
             ))
             return
+        if parsed.path == "/api/paper-candidates":
+            params = parse_qs(parsed.query)
+            asset = params.get("asset", ["all"])[0].strip().lower()
+            if asset not in {"all", "option", "share", "futures"}:
+                self._send_json({"error": "invalid asset"}, status=400)
+                return
+            max_new = _int_param(params.get("max_new", ["5"])[0], 5, 1, 30)
+            max_open = _int_param(params.get("max_open", ["30"])[0], 30, 1, 200)
+            include_watch = _bool_param(params.get("include_watch", ["false"])[0])
+            allow_zero = _bool_param(params.get("allow_zero_size_placeholder", ["false"])[0])
+            dry_run = _bool_param(params.get("dry_run", ["false"])[0])
+            self._send_json(build_paper_candidates(
+                self.data_dir,
+                max_new=max_new,
+                max_open=max_open,
+                include_watch=include_watch,
+                allow_zero_size_placeholder=allow_zero,
+                asset=asset,
+                dry_run=dry_run,
+                write=False,
+            ))
+            return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})
             return
@@ -970,7 +1121,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         parsed = urlparse(self.path)
-        if parsed.path != "/api/run-symbol":
+        if parsed.path not in {"/api/run-symbol", "/api/export-paper"}:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
         try:
@@ -982,6 +1133,24 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
             body = {}
+        if parsed.path == "/api/export-paper":
+            asset = str(body.get("asset") or "all").strip().lower()
+            if asset not in {"all", "option", "share", "futures"}:
+                self._send_json({"error": "invalid asset"}, status=400)
+                return
+            dry_run = _bool_param(body.get("dry_run"), False)
+            report = build_paper_candidates(
+                self.data_dir,
+                max_new=_int_param(str(body.get("max_new") or "5"), 5, 1, 30),
+                max_open=_int_param(str(body.get("max_open") or "30"), 30, 1, 200),
+                include_watch=_bool_param(body.get("include_watch"), False),
+                allow_zero_size_placeholder=_bool_param(body.get("allow_zero_size_placeholder"), False),
+                asset=asset,
+                dry_run=dry_run,
+                write=not dry_run,
+            )
+            self._send_json(report)
+            return
         query = str(body.get("query") or "").strip()
         if not query:
             self._send_json({"ok": False, "error": "query is required"}, status=400)
