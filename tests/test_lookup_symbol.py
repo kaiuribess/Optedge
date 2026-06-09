@@ -106,6 +106,9 @@ def test_lookup_matches_requested_option_contract():
                 "mid": 3.2,
                 "confidence": 80,
                 "rank_score": 2.0,
+                "trade_status": "Trade",
+                "chain_source": "tradier",
+                "quote_quality": "live_or_broker",
             },
             {
                 "ticker": "AAPL",
@@ -128,9 +131,13 @@ def test_lookup_matches_requested_option_contract():
         assert report["brief"]["requested_option"]["label"] == "AAPL 2026-06-18 C 200"
         assert report["brief"]["requested_option"]["match_quality"] == "exact"
         assert report["brief"]["requested_option"]["matched_contract"] == "AAPL C 200.0 2026-06-18"
+        assert report["brief"]["paper_readiness"]["status"] == "ready"
+        assert report["brief"]["paper_readiness"]["score"] >= 75
         html = render_html(report)
         assert "Requested option" in html
         assert "Requested match" in html
+        assert "Paper readiness" in html
+        assert "Readiness checklist" in html
 
 
 def test_lookup_resolves_company_name_option_request_to_ticker():
@@ -189,6 +196,12 @@ def test_lookup_brief_warns_when_requested_option_is_closest_only():
         assert requested["label"] == "MSFT 2026-06-18 C 420"
         assert requested["match_quality"] == "closest"
         assert requested["strike_diff"] == 10.0
+        assert report["brief"]["paper_readiness"]["status"] in {"caution", "blocked"}
+        assert any(
+            row["label"] == "Requested option match"
+            and row["level"] == "warn"
+            for row in report["brief"]["paper_readiness"]["checks"]
+        )
         assert any("matched as closest" in warning for warning in report["brief"]["risk_warnings"])
         assert "Requested match" in render_html(report)
 

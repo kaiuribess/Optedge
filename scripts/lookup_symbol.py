@@ -485,6 +485,104 @@ def _research_action(
     }
 
 
+def _paper_readiness(
+    best_idea: dict[str, Any] | None,
+    requested_option: dict[str, Any] | None,
+    open_summary: dict[str, Any],
+    warnings: list[str],
+    action: dict[str, Any],
+    total_hits: int,
+) -> dict[str, Any]:
+    """Conservative manual paper-review readiness checklist."""
+    score = 100
+    checks: list[dict[str, Any]] = []
+
+    def add(level: str, label: str, detail: str, penalty: int = 0) -> None:
+        nonlocal score
+        score -= max(0, int(penalty))
+        checks.append({"level": level, "label": label, "detail": detail, "penalty": penalty})
+
+    if total_hits <= 0:
+        add("bad", "No local rows", "Run a focused scan before treating this as a candidate.", 60)
+    if not best_idea:
+        add("bad", "No ranked idea", "No current ranked local idea was found.", 45)
+    else:
+        status = _status_text(best_idea.get("trade_status"))
+        if status in {"watch", "skip", "blocked"}:
+            add("warn" if status == "watch" else "bad", "Trade status", f"Best idea status is {status}.", 30)
+        else:
+            add("ok", "Trade status", f"Best idea status is {best_idea.get('trade_status') or 'unknown'}.")
+
+        freshness = str(best_idea.get("snapshot_freshness") or "unknown").lower()
+        age = _float_value(best_idea.get("snapshot_age_min"))
+        if freshness == "stale":
+            add("bad", "Snapshot freshness", f"Snapshot is stale ({age or 0:.0f} minutes old).", 30)
+        elif freshness == "aging":
+            add("warn", "Snapshot freshness", f"Snapshot is aging ({age or 0:.0f} minutes old).", 10)
+        else:
+            add("ok", "Snapshot freshness", f"Snapshot freshness is {freshness}.")
+
+        quote_warning = best_idea.get("quote_source_warning")
+        quote_label = best_idea.get("quote_source_label") or "unknown"
+        if quote_warning:
+            add("warn", "Quote source", str(quote_warning), 15)
+        else:
+            add("ok", "Quote source", f"Quote source: {quote_label}.")
+
+    if requested_option:
+        quality = str(requested_option.get("match_quality") or "missing").lower()
+        if quality == "exact":
+            add("ok", "Requested option match", "Requested contract matched exactly.")
+        elif quality == "closest":
+            add("warn", "Requested option match", "Only a closest contract match was found.", 25)
+        elif quality == "ticker_only":
+            add("warn", "Requested option match", "Only ticker-level option rows matched.", 35)
+        else:
+            add("bad", "Requested option match", "Requested option was not found.", 45)
+
+    max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
+    if max_pressure >= 80:
+        add("bad", "Open exposure", f"Existing position exit pressure is high ({max_pressure:.0f}/100).", 35)
+    elif max_pressure >= 60:
+        add("warn", "Open exposure", f"Existing position exit pressure is elevated ({max_pressure:.0f}/100).", 20)
+    else:
+        add("ok", "Open exposure", "No high exit-pressure open position conflict surfaced.")
+
+    warning_text = " ".join(str(w).lower() for w in warnings)
+    if "blocked" in warning_text or "do not trust" in warning_text:
+        add("bad", "Guardrails", "Guardrail warning is active.", 45)
+    elif "sample size" in warning_text or "too small" in warning_text:
+        add("warn", "Validation sample", "Validation sample-size warning is active.", 15)
+    elif warnings:
+        add("warn", "Warnings", "Lookup has active warnings to review.", 10)
+    else:
+        add("ok", "Warnings", "No lookup warnings surfaced.")
+
+    if action.get("risk_level") == "high":
+        add("bad", "Action risk", "Research action risk is high.", 30)
+    elif action.get("can_export_paper_candidate"):
+        add("ok", "Paper export", "Candidate can be considered for manual paper review.")
+    else:
+        add("warn", "Paper export", "Candidate is not currently marked as paper-export ready.", 15)
+
+    score = max(0, min(100, score))
+    if any(row["level"] == "bad" for row in checks) or score < 45:
+        status = "blocked"
+        label = "Needs fresh review"
+    elif score < 75:
+        status = "caution"
+        label = "Caution"
+    else:
+        status = "ready"
+        label = "Manual paper review ready"
+    return {
+        "score": score,
+        "status": status,
+        "label": label,
+        "checks": checks[:10],
+    }
+
+
 def _load_json_obj(path: Path) -> dict[str, Any]:
     try:
         obj = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -502,6 +600,10 @@ def _research_brief(
     local_hit_count: int,
 ) -> dict[str, Any]:
     best_section, best = _best_row(raw_matches)
+    requested_rows = sections.get("requested_option_matches", [])
+    if resolution.get("request") and requested_rows:
+        best_section = "options"
+        best = pd.Series(requested_rows[0])
     drivers = _factor_drivers(best)
     open_rows = (
         sections.get("open_options", [])
@@ -543,6 +645,13 @@ def _research_brief(
             )
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     open_summary = _open_position_summary(open_rows)
+    research_action = _research_action(
+        symbol, best_idea, open_summary, deduped_warnings, local_hit_count
+    )
+    paper_readiness = _paper_readiness(
+        best_idea, requested_option, open_summary, deduped_warnings,
+        research_action, local_hit_count,
+    )
     brief = {
         "symbol": symbol,
         "resolved_from": resolution.get("query"),
@@ -574,9 +683,8 @@ def _research_brief(
         "top_positive_factors": drivers["positive"],
         "top_negative_factors": drivers["negative"],
         "risk_warnings": deduped_warnings,
-        "research_action": _research_action(
-            symbol, best_idea, open_summary, deduped_warnings, local_hit_count
-        ),
+        "research_action": research_action,
+        "paper_readiness": paper_readiness,
         "validation": {
             "scope": validation.get("validation_scope"),
             "closed_positions": validation.get("closed_positions"),
@@ -806,6 +914,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
         return ""
     idea = brief.get("best_idea") or {}
     requested = brief.get("requested_option") or {}
+    readiness = brief.get("paper_readiness") or {}
     open_pos = brief.get("open_positions") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
@@ -828,6 +937,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
     action_reasons = "".join(
         f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6]
     ) or "<li>No action-specific reasons surfaced.</li>"
+    readiness_checks = "".join(
+        f"<li>{html.escape(str(row.get('label')))}: {html.escape(str(row.get('detail')))}</li>"
+        for row in readiness.get("checks", [])[:6]
+    ) or "<li>No readiness checks available.</li>"
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
     return f"""
@@ -839,6 +952,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
     <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
     <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
+    <div><span class="muted">Paper readiness</span><strong>{html.escape(str(readiness.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Readiness score</span><strong>{html.escape(str(readiness.get('score') if readiness.get('score') is not None else '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
     <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get('quote_source_label') or '-'))}</strong></div>
     <div><span class="muted">Snapshot age</span><strong>{html.escape(str(idea.get('snapshot_age_min') if idea.get('snapshot_age_min') is not None else '-'))} min</strong></div>
@@ -867,6 +982,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><h3>Action reasons</h3><ul>{action_reasons}</ul></div>
     <div><h3>Next steps</h3><ul>{next_steps}</ul></div>
   </div>
+  <h3>Readiness checklist</h3><ul>{readiness_checks}</ul>
   <h3>Warnings</h3><ul>{warnings}</ul>
 </section>"""
 

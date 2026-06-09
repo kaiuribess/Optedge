@@ -1903,6 +1903,7 @@ function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
   const requested = brief.requested_option || {};
+  const readiness = brief.paper_readiness || {};
   const open = brief.open_positions || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
@@ -1922,6 +1923,8 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Requested option</span><strong>${escHtml(requested.label || '-')}</strong></div>
         <div class="brief-tile"><span>Requested match</span><strong>${escHtml(requested.match_quality || '-')}</strong></div>
         <div class="brief-tile"><span>Matched contract</span><strong>${escHtml(requested.matched_contract || '-')}</strong></div>
+        <div class="brief-tile"><span>Paper readiness</span><strong>${escHtml(readiness.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Readiness score</span><strong>${cell(readiness.score)}</strong></div>
         <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
         <div class="brief-tile"><span>Snapshot age</span><strong>${cell(idea.snapshot_age_min)} min</strong></div>
         <div class="brief-tile"><span>Freshness</span><strong>${escHtml(idea.snapshot_freshness || '-')}</strong></div>
@@ -1944,6 +1947,7 @@ function briefHtml(brief) {
       <div class="brief-cols">
         <div class="brief-list"><h4>Positive factors</h4><ul>${list(brief.top_positive_factors)}</ul></div>
         <div class="brief-list"><h4>Negative factors</h4><ul>${list(brief.top_negative_factors)}</ul></div>
+        <div class="brief-list"><h4>Readiness checklist</h4><ul>${(readiness.checks && readiness.checks.length) ? readiness.checks.slice(0, 6).map(c => `<li>${escHtml(c.label)}: ${escHtml(c.detail)}</li>`).join('') : '<li>No readiness checks available.</li>'}</ul></div>
         <div class="brief-list"><h4>Next steps</h4><ul>${(action.next_steps && action.next_steps.length) ? action.next_steps.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>Review local factors and exposure.</li>'}</ul></div>
         <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
       </div>
