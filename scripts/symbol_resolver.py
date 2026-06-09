@@ -216,6 +216,40 @@ def _cache_age_days(path: Path) -> float | None:
         return None
 
 
+def sec_company_cache_meta(cache_path: Path | None = None) -> dict[str, Any]:
+    """Return local SEC ticker-cache health without fetching the network."""
+    path = Path(cache_path or SEC_TICKER_CACHE)
+    age_days = _cache_age_days(path)
+    if age_days is None:
+        return {
+            "exists": False,
+            "path": str(path),
+            "age_days": None,
+            "status": "missing",
+            "row_count": 0,
+        }
+    row_count = 0
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8-sig"))
+        row_count = len(_normalize_sec_rows(cached.get("rows", cached) if isinstance(cached, dict) else cached))
+    except Exception:
+        return {
+            "exists": True,
+            "path": str(path),
+            "age_days": round(age_days, 2),
+            "status": "corrupt",
+            "row_count": 0,
+        }
+    status = "fresh" if age_days <= SEC_CACHE_MAX_AGE_DAYS else "stale"
+    return {
+        "exists": True,
+        "path": str(path),
+        "age_days": round(age_days, 2),
+        "status": status,
+        "row_count": row_count,
+    }
+
+
 def _normalize_sec_rows(raw: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     iterable = raw.values() if isinstance(raw, dict) else raw if isinstance(raw, list) else []

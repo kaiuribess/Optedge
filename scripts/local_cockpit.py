@@ -32,7 +32,7 @@ from scripts.export_external_paper_track import build_external_orders, write_out
 from scripts.research_jobs import (
     create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
 )
-from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol, sec_company_search
+from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol, sec_company_cache_meta, sec_company_search
 
 
 FRESH_SNAPSHOT_MINUTES = 90.0
@@ -1523,6 +1523,28 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         elif _float_value(meta.get("age_minutes")) > 24 * 60:
             checks.append(_health_check("warn", f"{asset_name} snapshot old", f"{meta['name']} is more than 24 hours old."))
 
+    sec_cache = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
+    if sec_cache.get("status") == "fresh":
+        checks.append(_health_check(
+            "ok", "SEC ticker cache",
+            f"Free SEC company-name search cache has {sec_cache.get('row_count', 0)} ticker row(s).",
+        ))
+    elif sec_cache.get("status") == "stale":
+        checks.append(_health_check(
+            "warn", "SEC ticker cache stale",
+            f"Free SEC ticker cache is {sec_cache.get('age_days')} days old; run any company lookup to refresh it.",
+        ))
+    elif sec_cache.get("status") == "corrupt":
+        checks.append(_health_check(
+            "warn", "SEC ticker cache corrupt",
+            "Free SEC ticker cache could not be read; run a company lookup to rebuild it.",
+        ))
+    else:
+        checks.append(_health_check(
+            "warn", "SEC ticker cache missing",
+            "Company-name autocomplete uses the free SEC ticker cache after the first company lookup warms it.",
+        ))
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": _health_status(checks),
@@ -1537,9 +1559,13 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "equity_curve": _file_meta(equity_curve),
         },
         "snapshots": snapshot_meta,
+        "free_data_caches": {
+            "sec_company_tickers": sec_cache,
+        },
         "notes": [
             "Data health reads the same local files used by the cockpit.",
             "Open-position counts come directly from current open position JSON files.",
+            "Free data caches improve search coverage without paid APIs.",
             "Warnings mean review the artifacts before trusting the displayed analytics.",
         ],
     }

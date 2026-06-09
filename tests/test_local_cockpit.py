@@ -135,6 +135,39 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["Position aging count"]["level"] == "warn"
         assert labels["Duplicate open positions"]["level"] == "warn"
         assert labels["Equity curve image corrupt"]["level"] == "bad"
+        assert labels["SEC ticker cache missing"]["level"] == "warn"
+        assert health["free_data_caches"]["sec_company_tickers"]["status"] == "missing"
+
+
+def test_data_health_reports_fresh_sec_ticker_cache():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "open_positions": 0,
+            "assets": {
+                "option": {"open_positions": 0},
+                "share": {"open_positions": 0},
+                "futures": {"open_positions": 0},
+            },
+        }), encoding="utf-8")
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 0}), encoding="utf-8",
+        )
+        (data_dir / "sec_company_tickers.json").write_text(json.dumps({
+            "rows": [
+                {"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147},
+                {"symbol": "AAPL", "name": "Apple Inc.", "cik": 320193},
+            ],
+        }), encoding="utf-8")
+
+        health = build_data_health(data_dir)
+        labels = {row["label"]: row for row in health["checks"]}
+        assert labels["SEC ticker cache"]["level"] == "ok"
+        assert health["free_data_caches"]["sec_company_tickers"]["status"] == "fresh"
+        assert health["free_data_caches"]["sec_company_tickers"]["row_count"] == 2
 
 
 def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
@@ -635,6 +668,7 @@ if __name__ == "__main__":
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
+    test_data_health_reports_fresh_sec_ticker_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -643,4 +677,4 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("12/12 local cockpit tests passed")
+    print("13/13 local cockpit tests passed")

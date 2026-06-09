@@ -147,6 +147,25 @@ def test_sec_company_search_scores_cached_rows():
             resolver.SEC_TICKER_CACHE = old_cache
 
 
+def test_sec_company_cache_meta_reports_missing_and_rows():
+    with tempfile.TemporaryDirectory() as td:
+        cache = Path(td) / "missing.json"
+        missing = resolver.sec_company_cache_meta(cache)
+        assert missing["status"] == "missing"
+        assert missing["exists"] is False
+
+        cache.write_text(json.dumps({
+            "rows": [
+                {"symbol": "SNOW", "name": "Snowflake Inc."},
+                {"symbol": "AAPL", "name": "Apple Inc."},
+            ],
+        }), encoding="utf-8")
+        meta = resolver.sec_company_cache_meta(cache)
+        assert meta["status"] == "fresh"
+        assert meta["exists"] is True
+        assert meta["row_count"] == 2
+
+
 if __name__ == "__main__":
     test_resolver_accepts_direct_ticker()
     test_resolver_extracts_underlying_from_option_text()
@@ -156,4 +175,5 @@ if __name__ == "__main__":
     test_resolver_uses_sec_company_tickers_before_yahoo()
     test_resolver_uses_sec_for_company_name_option_request()
     test_sec_company_search_scores_cached_rows()
-    print("8/8 symbol resolver tests passed")
+    test_sec_company_cache_meta_reports_missing_and_rows()
+    print("9/9 symbol resolver tests passed")
