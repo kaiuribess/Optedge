@@ -339,6 +339,21 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
     return out
 
 
+def _watchlist_sort_key(row: dict[str, Any]) -> tuple[int, float, float, float, str]:
+    status_rank = {
+        "ready": 3,
+        "caution": 2,
+        "blocked": 1,
+    }.get(str(row.get("paper_readiness_status") or "").lower(), 0)
+    return (
+        status_rank,
+        _float_value(row.get("paper_readiness_score"), 0.0),
+        _float_value(row.get("max_exit_pressure"), 0.0),
+        _float_value(row.get("best_score"), 0.0),
+        str(row.get("updated_at") or row.get("added_at") or ""),
+    )
+
+
 def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str, Any]:
     rows = _read_json(_watchlist_file(data_dir))
     if not isinstance(rows, list):
@@ -354,6 +369,8 @@ def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str,
         seen.add(item_id)
         cleaned.append(row)
     entries = [_enrich_watchlist_entry(row, Path(data_dir)) for row in cleaned] if enrich else cleaned
+    if enrich:
+        entries = sorted(entries, key=_watchlist_sort_key, reverse=True)
     return {
         "generated_at": _now_iso(),
         "count": len(entries),

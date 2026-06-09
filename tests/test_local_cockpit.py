@@ -320,6 +320,35 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready[0]["action"] == "preview_paper_candidate"
 
 
+def test_enriched_watchlist_sorts_ready_ideas_first():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        add_watchlist_query("Apple", data_dir)
+        add_watchlist_query("Nvidia 20260618 C 200", data_dir)
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+
+        plain = load_watchlist(data_dir, enrich=False)
+        assert [row["symbol"] for row in plain["entries"]] == ["AAPL", "NVDA"]
+
+        enriched = load_watchlist(data_dir, enrich=True)
+        assert enriched["entries"][0]["symbol"] == "NVDA"
+        assert enriched["entries"][0]["paper_readiness_status"] == "ready"
+
+
 def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -754,6 +783,7 @@ if __name__ == "__main__":
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_action_queue_surfaces_ready_watchlist_ideas()
+    test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
@@ -761,4 +791,4 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("15/15 local cockpit tests passed")
+    print("16/16 local cockpit tests passed")
