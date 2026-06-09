@@ -1,4 +1,4 @@
-"""Unit tests for pricing models + Kelly formula — v20.7.
+"""Unit tests for pricing models + Kelly formula - v20.7.
 
 Run from the optedge/ root:
     python -m pytest tests/test_pricing.py -v
@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 import numpy as np
 try:
-    import pytest    # noqa: F401 — optional, only needed for `pytest` runner
+    import pytest    # noqa: F401 - optional, only needed for `pytest` runner
 except ImportError:
     pytest = None    # Fall back to the __main__ runner at the bottom
 
@@ -80,7 +80,7 @@ def test_crr_agrees_with_bs_on_no_div_call():
 
 
 def test_bjs_no_negative_prices():
-    # Sweep strikes — every BJS price should be >= 0
+    # Sweep strikes - every BJS price should be >= 0
     for K in [50, 80, 100, 120, 150, 200]:
         for call in (True, False):
             p = bjs_price(100.0, K, 30/365, 0.045, 0.30, 0.02, call=call)
@@ -88,7 +88,7 @@ def test_bjs_no_negative_prices():
 
 
 def test_bjs_itm_put_above_intrinsic():
-    # American ITM put should have value ≥ intrinsic
+    # American ITM put should have value >= intrinsic
     S, K, T, r, sigma, q = 95.0, 100.0, 60/365, 0.045, 0.30, 0.02
     p = bjs_price(S, K, T, r, sigma, q, call=False)
     intrinsic = K - S
@@ -125,7 +125,7 @@ def test_crr_vec_matches_scalar_within_tolerance():
                             0.045, float(sigma[i]), float(q[i]),
                             call=False, steps=60)
         # Vectorized backward-induction differs from scalar at ~1e-3 due to
-        # numerical accumulation order — accept 0.05 absolute tolerance
+        # numerical accumulation order - accept 0.05 absolute tolerance
         assert abs(vec[i] - scalar) < 0.05, f"i={i}: vec={vec[i]} scalar={scalar}"
 
 
@@ -173,7 +173,7 @@ def test_kelly_zero_when_no_prediction():
 
 
 def test_slippage_subtracts_from_ev():
-    # Same row, two slippage values — higher slippage = lower EV
+    # Same row, two slippage values - higher slippage = lower EV
     row = pd.Series({"pred_option_return_pct": 0.30, "delta": 0.40,
                       "mid": 2.0, "dte": 30})
     ev_low = compute_option_ev_and_kelly(row, fill_slippage_pct=0.02)["ev_pct"]
@@ -207,16 +207,16 @@ if __name__ == "__main__":
     import inspect
     fns = [v for k, v in dict(globals()).items()
            if k.startswith("test_") and callable(v)]
-    print(f"Running {len(fns)} tests…")
+    print(f"Running {len(fns)} tests...")
     passed = 0
     failed = []
     for fn in fns:
         try:
             fn()
-            print(f"  ✓ {fn.__name__}")
+            print(f"  OK {fn.__name__}")
             passed += 1
         except Exception as e:
-            print(f"  ✗ {fn.__name__}: {e}")
+            print(f"  X {fn.__name__}: {e}")
             failed.append(fn.__name__)
-    print(f"\n{passed}/{len(fns)} passed", "✓" if not failed else f"— {len(failed)} failed")
+    print(f"\n{passed}/{len(fns)} passed", "OK" if not failed else f"- {len(failed)} failed")
     sys.exit(0 if not failed else 1)

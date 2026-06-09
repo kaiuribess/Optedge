@@ -206,27 +206,6 @@ def _current_mid_for_position(pos: Dict, chain_blobs: Dict[str, dict]) -> Option
     return last if last > 0 else None
 
 
-def _ibkr_quotes_for_positions(open_rows: List[Dict]) -> Dict[Tuple, Dict]:
-    try:
-        import ibkr_provider
-        from config import IBKR_MAX_OPTION_QUOTES_PER_SCAN
-    except Exception:
-        return {}
-    if not ibkr_provider.is_enabled():
-        return {}
-    quotes: Dict[Tuple, Dict] = {}
-    limit = int(IBKR_MAX_OPTION_QUOTES_PER_SCAN or 0)
-    for pos in open_rows[:limit]:
-        quote = ibkr_provider.quote_option_position(pos)
-        if quote:
-            quotes[_option_key(pos)] = quote
-    if quotes:
-        log.info("positions: IBKR repriced %d/%d open options", len(quotes), len(open_rows))
-    elif ibkr_provider.disabled_reason():
-        log.debug("positions: IBKR repricing unavailable: %s", ibkr_provider.disabled_reason())
-    return quotes
-
-
 def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                    current_signals: Optional[pd.DataFrame] = None) -> Dict[str, float]:
     """Re-fetch the current chain for each unique open-position ticker and
@@ -250,13 +229,11 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
         return {"open": len(open_rows), "closed_this_iter": 0,
                  "mean_unrealized_pct": 0.0}
 
-    ibkr_quotes = _ibkr_quotes_for_positions(open_rows)
-    needs_chain = [r for r in open_rows if _option_key(r) not in ibkr_quotes]
-    tickers = sorted({(r.get("ticker") or "").upper() for r in needs_chain
+    tickers = sorted({(r.get("ticker") or "").upper() for r in open_rows
                        if r.get("ticker")})
     if len(tickers) > max_chain_fetch:
         # Prioritize the freshest entries (most recent entry_time)
-        recent_tk = (pd.DataFrame(needs_chain)
+        recent_tk = (pd.DataFrame(open_rows)
                        .sort_values("entry_time", ascending=False)
                        .head(max_chain_fetch)["ticker"].astype(str).str.upper().tolist())
         tickers = list(dict.fromkeys(recent_tk))
@@ -288,8 +265,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
         except Exception:
             exp_dt = None
         is_expired = exp_dt is not None and now >= exp_dt
-        ibkr_quote = ibkr_quotes.get(_option_key(pos))
-        cur_mid = float(ibkr_quote["mid"]) if ibkr_quote else _current_mid_for_position(pos, chains)
+        cur_mid = _current_mid_for_position(pos, chains)
         if is_expired:
             entry = float(pos.get("entry_price") or 0)
             # At expiry, intrinsic value is the only thing left
@@ -326,7 +302,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
         entry = float(pos.get("entry_price") or 0)
         if entry <= 0:
             still_open.append({**pos, "current_mid": cur_mid, "age_days": age_days,
-                               "last_reprice_source": ibkr_quote.get("source") if ibkr_quote else "chain"})
+                               "last_reprice_source": "chain"})
             continue
         pnl_pct = (cur_mid - entry) / entry
         unrealized_pcts.append(pnl_pct)
@@ -357,7 +333,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
             continue
         pos2 = {**pos, "current_mid": cur_mid, "current_price": cur_mid,
                 "unrealized_pct": pnl_pct, "age_days": age_days,
-                "last_reprice_source": ibkr_quote.get("source") if ibkr_quote else "chain"}
+                "last_reprice_source": "chain"}
         if compute_exit_pressure and apply_dynamic_exit_action and log_exit_review:
             review = compute_exit_pressure(pos2, current_signal, asset="option")
             log_exit_review(review)

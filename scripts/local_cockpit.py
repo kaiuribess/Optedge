@@ -1051,7 +1051,7 @@ def _performance_tip(item: dict[str, Any]) -> str:
     if engine == "insider" and elapsed >= 90:
         return "Use --turbo or --fast-insider during loops; run a full insider parse less often."
     if engine == "mispricing" and elapsed >= 90:
-        return "Options chains are the likely bottleneck; keep IBKR/authorized data connected or narrow --universe for focused scans."
+        return "Options chains are the likely bottleneck; use turbo cache or narrow --universe for focused scans."
     if engine in {"congress", "thirteen_f"} and elapsed >= 45:
         return "Regulatory/PDF parsing can be slow; rely on cache in loop mode or skip for quick scans."
     if engine in {"news", "sentiment", "gtrends", "twitter", "social"} and elapsed >= 30:

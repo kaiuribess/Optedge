@@ -321,18 +321,4 @@ ENGINE_SLA_SECONDS = {
 HEDGE_DELTA_THRESHOLD = 5000.0   # $ net delta triggers SPY hedge suggestion
 DRAWDOWN_BREAKER_ENABLED = True   # halve Kelly on rolling -10% P&L
 
-# ---- IBKR local market-data bridge -----------------------------------
-# No username/password is stored here. Log into TWS/IB Gateway paper trading
-# yourself, enable read-only API access, then Optedge connects to localhost.
-IBKR_ENABLED = os.getenv("OPTEDGE_IBKR_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
-IBKR_HOST = os.getenv("OPTEDGE_IBKR_HOST", "127.0.0.1")
-IBKR_PORT = int(os.getenv("OPTEDGE_IBKR_PORT", "7497"))  # TWS paper default
-IBKR_CLIENT_ID = int(os.getenv("OPTEDGE_IBKR_CLIENT_ID", "77"))
-IBKR_CONNECT_TIMEOUT = float(os.getenv("OPTEDGE_IBKR_CONNECT_TIMEOUT", "4"))
-IBKR_QUOTE_TIMEOUT = float(os.getenv("OPTEDGE_IBKR_QUOTE_TIMEOUT", "1.5"))
-IBKR_MAX_OPTION_QUOTES_PER_SCAN = int(os.getenv("OPTEDGE_IBKR_MAX_OPTION_QUOTES_PER_SCAN", "500"))
-# Try live first, then free delayed feeds where IBKR permits them. This is
-# read-only market data and does not place trades.
-IBKR_MARKET_DATA_TYPES = os.getenv("OPTEDGE_IBKR_MARKET_DATA_TYPES", "1,3,4")
-
 ASOF = datetime.now(timezone.utc)

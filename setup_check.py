@@ -1,4 +1,4 @@
-"""Optedge — interactive setup & health check.
+"""Optedge - interactive setup & health check.
 
 Run BEFORE your first `python3 run.py` to verify all data sources work.
 
@@ -29,11 +29,11 @@ BOLD = "\033[1m"
 
 def banner(text: str):
     print(f"\n{BOLD}{text}{RESET}")
-    print("─" * len(text))
+    print("-" * len(text))
 
 
 def ok(msg: str):
-    print(f"  {GREEN}✓{RESET} {msg}")
+    print(f"  {GREEN}OK{RESET} {msg}")
 
 
 def warn(msg: str):
@@ -41,7 +41,7 @@ def warn(msg: str):
 
 
 def fail(msg: str, hint: str = ""):
-    print(f"  {RED}✗{RESET} {msg}")
+    print(f"  {RED}X{RESET} {msg}")
     if hint:
         print(f"    {DIM}{hint}{RESET}")
 
@@ -52,7 +52,7 @@ def check_python() -> bool:
     if v >= (3, 9):
         ok(f"Python {v.major}.{v.minor}.{v.micro}")
         return True
-    fail(f"Python {v.major}.{v.minor} — need ≥ 3.9",
+    fail(f"Python {v.major}.{v.minor} - need >= 3.9",
          "Install Python 3.9+ (e.g. `brew install python@3.11` on macOS)")
     return False
 
@@ -69,7 +69,7 @@ def check_packages() -> bool:
         ("pyarrow", "pyarrow"),
         ("scikit-learn", "sklearn"),
     ]
-    optional = [("curl_cffi", "curl_cffi"), ("ib_insync", "ib_insync")]
+    optional = [("curl_cffi", "curl_cffi")]
     all_good = True
     for name, importable in needed:
         try:
@@ -83,12 +83,12 @@ def check_packages() -> bool:
             __import__(importable)
             ok(f"{name} (optional, recommended)")
         except ImportError:
-            warn(f"{name} not installed — yfinance will work but may be more rate-limited")
+            warn(f"{name} not installed - yfinance will work but may be more rate-limited")
     return all_good
 
 
 def check_yfinance() -> tuple[bool, str]:
-    banner("Yahoo Finance (yfinance) — prices, options, fundamentals, macro")
+    banner("Yahoo Finance (yfinance) - prices, options, fundamentals, macro")
     try:
         import yfinance as yf
     except ImportError:
@@ -108,7 +108,7 @@ def check_yfinance() -> tuple[bool, str]:
         if h.empty:
             fail("AAPL history returned empty",
                  "Yahoo may be rate-limiting your IP. Wait 5 min and retry, or "
-                 "set up Polygon.io (free tier) — see README.")
+                 "set up Polygon.io (free tier) - see README.")
             return False, "empty"
         last = float(h["Close"].iloc[-1])
         ok(f"AAPL last close: ${last:.2f}")
@@ -117,7 +117,7 @@ def check_yfinance() -> tuple[bool, str]:
         time.sleep(1)
         opts = tk.options
         if not opts:
-            warn("AAPL options expirations empty — options engine will be impaired")
+            warn("AAPL options expirations empty - options engine will be impaired")
             return True, "history-only"
         ok(f"AAPL options expirations available: {len(opts)} (first: {opts[0]})")
 
@@ -134,7 +134,7 @@ def check_yfinance() -> tuple[bool, str]:
         if "rate" in msg.lower() or "429" in msg:
             fail(f"Yahoo rate-limited this IP: {msg}",
                  "Common from datacenter/VPN IPs. Try a residential connection, "
-                 "wait 30 min, or use Polygon.io free tier — see README.")
+                 "wait 30 min, or use Polygon.io free tier - see README.")
         else:
             fail(f"yfinance error: {msg}",
                  "Check internet connection and try again.")
@@ -142,7 +142,7 @@ def check_yfinance() -> tuple[bool, str]:
 
 
 def check_reddit() -> tuple[bool, str]:
-    banner("Reddit — sentiment data (no auth required)")
+    banner("Reddit - sentiment data (no auth required)")
     try:
         import requests
         r = requests.get(
@@ -175,7 +175,7 @@ def check_reddit() -> tuple[bool, str]:
 
 
 def check_sec() -> tuple[bool, str]:
-    banner("SEC EDGAR — insider Form 4 data (no auth required)")
+    banner("SEC EDGAR - insider Form 4 data (no auth required)")
     try:
         import requests
         r = requests.get(
@@ -196,7 +196,7 @@ def check_sec() -> tuple[bool, str]:
             if r2.status_code == 200:
                 ok("Form 4 submissions endpoint reachable")
                 return True, "ok"
-            warn(f"submissions endpoint returned {r2.status_code} — insider engine may be impaired")
+            warn(f"submissions endpoint returned {r2.status_code} - insider engine may be impaired")
             return True, "partial"
         fail(f"EDGAR ticker map returned HTTP {r.status_code}",
              "SEC sometimes throttles. Wait a minute and retry.")
@@ -207,7 +207,7 @@ def check_sec() -> tuple[bool, str]:
 
 
 def check_macro() -> tuple[bool, str]:
-    banner("Macro — VIX / yields (uses yfinance)")
+    banner("Macro - VIX / yields (uses yfinance)")
     try:
         import yfinance as yf
         try:
@@ -218,7 +218,7 @@ def check_macro() -> tuple[bool, str]:
             vix_tk = yf.Ticker("^VIX")
         h = vix_tk.history(period="5d")
         if h.empty:
-            warn("VIX returned empty — macro engine will use defaults")
+            warn("VIX returned empty - macro engine will use defaults")
             return False, "empty"
         ok(f"VIX last close: {float(h['Close'].iloc[-1]):.2f}")
         return True, "ok"
@@ -228,10 +228,10 @@ def check_macro() -> tuple[bool, str]:
 
 
 def maybe_setup_fred() -> str:
-    banner("FRED API key — optional (richer macro data)")
+    banner("FRED API key - optional (richer macro data)")
     existing = os.environ.get("FRED_API_KEY")
     if existing:
-        ok(f"FRED_API_KEY already set ({existing[:6]}…)")
+        ok(f"FRED_API_KEY already set ({existing[:6]}...)")
         return existing
     print(f"  {DIM}FRED is optional. Adds CPI, unemployment, and more macro series.{RESET}")
     print(f"  {DIM}Get a free key in 30s: https://fredaccount.stlouisfed.org/apikey{RESET}")
@@ -245,14 +245,14 @@ def maybe_setup_fred() -> str:
         print(f"    {DIM}To make permanent, add to your shell profile:{RESET}")
         print(f"    {DIM}  export FRED_API_KEY='{ans}'{RESET}")
         return ans
-    warn("FRED skipped — macro engine will run on yfinance VIX/yields only")
+    warn("FRED skipped - macro engine will run on yfinance VIX/yields only")
     return ""
 
 
 def main():
-    print(f"{BOLD}╭─────────────────────────────────╮{RESET}")
-    print(f"{BOLD}│  Optedge — setup health check   │{RESET}")
-    print(f"{BOLD}╰─────────────────────────────────╯{RESET}")
+    print(f"{BOLD}+---------------------------------+{RESET}")
+    print(f"{BOLD}|  Optedge - setup health check   |{RESET}")
+    print(f"{BOLD}+---------------------------------+{RESET}")
 
     py_ok = check_python()
     pkg_ok = check_packages()
@@ -280,8 +280,8 @@ def main():
     if yf_ok and yf_state == "full":
         ok("Live mode is fully operational. Run: python3 run.py")
     elif yf_ok:
-        warn("Live mode partially working — options chain may be impaired.")
-        print(f"    {DIM}Run: python3 run.py — system will degrade gracefully.{RESET}")
+        warn("Live mode partially working - options chain may be impaired.")
+        print(f"    {DIM}Run: python3 run.py - system will degrade gracefully.{RESET}")
     else:
         fail("Live mode unavailable from this network/IP.",
              "Run `python3 run.py --demo` to use synthetic data, or "

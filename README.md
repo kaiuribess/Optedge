@@ -383,7 +383,6 @@ python tests/test_local_cockpit.py
 python tests/test_fred_public.py
 python tests/test_performance_cache.py
 python tests/test_finbert_batching.py
-python tests/test_ibkr_provider.py
 ```
 
 If `pytest` and `ruff` are installed:
