@@ -300,6 +300,8 @@ def test_opportunity_explorer_reads_and_filters_latest_snapshots():
         assert filtered["rows"][0]["actionable"] is True
         assert filtered["rows"][0]["chain_source"] == "tradier"
         assert filtered["rows"][0]["quote_quality"] == "live_or_broker"
+        assert filtered["rows"][0]["snapshot_age_min"] >= 0
+        assert filtered["rows"][0]["snapshot_freshness"] in {"fresh", "aging", "stale"}
 
 
 def test_position_monitor_reads_dedupes_and_filters_open_state():

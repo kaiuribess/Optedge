@@ -35,6 +35,9 @@ from scripts.research_jobs import (
 from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol
 
 
+FRESH_SNAPSHOT_MINUTES = 90.0
+STALE_SNAPSHOT_MINUTES = 360.0
+
 ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
     "validation-report": ("validation_report.html", "text/html; charset=utf-8"),
@@ -54,7 +57,8 @@ OPPORTUNITY_SPECS = {
             "asset", "actionable", "ticker", "side", "strike", "expiry", "dte", "mid", "spot",
             "confidence", "rank_score", "fused_score", "trade_status",
             "suggested_contracts", "spread_pct", "ev_pct", "net_edge_pct",
-            "stop_price", "target_price", "chain_source", "quote_quality", "top_headline",
+            "stop_price", "target_price", "chain_source", "quote_quality",
+            "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
     },
     "share": {
@@ -64,7 +68,7 @@ OPPORTUNITY_SPECS = {
         "columns": [
             "asset", "actionable", "ticker", "spot", "confidence", "rank_score", "fused_score",
             "trade_status", "suggested_dollars", "ev_pct", "stop_price",
-            "target_price", "top_headline",
+            "target_price", "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
     },
     "futures": {
@@ -76,7 +80,7 @@ OPPORTUNITY_SPECS = {
             "futures_score", "rank_score", "confidence", "trade_status",
             "suggested_contracts", "entry_price", "stop_price", "target_price",
             "risk_dollars", "reward_dollars", "ret_20d", "hv20", "range_pos",
-            "top_headline",
+            "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
     },
     "value": {
@@ -86,7 +90,7 @@ OPPORTUNITY_SPECS = {
         "columns": [
             "asset", "actionable", "ticker", "value_score", "value_bucket", "pe", "fcf_yield",
             "earnings_yield", "rev_growth", "op_margin", "insider_score",
-            "n_buys", "n_sells", "top_headline",
+            "n_buys", "n_sells", "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
     },
 }
@@ -127,6 +131,21 @@ def _direct_open_counts(data_dir: Path) -> dict[str, int]:
     }
 
 
+def _snapshot_age_minutes(path: Path) -> float:
+    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+
+
+def _snapshot_freshness(age_minutes: float | None) -> str:
+    if age_minutes is None:
+        return "unknown"
+    if age_minutes <= FRESH_SNAPSHOT_MINUTES:
+        return "fresh"
+    if age_minutes <= STALE_SNAPSHOT_MINUTES:
+        return "aging"
+    return "stale"
+
+
 def _read_parquet(path: Path | None) -> pd.DataFrame:
     if path is None:
         return pd.DataFrame()
@@ -137,7 +156,10 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
+    age = _snapshot_age_minutes(path)
     out["_source_file"] = path.name
+    out["snapshot_age_min"] = round(age, 1)
+    out["snapshot_freshness"] = _snapshot_freshness(age)
     return out
 
 
@@ -1835,6 +1857,8 @@ function briefHtml(brief) {
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
         <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
+        <div class="brief-tile"><span>Snapshot age</span><strong>${cell(idea.snapshot_age_min)} min</strong></div>
+        <div class="brief-tile"><span>Freshness</span><strong>${escHtml(idea.snapshot_freshness || '-')}</strong></div>
         <div class="brief-tile"><span>Research action</span><strong>${escHtml(action.label || 'Review')}</strong></div>
         <div class="brief-tile"><span>Action risk</span><strong>${escHtml(action.risk_level || '-')}</strong></div>
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>

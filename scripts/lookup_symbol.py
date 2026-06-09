@@ -24,6 +24,8 @@ from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symb
 from scripts.symbol_resolver import resolve_symbol
 
 DATA_DIR = ROOT / "data"
+FRESH_SNAPSHOT_MINUTES = 90.0
+STALE_SNAPSHOT_MINUTES = 360.0
 
 SNAPSHOTS = {
     "options": ("top_options_*.parquet", "ticker"),
@@ -43,20 +45,23 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
-        "chain_source", "quote_quality", "top_headline",
+        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
+        "top_headline",
     ],
     "shares": [
         "ticker", "spot", "confidence", "rank_score", "fused_score", "trade_status",
-        "suggested_dollars", "stop_price", "target_price", "ev_pct", "top_headline",
+        "suggested_dollars", "stop_price", "target_price", "ev_pct",
+        "snapshot_age_min", "snapshot_freshness", "top_headline",
     ],
     "value": [
         "ticker", "value_score", "value_bucket", "pe", "fcf_yield", "earnings_yield",
-        "insider_score", "top_headline",
+        "insider_score", "snapshot_age_min", "snapshot_freshness", "top_headline",
     ],
     "futures": [
         "symbol", "name", "direction", "contract", "using_micro", "futures_score",
         "rank_score", "trade_status", "suggested_contracts", "entry_price",
         "stop_price", "target_price", "risk_dollars", "reward_dollars",
+        "snapshot_age_min", "snapshot_freshness",
     ],
     "open_options": [
         "ticker", "side", "strike", "expiry", "entry_time", "entry_price",
@@ -78,7 +83,8 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
-        "chain_source", "quote_quality", "match_quality", "strike_diff", "requested_side", "requested_expiry",
+        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
+        "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "top_headline",
     ],
     "recent_sec_filings": [
@@ -99,6 +105,21 @@ def _latest_file(data_dir: Path, pattern: str) -> Path | None:
     return max(files, key=lambda p: (p.stat().st_mtime, p.name))
 
 
+def _snapshot_age_minutes(path: Path) -> float:
+    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+
+
+def _snapshot_freshness(age_minutes: float | None) -> str:
+    if age_minutes is None:
+        return "unknown"
+    if age_minutes <= FRESH_SNAPSHOT_MINUTES:
+        return "fresh"
+    if age_minutes <= STALE_SNAPSHOT_MINUTES:
+        return "aging"
+    return "stale"
+
+
 def _read_parquet(path: Path | None) -> pd.DataFrame:
     if path is None:
         return pd.DataFrame()
@@ -109,7 +130,10 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
+    age = _snapshot_age_minutes(path)
     out["_source_file"] = path.name
+    out["snapshot_age_min"] = round(age, 1)
+    out["snapshot_freshness"] = _snapshot_freshness(age)
     return out
 
 
@@ -303,6 +327,9 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
         "quote_source": quote_source,
         "quote_source_label": (quote_source or {}).get("label"),
         "quote_source_warning": (quote_source or {}).get("warning"),
+        "source_file": _clean_value(row.get("_source_file")),
+        "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
+        "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
         "headline": _clean_value(row.get("top_headline")),
     }
 
@@ -374,6 +401,11 @@ def _research_action(
 
     if best_idea:
         reasons.append(f"Best local idea status is {best_idea.get('trade_status') or 'unknown'}.")
+        snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
+        if snapshot_age is not None and snapshot_age > STALE_SNAPSHOT_MINUTES:
+            risk_level = "medium" if risk_level == "low" else risk_level
+            reasons.append(f"Best local idea comes from a stale snapshot ({snapshot_age:.0f} minutes old).")
+            next_steps.append("Run a fresh focused scan before using this as a paper candidate.")
         quote_label = best_idea.get("quote_source_label")
         quote_warning = best_idea.get("quote_source_warning")
         if quote_warning:
@@ -451,8 +483,14 @@ def _research_brief(
         if isinstance(w, (dict, str))
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
-    deduped_warnings = list(dict.fromkeys(warnings))[:5]
     best_idea = _best_idea_dict(best_section, best)
+    if best_idea:
+        snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
+        if snapshot_age is not None and snapshot_age > STALE_SNAPSHOT_MINUTES:
+            warnings.append(
+                f"Best idea snapshot is stale ({snapshot_age:.0f} minutes old); run a fresh focused scan."
+            )
+    deduped_warnings = list(dict.fromkeys(warnings))[:5]
     open_summary = _open_position_summary(open_rows)
     brief = {
         "symbol": symbol,
@@ -747,6 +785,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
     <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get('quote_source_label') or '-'))}</strong></div>
+    <div><span class="muted">Snapshot age</span><strong>{html.escape(str(idea.get('snapshot_age_min') if idea.get('snapshot_age_min') is not None else '-'))} min</strong></div>
+    <div><span class="muted">Freshness</span><strong>{html.escape(str(idea.get('snapshot_freshness') or '-'))}</strong></div>
     <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
     <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
     <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>

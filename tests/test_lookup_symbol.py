@@ -1,6 +1,8 @@
 import json
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -232,6 +234,37 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert "Live Tradier" in html
 
 
+def test_lookup_flags_stale_snapshot_age():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        path = data_dir / "top_options_20260603_120000.parquet"
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+        }]).to_parquet(path)
+        old_ts = time.time() - (8 * 60 * 60)
+        os.utime(path, (old_ts, old_ts))
+
+        report = lookup_symbol("NVDA", data_dir)
+        brief = report["brief"]
+        assert brief["best_idea"]["snapshot_freshness"] == "stale"
+        assert brief["best_idea"]["snapshot_age_min"] >= 360
+        assert any("stale" in str(w).lower() for w in brief["risk_warnings"])
+        assert any(
+            "stale snapshot" in str(reason).lower()
+            for reason in brief["research_action"]["reasons"]
+        )
+        html = render_html(report)
+        assert "Snapshot age" in html
+        assert "stale" in html
+
+
 def test_lookup_includes_recent_sec_filings_when_available():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -385,7 +418,8 @@ if __name__ == "__main__":
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
+    test_lookup_flags_stale_snapshot_age()
     test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
-    print("11/11 lookup tests passed")
+    print("12/12 lookup tests passed")
