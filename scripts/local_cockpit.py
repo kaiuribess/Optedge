@@ -806,6 +806,7 @@ def build_paper_candidates(
     asset: str = "all",
     dry_run: bool = False,
     write: bool = False,
+    query: str = "",
 ) -> dict[str, Any]:
     """Build or write the compact external paper tracking candidate list."""
     df = build_external_orders(
@@ -816,6 +817,7 @@ def build_paper_candidates(
         allow_zero_size_placeholder=allow_zero_size_placeholder,
         asset=asset,
         dry_run=dry_run,
+        query=query,
     )
     paths: dict[str, str] = {}
     if write and not dry_run:
@@ -832,6 +834,7 @@ def build_paper_candidates(
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "asset": asset,
+        "query": query,
         "max_new": max_new,
         "max_open": max_open,
         "include_watch": include_watch,
@@ -845,6 +848,7 @@ def build_paper_candidates(
         "rows": _records_from_frame(df, limit=150),
         "notes": [
             "External paper candidates are a small filtered subset, not every internal signal.",
+            "Use the filter box to preview candidates for one ticker, futures symbol, or option contract.",
             "This creates manual paper-tracking files only; no trades are placed.",
             "Dry-run review includes rejected rows and exclusion reasons.",
         ],
@@ -1852,6 +1856,7 @@ tr.clickable-row:hover { background:#111c31; }
       </select>
       <input id="paper-max-new" type="number" min="1" max="30" step="1" value="5" aria-label="Max new orders">
       <input id="paper-max-open" type="number" min="1" max="200" step="1" value="30" aria-label="Max open positions">
+      <input id="paper-query" placeholder="Filter ticker/contract">
       <label class="check"><input id="paper-include-watch" type="checkbox"> include Watch</label>
       <label class="check"><input id="paper-zero-size" type="checkbox"> allow zero-size placeholders</label>
       <label class="check"><input id="paper-dry-run" type="checkbox"> review exclusions</label>
@@ -2169,6 +2174,7 @@ async function routeQueueAction(action, query, symbol) {
   }
   if (action === 'preview_paper_candidate' || action === 'review_paper_export') {
     $('paper-dry-run').checked = false;
+    $('paper-query').value = q || symbol || $('symbol').value.trim();
     await loadPaperCandidates(false);
     if (q) $('symbol').value = q;
     scrollToId('paper-results');
@@ -2365,6 +2371,7 @@ async function loadPaperCandidates(write=false) {
     asset: $('paper-asset').value,
     max_new: $('paper-max-new').value || 5,
     max_open: $('paper-max-open').value || 30,
+    query: $('paper-query').value.trim(),
     include_watch: $('paper-include-watch').checked,
     allow_zero_size_placeholder: $('paper-zero-size').checked,
     dry_run: dryRun
@@ -2564,6 +2571,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             include_watch = _bool_param(params.get("include_watch", ["false"])[0])
             allow_zero = _bool_param(params.get("allow_zero_size_placeholder", ["false"])[0])
             dry_run = _bool_param(params.get("dry_run", ["false"])[0])
+            query = params.get("query", [""])[0]
             self._send_json(build_paper_candidates(
                 self.data_dir,
                 max_new=max_new,
@@ -2573,6 +2581,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 asset=asset,
                 dry_run=dry_run,
                 write=False,
+                query=query,
             ))
             return
         if parsed.path == "/api/watchlist":
@@ -2688,6 +2697,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 asset=asset,
                 dry_run=dry_run,
                 write=not dry_run,
+                query=str(body.get("query") or ""),
             )
             self._send_json(report)
             return

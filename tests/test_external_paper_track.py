@@ -141,6 +141,22 @@ def test_dry_run_includes_exclusion_reasons():
     assert "suggested_contracts <= 0" in out.loc[0, "reason_excluded"]
 
 
+def test_query_filters_to_matching_ticker_or_contract():
+    out = _export(
+        options=[
+            _option(ticker="AAPL", contract="AAPL 2026-06-18 C 200"),
+            _option(ticker="MSFT", contract="MSFT 2026-06-18 C 500", rank_score=5.0),
+        ],
+        shares=[_share(ticker="NVDA", rank_score=10.0)],
+        query="AAPL 20260618 C 200",
+        max_new=5,
+        max_options=5,
+        max_shares=5,
+    )
+    assert len(out) == 1
+    assert out.loc[0, "ticker_or_symbol"] == "AAPL"
+
+
 if __name__ == "__main__":
     test_excludes_zero_contract_options_by_default()
     test_excludes_watch_trades_by_default()
@@ -150,4 +166,5 @@ if __name__ == "__main__":
     test_normalizes_shares_correctly()
     test_normalizes_futures_correctly()
     test_dry_run_includes_exclusion_reasons()
-    print("8/8 external paper track tests passed")
+    test_query_filters_to_matching_ticker_or_contract()
+    print("9/9 external paper track tests passed")

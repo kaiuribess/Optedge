@@ -702,6 +702,11 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         symbols = {row["ticker_or_symbol"] for row in preview["rows"]}
         assert symbols == {"AAPL", "NVDA"}
 
+        filtered = build_paper_candidates(data_dir, max_new=5, query="AAPL 20260618 C 200")
+        assert filtered["query"] == "AAPL 20260618 C 200"
+        assert filtered["selected_count"] == 1
+        assert filtered["rows"][0]["ticker_or_symbol"] == "AAPL"
+
         dry = build_paper_candidates(data_dir, dry_run=True)
         assert dry["excluded_count"] == 1
         assert any("suggested_contracts <= 0" in row["reason_excluded"] for row in dry["rows"])

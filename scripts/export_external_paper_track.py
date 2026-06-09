@@ -153,6 +153,37 @@ def _score_row(row: pd.Series) -> float:
     return float(rank or 0.0) + 0.25 * conf + 0.10 * ev
 
 
+def _compact_search_text(value: Any) -> str:
+    text = _text(value).upper()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _matches_query(row: pd.Series, normalized: dict[str, Any], query: str) -> bool:
+    query_text = _text(query)
+    if not query_text:
+        return True
+    values: list[str] = []
+    for key in (
+        "ticker_or_symbol", "contract", "option_side", "strike", "expiry", "direction", "action",
+        "ticker", "symbol", "name", "company", "company_name", "security_name", "localSymbol",
+        "side", "top_headline",
+    ):
+        if key in normalized:
+            values.append(_text(normalized.get(key)))
+        if key in row.index:
+            values.append(_text(row.get(key)))
+    blob = " ".join(v for v in values if v).upper()
+    compact_blob = _compact_search_text(blob)
+    compact_query = _compact_search_text(query_text)
+    if not compact_query:
+        return True
+    if query_text.upper() in blob or compact_query in compact_blob:
+        return True
+    tokens = [_compact_search_text(token) for token in query_text.replace("/", " ").split()]
+    tokens = [token for token in tokens if token]
+    return bool(tokens) and all(token in compact_blob for token in tokens)
+
+
 def _open_keys(open_rows: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
     keys: set[tuple[str, str, str]] = set()
     for row in open_rows:
@@ -353,6 +384,7 @@ def _candidate_rows(
     max_spread: float,
     open_key_set: set[tuple[str, str, str]],
     now: datetime,
+    query: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     selected: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -387,6 +419,9 @@ def _candidate_rows(
             reasons.append(reason)
         if ticker and (asset, ticker, direction) in open_key_set:
             reasons.append("duplicate ticker/symbol already open in same direction")
+
+        if not _matches_query(row, normalized, query):
+            continue
 
         if reasons:
             out = normalized if normalized else _base_output(generated_at, asset)
@@ -423,6 +458,7 @@ def export_candidates(
     existing_external_open: int = 0,
     generated_at: str | None = None,
     now: datetime | None = None,
+    query: str = "",
 ) -> pd.DataFrame:
     """Return normalized paper-tracking candidates.
 
@@ -455,6 +491,7 @@ def export_candidates(
             DEFAULT_MAX_SPREAD,
             open_key_set,
             now,
+            query=query,
         )
         selected.extend(picked)
         excluded.extend(dropped)
@@ -523,6 +560,7 @@ def build_external_orders(
     allow_zero_size_placeholder: bool = False,
     asset: str = "all",
     dry_run: bool = False,
+    query: str = "",
 ) -> pd.DataFrame:
     data_dir = Path(data_dir)
     options = _load_latest_parquet(data_dir, "top_options_*.parquet")
@@ -546,6 +584,7 @@ def build_external_orders(
         allow_zero_size_placeholder=allow_zero_size_placeholder,
         asset=asset,
         dry_run=dry_run,
+        query=query,
     )
 
 
@@ -567,6 +606,7 @@ def main() -> int:
     parser.add_argument("--allow-zero-size-placeholder", action="store_true")
     parser.add_argument("--asset", choices=["option", "share", "futures", "all"], default="all")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--query", default="", help="Optional ticker, symbol, or contract filter")
     args = parser.parse_args()
     df = build_external_orders(
         max_new=args.max_new,
@@ -575,6 +615,7 @@ def main() -> int:
         allow_zero_size_placeholder=args.allow_zero_size_placeholder,
         asset=args.asset,
         dry_run=args.dry_run,
+        query=args.query,
     )
     if args.dry_run:
         print(df.to_csv(index=False))
