@@ -315,12 +315,19 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
         brief = report.get("brief") or {}
         best = brief.get("best_idea") or {}
         open_pos = brief.get("open_positions") or {}
+        readiness = brief.get("paper_readiness") or {}
+        readiness_checks = readiness.get("checks") if isinstance(readiness.get("checks"), list) else []
         out.update({
             "local_hits": _clean_value(report.get("total_hits")),
             "best_idea": _clean_value(best.get("label")),
             "best_status": _clean_value(best.get("trade_status")),
             "best_confidence": _clean_value(best.get("confidence")),
             "best_score": _clean_value(best.get("score")),
+            "paper_readiness_status": _clean_value(readiness.get("status")),
+            "paper_readiness_label": _clean_value(readiness.get("label")),
+            "paper_readiness_score": _clean_value(readiness.get("score")),
+            "paper_readiness_bad_count": sum(1 for row in readiness_checks if row.get("level") == "bad"),
+            "paper_readiness_warn_count": sum(1 for row in readiness_checks if row.get("level") == "warn"),
             "open_count": _clean_value(open_pos.get("count")),
             "avg_unrealized_pct": _clean_value(open_pos.get("avg_unrealized_pct")),
             "max_exit_pressure": _clean_value(open_pos.get("max_exit_pressure")),
@@ -1348,6 +1355,23 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                     f"{row.get('query') or row.get('symbol')} has no current local scan rows.",
                     "run_focused_scan", symbol=row.get("symbol"), query=row.get("query") or row.get("symbol"),
                 ))
+                continue
+            readiness = str(row.get("paper_readiness_status") or "").lower()
+            score = _float_value(row.get("paper_readiness_score"), 0.0)
+            query = row.get("query") or row.get("symbol")
+            if readiness == "ready":
+                items.append(_queue_item(
+                    62, "watchlist", "Review ready watchlist idea",
+                    f"{query} has paper-readiness score {score:.0f}/100.",
+                    "preview_paper_candidate", symbol=row.get("symbol"), query=query,
+                ))
+            elif readiness in {"caution", "blocked"}:
+                items.append(_queue_item(
+                    48 if readiness == "caution" else 58,
+                    "watchlist", "Recheck watchlist idea",
+                    f"{query} readiness is {readiness} at {score:.0f}/100.",
+                    "run_focused_scan", symbol=row.get("symbol"), query=query,
+                ))
     except Exception as exc:
         items.append(_queue_item(
             40, "watchlist", "Watchlist enrichment failed",
@@ -2075,6 +2099,8 @@ function watchlistTable(rows) {
       <td>${cell(r.best_idea || '-')}</td>
       <td>${cell(r.best_status || '-')}</td>
       <td>${cell(r.best_confidence || '-')}</td>
+      <td>${cell(r.paper_readiness_label || '-')}</td>
+      <td>${cell(r.paper_readiness_score)}</td>
       <td>${cell(r.open_count || 0)}</td>
       <td>${pct(r.avg_unrealized_pct)}</td>
       <td>${cell(r.warning_count || 0)}</td>
@@ -2083,7 +2109,7 @@ function watchlistTable(rows) {
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
+    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Readiness</th><th>Score</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {

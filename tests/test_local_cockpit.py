@@ -64,6 +64,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/export-paper" in html
     assert "Write export files" in html
     assert "Research watchlist" in html
+    assert "Readiness" in html
     assert "/api/watchlist" in html
     assert "/api/watchlist-add" in html
     assert "/api/watchlist-run" in html
@@ -275,6 +276,48 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         assert len(aapl_rows) == 1
         assert aapl_rows[0]["grouped_count"] == 2
         assert any(row["category"] == "paper_candidate" and row["symbol"] == "NVDA" for row in queue["rows"])
+
+
+def test_action_queue_surfaces_ready_watchlist_ideas():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "open_positions": 0,
+            "assets": {
+                "option": {"open_positions": 0},
+                "share": {"open_positions": 0},
+                "futures": {"open_positions": 0},
+            },
+        }), encoding="utf-8")
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 0}), encoding="utf-8",
+        )
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 3.2,
+            "confidence": 80,
+            "rank_score": 2.0,
+            "trade_status": "Trade",
+            "suggested_contracts": 1,
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        add_watchlist_query("AAPL 20260618 C 200", data_dir)
+        queue = build_action_queue(data_dir)
+        ready = [
+            row for row in queue["rows"]
+            if row["category"] == "watchlist" and row["label"] == "Review ready watchlist idea"
+        ]
+        assert ready
+        assert ready[0]["symbol"] == "AAPL"
+        assert ready[0]["action"] == "preview_paper_candidate"
 
 
 def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
@@ -667,6 +710,8 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
             "confidence": 82,
             "rank_score": 2.5,
             "trade_status": "Trade",
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
         }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
         (data_dir / "open_positions.json").write_text(json.dumps([{
             "ticker": "NVDA",
@@ -682,6 +727,9 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
         assert nvda["local_hits"] >= 2
         assert nvda["best_idea"] == "NVDA C 200.0 2026-06-18"
         assert nvda["best_status"] == "Trade"
+        assert nvda["paper_readiness_status"] == "ready"
+        assert nvda["paper_readiness_score"] >= 75
+        assert nvda["paper_readiness_bad_count"] == 0
         assert nvda["open_count"] == 1
         assert nvda["avg_unrealized_pct"] == 0.5
 
@@ -705,6 +753,7 @@ if __name__ == "__main__":
     test_data_health_reports_fresh_sec_ticker_cache()
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
+    test_action_queue_surfaces_ready_watchlist_ideas()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
@@ -712,4 +761,4 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("14/14 local cockpit tests passed")
+    print("15/15 local cockpit tests passed")
