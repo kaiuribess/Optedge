@@ -15,6 +15,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_performance_summary, build_positions,
     build_risk_summary, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
+    warm_sec_ticker_cache,
 )
 
 
@@ -82,6 +83,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/job-log" in html
     assert "/job-dashboard" in html
     assert "/job-lookup" in html
+    assert "/api/warm-sec-cache" in html
     assert "job-match-btn" in html
     assert "Quick scan" in html
     assert "Bankroll override" in html
@@ -170,6 +172,31 @@ def test_data_health_reports_fresh_sec_ticker_cache():
         assert health["free_data_caches"]["sec_company_tickers"]["row_count"] == 2
 
 
+def test_warm_sec_ticker_cache_uses_data_dir_cache():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_loader = cockpit_module.load_sec_company_tickers
+
+        def fake_loader(cache_path, timeout=8.0, fetch_if_stale=True, **kwargs):
+            Path(cache_path).write_text(json.dumps({
+                "rows": [
+                    {"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147},
+                ],
+            }), encoding="utf-8")
+            return [{"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147}]
+
+        cockpit_module.load_sec_company_tickers = fake_loader
+        try:
+            result = warm_sec_ticker_cache(data_dir)
+        finally:
+            cockpit_module.load_sec_company_tickers = old_loader
+
+        assert result["ok"] is True
+        assert result["row_count"] == 1
+        assert result["cache"]["status"] == "fresh"
+        assert (data_dir / "sec_company_tickers.json").exists()
+
+
 def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -233,6 +260,11 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         queue = build_action_queue(data_dir)
         assert queue["rows"][0]["category"] == "data_health"
         assert queue["rows"][0]["priority"] == 100
+        assert any(
+            row["label"] == "SEC ticker cache missing"
+            and row["action"] == "warm_sec_ticker_cache"
+            for row in queue["rows"]
+        )
         assert any(row["category"] == "open_position" and row["symbol"] == "AAPL" for row in queue["rows"])
         aapl_rows = [
             row for row in queue["rows"]
@@ -669,6 +701,7 @@ if __name__ == "__main__":
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_data_health_reports_fresh_sec_ticker_cache()
+    test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -677,4 +710,4 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("13/13 local cockpit tests passed")
+    print("14/14 local cockpit tests passed")

@@ -32,7 +32,10 @@ from scripts.export_external_paper_track import build_external_orders, write_out
 from scripts.research_jobs import (
     create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
 )
-from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol, sec_company_cache_meta, sec_company_search
+from scripts.symbol_resolver import (
+    COMMON_ALIASES, load_sec_company_tickers, resolve_symbol,
+    sec_company_cache_meta, sec_company_search,
+)
 
 
 FRESH_SNAPSHOT_MINUTES = 90.0
@@ -452,6 +455,24 @@ def run_watchlist_scans(
         "jobs": jobs,
         "scan_args": scan_args,
         "launched": launch,
+    }
+
+
+def warm_sec_ticker_cache(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[str, Any]:
+    """Warm the free SEC company ticker cache used by company-name search."""
+    cache_path = Path(data_dir) / "sec_company_tickers.json"
+    rows = load_sec_company_tickers(cache_path=cache_path, timeout=timeout, fetch_if_stale=True)
+    meta = sec_company_cache_meta(cache_path)
+    ok = bool(rows) and meta.get("status") in {"fresh", "stale"}
+    return {
+        "ok": ok,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "row_count": len(rows),
+        "cache": meta,
+        "message": (
+            f"SEC ticker cache ready with {len(rows)} company row(s)."
+            if ok else "SEC ticker cache could not be warmed right now."
+        ),
     }
 
 
@@ -1267,10 +1288,16 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 "refresh_or_fix_artifact",
             ))
         elif level == "warn":
+            action = (
+                "warm_sec_ticker_cache"
+                if str(check.get("label") or "").startswith("SEC ticker cache")
+                else "review_data_health"
+            )
             items.append(_queue_item(
-                70, "data_health", check.get("label") or "Data health warning",
+                75 if action == "warm_sec_ticker_cache" else 70,
+                "data_health", check.get("label") or "Data health warning",
                 check.get("detail") or "A dashboard data-health warning is active.",
-                "review_data_health",
+                action,
             ))
 
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
@@ -2066,6 +2093,16 @@ function scrollToId(id) {
 }
 async function routeQueueAction(action, query, symbol) {
   const q = query || symbol || '';
+  if (action === 'warm_sec_ticker_cache') {
+    $('queue-status-text').textContent = 'Warming free SEC company ticker cache...';
+    const res = await fetch('/api/warm-sec-cache', {method: 'POST'});
+    const data = await res.json();
+    $('queue-status-text').textContent = data.message || (data.ok ? 'SEC ticker cache warmed.' : 'SEC ticker cache warm failed.');
+    await loadSummary();
+    await loadActionQueue();
+    scrollToId('health-results');
+    return;
+  }
   if (action === 'refresh_or_fix_artifact' || action === 'review_data_health') {
     await loadSummary();
     scrollToId('health-results');
@@ -2550,6 +2587,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper",
             "/api/watchlist-add", "/api/watchlist-remove", "/api/watchlist-run",
+            "/api/warm-sec-cache",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
@@ -2562,6 +2600,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
             body = {}
+        if parsed.path == "/api/warm-sec-cache":
+            result = warm_sec_ticker_cache(self.data_dir)
+            self._send_json(result, status=200 if result.get("ok") else 502)
+            return
         if parsed.path == "/api/watchlist-add":
             result = add_watchlist_query(str(body.get("query") or ""), self.data_dir)
             self._send_json(result, status=200 if result.get("ok") else 400)
