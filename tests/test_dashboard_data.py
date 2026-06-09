@@ -10,6 +10,39 @@ if str(ROOT) not in sys.path:
 from dashboard import build as dashboard_build
 
 
+def _sample_option_row(**extra):
+    row = {
+        "ticker": "AAPL",
+        "side": "call",
+        "strike": 280.0,
+        "spot": 300.0,
+        "top_headline": "",
+        "days_to_earnings": None,
+        "pred_option_return_pct": 0.1,
+        "ev_pct": 0.2,
+        "kelly_pct": 0.05,
+        "actual_dollars": 500,
+        "suggested_contracts": 1,
+        "stop_price": 0.5,
+        "target_price": 2.0,
+        "contract": "AAPL 2026-06-18 C 280",
+        "trade_status": "Trade",
+        "confidence": 80,
+        "dte": 30,
+        "mid": 1.0,
+        "iv_market": 0.4,
+        "fair_vol": 0.3,
+        "vol_premium": 0.1,
+        "delta": 0.4,
+        "open_interest": 500,
+        "spread_pct": 0.05,
+        "reasoning": "test",
+        "risks": "test",
+    }
+    row.update(extra)
+    return dashboard_build.pd.Series(row)
+
+
 def test_dashboard_helpers_dedupe_and_label_positions():
     rows = [
         {
@@ -35,6 +68,19 @@ def test_dashboard_helpers_dedupe_and_label_positions():
     assert dashboard_build._open_position_label(rows[0]) == "AAPL C 280 06-18"
     assert dashboard_build._is_win_pnl(0.01) is True
     assert dashboard_build._is_win_pnl(-0.01) is False
+
+
+def test_option_card_and_table_show_quote_quality():
+    live_row = _sample_option_row(chain_source="tradier", quote_quality="live_or_broker")
+    fallback_row = _sample_option_row(ticker="MSFT", chain_source="yfinance", quote_quality="free_or_delayed")
+
+    card_html = dashboard_build._option_card(live_row)
+    table_html = dashboard_build._options_table(dashboard_build.pd.DataFrame([live_row, fallback_row]))
+
+    assert "Live Tradier" in card_html
+    assert "Source" in table_html
+    assert "Live Tradier" in table_html
+    assert "Yahoo fallback" in table_html
 
 
 def test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels():
@@ -218,8 +264,9 @@ def test_dashboard_includes_export_and_workflow_controls():
 
 if __name__ == "__main__":
     test_dashboard_helpers_dedupe_and_label_positions()
+    test_option_card_and_table_show_quote_quality()
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
     test_dashboard_performance_prefers_validation_over_forward_telemetry()
     test_dashboard_engine_panels_are_merged_into_one_section()
     test_dashboard_includes_export_and_workflow_controls()
-    print("5/5 dashboard data tests passed")
+    print("6/6 dashboard data tests passed")

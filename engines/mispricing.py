@@ -425,7 +425,8 @@ def _log_model_predictions(contracts: pd.DataFrame) -> None:
     if contracts is None or contracts.empty:
         return
     cols_needed = ["ticker","expiry","strike","side","spot","mid",
-                   "theo_bs","theo_crr","theo_bjs","theo_cboe","regime","chain_source"]
+                   "theo_bs","theo_crr","theo_bjs","theo_cboe","regime",
+                   "chain_source","quote_quality"]
     cols = [c for c in cols_needed if c in contracts.columns]
     if not cols:
         return

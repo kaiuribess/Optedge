@@ -107,6 +107,39 @@ def _trade_status_chip(row: pd.Series) -> str:
             f'{label}</span>')
 
 
+def _quote_quality_chip(row: pd.Series) -> str:
+    source = str(row.get("chain_source") or row.get("quote_source") or "unknown").strip()
+    quality = str(row.get("quote_quality") or "").strip().lower()
+    if not source or source.lower() == "nan":
+        source = "unknown"
+    src_label = source.replace("_", " ").title()
+    if source.lower() == "tradier" or quality in {"live_or_broker", "live", "broker"}:
+        color = "#10b981"
+        label = f"Live {src_label}"
+        title = "Broker/live option chain source; still verify spreads before manual execution."
+    elif source.lower().startswith("cboe"):
+        color = "#f59e0b"
+        label = "CBOE delayed"
+        title = "Free CBOE delayed option chain source."
+    elif source.lower().startswith("nasdaq"):
+        color = "#f59e0b"
+        label = "NASDAQ free"
+        title = "Free NASDAQ option chain source; treat as non-live unless verified."
+    elif source.lower().startswith("yfinance"):
+        color = "#94a3b8"
+        label = "Yahoo fallback"
+        title = "Free yfinance fallback; can be delayed, partial, or rate-limited."
+    else:
+        color = "#94a3b8"
+        label = src_label
+        title = "Quote source quality is unknown; verify before manual execution."
+    return (
+        f'<span class="chip quote-source" title="{html.escape(title)}" '
+        f'style="background:{color}20;color:{color};border:1px solid {color}55">'
+        f'{html.escape(label)}</span>'
+    )
+
+
 def _position_identity(row: Dict[str, Any]) -> tuple:
     """Stable identity for lifecycle rows that may not have a position_id."""
     pid = row.get("position_id")
@@ -311,6 +344,7 @@ def _option_card(row: pd.Series) -> str:
       {pred_html}
       {ev_html}
       {kelly_html}
+      {_quote_quality_chip(row)}
       {congress_html}
       {analyst_html}
       {tech_html}
@@ -760,6 +794,7 @@ def _options_table(df: pd.DataFrame) -> str:
         side_color = "#10b981" if r["side"] == "call" else "#f87171"
         side_label = "C" if r["side"] == "call" else "P"
         status = html.escape(str(r.get("trade_status") or "Watch"))
+        source_html = _quote_quality_chip(r)
         rows.append(f"""
 <tr>
   <td>{i+1}</td>
@@ -775,12 +810,13 @@ def _options_table(df: pd.DataFrame) -> str:
   <td>{_fmt_pct(r['vol_premium'])}</td>
   <td>{int(r['dte'])}d</td>
   <td>${_fmt_num(r['mid'])}</td>
+  <td>{source_html}</td>
 </tr>""")
     return f"""
 <table class="ranked">
   <thead><tr>
     <th>#</th><th>Ticker</th><th>Contract</th><th>Side</th>
-    <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>IV</th><th>HV30</th><th>Vol prem</th><th>DTE</th><th>Mid</th>
+    <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>IV</th><th>HV30</th><th>Vol prem</th><th>DTE</th><th>Mid</th><th>Source</th>
   </tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>
