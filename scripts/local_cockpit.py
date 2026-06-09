@@ -2139,6 +2139,26 @@ function actionQueueTable(rows) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function countMapText(map) {
+  if (!map || typeof map !== 'object') return '-';
+  const entries = Object.entries(map).filter(([k, v]) => k && Number(v) > 0);
+  return entries.length ? entries.map(([k, v]) => `${k}:${v}`).join(', ') : '-';
+}
+function opportunityQualityTable(health) {
+  const quality = (health && health.opportunity_quality) || {};
+  const rows = Object.values(quality).map(r => ({
+    asset: r.asset,
+    file: r.file || '-',
+    rows: r.rows || 0,
+    actionable_rows: r.actionable_rows || 0,
+    duplicate_rows: r.duplicate_rows || 0,
+    missing_columns: (r.missing_required_columns || []).join(', ') || '-',
+    price_or_score: r.missing_price_or_score ? 'missing' : 'ok',
+    quote_quality: countMapText(r.quote_quality_counts)
+  }));
+  if (!rows.length) return '<div class="empty">No opportunity quality audit available.</div>';
+  return table(rows);
+}
 function riskSummaryHtml(risk) {
   if (!risk) return '<div class="empty">No risk summary available.</div>';
   const tiles = `<div class="brief-grid">
@@ -2197,7 +2217,8 @@ function healthTable(health) {
   const checks = (health && health.checks) || [];
   if (!checks.length) return '<div class="empty">No health checks available.</div>';
   const body = checks.map(c => `<tr><td><strong class="${healthClass(c.level)}">${cell(c.level)}</strong></td><td>${cell(c.label)}</td><td>${cell(c.detail)}</td></tr>`).join('');
-  return `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>
+    <div class="brief-list" style="margin-top:10px"><h4>Opportunity quality</h4>${opportunityQualityTable(health)}</div>`;
 }
 function suggestionHtml(rows) {
   if (!rows || rows.length === 0) return '';

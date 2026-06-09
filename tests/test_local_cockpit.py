@@ -47,6 +47,8 @@ def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
     assert "Data health" in html
+    assert "Opportunity quality" in html
+    assert "opportunityQualityTable" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
