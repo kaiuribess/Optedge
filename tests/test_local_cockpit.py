@@ -175,6 +175,67 @@ def test_data_health_reports_fresh_sec_ticker_cache():
         assert health["free_data_caches"]["sec_company_tickers"]["row_count"] == 2
 
 
+def test_data_health_audits_latest_opportunity_duplicates():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "open_positions": 0,
+            "assets": {
+                "option": {"open_positions": 0},
+                "share": {"open_positions": 0},
+                "futures": {"open_positions": 0},
+            },
+        }), encoding="utf-8")
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 0}), encoding="utf-8",
+        )
+        pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+                "mid": 2.5,
+                "suggested_contracts": 1,
+                "trade_status": "Trade",
+            },
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2026-06-18",
+                "mid": 2.6,
+                "suggested_contracts": 1,
+                "trade_status": "Trade",
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "spot": 100.0,
+            "suggested_dollars": 500,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame([{
+            "symbol": "ES=F",
+            "contract": "/MES",
+            "direction": "long",
+            "entry_price": 5000,
+            "suggested_contracts": 1,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+
+        health = build_data_health(data_dir)
+        labels = {row["label"]: row for row in health["checks"]}
+        assert labels["option opportunity duplicates"]["level"] == "warn"
+        assert "1 duplicate" in labels["option opportunity duplicates"]["detail"]
+        assert health["opportunity_quality"]["option"]["duplicate_rows"] == 1
+        assert health["opportunity_quality"]["share"]["actionable_rows"] == 1
+        assert health["opportunity_quality"]["futures"]["actionable_rows"] == 1
+
+
 def test_warm_sec_ticker_cache_uses_data_dir_cache():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -785,6 +846,7 @@ if __name__ == "__main__":
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_data_health_reports_fresh_sec_ticker_cache()
+    test_data_health_audits_latest_opportunity_duplicates()
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_action_queue_surfaces_ready_watchlist_ideas()
@@ -796,4 +858,4 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("16/16 local cockpit tests passed")
+    print("17/17 local cockpit tests passed")

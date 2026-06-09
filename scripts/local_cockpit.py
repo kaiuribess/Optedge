@@ -1483,6 +1483,121 @@ def _count_duplicate_open_positions(data_dir: Path) -> tuple[int, int]:
     return raw_count, deduped_count
 
 
+def _missing_required_columns(df: pd.DataFrame, required: list[str]) -> list[str]:
+    return [col for col in required if col not in df.columns]
+
+
+def _has_any_column(df: pd.DataFrame, columns: list[str]) -> bool:
+    return any(col in df.columns for col in columns)
+
+
+def _opportunity_identity_columns(asset: str, df: pd.DataFrame) -> list[str]:
+    candidates = {
+        "option": ["ticker", "side", "strike", "expiry"],
+        "share": ["ticker"],
+        "futures": ["symbol", "direction", "contract"],
+        "value": ["ticker"],
+    }.get(asset, [])
+    cols = [col for col in candidates if col in df.columns]
+    if asset == "futures" and "contract" not in cols:
+        cols = [col for col in cols if col != "contract"]
+    return cols
+
+
+def _count_duplicate_opportunities(asset: str, df: pd.DataFrame) -> int:
+    cols = _opportunity_identity_columns(asset, df)
+    if not cols or df.empty:
+        return 0
+    normalized = df[cols].fillna("").astype(str).apply(lambda col: col.str.upper().str.strip())
+    return int(normalized.duplicated(keep="first").sum())
+
+
+def _opportunity_quality_audit(data_dir: Path) -> dict[str, Any]:
+    required = {
+        "option": ["ticker", "side", "strike", "expiry"],
+        "share": ["ticker"],
+        "futures": ["symbol", "direction"],
+        "value": ["ticker"],
+    }
+    price_any = {
+        "option": ["mid", "entry_price"],
+        "share": ["spot", "entry_price", "current_price"],
+        "futures": ["entry_price", "spot"],
+        "value": ["value_score", "rank_score"],
+    }
+    rows: dict[str, dict[str, Any]] = {}
+    checks: list[dict[str, str]] = []
+
+    for asset, spec in OPPORTUNITY_SPECS.items():
+        path = _latest_file(data_dir, spec["pattern"])
+        meta = _file_meta(path)
+        df = _read_parquet(path)
+        row_count = int(len(df))
+        missing = _missing_required_columns(df, required.get(asset, [])) if not df.empty else []
+        missing_price = bool(not df.empty and not _has_any_column(df, price_any.get(asset, [])))
+        duplicate_rows = _count_duplicate_opportunities(asset, df)
+        actionable_count = 0
+        if not df.empty:
+            out = df.copy()
+            out["asset"] = asset
+            actionable_count = int(out.apply(_is_actionable, axis=1).sum())
+        quote_quality_counts: dict[str, int] = {}
+        if not df.empty and "quote_quality" in df.columns:
+            quote_quality_counts = {
+                str(key): int(value)
+                for key, value in df["quote_quality"].fillna("unknown").astype(str).value_counts().to_dict().items()
+            }
+        rows[asset] = {
+            "asset": asset,
+            "file": meta.get("name") if meta else None,
+            "rows": row_count,
+            "actionable_rows": actionable_count,
+            "duplicate_rows": duplicate_rows,
+            "missing_required_columns": missing,
+            "missing_price_or_score": missing_price,
+            "quote_quality_counts": quote_quality_counts,
+        }
+
+        if path is None:
+            continue
+        if df.empty:
+            checks.append(_health_check(
+                "warn", f"{asset} opportunity snapshot empty",
+                f"{spec['pattern']} exists but has no rows for search/explorer/paper review.",
+            ))
+            continue
+        if missing:
+            checks.append(_health_check(
+                "bad", f"{asset} opportunity columns",
+                f"Latest {asset} snapshot is missing required column(s): {', '.join(missing)}.",
+            ))
+        if missing_price:
+            checks.append(_health_check(
+                "warn", f"{asset} opportunity pricing",
+                f"Latest {asset} snapshot has no usable price/score column for ranking or paper readiness.",
+            ))
+        if duplicate_rows:
+            checks.append(_health_check(
+                "warn", f"{asset} opportunity duplicates",
+                f"Latest {asset} snapshot has {duplicate_rows} duplicate row(s) by trade identity.",
+            ))
+        elif not missing:
+            checks.append(_health_check(
+                "ok", f"{asset} opportunity duplicates",
+                f"Latest {asset} snapshot has no duplicate trade identities across {row_count} row(s).",
+            ))
+        if asset in {"option", "share", "futures"} and row_count and actionable_count == 0:
+            checks.append(_health_check(
+                "warn", f"{asset} actionable opportunities",
+                f"Latest {asset} snapshot has 0 actionable row(s) after Watch/Skip and sizing checks.",
+            ))
+
+    return {
+        "rows": rows,
+        "checks": checks,
+    }
+
+
 def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Check whether the dashboard-facing artifacts agree with current state."""
     open_counts = _direct_open_counts(data_dir)
@@ -1595,6 +1710,9 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         elif _float_value(meta.get("age_minutes")) > 24 * 60:
             checks.append(_health_check("warn", f"{asset_name} snapshot old", f"{meta['name']} is more than 24 hours old."))
 
+    opportunity_quality = _opportunity_quality_audit(data_dir)
+    checks.extend(opportunity_quality["checks"])
+
     sec_cache = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
     if sec_cache.get("status") == "fresh":
         checks.append(_health_check(
@@ -1631,6 +1749,7 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "equity_curve": _file_meta(equity_curve),
         },
         "snapshots": snapshot_meta,
+        "opportunity_quality": opportunity_quality["rows"],
         "free_data_caches": {
             "sec_company_tickers": sec_cache,
         },
