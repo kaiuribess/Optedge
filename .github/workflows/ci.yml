@@ -51,6 +51,7 @@ jobs:
           python tests/test_fred_public.py
           python tests/test_performance_cache.py
           python tests/test_finbert_batching.py
+          python tests/test_chain_provider_tradier.py
 
       - name: Lint
         run: |

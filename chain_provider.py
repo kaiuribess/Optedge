@@ -28,6 +28,7 @@ Each DataFrame's required columns:
 """
 from __future__ import annotations
 import logging
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,6 +48,10 @@ log = logging.getLogger("optedge.chain")
 
 CBOE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{tk}.json"
 NASDAQ_URL = "https://api.nasdaq.com/api/quote/{tk}/option-chain"
+TRADIER_BASE_URL = os.environ.get("OPTEDGE_TRADIER_BASE_URL", "https://api.tradier.com/v1").rstrip("/")
+TRADIER_CHAIN_URL = f"{TRADIER_BASE_URL}/markets/options/chains"
+TRADIER_EXPIRATIONS_URL = f"{TRADIER_BASE_URL}/markets/options/expirations"
+TRADIER_MAX_EXPIRATIONS = max(1, int(os.environ.get("OPTEDGE_TRADIER_MAX_EXPIRATIONS", "12")))
 NASDAQ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 "
                   "(KHTML, like Gecko) Version/16.6 Safari/605.1.15",
@@ -95,6 +100,165 @@ def _parse_occ(symbol: str) -> Optional[Tuple[str, str, str, float]]:
         return root, expiry, side, strike
     except (ValueError, IndexError):
         return None
+
+
+def _tradier_token() -> str:
+    return (
+        os.environ.get("OPTEDGE_TRADIER_TOKEN")
+        or os.environ.get("TRADIER_TOKEN")
+        or os.environ.get("TRADIER_ACCESS_TOKEN")
+        or ""
+    ).strip()
+
+
+def tradier_enabled() -> bool:
+    return bool(_tradier_token())
+
+
+def _tradier_headers() -> Dict[str, str]:
+    return {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {_tradier_token()}",
+    }
+
+
+def _tradier_option_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    options = (payload or {}).get("options") if isinstance(payload, dict) else None
+    rows = options.get("option") if isinstance(options, dict) else None
+    if rows is None:
+        return []
+    if isinstance(rows, dict):
+        return [rows]
+    return rows if isinstance(rows, list) else []
+
+
+def _fetch_tradier_expirations(ticker: str, session) -> List[str]:
+    if not tradier_enabled():
+        return []
+    try:
+        r = session.get(
+            TRADIER_EXPIRATIONS_URL,
+            params={"symbol": ticker.upper(), "includeAllRoots": "false"},
+            headers=_tradier_headers(),
+            timeout=12,
+        )
+        if r.status_code != 200:
+            log.debug("tradier expirations %s status=%s", ticker, r.status_code)
+            return []
+        data = r.json()
+    except Exception as e:
+        log.debug("tradier expirations %s fetch: %s", ticker, e)
+        return []
+    raw = ((data or {}).get("expirations") or {}).get("date")
+    if isinstance(raw, str):
+        return [raw]
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
+def _tradier_record(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    opt_symbol = str(row.get("symbol") or "")
+    parsed = _parse_occ(opt_symbol)
+    expiry = None
+    side = str(row.get("option_type") or "").strip().lower()
+    strike = _safe_float(row.get("strike"))
+    if parsed:
+        _, expiry, parsed_side, parsed_strike = parsed
+        side = side or parsed_side
+        if pd.isna(strike):
+            strike = parsed_strike
+    if side in {"c", "call"}:
+        side = "call"
+    elif side in {"p", "put"}:
+        side = "put"
+    else:
+        return None
+    if pd.isna(strike) or strike <= 0:
+        return None
+    greeks = row.get("greeks") if isinstance(row.get("greeks"), dict) else {}
+    bid = _safe_float(row.get("bid"))
+    ask = _safe_float(row.get("ask"))
+    last = _safe_float(row.get("last"))
+    if pd.isna(last) and not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask >= bid:
+        last = (bid + ask) / 2.0
+    return {
+        "strike": strike,
+        "side": side,
+        "bid": bid,
+        "ask": ask,
+        "lastPrice": last,
+        "volume": _safe_int(row.get("volume")),
+        "openInterest": _safe_int(row.get("open_interest")),
+        "impliedVolatility": _safe_float(greeks.get("mid_iv") or greeks.get("smv_vol")),
+        "delta": _safe_float(greeks.get("delta")),
+        "gamma": _safe_float(greeks.get("gamma")),
+        "theta": _safe_float(greeks.get("theta")),
+        "vega": _safe_float(greeks.get("vega")),
+        "rho": _safe_float(greeks.get("rho")),
+        "_expiry": expiry,
+    }
+
+
+def _fetch_tradier(ticker: str, session) -> Optional[Dict[str, Any]]:
+    """Optional Tradier production option chains.
+
+    Tradier exposes expirations separately, then one chain per expiration.
+    Set OPTEDGE_TRADIER_TOKEN or TRADIER_TOKEN to enable this provider.
+    """
+    if not tradier_enabled():
+        return None
+    expirations = _fetch_tradier_expirations(ticker, session)
+    if not expirations:
+        return None
+    by_exp: Dict[str, List[Dict[str, Any]]] = {}
+    spot_candidates: List[float] = []
+    for exp in expirations[:TRADIER_MAX_EXPIRATIONS]:
+        try:
+            r = session.get(
+                TRADIER_CHAIN_URL,
+                params={"symbol": ticker.upper(), "expiration": exp, "greeks": "true"},
+                headers=_tradier_headers(),
+                timeout=12,
+            )
+            if r.status_code != 200:
+                log.debug("tradier chain %s %s status=%s", ticker, exp, r.status_code)
+                continue
+            rows = _tradier_option_rows(r.json())
+        except Exception as e:
+            log.debug("tradier chain %s %s fetch: %s", ticker, exp, e)
+            continue
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            rec = _tradier_record(raw)
+            if not rec:
+                continue
+            row_exp = rec.pop("_expiry") or exp
+            by_exp.setdefault(row_exp, []).append(rec)
+            underlying = _safe_float(raw.get("underlying_price"))
+            if not pd.isna(underlying) and underlying > 0:
+                spot_candidates.append(underlying)
+    if not by_exp:
+        return None
+    spot = spot_candidates[-1] if spot_candidates else float("nan")
+    if pd.isna(spot) or spot <= 0:
+        try:
+            import data_provider as _dp
+
+            h = _dp.get_history(ticker, period="5d", cache_age=300)
+            if not h.empty:
+                spot = float(h["Close"].iloc[-1])
+        except Exception:
+            spot = float("nan")
+    if pd.isna(spot) or spot <= 0:
+        return None
+    return {
+        "spot": float(spot),
+        "div_yield": 0.0,
+        "expirations": sorted(by_exp.keys()),
+        "chains": {exp: pd.DataFrame(rows) for exp, rows in by_exp.items()},
+        "source": "tradier",
+        "quote_quality": "live_or_broker",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +507,11 @@ def fetch_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
 
     sess = _dp.get_session()
 
-    # CBOE
-    blob = _fetch_cboe(ticker, sess)
+    # Optional live/broker source first when configured.
+    blob = _fetch_tradier(ticker, sess)
+    # Free/keyless delayed source.
+    if not blob:
+        blob = _fetch_cboe(ticker, sess)
     # NASDAQ (try stocks, then etf, then index — first one that returns wins)
     if not blob:
         for ac in ("stocks", "etf", "index"):

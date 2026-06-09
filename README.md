@@ -144,6 +144,14 @@ python setup_check.py
 
 Python `3.11` or `3.12` is recommended.
 
+Optional live/broker option-chain source:
+
+```powershell
+$env:OPTEDGE_TRADIER_TOKEN="your-production-tradier-token"
+```
+
+If no Tradier token is set, Optedge stays on the free chain stack: CBOE delayed quotes, NASDAQ chains, then yfinance fallback.
+
 ## Run
 
 Single scan:
@@ -333,6 +341,7 @@ Optedge uses free or locally configured sources where possible, including:
 - News and earnings feeds.
 - Macro, rates, credit, energy, agriculture, volatility, and futures context.
 - Optional FinBERT sentiment scoring when the local environment supports it.
+- Optional Tradier production token for broker/live option chains; free CBOE/NASDAQ/yfinance fallbacks remain the default.
 
 Some sources may rate-limit, return partial data, or require keys in your local `keys.py`. Private keys are ignored by Git.
 

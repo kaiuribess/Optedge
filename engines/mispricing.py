@@ -324,6 +324,7 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
         "vega_src":  vega_src,
         "moneyness": K_arr / np.where(S_arr > 0, S_arr, 1.0),
         "chain_source": blob.get("source", "unknown"),
+        "quote_quality": blob.get("quote_quality", "free_or_delayed"),
         "regime": regime,
     })
     return out
