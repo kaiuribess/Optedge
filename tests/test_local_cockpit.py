@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_performance_summary, build_positions,
@@ -211,6 +212,8 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
 def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
+        old_sec = cockpit_module.sec_company_search
+        cockpit_module.sec_company_search = lambda query, limit=16: []
         pd.DataFrame([{
             "ticker": "NVDA",
             "side": "call",
@@ -240,17 +243,29 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             encoding="utf-8",
         )
 
-        nvda = build_symbol_suggestions(data_dir, query="nvda")
-        assert any(row["query"] == "NVDA 2026-06-18 C 200" for row in nvda["rows"])
+        try:
+            nvda = build_symbol_suggestions(data_dir, query="nvda")
+            assert any(row["query"] == "NVDA 2026-06-18 C 200" for row in nvda["rows"])
 
-        oil = build_symbol_suggestions(data_dir, query="oil")
-        assert any(row["symbol"] == "CL=F" for row in oil["rows"])
+            oil = build_symbol_suggestions(data_dir, query="oil")
+            assert any(row["symbol"] == "CL=F" for row in oil["rows"])
 
-        apple = build_symbol_suggestions(data_dir, query="apple")
-        assert any(row["symbol"] == "AAPL" and row["kind"] == "alias" for row in apple["rows"])
+            apple = build_symbol_suggestions(data_dir, query="apple")
+            assert any(row["symbol"] == "AAPL" and row["kind"] == "alias" for row in apple["rows"])
 
-        gas = build_symbol_suggestions(data_dir, query="NG")
-        assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
+            gas = build_symbol_suggestions(data_dir, query="NG")
+            assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
+
+            cockpit_module.sec_company_search = lambda query, limit=16: [{
+                "symbol": "SNOW",
+                "name": "Snowflake Inc.",
+                "score": 0.97,
+            }]
+            snow = build_symbol_suggestions(data_dir, query="snowflake")
+            assert any(row["symbol"] == "SNOW" and row["kind"] == "sec" for row in snow["rows"])
+            assert "free SEC ticker map" in " ".join(snow["notes"])
+        finally:
+            cockpit_module.sec_company_search = old_sec
 
 
 def test_opportunity_explorer_reads_and_filters_latest_snapshots():

@@ -32,7 +32,7 @@ from scripts.export_external_paper_track import build_external_orders, write_out
 from scripts.research_jobs import (
     create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
 )
-from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol
+from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol, sec_company_search
 
 
 FRESH_SNAPSHOT_MINUTES = 90.0
@@ -711,6 +711,15 @@ def build_symbol_suggestions(
             name=item.get("name"), score=0.75,
         )
 
+    if len(query_norm) >= 2:
+        for item in sec_company_search(query, limit=limit):
+            _add_suggestion(
+                rows, seen, item.get("symbol"),
+                f"{item.get('symbol')} - {item.get('name') or 'SEC company'}",
+                "sec", "SEC company tickers", query=str(item.get("symbol") or ""),
+                name=item.get("name"), score=item.get("score"),
+            )
+
     if query_norm:
         rows = [row for row in rows if query_norm in _suggestion_text(row)]
 
@@ -728,7 +737,7 @@ def build_symbol_suggestions(
         "count": len(rows),
         "rows": rows,
         "notes": [
-            "Suggestions are built from local scan snapshots, open positions, watchlist entries, and built-in aliases.",
+            "Suggestions are built from local scan snapshots, open positions, watchlist entries, built-in aliases, and the free SEC ticker map.",
             "Selecting a suggestion only fills or runs local research; it does not place trades.",
         ],
     }
