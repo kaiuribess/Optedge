@@ -182,6 +182,11 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
             "trade_status": "Trade",
             "stop_price": 2.1,
             "target_price": 8.4,
+            "spread_pct": 0.12,
+            "net_edge_pct": 0.35,
+            "suggested_contracts": 1,
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
             "z_macro": 1.5,
             "z_insider": -0.8,
             "top_headline": "NVDA test headline",
@@ -208,6 +213,10 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         brief = report["brief"]
         assert brief["symbol"] == "NVDA"
         assert brief["best_idea"]["label"] == "NVDA C 200.0 2026-06-18"
+        assert brief["best_idea"]["quote_source_label"] == "Live Tradier"
+        assert brief["best_idea"]["quote_source"]["is_live_or_broker"] is True
+        assert brief["best_idea"]["spread_pct"] == 0.12
+        assert brief["best_idea"]["net_edge_pct"] == 0.35
         assert brief["open_positions"]["count"] == 1
         assert brief["open_positions"]["avg_unrealized_pct"] == 0.5
         assert brief["validation"]["win_rate"] == 0.6
@@ -216,8 +225,11 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert "macro" in {x["factor"] for x in brief["top_positive_factors"]}
         assert "insider" in {x["factor"] for x in brief["top_negative_factors"]}
         assert "sample warning" in brief["risk_warnings"]
-        assert "Research action" in render_html(report)
-        assert "Research Brief" in render_html(report)
+        html = render_html(report)
+        assert "Research action" in html
+        assert "Research Brief" in html
+        assert "Quote source" in html
+        assert "Live Tradier" in html
 
 
 def test_lookup_includes_recent_sec_filings_when_available():

@@ -266,6 +266,8 @@ def test_opportunity_explorer_reads_and_filters_latest_snapshots():
                 "rank_score": 1.5,
                 "trade_status": "Trade",
                 "suggested_contracts": 1,
+                "chain_source": "tradier",
+                "quote_quality": "live_or_broker",
             },
             {
                 "ticker": "TSLA",
@@ -296,6 +298,8 @@ def test_opportunity_explorer_reads_and_filters_latest_snapshots():
         filtered = build_opportunities(data_dir, asset="option", query="AAPL", limit=10)
         assert filtered["rows"][0]["ticker"] == "AAPL"
         assert filtered["rows"][0]["actionable"] is True
+        assert filtered["rows"][0]["chain_source"] == "tradier"
+        assert filtered["rows"][0]["quote_quality"] == "live_or_broker"
 
 
 def test_position_monitor_reads_dedupes_and_filters_open_state():

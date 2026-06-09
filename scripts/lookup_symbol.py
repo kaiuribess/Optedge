@@ -43,7 +43,7 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
-        "top_headline",
+        "chain_source", "quote_quality", "top_headline",
     ],
     "shares": [
         "ticker", "spot", "confidence", "rank_score", "fused_score", "trade_status",
@@ -61,7 +61,8 @@ DISPLAY_COLUMNS = {
     "open_options": [
         "ticker", "side", "strike", "expiry", "entry_time", "entry_price",
         "current_mid", "unrealized_pct", "trade_status", "stop_price", "target_price",
-        "latest_exit_pressure", "latest_exit_action", "last_reprice_source",
+        "latest_exit_pressure", "latest_exit_action", "chain_source", "quote_quality",
+        "last_reprice_source",
     ],
     "open_shares": [
         "ticker", "entry_time", "entry_price", "current_price", "unrealized_pct",
@@ -77,7 +78,7 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
-        "match_quality", "strike_diff", "requested_side", "requested_expiry",
+        "chain_source", "quote_quality", "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "top_headline",
     ],
     "recent_sec_filings": [
@@ -174,6 +175,50 @@ def _score_row(row: pd.Series) -> float:
     return 0.0
 
 
+def _quote_source_info(row: pd.Series | dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    getter = row.get
+    source = str(
+        getter("chain_source")
+        or getter("quote_source")
+        or getter("last_reprice_source")
+        or ""
+    ).strip()
+    quality = str(getter("quote_quality") or "").strip().lower()
+    if not source or source.lower() in {"nan", "none"}:
+        if not quality:
+            return None
+        source = "unknown"
+
+    source_key = source.lower()
+    src_label = source.replace("_", " ").title()
+    is_live = source_key == "tradier" or quality in {"live_or_broker", "live", "broker"}
+    if is_live:
+        label = f"Live {src_label}"
+        warning = None
+    elif source_key.startswith("cboe"):
+        label = "CBOE delayed"
+        warning = "Option quote source is free/delayed; verify bid/ask before paper tracking."
+    elif source_key.startswith("nasdaq"):
+        label = "NASDAQ free"
+        warning = "Option quote source is free/non-live; verify bid/ask before paper tracking."
+    elif source_key.startswith("yfinance"):
+        label = "Yahoo fallback"
+        warning = "Option quote source is a free fallback and may be delayed or partial."
+    else:
+        label = src_label
+        warning = "Option quote source quality is unknown; verify bid/ask before paper tracking."
+
+    return {
+        "source": source,
+        "quality": quality or None,
+        "label": label,
+        "is_live_or_broker": is_live,
+        "warning": warning,
+    }
+
+
 def _best_row(matches: dict[str, pd.DataFrame]) -> tuple[str | None, pd.Series | None]:
     candidates: list[tuple[float, str, pd.Series]] = []
     for section, df in matches.items():
@@ -238,6 +283,7 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
         label = f"{symbol} {str(side).upper()[:1]} {row.get('strike', '-')} {row.get('expiry', '-')}"
     elif section == "futures":
         label = f"{symbol} {str(side).upper()} {row.get('contract', '')}".strip()
+    quote_source = _quote_source_info(row)
     return {
         "asset": section.rstrip("s"),
         "label": label,
@@ -247,6 +293,16 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
         "entry_price": _clean_value(row.get("mid", row.get("spot", row.get("entry_price")))),
         "stop_price": _clean_value(row.get("stop_price")),
         "target_price": _clean_value(row.get("target_price")),
+        "spread_pct": _clean_value(row.get("spread_pct")),
+        "ev_pct": _clean_value(row.get("ev_pct")),
+        "net_edge_pct": _clean_value(row.get("net_edge_pct")),
+        "suggested_contracts": _clean_value(row.get("suggested_contracts")),
+        "suggested_dollars": _clean_value(row.get("suggested_dollars")),
+        "chain_source": _clean_value(row.get("chain_source")),
+        "quote_quality": _clean_value(row.get("quote_quality")),
+        "quote_source": quote_source,
+        "quote_source_label": (quote_source or {}).get("label"),
+        "quote_source_warning": (quote_source or {}).get("warning"),
         "headline": _clean_value(row.get("top_headline")),
     }
 
@@ -318,6 +374,14 @@ def _research_action(
 
     if best_idea:
         reasons.append(f"Best local idea status is {best_idea.get('trade_status') or 'unknown'}.")
+        quote_label = best_idea.get("quote_source_label")
+        quote_warning = best_idea.get("quote_source_warning")
+        if quote_warning:
+            risk_level = "medium" if risk_level == "low" else risk_level
+            reasons.append(str(quote_warning))
+            next_steps.append("Verify the latest option bid/ask before paper tracking or sizing.")
+        elif quote_label:
+            reasons.append(f"Option quote source: {quote_label}.")
         if action == "review" and status in {"trade", "actionable", "buy", "long", "short"}:
             action = "paper_candidate_review"
             label = "Candidate for paper review"
@@ -682,8 +746,11 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
+    <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get('quote_source_label') or '-'))}</strong></div>
     <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
     <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
+    <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>
+    <div><span class="muted">Net edge</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
     <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get('count') or 0)}</strong></div>
     <div><span class="muted">SEC watch signals</span><strong>{html.escape(sec_signals)}</strong></div>

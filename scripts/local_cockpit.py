@@ -54,7 +54,7 @@ OPPORTUNITY_SPECS = {
             "asset", "actionable", "ticker", "side", "strike", "expiry", "dte", "mid", "spot",
             "confidence", "rank_score", "fused_score", "trade_status",
             "suggested_contracts", "spread_pct", "ev_pct", "net_edge_pct",
-            "stop_price", "target_price", "top_headline",
+            "stop_price", "target_price", "chain_source", "quote_quality", "top_headline",
         ],
     },
     "share": {
@@ -1834,9 +1834,12 @@ function briefHtml(brief) {
     <div style="padding:12px">
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
+        <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
         <div class="brief-tile"><span>Research action</span><strong>${escHtml(action.label || 'Review')}</strong></div>
         <div class="brief-tile"><span>Action risk</span><strong>${escHtml(action.risk_level || '-')}</strong></div>
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
+        <div class="brief-tile"><span>Spread</span><strong>${pct(idea.spread_pct)}</strong></div>
+        <div class="brief-tile"><span>Net edge</span><strong>${pct(idea.net_edge_pct)}</strong></div>
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
         <div class="brief-tile"><span>Recent SEC filings</span><strong>${cell(sec.count || 0)}</strong></div>
