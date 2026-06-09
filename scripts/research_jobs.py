@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.lookup_symbol import DATA_DIR
+from scripts.lookup_symbol import DATA_DIR, lookup_symbol, save_lookup
 from scripts.symbol_resolver import resolve_symbol
 
 JOBS_DIRNAME = "cockpit_jobs"
@@ -58,11 +58,36 @@ def _safe_dashboard_path(raw: Any, data_dir: Path = DATA_DIR) -> Path | None:
     return resolved if resolved.exists() and resolved.is_file() else None
 
 
+def _safe_lookup_path(raw: Any, data_dir: Path = DATA_DIR) -> Path | None:
+    if not raw:
+        return None
+    path = Path(str(raw))
+    if not path.is_absolute():
+        path = data_dir / path
+    try:
+        resolved = path.resolve()
+        data_root = data_dir.resolve()
+    except Exception:
+        return None
+    if resolved.parent != data_root:
+        return None
+    if not resolved.name.startswith("lookup_") or resolved.suffix.lower() != ".html":
+        return None
+    return resolved if resolved.exists() and resolved.is_file() else None
+
+
 def job_dashboard_path(job_id: str, data_dir: Path = DATA_DIR) -> Path | None:
     job = read_job(job_id, data_dir)
     if not job:
         return None
     return _safe_dashboard_path(job.get("dashboard_path"), data_dir)
+
+
+def job_lookup_path(job_id: str, data_dir: Path = DATA_DIR) -> Path | None:
+    job = read_job(job_id, data_dir)
+    if not job:
+        return None
+    return _safe_lookup_path(job.get("lookup_html_path"), data_dir)
 
 
 def read_job(job_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any] | None:
@@ -115,6 +140,45 @@ def _latest_dashboard_after(started_at: datetime, data_dir: Path) -> str | None:
     return str(max(files, key=lambda p: p.stat().st_mtime))
 
 
+def _request_label(request: dict[str, Any] | None) -> str | None:
+    if not request:
+        return None
+    side = str(request.get("side") or "").strip().lower()
+    side_code = "C" if side.startswith("c") else "P" if side.startswith("p") else side.upper()
+    expiry = str(request.get("expiry") or "").strip()
+    strike = request.get("strike")
+    try:
+        strike_text = f"{float(strike):g}"
+    except Exception:
+        strike_text = str(strike or "").strip()
+    ticker = str(request.get("ticker") or "").strip().upper()
+    return " ".join(part for part in [ticker, expiry, side_code, strike_text] if part)
+
+
+def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
+    query = str(job.get("query") or job.get("symbol") or "").strip()
+    if not query:
+        return
+    report = lookup_symbol(query, data_dir, include_sec=False)
+    paths = save_lookup(report, data_dir)
+    sections = report.get("sections", {}) if isinstance(report, dict) else {}
+    sources = report.get("sources", {}) if isinstance(report, dict) else {}
+    requested_matches = sections.get("requested_option_matches") or []
+    best_match = requested_matches[0] if requested_matches else {}
+    job.update({
+        "lookup_query": query,
+        "lookup_total_hits": int(report.get("total_hits") or 0),
+        "lookup_html_path": str(paths["html"]),
+        "lookup_json_path": str(paths["json"]),
+        "requested_match_count": len(requested_matches),
+        "requested_match_quality": best_match.get("match_quality"),
+        "requested_match_mid": best_match.get("mid"),
+        "requested_match_quote_quality": best_match.get("quote_quality"),
+        "requested_match_chain_source": best_match.get("chain_source"),
+        "requested_match_source_file": sources.get("requested_option_matches"),
+    })
+
+
 def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
                extra_scan_args: list[str] | None = None,
                scan_mode: str = "full") -> dict[str, Any]:
@@ -136,6 +200,8 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
         "name": resolution.get("name"),
         "resolution": resolution,
         "request": resolution.get("request"),
+        "request_label": _request_label(resolution.get("request")),
+        "lookup_query": query,
         "scan_mode": scan_mode,
         "scan_args": extra_scan_args or [],
         "status": "queued",
@@ -208,6 +274,12 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
         proc = subprocess.run(command, cwd=str(ROOT), stdout=log_file,
                               stderr=subprocess.STDOUT, text=True)
     dashboard = _latest_dashboard_after(started, data_dir)
+    lookup_error = None
+    if proc.returncode == 0:
+        try:
+            _attach_lookup_summary(job, data_dir)
+        except Exception as exc:
+            lookup_error = str(exc)[:240]
     job.update({
         "status": "completed" if proc.returncode == 0 else "failed",
         "exit_code": proc.returncode,
@@ -215,6 +287,8 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
         "updated_at": _now(),
         "dashboard_path": dashboard,
     })
+    if lookup_error:
+        job["lookup_error"] = lookup_error
     write_job(job, data_dir)
     return int(proc.returncode)
 

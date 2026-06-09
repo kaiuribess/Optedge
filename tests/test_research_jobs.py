@@ -1,13 +1,18 @@
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import scripts.research_jobs as jobs_module
 from scripts.research_jobs import (
-    create_job, job_dashboard_path, job_log_path, list_jobs, read_job, read_job_log, write_job,
+    create_job, job_dashboard_path, job_log_path, job_lookup_path, list_jobs, read_job,
+    read_job_log, run_job, write_job,
 )
 
 
@@ -51,6 +56,44 @@ def test_create_job_preserves_option_request_and_reads_log_tail():
         assert tail["lines"] == ["line 97", "line 98", "line 99"]
 
 
+def test_run_job_writes_lookup_summary_for_requested_option():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "mid": 3.2,
+            "confidence": 80,
+            "rank_score": 2.0,
+            "trade_status": "Trade",
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
+
+        old_run = jobs_module.subprocess.run
+        jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+        try:
+            assert run_job(job["job_id"], job["symbol"], data_dir) == 0
+        finally:
+            jobs_module.subprocess.run = old_run
+
+        stored = read_job(job["job_id"], data_dir)
+        assert stored["status"] == "completed"
+        assert stored["request_label"] == "AAPL 2026-06-18 C 200"
+        assert stored["requested_match_count"] == 1
+        assert stored["requested_match_quality"] == "exact"
+        assert stored["requested_match_mid"] == 3.2
+        assert stored["requested_match_quote_quality"] == "live_or_broker"
+        assert Path(stored["lookup_html_path"]).exists()
+        assert Path(stored["lookup_json_path"]).exists()
+        assert job_lookup_path(job["job_id"], data_dir) == Path(stored["lookup_html_path"]).resolve()
+        log = read_job_log(job["job_id"], data_dir, max_lines=10)
+        assert any("Requested contract" in line for line in log["lines"])
+
+
 def test_job_dashboard_path_allows_only_data_dashboard_file():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -70,5 +113,6 @@ if __name__ == "__main__":
     test_list_jobs_returns_recent_jobs()
     test_create_job_returns_error_for_empty_query()
     test_create_job_preserves_option_request_and_reads_log_tail()
+    test_run_job_writes_lookup_summary_for_requested_option()
     test_job_dashboard_path_allows_only_data_dashboard_file()
-    print("5/5 research job tests passed")
+    print("6/6 research job tests passed")

@@ -30,7 +30,7 @@ import data_provider
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import build_external_orders, write_outputs
 from scripts.research_jobs import (
-    create_job, job_dashboard_path, list_jobs, read_job, read_job_log,
+    create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
 )
 from scripts.symbol_resolver import COMMON_ALIASES, resolve_symbol, sec_company_search
 
@@ -2121,10 +2121,12 @@ function jobClass(status) {
 }
 function jobHtml(job) {
   const dash = job.dashboard_path ? `<a class="btn" href="/job-dashboard?id=${encodeURIComponent(job.job_id)}" target="_blank">Dashboard</a>` : '';
+  const lookup = job.lookup_html_path ? `<a class="btn" href="/job-lookup?id=${encodeURIComponent(job.job_id)}" target="_blank">Lookup</a>` : '';
   const match = job.request ? `<button class="btn job-match-btn" type="button" data-query="${escAttr(job.query)}">Match</button>` : '';
-  const req = job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
+  const req = job.request_label ? ` | ${job.request_label}` : job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
+  const matchText = job.requested_match_quality ? ` | ${job.requested_match_quality} match` : (job.request && job.status === 'completed' ? ` | ${cell(job.requested_match_count || 0)} matches` : '');
   const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
-  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${mode} ${job.updated_at || ''}</small></div><div>${dash}${match}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
+  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${matchText}${mode} ${job.updated_at || ''}</small></div><div>${dash}${lookup}${match}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }
 async function loadJobs() {
   const res = await fetch('/api/jobs');
@@ -2495,6 +2497,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
             path = job_dashboard_path(job_id, self.data_dir) if job_id else None
             if path is None:
                 self._send(404, b"Job dashboard not found", "text/plain; charset=utf-8")
+                return
+            self._send_file(path, "text/html; charset=utf-8")
+            return
+        if parsed.path == "/job-lookup":
+            job_id = parse_qs(parsed.query).get("id", [""])[0]
+            path = job_lookup_path(job_id, self.data_dir) if job_id else None
+            if path is None:
+                self._send(404, b"Job lookup not found", "text/plain; charset=utf-8")
                 return
             self._send_file(path, "text/html; charset=utf-8")
             return

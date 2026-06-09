@@ -81,6 +81,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/run-symbol" in html
     assert "/api/job-log" in html
     assert "/job-dashboard" in html
+    assert "/job-lookup" in html
     assert "job-match-btn" in html
     assert "Quick scan" in html
     assert "Bankroll override" in html
