@@ -125,6 +125,12 @@ def test_lookup_matches_requested_option_contract():
         assert matches[0]["strike"] == 200.0
         assert matches[0]["match_quality"] == "exact"
         assert report["lookup_symbol"] == "AAPL"
+        assert report["brief"]["requested_option"]["label"] == "AAPL 2026-06-18 C 200"
+        assert report["brief"]["requested_option"]["match_quality"] == "exact"
+        assert report["brief"]["requested_option"]["matched_contract"] == "AAPL C 200.0 2026-06-18"
+        html = render_html(report)
+        assert "Requested option" in html
+        assert "Requested match" in html
 
 
 def test_lookup_resolves_company_name_option_request_to_ticker():
@@ -168,6 +174,23 @@ def test_option_request_falls_back_to_closest_strike():
         }, data_dir)
         assert matches[0]["strike"] == 410.0
         assert matches[0]["strike_diff"] == 10.0
+
+
+def test_lookup_brief_warns_when_requested_option_is_closest_only():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {"ticker": "MSFT", "side": "call", "strike": 410.0, "expiry": "2026-06-18"},
+            {"ticker": "MSFT", "side": "call", "strike": 430.0, "expiry": "2026-06-18"},
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        report = lookup_symbol("MSFT 20260618 C 420", data_dir)
+        requested = report["brief"]["requested_option"]
+        assert requested["label"] == "MSFT 2026-06-18 C 420"
+        assert requested["match_quality"] == "closest"
+        assert requested["strike_diff"] == 10.0
+        assert any("matched as closest" in warning for warning in report["brief"]["risk_warnings"])
+        assert "Requested match" in render_html(report)
 
 
 def test_lookup_builds_research_brief_from_local_factors_and_open_state():
@@ -417,9 +440,10 @@ if __name__ == "__main__":
     test_lookup_matches_requested_option_contract()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_option_request_falls_back_to_closest_strike()
+    test_lookup_brief_warns_when_requested_option_is_closest_only()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
     test_lookup_flags_stale_snapshot_age()
     test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
-    print("12/12 lookup tests passed")
+    print("13/13 lookup tests passed")

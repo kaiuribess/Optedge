@@ -1902,6 +1902,7 @@ function moneyShort(v) {
 function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
+  const requested = brief.requested_option || {};
   const open = brief.open_positions || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
@@ -1918,6 +1919,9 @@ function briefHtml(brief) {
     <div style="padding:12px">
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
+        <div class="brief-tile"><span>Requested option</span><strong>${escHtml(requested.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Requested match</span><strong>${escHtml(requested.match_quality || '-')}</strong></div>
+        <div class="brief-tile"><span>Matched contract</span><strong>${escHtml(requested.matched_contract || '-')}</strong></div>
         <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
         <div class="brief-tile"><span>Snapshot age</span><strong>${cell(idea.snapshot_age_min)} min</strong></div>
         <div class="brief-tile"><span>Freshness</span><strong>${escHtml(idea.snapshot_freshness || '-')}</strong></div>

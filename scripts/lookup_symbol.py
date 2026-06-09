@@ -297,6 +297,45 @@ def _open_position_summary(open_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _requested_option_summary(
+    request: dict[str, Any] | None,
+    matches: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not request or request.get("asset") != "option":
+        return None
+    best = matches[0] if matches else {}
+    side = str(request.get("side") or "").strip().lower()
+    side_code = "C" if side.startswith("c") else "P" if side.startswith("p") else side.upper()
+    try:
+        strike_text = f"{float(request.get('strike')):g}"
+    except Exception:
+        strike_text = str(request.get("strike") or "").strip()
+    label = " ".join(
+        part for part in [
+            str(request.get("ticker") or "").upper(),
+            str(request.get("expiry") or ""),
+            side_code,
+            strike_text,
+        ] if part
+    )
+    quality = str(best.get("match_quality") or "missing")
+    return {
+        "label": label,
+        "match_count": len(matches),
+        "match_quality": quality,
+        "matched_contract": (
+            f"{best.get('ticker')} {str(best.get('side') or '').upper()[:1]} "
+            f"{best.get('strike')} {best.get('expiry')}"
+            if best else None
+        ),
+        "matched_mid": _clean_value(best.get("mid")),
+        "matched_spread_pct": _clean_value(best.get("spread_pct")),
+        "matched_quote_quality": _clean_value(best.get("quote_quality")),
+        "matched_chain_source": _clean_value(best.get("chain_source")),
+        "strike_diff": _clean_value(best.get("strike_diff")),
+    }
+
+
 def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any] | None:
     if row is None or section is None:
         return None
@@ -484,6 +523,18 @@ def _research_brief(
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     best_idea = _best_idea_dict(best_section, best)
+    requested_option = _requested_option_summary(
+        resolution.get("request"),
+        sections.get("requested_option_matches", []),
+    )
+    if requested_option:
+        quality = str(requested_option.get("match_quality") or "missing").lower()
+        if quality == "missing":
+            warnings.append(f"Requested option {requested_option.get('label')} was not found in latest local option rows.")
+        elif quality != "exact":
+            warnings.append(
+                f"Requested option {requested_option.get('label')} matched as {quality}; verify before using it."
+            )
     if best_idea:
         snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
         if snapshot_age is not None and snapshot_age > STALE_SNAPSHOT_MINUTES:
@@ -497,6 +548,7 @@ def _research_brief(
         "resolved_from": resolution.get("query"),
         "resolution_source": resolution.get("source"),
         "request": resolution.get("request"),
+        "requested_option": requested_option,
         "best_idea": best_idea,
         "open_positions": open_summary,
         "recent_sec_filings": {
@@ -753,6 +805,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     if not brief:
         return ""
     idea = brief.get("best_idea") or {}
+    requested = brief.get("requested_option") or {}
     open_pos = brief.get("open_positions") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
@@ -783,6 +836,9 @@ def _render_brief(brief: dict[str, Any]) -> str:
   <div class="brief-grid">
     <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
+    <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
+    <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
     <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get('quote_source_label') or '-'))}</strong></div>
     <div><span class="muted">Snapshot age</span><strong>{html.escape(str(idea.get('snapshot_age_min') if idea.get('snapshot_age_min') is not None else '-'))} min</strong></div>
