@@ -312,8 +312,13 @@ def _sec_candidate_score(query: str, row: dict[str, Any]) -> float:
     return SequenceMatcher(None, q_key, name_key).ratio() * 0.7
 
 
-def sec_company_search(query: str, limit: int = 8, timeout: float = 6.0) -> list[dict[str, Any]]:
-    rows = load_sec_company_tickers(timeout=timeout)
+def sec_company_search(
+    query: str,
+    limit: int = 8,
+    timeout: float = 6.0,
+    fetch_if_stale: bool = True,
+) -> list[dict[str, Any]]:
+    rows = load_sec_company_tickers(timeout=timeout, fetch_if_stale=fetch_if_stale)
     scored: list[dict[str, Any]] = []
     for row in rows:
         score = _sec_candidate_score(query, row)

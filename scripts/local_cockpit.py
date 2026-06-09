@@ -712,7 +712,7 @@ def build_symbol_suggestions(
         )
 
     if len(query_norm) >= 2:
-        for item in sec_company_search(query, limit=limit):
+        for item in sec_company_search(query, limit=limit, fetch_if_stale=False):
             _add_suggestion(
                 rows, seen, item.get("symbol"),
                 f"{item.get('symbol')} - {item.get('name') or 'SEC company'}",

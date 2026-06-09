@@ -52,7 +52,7 @@ def test_resolver_uses_yahoo_for_long_uppercase_company_name():
     old_aliases = resolver.COMMON_ALIASES
     resolver.COMMON_ALIASES = {}
     old_sec = resolver.sec_company_search
-    resolver.sec_company_search = lambda query, limit=8, timeout=6.0: []
+    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: []
     old = resolver.yahoo_search
     resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
         "symbol": "NVDA",
@@ -75,7 +75,7 @@ def test_resolver_uses_sec_company_tickers_before_yahoo():
     old_sec = resolver.sec_company_search
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
-    resolver.sec_company_search = lambda query, limit=8, timeout=6.0: [{
+    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [{
         "symbol": "SNOW",
         "name": "Snowflake Inc.",
         "exchange": None,
@@ -103,7 +103,7 @@ def test_resolver_uses_sec_for_company_name_option_request():
     old_sec = resolver.sec_company_search
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
-    resolver.sec_company_search = lambda query, limit=8, timeout=6.0: [{
+    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [{
         "symbol": "SNOW",
         "name": "Snowflake Inc.",
         "type": "EQUITY",

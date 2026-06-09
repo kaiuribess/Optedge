@@ -213,7 +213,7 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         old_sec = cockpit_module.sec_company_search
-        cockpit_module.sec_company_search = lambda query, limit=16: []
+        cockpit_module.sec_company_search = lambda query, limit=16, fetch_if_stale=True: []
         pd.DataFrame([{
             "ticker": "NVDA",
             "side": "call",
@@ -256,14 +256,21 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             gas = build_symbol_suggestions(data_dir, query="NG")
             assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
 
-            cockpit_module.sec_company_search = lambda query, limit=16: [{
-                "symbol": "SNOW",
-                "name": "Snowflake Inc.",
-                "score": 0.97,
-            }]
+            observed_fetch_modes = []
+
+            def fake_sec_search(query, limit=16, fetch_if_stale=True):
+                observed_fetch_modes.append(fetch_if_stale)
+                return [{
+                    "symbol": "SNOW",
+                    "name": "Snowflake Inc.",
+                    "score": 0.97,
+                }]
+
+            cockpit_module.sec_company_search = fake_sec_search
             snow = build_symbol_suggestions(data_dir, query="snowflake")
             assert any(row["symbol"] == "SNOW" and row["kind"] == "sec" for row in snow["rows"])
             assert "free SEC ticker map" in " ".join(snow["notes"])
+            assert observed_fetch_modes == [False]
         finally:
             cockpit_module.sec_company_search = old_sec
 
