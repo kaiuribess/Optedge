@@ -54,6 +54,39 @@ Default run caps:
 
 These caps exist so the external journal stays readable and executable.
 
+## Robinhood Agentic Options Queue
+
+For a small options-focused experiment, Optedge can also create a Robinhood Agentic Trading handoff queue:
+
+```bash
+python scripts/export_robinhood_agentic_queue.py --account-budget 500
+```
+
+Outputs:
+
+- `data/robinhood_agentic_queue.json`
+- `data/robinhood_agentic_prompt.md`
+
+This queue is options-only and loss-capped. It does not connect to Robinhood, store credentials, or place trades. It prepares a strict candidate file that a Codex/Robinhood MCP agent can double-check before submitting any order.
+
+Default safety caps:
+
+- `2` option orders maximum
+- `$500` account budget assumption
+- max total premium: `min(50% of budget, $250)`
+- max premium per order: `min(30% of budget, $150)`
+- BUY_TO_OPEN limit DAY orders only
+- no market orders
+- no shares, futures, crypto, or margin
+
+Preview without writing files:
+
+```bash
+python scripts/export_robinhood_agentic_queue.py --account-budget 500 --dry-run
+```
+
+The generated prompt tells the agent to verify exact contract, buying power, current bid/ask/mid, spread, duplicate exposure, and current news before submitting. If any check is unclear, the agent should skip the order and report why.
+
 ## Asset Separation
 
 Track each asset class separately in the journal:
