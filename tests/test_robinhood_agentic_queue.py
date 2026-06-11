@@ -22,10 +22,10 @@ def _candidate(**overrides):
         "action": "BUY_TO_OPEN",
         "direction": "long_call",
         "quantity": 1,
-        "contract": "AAPL 2026-06-18 CALL 200",
+        "contract": "AAPL 2027-01-15 CALL 200",
         "option_side": "call",
         "strike": 200,
-        "expiry": "2026-06-18",
+        "expiry": "2027-01-15",
         "entry_price": 0.75,
         "stop_price": 0.35,
         "target_price": 1.6,
@@ -64,7 +64,7 @@ def test_queue_is_options_only():
 def test_queue_rejects_contracts_above_500_budget_caps():
     queue = _queue([
         _candidate(entry_price=2.50, confidence=90, rank_score=9.0),
-        _candidate(ticker_or_symbol="MSFT", contract="MSFT 2026-06-18 CALL 500"),
+        _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500"),
     ])
     symbols = {row["symbol"] for row in queue["orders"]}
     assert symbols == {"MSFT"}
@@ -72,20 +72,39 @@ def test_queue_rejects_contracts_above_500_budget_caps():
     assert "premium cap leaves no buyable contracts" in rejected["reasons"]
 
 
-def test_queue_caps_order_count_and_total_premium():
+def test_queue_caps_candidate_count_separately_from_order_count():
     queue = _queue(
         [
-            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2026-06-18 CALL 200", rank_score=5.0),
-            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2026-06-18 CALL 500", rank_score=4.0),
-            _candidate(ticker_or_symbol="NVDA", contract="NVDA 2026-06-18 CALL 200", rank_score=3.0),
+            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0),
+            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0),
+            _candidate(ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0),
         ],
         max_orders=2,
         max_total_premium=150,
         max_premium_per_order=100,
+        max_candidates=2,
     )
     assert len(queue["orders"]) == 2
-    assert queue["estimated_total_premium"] == 150.0
-    assert any("premium cap leaves no buyable contracts" in row["reasons"] for row in queue["rejected"])
+    assert queue["max_orders_to_submit"] == 2
+    assert queue["estimated_total_candidate_premium"] == 150.0
+    assert any("max candidate count reached" in row["reasons"] for row in queue["rejected"])
+
+
+def test_queue_rejects_short_dated_options_by_default():
+    queue = _queue([_candidate(expiry="2026-06-18", contract="AAPL 2026-06-18 CALL 200")])
+    assert queue["orders"] == []
+    assert "dte below 180" in queue["rejected"][0]["reasons"]
+
+
+def test_queue_can_give_agent_more_candidates_than_order_cap():
+    rows = [
+        _candidate(ticker_or_symbol=f"T{i}", contract=f"T{i} 2027-01-15 CALL 20", rank_score=10 - i)
+        for i in range(6)
+    ]
+    queue = _queue(rows, max_candidates=5, max_orders=2, max_total_premium=500)
+    assert len(queue["orders"]) == 5
+    assert queue["max_orders_to_submit"] == 2
+    assert any("max candidate count reached" in row["reasons"] for row in queue["rejected"])
 
 
 def test_queue_prompt_requires_codex_double_check_and_limit_orders():
@@ -94,6 +113,7 @@ def test_queue_prompt_requires_codex_double_check_and_limit_orders():
     assert "Double-check current Robinhood quotes" in prompt
     assert "BUY_TO_OPEN limit DAY orders only" in prompt
     assert "Do not exceed any max_limit_price" in prompt
+    assert "Long-dated options only" in prompt
     assert "current news" in prompt
 
 
@@ -111,7 +131,9 @@ def test_queue_write_outputs_json_and_prompt():
 if __name__ == "__main__":
     test_queue_is_options_only()
     test_queue_rejects_contracts_above_500_budget_caps()
-    test_queue_caps_order_count_and_total_premium()
+    test_queue_caps_candidate_count_separately_from_order_count()
+    test_queue_rejects_short_dated_options_by_default()
+    test_queue_can_give_agent_more_candidates_than_order_cap()
     test_queue_prompt_requires_codex_double_check_and_limit_orders()
     test_queue_write_outputs_json_and_prompt()
-    print("5/5 robinhood agentic queue tests passed")
+    print("7/7 robinhood agentic queue tests passed")

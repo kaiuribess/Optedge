@@ -71,10 +71,12 @@ This queue is options-only and loss-capped. It does not connect to Robinhood, st
 
 Default safety caps:
 
-- `2` option orders maximum
+- up to `5` long-dated option candidates
+- `2` option orders maximum for the agent to submit
 - `$500` account budget assumption
 - max total premium: `min(50% of budget, $250)`
 - max premium per order: `min(30% of budget, $150)`
+- minimum DTE: `180`
 - BUY_TO_OPEN limit DAY orders only
 - no market orders
 - no shares, futures, crypto, or margin
@@ -83,6 +85,12 @@ Preview without writing files:
 
 ```bash
 python scripts/export_robinhood_agentic_queue.py --account-budget 500 --dry-run
+```
+
+To refresh the queue automatically after every Optedge scan:
+
+```bash
+python run.py --aggressive --bankroll 500 --loop 30 --turbo --no-open --robinhood-agentic-queue --robinhood-budget 500 --robinhood-min-dte 180 --robinhood-max-candidates 5 --robinhood-max-orders 2
 ```
 
 The generated prompt tells the agent to verify exact contract, buying power, current bid/ask/mid, spread, duplicate exposure, and current news before submitting. If any check is unclear, the agent should skip the order and report why.

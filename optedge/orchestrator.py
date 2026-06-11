@@ -417,6 +417,18 @@ def main():
                     help="Run continuously, sleeping N minutes between iterations")
     ap.add_argument("--no-open", action="store_true",
                     help="Don't auto-open the dashboard in browser when done")
+    ap.add_argument("--robinhood-agentic-queue", action="store_true",
+                    help="Write an options-only Robinhood Agentic handoff queue after each scan")
+    ap.add_argument("--robinhood-budget", type=float, default=None,
+                    help="Budget for Robinhood Agentic queue caps (defaults to --bankroll)")
+    ap.add_argument("--robinhood-max-candidates", type=int, default=5,
+                    help="Max option candidates to hand to the Robinhood agent")
+    ap.add_argument("--robinhood-max-orders", type=int, default=2,
+                    help="Max option orders the Robinhood agent may submit from the candidate queue")
+    ap.add_argument("--robinhood-min-dte", type=int, default=180,
+                    help="Minimum DTE for Robinhood agentic option candidates")
+    ap.add_argument("--robinhood-min-confidence", type=float, default=55.0,
+                    help="Minimum confidence for Robinhood agentic option candidates")
     ap.add_argument("--quiet", action="store_true",
                     help="Reduce log verbosity (only WARNING and above)")
     ap.add_argument("--minimal", action="store_true",
@@ -1293,6 +1305,35 @@ def main():
     log.info("tradingview watchlist: %s", tv_path)
     log.info("total elapsed: %.1f sec", elapsed)
 
+    robinhood_queue_paths = None
+    robinhood_queue_summary = None
+    if args.robinhood_agentic_queue:
+        try:
+            from scripts.export_robinhood_agentic_queue import (
+                build_robinhood_queue as _build_robinhood_queue,
+                write_outputs as _write_robinhood_queue,
+            )
+            rh_budget = args.robinhood_budget if args.robinhood_budget is not None else args.bankroll
+            queue = _build_robinhood_queue(
+                data_dir=out_dir,
+                account_budget=rh_budget,
+                max_orders=args.robinhood_max_orders,
+                max_candidates=args.robinhood_max_candidates,
+                min_dte=args.robinhood_min_dte,
+                min_confidence=args.robinhood_min_confidence,
+            )
+            robinhood_queue_paths = _write_robinhood_queue(queue, out_dir)
+            robinhood_queue_summary = queue
+            log.info(
+                "robinhood agentic queue: %s (%d candidates, max %d orders, min_dte %d)",
+                robinhood_queue_paths[0],
+                len(queue.get("orders") or []),
+                int(queue.get("max_orders_to_submit") or 0),
+                int(queue.get("min_dte") or 0),
+            )
+        except Exception as e:
+            log.warning("robinhood agentic queue export failed: %s", e)
+
     # Auto-open in default browser unless --no-open. In loop mode, only the
     # first iteration opens the browser (env var marks subsequent iterations).
     if not args.no_open and not os.environ.get("OPTEDGE_NO_OPEN"):
@@ -1354,6 +1395,13 @@ def main():
         )
     print(f"\n→ Dashboard: file://{html_path}")
     print(f"→ TradingView watchlist: {tv_path}")
+    if robinhood_queue_paths:
+        count = len((robinhood_queue_summary or {}).get("orders") or [])
+        max_submit = int((robinhood_queue_summary or {}).get("max_orders_to_submit") or 0)
+        print(
+            f"Robinhood agentic queue: {robinhood_queue_paths[0]} "
+            f"({count} candidates, max {max_submit} orders)"
+        )
     return 0
 
 

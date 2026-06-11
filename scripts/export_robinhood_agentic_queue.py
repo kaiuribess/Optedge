@@ -26,9 +26,11 @@ KILL_SWITCH = "agentic_trading_disabled.flag"
 
 DEFAULT_ACCOUNT_BUDGET = 500.0
 DEFAULT_MAX_ORDERS = 2
+DEFAULT_MAX_CANDIDATES = 5
 DEFAULT_MIN_CONFIDENCE = 55.0
 DEFAULT_MAX_SPREAD_PCT = 0.15
 DEFAULT_LIMIT_BUFFER_PCT = 0.08
+DEFAULT_MIN_DTE = 180
 
 
 def _text(value: Any) -> str:
@@ -63,6 +65,26 @@ def _int(value: Any, default: int = 0) -> int:
 
 def _round_option_price(value: float) -> float:
     return round(max(0.01, value), 2)
+
+
+def _asof_date(generated_at: str | None) -> pd.Timestamp:
+    if generated_at:
+        try:
+            return pd.to_datetime(generated_at, utc=True).normalize()
+        except Exception:
+            pass
+    return pd.Timestamp.now(tz="UTC").normalize()
+
+
+def _dte(expiry: Any, generated_at: str | None) -> int | None:
+    text = _text(expiry)
+    if not text:
+        return None
+    try:
+        expiry_date = pd.to_datetime(text, utc=True).normalize()
+    except Exception:
+        return None
+    return int((expiry_date - _asof_date(generated_at)).days)
 
 
 def _default_max_total_premium(account_budget: float) -> float:
@@ -109,6 +131,7 @@ def _order_from_row(
     entry = _float(row.get("entry_price"))
     limit_price = _round_option_price(entry * (1.0 + limit_buffer_pct))
     premium = round(entry * quantity * 100.0, 2)
+    dte_value = _dte(row.get("expiry"), row.get("generated_at"))
     return {
         "asset": "option",
         "symbol": _text(row.get("ticker_or_symbol")).upper(),
@@ -120,6 +143,7 @@ def _order_from_row(
         "option_side": _text(row.get("option_side")).lower(),
         "strike": row.get("strike"),
         "expiry": row.get("expiry"),
+        "dte": dte_value,
         "direction": _text(row.get("direction")),
         "reference_entry_price": entry,
         "max_limit_price": limit_price,
@@ -144,11 +168,13 @@ def build_queue_from_candidates(
     candidates: pd.DataFrame,
     account_budget: float = DEFAULT_ACCOUNT_BUDGET,
     max_orders: int = DEFAULT_MAX_ORDERS,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
     max_total_premium: float | None = None,
     max_premium_per_order: float | None = None,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     max_spread_pct: float = DEFAULT_MAX_SPREAD_PCT,
     limit_buffer_pct: float = DEFAULT_LIMIT_BUFFER_PCT,
+    min_dte: int = DEFAULT_MIN_DTE,
     generated_at: str | None = None,
     kill_switch_present: bool = False,
 ) -> dict[str, Any]:
@@ -156,6 +182,8 @@ def build_queue_from_candidates(
     generated_at = generated_at or datetime.now(timezone.utc).isoformat()
     account_budget = max(0.0, float(account_budget))
     max_orders = max(0, int(max_orders))
+    max_candidates = max(0, int(max_candidates))
+    min_dte = max(0, int(min_dte))
     max_total_premium = (
         _default_max_total_premium(account_budget)
         if max_total_premium is None
@@ -203,6 +231,7 @@ def build_queue_from_candidates(
         if _text(row.get("strike")) == "":
             reasons.append("missing strike")
 
+        dte = _dte(row.get("expiry"), generated_at)
         entry = _float(row.get("entry_price"))
         confidence = _float(row.get("confidence"))
         spread = _float(row.get("spread_pct"), default=0.0)
@@ -215,6 +244,10 @@ def build_queue_from_candidates(
             reasons.append("suggested quantity <= 0")
         if confidence < min_confidence:
             reasons.append(f"confidence below {min_confidence:g}")
+        if dte is None:
+            reasons.append("missing/invalid expiry date")
+        elif dte < min_dte:
+            reasons.append(f"dte below {min_dte}")
         if spread > max_spread_pct:
             reasons.append(f"spread above {max_spread_pct:.0%}")
         if stop <= 0:
@@ -225,12 +258,11 @@ def build_queue_from_candidates(
         qty = 0
         if entry > 0:
             qty_by_order = math.floor(max_premium_per_order / (entry * 100.0))
-            qty_by_total = math.floor((max_total_premium - total_premium) / (entry * 100.0))
-            qty = min(suggested_qty, qty_by_order, qty_by_total)
+            qty = min(suggested_qty, qty_by_order)
             if qty <= 0 and not reasons:
                 reasons.append("premium cap leaves no buyable contracts")
-        if len(orders) >= max_orders and not reasons:
-            reasons.append("max order count reached")
+        if len(orders) >= max_candidates and not reasons:
+            reasons.append("max candidate count reached")
 
         if reasons:
             rejected.append(_rejection(row, reasons))
@@ -249,12 +281,15 @@ def build_queue_from_candidates(
         "does_not_place_orders": True,
         "account_budget": round(account_budget, 2),
         "max_orders": max_orders,
+        "max_orders_to_submit": max_orders,
+        "max_candidates": max_candidates,
         "max_total_premium": round(max_total_premium, 2),
         "max_premium_per_order": round(max_premium_per_order, 2),
         "min_confidence": min_confidence,
+        "min_dte": min_dte,
         "max_spread_pct": max_spread_pct,
         "limit_buffer_pct": limit_buffer_pct,
-        "estimated_total_premium": round(total_premium, 2),
+        "estimated_total_candidate_premium": round(total_premium, 2),
         "kill_switch_file": str(DATA_DIR / KILL_SWITCH),
         "orders": orders,
         "rejected": rejected,
@@ -283,9 +318,12 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
         "## Hard Rules",
         "- Trade only in the dedicated Robinhood Agentic account.",
         "- Options only. No shares, crypto, futures, margin, or market orders.",
+        "- Long-dated options only. Skip contracts below the queue minimum DTE.",
         "- Use BUY_TO_OPEN limit DAY orders only.",
         "- Do not exceed any max_limit_price in the queue.",
-        "- Do not exceed the queue max_orders or max_total_premium.",
+        "- Treat these as candidates. Submit at most max_orders_to_submit.",
+        "- Do not exceed the queue max_orders_to_submit or max_total_premium.",
+        "- Prefer contracts with at least the queue min_dte remaining.",
         "- Skip everything if the queue status is not ready.",
         "- Skip everything if the kill-switch file exists locally.",
         "- Double-check current Robinhood quotes and current news before submitting.",
@@ -297,8 +335,9 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
         f"- Account budget: ${queue.get('account_budget')}",
         f"- Max total premium: ${queue.get('max_total_premium')}",
         f"- Max premium per order: ${queue.get('max_premium_per_order')}",
-        f"- Max orders: {queue.get('max_orders')}",
-        f"- Selected orders: {len(orders)}",
+        f"- Minimum DTE: {queue.get('min_dte')}",
+        f"- Max orders to submit: {queue.get('max_orders_to_submit')}",
+        f"- Candidate orders: {len(orders)}",
         "",
         "## Required Double Checks",
     ]
@@ -312,6 +351,7 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
             f"{order['strike']} {order['expiry']}",
             f"- Contract label: {order['contract']}",
             f"- Quantity: {order['quantity']}",
+            f"- DTE: {order.get('dte')}",
             f"- Max limit price: {order['max_limit_price']}",
             f"- Estimated premium: ${order['estimated_premium_dollars']}",
             f"- Confidence: {order.get('confidence')}",
@@ -333,18 +373,21 @@ def build_robinhood_queue(
     data_dir: Path = DATA_DIR,
     account_budget: float = DEFAULT_ACCOUNT_BUDGET,
     max_orders: int = DEFAULT_MAX_ORDERS,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
     max_total_premium: float | None = None,
     max_premium_per_order: float | None = None,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
     max_spread_pct: float = DEFAULT_MAX_SPREAD_PCT,
     limit_buffer_pct: float = DEFAULT_LIMIT_BUFFER_PCT,
+    min_dte: int = DEFAULT_MIN_DTE,
     query: str = "",
 ) -> dict[str, Any]:
     data_dir = Path(data_dir)
     candidates = build_external_orders(
         data_dir=data_dir,
-        max_new=max(max_orders * 4, max_orders),
+        max_new=max(max_candidates * 4, max_orders * 4, max_candidates),
         max_open=30,
+        max_options=max(max_candidates * 4, max_candidates),
         asset="option",
         dry_run=False,
         query=query,
@@ -353,11 +396,13 @@ def build_robinhood_queue(
         candidates,
         account_budget=account_budget,
         max_orders=max_orders,
+        max_candidates=max_candidates,
         max_total_premium=max_total_premium,
         max_premium_per_order=max_premium_per_order,
         min_confidence=min_confidence,
         max_spread_pct=max_spread_pct,
         limit_buffer_pct=limit_buffer_pct,
+        min_dte=min_dte,
         kill_switch_present=(data_dir / KILL_SWITCH).exists(),
     )
 
@@ -376,11 +421,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Export Robinhood agentic options queue")
     parser.add_argument("--account-budget", type=float, default=DEFAULT_ACCOUNT_BUDGET)
     parser.add_argument("--max-orders", type=int, default=DEFAULT_MAX_ORDERS)
+    parser.add_argument("--max-candidates", type=int, default=DEFAULT_MAX_CANDIDATES)
     parser.add_argument("--max-total-premium", type=float, default=None)
     parser.add_argument("--max-premium-per-order", type=float, default=None)
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
     parser.add_argument("--max-spread-pct", type=float, default=DEFAULT_MAX_SPREAD_PCT)
     parser.add_argument("--limit-buffer-pct", type=float, default=DEFAULT_LIMIT_BUFFER_PCT)
+    parser.add_argument("--min-dte", type=int, default=DEFAULT_MIN_DTE)
     parser.add_argument("--query", default="", help="Optional ticker or contract filter")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -388,11 +435,13 @@ def main() -> int:
     queue = build_robinhood_queue(
         account_budget=args.account_budget,
         max_orders=args.max_orders,
+        max_candidates=args.max_candidates,
         max_total_premium=args.max_total_premium,
         max_premium_per_order=args.max_premium_per_order,
         min_confidence=args.min_confidence,
         max_spread_pct=args.max_spread_pct,
         limit_buffer_pct=args.limit_buffer_pct,
+        min_dte=args.min_dte,
         query=args.query,
     )
     if args.dry_run:
