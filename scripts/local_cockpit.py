@@ -538,15 +538,124 @@ def _saved_contract_status(dte: int | None, readiness: Any) -> str:
     return "saved_review"
 
 
+def _norm_option_side(value: Any) -> str:
+    side = str(value or "").strip().lower()
+    if side in {"c", "call", "calls"}:
+        return "call"
+    if side in {"p", "put", "puts"}:
+        return "put"
+    return side
+
+
+def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: int | None) -> dict[str, Any]:
+    ticker = str(symbol or request.get("ticker") or "").upper()
+    expiry = str(request.get("expiry") or "").strip()
+    side = _norm_option_side(request.get("side"))
+    strike = _float_value(request.get("strike"), default=math.nan)
+    if not ticker or not expiry or side not in {"call", "put"} or not math.isfinite(strike):
+        return {"quote_status": "invalid_request", "quote_checked_at": _now_iso()}
+
+    try:
+        blob = _fetch_option_chain(ticker, cache_age=300)
+    except Exception as exc:
+        return {
+            "quote_status": "fetch_failed",
+            "quote_error": str(exc)[:160],
+            "quote_checked_at": _now_iso(),
+        }
+    chains = blob.get("chains") if isinstance(blob, dict) else None
+    chain_df = chains.get(expiry) if isinstance(chains, dict) else None
+    if not isinstance(chain_df, pd.DataFrame) or chain_df.empty:
+        return {
+            "quote_status": "missing_expiry",
+            "chain_source": _clean_value(blob.get("source")) if isinstance(blob, dict) else None,
+            "quote_quality": _clean_value(blob.get("quote_quality")) if isinstance(blob, dict) else None,
+            "quote_checked_at": _now_iso(),
+        }
+
+    matches = []
+    for _, raw in chain_df.iterrows():
+        raw_side = _norm_option_side(raw.get("side"))
+        raw_strike = _float_value(raw.get("strike"), default=math.nan)
+        if raw_side == side and math.isfinite(raw_strike) and abs(raw_strike - strike) <= 0.0001:
+            matches.append(raw)
+    if not matches:
+        return {
+            "quote_status": "missing_contract",
+            "chain_source": _clean_value(blob.get("source")) if isinstance(blob, dict) else None,
+            "quote_quality": _clean_value(blob.get("quote_quality")) if isinstance(blob, dict) else None,
+            "quote_checked_at": _now_iso(),
+        }
+
+    best = sorted(
+        matches,
+        key=lambda row: (
+            _float_value(row.get("openInterest"), default=0.0),
+            _float_value(row.get("volume"), default=0.0),
+        ),
+        reverse=True,
+    )[0]
+    mid = _option_mid(best)
+    spread_pct = _option_spread_pct(best, mid)
+    spot = _float_value(blob.get("spot"), default=math.nan) if isinstance(blob, dict) else math.nan
+    moneyness = ((strike - spot) / spot) if math.isfinite(strike) and math.isfinite(spot) and spot > 0 else None
+    quote_quality = (
+        blob.get("quote_quality")
+        or ("live_or_broker" if str(blob.get("source") or "") == "tradier" else "free_or_delayed")
+    ) if isinstance(blob, dict) else "unknown"
+    quote_row = {
+        "symbol": ticker,
+        "side": side,
+        "expiry": expiry,
+        "dte": dte,
+        "strike": strike,
+        "bid": _clean_value(best.get("bid")),
+        "ask": _clean_value(best.get("ask")),
+        "mid": round(mid, 4) if math.isfinite(mid) else None,
+        "premium_dollars": round(mid * 100.0, 2) if math.isfinite(mid) else None,
+        "spread_pct": _clean_value(spread_pct),
+        "volume": int(_float_value(best.get("volume"), default=0.0)),
+        "openInterest": int(_float_value(best.get("openInterest"), default=0.0)),
+        "impliedVolatility": _clean_value(best.get("impliedVolatility")),
+        "delta": _clean_value(best.get("delta")),
+        "moneyness_pct": _clean_value(moneyness),
+    }
+    quote_row["contract_quality_score"] = round(_option_chain_score(quote_row), 3)
+    quote_row.update(_option_contract_readiness(quote_row, str(quote_quality)))
+    return {
+        "quote_status": "matched",
+        "quote_checked_at": _now_iso(),
+        "chain_source": _clean_value(blob.get("source")) if isinstance(blob, dict) else None,
+        "quote_quality": _clean_value(quote_quality),
+        "current_mid": quote_row["mid"],
+        "current_bid": quote_row["bid"],
+        "current_ask": quote_row["ask"],
+        "current_premium_dollars": quote_row["premium_dollars"],
+        "current_spread_pct": quote_row["spread_pct"],
+        "current_volume": quote_row["volume"],
+        "current_open_interest": quote_row["openInterest"],
+        "current_iv": quote_row["impliedVolatility"],
+        "current_delta": quote_row["delta"],
+        "quote_readiness_label": quote_row["readiness_label"],
+        "quote_readiness_score": quote_row["readiness_score"],
+        "quote_flags": quote_row["risk_flags"],
+        "contract_quality_score": quote_row["contract_quality_score"],
+    }
+
+
 def build_saved_option_contracts(
     data_dir: Path = DATA_DIR,
     enrich: bool = True,
     limit: int = 80,
+    refresh_quotes: bool = False,
+    quote_limit: int = 20,
 ) -> dict[str, Any]:
     """Return saved option-request watchlist entries as a clean contract review queue."""
     limit = max(1, min(int(limit or 80), 250))
+    quote_limit = max(0, min(int(quote_limit or 20), 80))
     watchlist = load_watchlist(data_dir, enrich=enrich)
     rows: list[dict[str, Any]] = []
+    quote_checked_count = 0
     for entry in watchlist.get("entries", []):
         request = entry.get("request") if isinstance(entry, dict) else None
         if not isinstance(request, dict) or request.get("asset") != "option":
@@ -575,6 +684,11 @@ def build_saved_option_contracts(
             "added_at": entry.get("added_at"),
             "updated_at": entry.get("updated_at"),
         }
+        if refresh_quotes and quote_checked_count < quote_limit:
+            row.update(_saved_contract_quote_snapshot(str(row.get("symbol") or ""), request, dte))
+            quote_checked_count += 1
+        else:
+            row["quote_status"] = "not_checked" if not refresh_quotes else "not_checked_limit"
         rows.append({k: _clean_value(v) for k, v in row.items()})
 
     rows = sorted(
@@ -588,14 +702,21 @@ def build_saved_option_contracts(
         reverse=True,
     )[:limit]
     status_counts: dict[str, int] = {}
+    quote_status_counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
+        quote_status = str(row.get("quote_status") or "unknown")
+        quote_status_counts[quote_status] = quote_status_counts.get(quote_status, 0) + 1
     return {
         "generated_at": _now_iso(),
         "count": len(rows),
         "enriched": enrich,
+        "refresh_quotes": refresh_quotes,
+        "quote_limit": quote_limit,
+        "quote_checked_count": quote_checked_count,
         "status_counts": status_counts,
+        "quote_status_counts": quote_status_counts,
         "call_count": sum(row.get("side") == "call" for row in rows),
         "put_count": sum(row.get("side") == "put" for row in rows),
         "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
@@ -603,6 +724,7 @@ def build_saved_option_contracts(
         "notes": [
             "Saved contracts come from the local research watchlist option requests.",
             "3m+ status uses the current calendar date and Optedge's 90 DTE swing floor.",
+            "Quote refresh uses the same free option-chain stack and may be delayed or incomplete.",
             "Use Chain to refresh the underlying option chain before acting; no trades are placed.",
         ],
     }
@@ -4013,6 +4135,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="muted">Exact option requests saved from chain scans and research search. Review DTE, readiness, and refresh the underlying chain before acting.</div>
     <div class="scan-controls">
       <button class="btn" type="button" id="saved-contracts-refresh">Refresh saved contracts</button>
+      <button class="btn" type="button" id="saved-contracts-quotes">Refresh quotes</button>
       <button class="btn" type="button" id="saved-contracts-run">Run saved scans</button>
     </div>
     <div class="status" id="saved-contracts-status-text"></div>
@@ -4562,10 +4685,13 @@ function watchlistTable(rows) {
 }
 function savedContractsSummary(data) {
   const status = data.status_counts || {};
+  const quote = data.quote_status_counts || {};
   const fields = [
     ['Saved contracts', data.count || 0],
     ['3m+ swing', data.swing_count || 0],
     ['Calls / puts', `${data.call_count || 0} / ${data.put_count || 0}`],
+    ['Quotes checked', data.quote_checked_count || 0],
+    ['Quote matched', quote.matched || 0],
     ['Ready review', status.ready_review || 0],
     ['Below 3m', status.below_3m || 0],
     ['Expired', status.expired || 0]
@@ -4584,6 +4710,12 @@ function savedContractsTable(rows) {
     <td>${cell(r.expiry)}</td>
     <td>${cell(r.dte)}</td>
     <td>${cell(r.status)}</td>
+    <td>${cell(r.quote_status || 'not_checked')}</td>
+    <td>${cell(r.current_mid)}</td>
+    <td>${pct(r.current_spread_pct)}</td>
+    <td>${moneyShort(r.current_premium_dollars)}</td>
+    <td>${cell(r.quote_readiness_label || '-')}</td>
+    <td>${cell(r.quote_readiness_score)}</td>
     <td>${cell(r.paper_readiness || '-')}</td>
     <td>${cell(r.paper_readiness_score)}</td>
     <td>${cell(r.best_idea || '-')}</td>
@@ -4592,7 +4724,7 @@ function savedContractsTable(rows) {
     <td>${cell(r.query)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Status</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
+    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Status</th><th>Quote</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {
@@ -4941,11 +5073,18 @@ async function loadWatchlist() {
   $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
   wireWatchlistRows();
 }
-async function loadSavedContracts() {
-  $('saved-contracts-status-text').textContent = 'Loading saved option contracts...';
-  const res = await fetch('/api/saved-option-contracts?enrich=1&limit=80');
+async function loadSavedContracts(refreshQuotes=false) {
+  $('saved-contracts-status-text').textContent = refreshQuotes ? 'Refreshing saved contract quotes...' : 'Loading saved option contracts...';
+  const params = new URLSearchParams({
+    enrich: '1',
+    limit: '80',
+    refresh_quotes: refreshQuotes ? '1' : '0',
+    quote_limit: '20'
+  });
+  const res = await fetch('/api/saved-option-contracts?' + params.toString());
   const data = await res.json();
-  $('saved-contracts-status-text').textContent = `${data.count || 0} saved option contract(s), ${data.swing_count || 0} at 3m+ DTE.`;
+  const quoteText = refreshQuotes ? ` ${data.quote_checked_count || 0} quote(s) checked.` : '';
+  $('saved-contracts-status-text').textContent = `${data.count || 0} saved option contract(s), ${data.swing_count || 0} at 3m+ DTE.${quoteText}`;
   $('saved-contracts-summary').innerHTML = savedContractsSummary(data);
   $('saved-contracts-results').innerHTML = savedContractsTable(data.rows || []);
   wireSavedContractRows();
@@ -5259,7 +5398,8 @@ document.querySelectorAll('.chain-preset').forEach(btn => {
 });
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
-$('saved-contracts-refresh').addEventListener('click', loadSavedContracts);
+$('saved-contracts-refresh').addEventListener('click', () => loadSavedContracts(false));
+$('saved-contracts-quotes').addEventListener('click', () => loadSavedContracts(true));
 $('saved-contracts-run').addEventListener('click', runWatchlist);
 $('provider-check').addEventListener('click', loadProviderStatus);
 $('provider-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadProviderStatus(); });
@@ -5512,7 +5652,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             enrich = _bool_param(params.get("enrich", ["true"])[0], True)
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
-            self._send_json(build_saved_option_contracts(self.data_dir, enrich=enrich, limit=limit))
+            refresh_quotes = _bool_param(params.get("refresh_quotes", ["false"])[0], False)
+            quote_limit = _int_param(params.get("quote_limit", ["20"])[0], 20, 0, 80)
+            self._send_json(build_saved_option_contracts(
+                self.data_dir,
+                enrich=enrich,
+                limit=limit,
+                refresh_quotes=refresh_quotes,
+                quote_limit=quote_limit,
+            ))
             return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})

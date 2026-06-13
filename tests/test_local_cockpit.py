@@ -136,6 +136,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
     assert "loadSavedContracts" in html
+    assert "Refresh quotes" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
@@ -1531,6 +1532,58 @@ def test_saved_option_contracts_extracts_watchlist_option_requests():
         assert contracts["swing_count"] == 1
 
 
+def test_saved_option_contracts_can_refresh_exact_chain_quotes():
+    original = cockpit_module._fetch_option_chain
+
+    def fake_fetch(ticker: str, cache_age: int = 300):
+        assert ticker == "AAPL"
+        assert cache_age == 300
+        return {
+            "spot": 200.0,
+            "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "chains": {
+                "2099-12-18": pd.DataFrame([
+                    {
+                        "strike": 220.0,
+                        "side": "call",
+                        "bid": 4.90,
+                        "ask": 5.10,
+                        "lastPrice": 5.0,
+                        "volume": 50,
+                        "openInterest": 1000,
+                        "impliedVolatility": 0.30,
+                        "delta": 0.42,
+                    }
+                ])
+            },
+        }
+
+    try:
+        cockpit_module._fetch_option_chain = fake_fetch
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            assert add_watchlist_query("AAPL 20991218 C 220", data_dir)["ok"] is True
+            contracts = build_saved_option_contracts(
+                data_dir,
+                enrich=False,
+                refresh_quotes=True,
+                quote_limit=5,
+            )
+    finally:
+        cockpit_module._fetch_option_chain = original
+
+    row = contracts["rows"][0]
+    assert contracts["quote_checked_count"] == 1
+    assert contracts["quote_status_counts"]["matched"] == 1
+    assert row["quote_status"] == "matched"
+    assert row["current_mid"] == 5.0
+    assert row["current_premium_dollars"] == 500.0
+    assert row["current_spread_pct"] < 0.10
+    assert row["quote_readiness_label"] in {"ready", "review"}
+    assert row["current_open_interest"] == 1000
+
+
 def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1622,5 +1675,6 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_saved_option_contracts_extracts_watchlist_option_requests()
+    test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("29/29 local cockpit tests passed")
+    print("30/30 local cockpit tests passed")
