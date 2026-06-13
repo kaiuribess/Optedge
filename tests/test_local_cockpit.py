@@ -16,6 +16,7 @@ from scripts.local_cockpit import (
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
     build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
+    build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -64,6 +65,12 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
     assert "routeQueueAction" in html
+    assert "Today review" in html
+    assert "/api/today-review" in html
+    assert "todayReviewHtml" in html
+    assert "loadTodayReview" in html
+    assert "today-review-action-btn" in html
+    assert "routeTodayReviewAction" in html
     assert "Swing climate" in html
     assert "/api/swing-climate" in html
     assert "swingClimateHtml" in html
@@ -450,6 +457,94 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready
         assert ready[0]["symbol"] == "AAPL"
         assert ready[0]["action"] == "preview_paper_candidate"
+
+
+def test_today_review_combines_setups_saved_contracts_and_risk():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_gated = cockpit_module.build_climate_gated_setups
+        old_saved = cockpit_module.build_saved_option_contracts
+        old_risk = cockpit_module.build_risk_summary
+        old_queue = cockpit_module.build_action_queue
+
+        def fake_gated(*args, **kwargs):
+            return {
+                "climate_label": "constructive_selective",
+                "climate_score": 68,
+                "rows": [{
+                    "ticker_or_symbol": "AAPL",
+                    "asset": "option",
+                    "setup": "AAPL swing call",
+                    "climate_gate_score": 86,
+                    "readiness_score": 82,
+                    "climate_gate_reasons": ["passes DTE gate", "spread acceptable"],
+                }],
+                "held": [],
+            }
+
+        def fake_saved(*args, **kwargs):
+            return {
+                "rows": [{
+                    "symbol": "AAPL",
+                    "query": "AAPL 2026-10-16 C 220",
+                    "side": "call",
+                    "side_code": "C",
+                    "expiry": "2026-10-16",
+                    "strike": 220,
+                    "review_action": "refresh_quote",
+                    "review_score": 74,
+                    "review_reasons": ["quote not checked"],
+                }],
+            }
+
+        def fake_risk(*args, **kwargs):
+            return {
+                "highest_exit_pressure": [{
+                    "ticker_or_symbol": "TSLA",
+                    "asset": "option",
+                    "position_label": "TSLA open call",
+                    "latest_exit_pressure": 85,
+                    "pnl_pct": -0.25,
+                }],
+                "warnings": ["TSLA concentration is high."],
+            }
+
+        def fake_queue(*args, **kwargs):
+            return {
+                "rows": [{
+                    "priority": 70,
+                    "category": "data_health",
+                    "label": "SEC ticker cache missing",
+                    "detail": "Warm the free company cache.",
+                    "action": "warm_sec_ticker_cache",
+                }],
+            }
+
+        cockpit_module.build_climate_gated_setups = fake_gated
+        cockpit_module.build_saved_option_contracts = fake_saved
+        cockpit_module.build_risk_summary = fake_risk
+        cockpit_module.build_action_queue = fake_queue
+        try:
+            review = build_today_review(data_dir, limit=8)
+        finally:
+            cockpit_module.build_climate_gated_setups = old_gated
+            cockpit_module.build_saved_option_contracts = old_saved
+            cockpit_module.build_risk_summary = old_risk
+            cockpit_module.build_action_queue = old_queue
+
+        categories = {row["category"] for row in review["rows"]}
+        actions = {row["action"] for row in review["rows"]}
+        assert review["climate_label"] == "constructive_selective"
+        assert review["setup_count"] == 1
+        assert review["saved_contract_count"] == 1
+        assert review["risk_count"] == 2
+        assert "setup" in categories
+        assert "saved_contract" in categories
+        assert "position_risk" in categories
+        assert "scan_swing_chain" in actions
+        assert "refresh_saved_quote" in actions
+        assert "open_position_monitor" in actions
+        assert any(row["route"] == "chains" for row in review["rows"])
 
 
 def test_enriched_watchlist_sorts_ready_ideas_first():
@@ -1666,6 +1761,7 @@ if __name__ == "__main__":
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_action_queue_surfaces_ready_watchlist_ideas()
+    test_today_review_combines_setups_saved_contracts_and_risk()
     test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -1687,4 +1783,4 @@ if __name__ == "__main__":
     test_saved_option_contracts_extracts_watchlist_option_requests()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("30/30 local cockpit tests passed")
+    print("31/31 local cockpit tests passed")

@@ -3526,6 +3526,250 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
     }
 
 
+def _can_scan_option_chain_symbol(symbol: Any, asset: Any = "") -> bool:
+    clean = str(symbol or "").strip().upper()
+    kind = str(asset or "").strip().lower()
+    if not clean or kind == "futures":
+        return False
+    return not clean.endswith("=F") and not clean.startswith("^")
+
+
+def _today_review_item(
+    priority: float,
+    category: str,
+    label: str,
+    detail: str,
+    action: str,
+    route: str,
+    *,
+    symbol: Any = None,
+    query: Any = None,
+    source: str | None = None,
+    asset: Any = None,
+) -> dict[str, Any]:
+    return {
+        "priority": int(max(0, min(100, round(_float_value(priority))))),
+        "category": category,
+        "label": label,
+        "detail": detail,
+        "action": action,
+        "route": route,
+        "symbol": _clean_value(symbol),
+        "query": _clean_value(query or symbol),
+        "asset": _clean_value(asset),
+        "source": source or category,
+    }
+
+
+def _today_route_for_queue_action(action: Any) -> str:
+    clean = str(action or "").strip().lower()
+    if clean in {"open_position_monitor"}:
+        return "positions"
+    if clean in {"preview_paper_candidate", "review_paper_export"}:
+        return "paper"
+    if clean in {"review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache"}:
+        return "data_health"
+    if clean in {"run_focused_scan", "review_watchlist"}:
+        return "research"
+    return "research"
+
+
+def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, Any]:
+    """Compose the first-screen review queue from setups, saved contracts, and open risk."""
+    limit = max(1, min(int(limit or 12), 40))
+    items: list[dict[str, Any]] = []
+    notes: list[str] = []
+    climate_label = None
+    climate_score = None
+
+    try:
+        gated = build_climate_gated_setups(data_dir, per_asset=4, limit=12, include_held=True)
+        climate_label = gated.get("climate_label")
+        climate_score = gated.get("climate_score")
+        for idx, row in enumerate((gated.get("rows") or [])[:8]):
+            symbol = row.get("ticker_or_symbol")
+            asset = row.get("asset")
+            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "open_research"
+            route = "chains" if action == "scan_swing_chain" else "research"
+            reasons = row.get("climate_gate_reasons")
+            if isinstance(reasons, list):
+                reason_text = "; ".join(str(x) for x in reasons[:3])
+            else:
+                reason_text = str(reasons or "passes current climate gates")
+            detail = (
+                f"{row.get('setup') or symbol} passed at gate score "
+                f"{row.get('climate_gate_score')} with readiness {row.get('readiness_score')}. "
+                f"{reason_text}"
+            )
+            items.append(_today_review_item(
+                94 - idx,
+                "setup",
+                "Review climate-cleared setup",
+                detail,
+                action,
+                route,
+                symbol=symbol,
+                query=symbol,
+                source="climate_gated_setups",
+                asset=asset,
+            ))
+        if not gated.get("rows") and gated.get("held"):
+            held = gated.get("held", [])[0]
+            symbol = held.get("ticker_or_symbol")
+            reasons = held.get("climate_gate_reasons")
+            reason_text = ", ".join(str(x) for x in reasons[:3]) if isinstance(reasons, list) else str(reasons or "")
+            items.append(_today_review_item(
+                66,
+                "setup",
+                "Best setup is held",
+                f"{held.get('setup') or symbol} is closest, but held by: {reason_text or 'current gates'}.",
+                "open_research",
+                "research",
+                symbol=symbol,
+                query=symbol,
+                source="climate_gated_setups",
+                asset=held.get("asset"),
+            ))
+    except Exception as exc:
+        notes.append(f"Climate-gated setup review failed: {str(exc)[:160]}")
+        items.append(_today_review_item(
+            60,
+            "setup",
+            "Setup review unavailable",
+            f"Could not build climate-gated setup review: {str(exc)[:160]}",
+            "review_data_health",
+            "data_health",
+            source="climate_gated_setups",
+        ))
+
+    try:
+        saved = build_saved_option_contracts(data_dir, enrich=True, limit=40, refresh_quotes=False)
+        for row in (saved.get("rows") or [])[:14]:
+            review_action = str(row.get("review_action") or "").lower()
+            score = _float_value(row.get("review_score"), default=0.0)
+            if review_action == "review_now":
+                priority = 96 + score / 100.0
+                label = "Review saved option contract"
+                action = "scan_swing_chain"
+                route = "chains"
+            elif review_action == "refresh_quote":
+                priority = 84 + score / 200.0
+                label = "Refresh saved option quote"
+                action = "refresh_saved_quote"
+                route = "chains"
+            elif review_action == "watch":
+                priority = 58 + score / 200.0
+                label = "Watch saved option contract"
+                action = "scan_swing_chain"
+                route = "chains"
+            else:
+                continue
+            query = row.get("query") or row.get("symbol")
+            reasons = row.get("review_reasons")
+            reason_text = ", ".join(str(x) for x in reasons[:4]) if isinstance(reasons, list) else str(reasons or "")
+            detail = (
+                f"{row.get('symbol')} {row.get('expiry')} {row.get('side_code') or row.get('side')} "
+                f"{row.get('strike')} has review score {row.get('review_score')}. "
+                f"{reason_text or row.get('status') or 'saved for review'}"
+            )
+            items.append(_today_review_item(
+                priority,
+                "saved_contract",
+                label,
+                detail,
+                action,
+                route,
+                symbol=row.get("symbol"),
+                query=query,
+                source="saved_option_contracts",
+                asset="option",
+            ))
+    except Exception as exc:
+        notes.append(f"Saved-contract review failed: {str(exc)[:160]}")
+
+    try:
+        risk = build_risk_summary(data_dir)
+        for idx, row in enumerate((risk.get("highest_exit_pressure") or [])[:8]):
+            pressure = _float_value(row.get("latest_exit_pressure"), default=0.0)
+            if pressure < 40:
+                continue
+            symbol = row.get("ticker_or_symbol")
+            priority = 98 if pressure >= 80 else 88 if pressure >= 60 else 72
+            detail = (
+                f"{row.get('position_label') or symbol} has exit pressure {row.get('latest_exit_pressure')} "
+                f"and open P&L {row.get('pnl_pct')}."
+            )
+            items.append(_today_review_item(
+                priority - idx,
+                "position_risk",
+                "Review open-position exit risk",
+                detail,
+                "open_position_monitor",
+                "positions",
+                symbol=symbol,
+                query=symbol,
+                source="risk_summary",
+                asset=row.get("asset"),
+            ))
+        for warning in (risk.get("warnings") or [])[:3]:
+            items.append(_today_review_item(
+                76,
+                "position_risk",
+                "Portfolio risk warning",
+                str(warning),
+                "open_position_monitor",
+                "positions",
+                source="risk_summary",
+            ))
+    except Exception as exc:
+        notes.append(f"Risk review failed: {str(exc)[:160]}")
+
+    try:
+        queue = build_action_queue(data_dir, limit=12)
+        for row in (queue.get("rows") or [])[:10]:
+            priority = min(_float_value(row.get("priority"), default=0.0), 82.0)
+            items.append(_today_review_item(
+                priority,
+                str(row.get("category") or "action_item"),
+                str(row.get("label") or "Review action item"),
+                str(row.get("detail") or ""),
+                str(row.get("action") or "open_research"),
+                _today_route_for_queue_action(row.get("action")),
+                symbol=row.get("symbol"),
+                query=row.get("query"),
+                source="action_queue",
+            ))
+    except Exception as exc:
+        notes.append(f"Action queue merge failed: {str(exc)[:160]}")
+
+    items = sorted(_dedupe_queue_items(items), key=lambda item: int(item.get("priority") or 0), reverse=True)
+    rows = [{k: _clean_value(v) for k, v in item.items()} for item in items[:limit]]
+    category_counts: dict[str, int] = {}
+    action_counts: dict[str, int] = {}
+    for row in rows:
+        category = str(row.get("category") or "unknown")
+        action = str(row.get("action") or "unknown")
+        category_counts[category] = category_counts.get(category, 0) + 1
+        action_counts[action] = action_counts.get(action, 0) + 1
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(rows),
+        "climate_label": _clean_value(climate_label),
+        "climate_score": _clean_value(climate_score),
+        "category_counts": category_counts,
+        "action_counts": action_counts,
+        "review_now_count": sum(1 for row in rows if row.get("action") in {"scan_swing_chain", "refresh_saved_quote"}),
+        "risk_count": category_counts.get("position_risk", 0),
+        "setup_count": category_counts.get("setup", 0),
+        "saved_contract_count": category_counts.get("saved_contract", 0),
+        "rows": rows,
+        "notes": notes + [
+            "Today Review merges local setup gates, saved contracts, open-position risk, and action queue items.",
+            "Open moves are routing actions only; no broker execution is performed.",
+        ],
+    }
+
+
 def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
     spec = ARTIFACTS.get(name)
     if spec is None:
@@ -4037,6 +4281,12 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="view-tab" type="button" data-view="all">All</button>
   </nav>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Today review</h2>
+    <div class="muted">One clean review queue from climate-cleared setups, saved option contracts, open-position risk, and local action items.</div>
+    <div class="status" id="today-review-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="today-review-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Swing climate</h2>
     <div class="muted">One-page posture from free market, breadth, and sector context. Use this to decide how strict to be with setup readiness.</div>
     <div class="status" id="swing-climate-status-text"></div>
@@ -4515,6 +4765,43 @@ function climateGatedSetupsHtml(data) {
     ${notes}
   </div>`;
 }
+function todayReviewHtml(data) {
+  if (!data) return '<div class="empty">No today-review data available.</div>';
+  const rows = data.rows || [];
+  const counts = data.category_counts || {};
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Queue</span><strong>${cell(data.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label || '-')}</strong></div>
+    <div class="brief-tile"><span>Climate score</span><strong>${cell(data.climate_score || '-')}</strong></div>
+    <div class="brief-tile"><span>Setups</span><strong>${cell(data.setup_count || counts.setup || 0)}</strong></div>
+    <div class="brief-tile"><span>Saved contracts</span><strong>${cell(data.saved_contract_count || counts.saved_contract || 0)}</strong></div>
+    <div class="brief-tile"><span>Risk items</span><strong>${cell(data.risk_count || counts.position_risk || 0)}</strong></div>
+  </div>`;
+  const tableRows = rows.length
+    ? todayReviewTable(rows)
+    : '<div class="empty">No urgent review items surfaced. Check the detailed panels or run a fresh scan.</div>';
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  return `<div style="padding:12px">${tiles}<div class="brief-list" style="margin-top:10px"><h4>Priority queue</h4>${tableRows}</div>${notes}</div>`;
+}
+function todayReviewTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No today-review rows.</div>';
+  const body = rows.map(r => {
+    const q = r.query || r.symbol || '';
+    return `<tr>
+      <td><button class="btn today-review-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-route="${escAttr(r.route || '')}" data-query="${escAttr(q)}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td>
+      <td><strong>${cell(r.priority)}</strong></td>
+      <td>${cell(r.category)}</td>
+      <td>${cell(r.label)}</td>
+      <td>${cell(r.detail)}</td>
+      <td>${cell(r.action)}</td>
+      <td>${cell(r.symbol || '-')}</td>
+      <td>${cell(r.source || '-')}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Type</th><th>Item</th><th>Why</th><th>Action</th><th>Symbol</th><th>Source</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function actionQueueTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
   const body = rows.map(r => {
@@ -4975,6 +5262,62 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('lookup-results');
   }
 }
+async function routeTodayReviewAction(action, route, query, symbol) {
+  const q = query || symbol || '';
+  if (action === 'scan_swing_chain' || route === 'chains') {
+    setView('chains');
+    if (symbol || q) $('chain-query').value = symbol || q;
+    applyChainPreset('swing');
+    window.location.hash = 'chains';
+    if (action === 'refresh_saved_quote') {
+      await loadSavedContracts(true);
+      scrollToId('saved-contracts-results');
+      return;
+    }
+    await scanOptionChain();
+    return;
+  }
+  if (route === 'positions' || action === 'open_position_monitor') {
+    $('positions-asset').value = 'all';
+    $('positions-status').value = 'attention';
+    $('positions-query').value = q;
+    await loadPositions();
+    scrollToId('positions-results');
+    return;
+  }
+  if (route === 'paper') {
+    $('paper-query').value = q;
+    await loadPaperCandidates(false);
+    scrollToId('paper-results');
+    return;
+  }
+  if (route === 'data_health') {
+    await loadSummary();
+    scrollToId('health-results');
+    return;
+  }
+  if (action === 'open_research' || route === 'research') {
+    setView('research');
+    $('symbol').value = q;
+    await lookup();
+    scrollToId('lookup-results');
+    return;
+  }
+  await routeQueueAction(action, query, symbol);
+}
+function wireTodayReviewRows() {
+  document.querySelectorAll('.today-review-action-btn').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await routeTodayReviewAction(
+        btn.dataset.action || '',
+        btn.dataset.route || '',
+        btn.dataset.query || '',
+        btn.dataset.symbol || ''
+      );
+    });
+  });
+}
 function wireActionQueueRows() {
   document.querySelectorAll('.queue-action-btn').forEach(btn => {
     btn.addEventListener('click', async (event) => {
@@ -5087,6 +5430,14 @@ async function loadActionQueue() {
   $('queue-results').innerHTML = actionQueueTable(data.rows || []);
   wireClickableRows($('queue-results'));
   wireActionQueueRows();
+}
+async function loadTodayReview() {
+  $('today-review-status-text').textContent = 'Building today review queue...';
+  const res = await fetch('/api/today-review?limit=12');
+  const data = await res.json();
+  $('today-review-status-text').textContent = `${data.count || 0} priority item(s) from setups, saved contracts, risk, and data health.`;
+  $('today-review-results').innerHTML = todayReviewHtml(data);
+  wireTodayReviewRows();
 }
 async function loadSwingClimate() {
   $('swing-climate-status-text').textContent = 'Loading swing climate...';
@@ -5469,7 +5820,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -5512,6 +5863,7 @@ $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchl
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
+loadTodayReview().catch(err => { $('today-review-status-text').textContent = 'Today review failed'; console.error(err); });
 loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadClimateGatedSetups().catch(err => { $('climate-gated-status-text').textContent = 'Climate-gated setups failed'; console.error(err); });
@@ -5569,6 +5921,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["20"])[0], 20, 1, 100)
             self._send_json(build_action_queue(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/today-review":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
+            self._send_json(build_today_review(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/swing-climate":
             params = parse_qs(parsed.query)
