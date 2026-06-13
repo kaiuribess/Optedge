@@ -1402,6 +1402,11 @@ def test_option_chain_scan_fetches_and_filters_contracts():
         return {
             "spot": 200.0,
             "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+            "source_attempts": [
+                {"provider": "cboe", "status": "ok", "rows": 3, "expirations": 2},
+            ],
             "expirations": ["2027-01-15", "2026-06-18"],
             "chains": {
                 "2027-01-15": pd.DataFrame([
@@ -1456,6 +1461,10 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["ok"] is True
     assert report["symbol"] == "AAPL"
     assert report["source"] == "cboe"
+    assert report["quote_quality"] == "free_or_delayed"
+    assert report["data_delay"] == "delayed"
+    assert report["providers_checked"] == 1
+    assert report["source_attempts"][0]["provider"] == "cboe"
     assert report["total_contracts"] == 3
     assert report["filtered_count"] == 1
     assert report["rejected_count"] == 2

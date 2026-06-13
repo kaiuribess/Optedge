@@ -1026,10 +1026,18 @@ def _opportunity_score(row: pd.Series) -> float:
     return _float_value(row.get("confidence"), default=0.0) / 100.0
 
 
-def _fetch_option_chain(ticker: str, cache_age: int = 600) -> dict[str, Any]:
+def _fetch_option_chain(
+    ticker: str,
+    cache_age: int = 600,
+    include_diagnostics: bool = False,
+) -> dict[str, Any]:
     import chain_provider
 
-    return chain_provider.fetch_chain(ticker, cache_age=cache_age)
+    return chain_provider.fetch_chain(
+        ticker,
+        cache_age=cache_age,
+        include_diagnostics=include_diagnostics,
+    )
 
 
 def _option_mid(row: pd.Series) -> float:
@@ -1292,7 +1300,7 @@ def build_option_chain_scan(
         side_norm = "all"
 
     try:
-        blob = _fetch_option_chain(ticker, cache_age=600)
+        blob = _fetch_option_chain_for_provider_status(ticker)
     except Exception as exc:
         return {"ok": False, "error": f"option-chain fetch failed: {exc}", "symbol": ticker, "rows": []}
     if not blob or not blob.get("chains"):
@@ -1301,6 +1309,7 @@ def build_option_chain_scan(
     spot = _float_value(blob.get("spot"), default=math.nan)
     source = str(blob.get("source") or "unknown")
     quote_quality = blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed")
+    source_attempts = blob.get("source_attempts") if isinstance(blob.get("source_attempts"), list) else []
     today = datetime.now(timezone.utc).date()
     rows: list[dict[str, Any]] = []
     rejected = 0
@@ -1391,6 +1400,9 @@ def build_option_chain_scan(
         "resolution": resolution,
         "source": source,
         "quote_quality": quote_quality,
+        "data_delay": _clean_value(blob.get("data_delay")),
+        "source_attempts": [{k: _clean_value(v) for k, v in row.items()} for row in source_attempts],
+        "providers_checked": len(source_attempts),
         "spot": _clean_value(spot),
         "total_expirations": len(blob.get("expirations") or []),
         "total_contracts": total_contracts,
@@ -3268,8 +3280,21 @@ def _history_probe_result(df: pd.DataFrame, note: str = "") -> dict[str, Any]:
 
 def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
     chains = blob.get("chains") if isinstance(blob, dict) else None
+    attempts = blob.get("source_attempts") if isinstance(blob, dict) else None
+    attempts = attempts if isinstance(attempts, list) else []
+    attempt_names = [
+        str(row.get("provider") or row.get("source") or "")
+        for row in attempts
+        if isinstance(row, dict) and (row.get("provider") or row.get("source"))
+    ]
     if not chains:
-        return {"ok": False, "rows": 0, "note": "No option-chain rows returned."}
+        return {
+            "ok": False,
+            "rows": 0,
+            "providers_checked": len(attempts),
+            "provider_attempts": ", ".join(attempt_names) if attempt_names else None,
+            "note": "No option-chain rows returned.",
+        }
     total = 0
     for df in chains.values():
         if isinstance(df, pd.DataFrame):
@@ -3281,9 +3306,19 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
         "rows": total,
         "source": blob.get("source"),
         "quote_quality": blob.get("quote_quality") or ("free_or_delayed" if blob.get("source") else None),
+        "data_delay": blob.get("data_delay"),
+        "providers_checked": len(attempts),
+        "provider_attempts": ", ".join(attempt_names) if attempt_names else None,
         "spot": _clean_value(blob.get("spot")),
         "note": f"{len(chains)} expiration(s) returned.",
     }
+
+
+def _fetch_option_chain_for_provider_status(symbol: str) -> dict[str, Any]:
+    try:
+        return _fetch_option_chain(symbol, cache_age=600, include_diagnostics=True)
+    except TypeError:
+        return _fetch_option_chain(symbol, cache_age=600)
 
 
 def build_provider_status(
@@ -3319,7 +3354,7 @@ def build_provider_status(
         rows.append(_provider_probe(
             "Option chain stack",
             "options",
-            lambda: _chain_probe_result(_fetch_option_chain(symbol, cache_age=600)),
+            lambda: _chain_probe_result(_fetch_option_chain_for_provider_status(symbol)),
         ))
     elif include_chain:
         rows.append({
@@ -5678,6 +5713,9 @@ function optionChainSummary(data) {
     ['Preset', data.preset_label || data.preset || '-'],
     ['Source', data.source || '-'],
     ['Quality', data.quote_quality || '-'],
+    ['Delay', data.data_delay || '-'],
+    ['Providers checked', data.providers_checked || 0],
+    ['Provider trail', (data.source_attempts || []).map(r => r.provider || r.source).filter(Boolean).join(' -> ') || '-'],
     ['Spot', data.spot || '-'],
     ['Expirations', data.total_expirations || 0],
     ['Contracts', data.total_contracts || 0],

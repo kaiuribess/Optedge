@@ -330,6 +330,8 @@ def _fetch_cboe(ticker: str, session) -> Optional[Dict[str, Any]]:
         "expirations": sorted(by_exp.keys()),
         "chains": chains,
         "source": "cboe",
+        "quote_quality": "free_or_delayed",
+        "data_delay": "delayed",
     }
 
 
@@ -438,6 +440,8 @@ def _fetch_nasdaq(ticker: str, session, asset_class: str = "stocks") -> Optional
         "expirations": sorted(by_exp.keys()),
         "chains": chains,
         "source": f"nasdaq_{asset_class}",
+        "quote_quality": "free_or_delayed",
+        "data_delay": "delayed",
     }
 
 
@@ -480,6 +484,8 @@ def _fetch_yfinance(ticker: str) -> Optional[Dict[str, Any]]:
             "expirations": list(expirations),
             "chains": chains,
             "source": "yfinance",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
         }
     except Exception as e:
         log.debug("yfinance %s fetch: %s", ticker, e)
@@ -487,9 +493,71 @@ def _fetch_yfinance(ticker: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Public entry point — multi-source orchestrator
+# Provider diagnostics
 # ---------------------------------------------------------------------------
-def fetch_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
+def _contract_count(blob: Optional[Dict[str, Any]]) -> int:
+    if not blob or not isinstance(blob, dict):
+        return 0
+    chains = blob.get("chains")
+    if not isinstance(chains, dict):
+        return 0
+    total = 0
+    for rows in chains.values():
+        if isinstance(rows, pd.DataFrame):
+            total += len(rows)
+        elif isinstance(rows, list):
+            total += len(rows)
+    return total
+
+
+def _attempt_record(
+    name: str,
+    blob: Optional[Dict[str, Any]],
+    elapsed_ms: float,
+    note: str = "",
+) -> Dict[str, Any]:
+    rows = _contract_count(blob)
+    return {
+        "provider": name,
+        "status": "ok" if rows > 0 else "warn",
+        "rows": rows,
+        "expirations": len((blob or {}).get("expirations") or []),
+        "source": (blob or {}).get("source") or name,
+        "quote_quality": (blob or {}).get("quote_quality"),
+        "data_delay": (blob or {}).get("data_delay"),
+        "latency_ms": round(elapsed_ms, 1),
+        "note": note or ("usable chain returned" if rows > 0 else "no usable chain returned"),
+    }
+
+
+def _timed_attempt(name: str, fetcher) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    started = time.perf_counter()
+    note = ""
+    try:
+        blob = fetcher()
+    except Exception as exc:
+        blob = None
+        note = str(exc)[:180]
+        log.debug("%s chain attempt failed: %s", name, exc)
+    return blob, _attempt_record(name, blob, (time.perf_counter() - started) * 1000.0, note)
+
+
+def _cacheable_blob(blob: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        **blob,
+        "chains": {k: v.to_dict("records") for k, v in blob["chains"].items()},
+    }
+
+
+def _restore_cached_blob(cached: Dict[str, Any]) -> Dict[str, Any]:
+    chains = {exp: pd.DataFrame(rows) for exp, rows in cached["chains"].items()}
+    return {**cached, "chains": chains}
+
+
+# ---------------------------------------------------------------------------
+# Public entry point - multi-source orchestrator
+# ---------------------------------------------------------------------------
+def fetch_chain(ticker: str, cache_age: int = 600, include_diagnostics: bool = False) -> Dict[str, Any]:
     """Multi-source options chain fetch. Tries CBOE -> NASDAQ (stocks then
     etf then index) -> yfinance, returning the first source with usable data.
 
@@ -500,37 +568,55 @@ def fetch_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
     cached = _dp.cache_get(key, cache_age)
     if cached and isinstance(cached, dict) and cached.get("chains"):
         try:
-            chains = {exp: pd.DataFrame(rows) for exp, rows in cached["chains"].items()}
-            return {**cached, "chains": chains}
+            blob = _restore_cached_blob(cached)
+            if include_diagnostics and "source_attempts" not in blob:
+                blob["source_attempts"] = [{
+                    "provider": "cache",
+                    "status": "ok",
+                    "rows": _contract_count(blob),
+                    "expirations": len(blob.get("expirations") or []),
+                    "source": blob.get("source"),
+                    "quote_quality": blob.get("quote_quality"),
+                    "data_delay": blob.get("data_delay"),
+                    "latency_ms": 0,
+                    "note": "cache hit",
+                }]
+            return blob
         except Exception:
             pass
 
     sess = _dp.get_session()
+    attempts: List[Dict[str, Any]] = []
 
     # Optional live/broker source first when configured.
-    blob = _fetch_tradier(ticker, sess)
+    blob = None
+    if tradier_enabled():
+        blob, attempt = _timed_attempt("tradier", lambda: _fetch_tradier(ticker, sess))
+        attempts.append(attempt)
     # Free/keyless delayed source.
     if not blob:
-        blob = _fetch_cboe(ticker, sess)
+        blob, attempt = _timed_attempt("cboe", lambda: _fetch_cboe(ticker, sess))
+        attempts.append(attempt)
     # NASDAQ (try stocks, then etf, then index — first one that returns wins)
     if not blob:
         for ac in ("stocks", "etf", "index"):
-            blob = _fetch_nasdaq(ticker, sess, asset_class=ac)
+            name = f"nasdaq_{ac}"
+            blob, attempt = _timed_attempt(name, lambda ac=ac: _fetch_nasdaq(ticker, sess, asset_class=ac))
+            attempts.append(attempt)
             if blob:
                 break
     # yfinance fallback
     if not blob:
-        blob = _fetch_yfinance(ticker)
+        blob, attempt = _timed_attempt("yfinance", lambda: _fetch_yfinance(ticker))
+        attempts.append(attempt)
 
     if not blob:
-        return {}
+        return {"source_attempts": attempts} if include_diagnostics else {}
+    if include_diagnostics:
+        blob["source_attempts"] = attempts
     # Cache (convert DataFrames to records, drop source for stability)
     try:
-        cached_blob = {
-            **blob,
-            "chains": {k: v.to_dict("records") for k, v in blob["chains"].items()},
-        }
-        _dp.cache_put(key, cached_blob)
+        _dp.cache_put(key, _cacheable_blob(blob))
     except Exception:
         pass
     return blob

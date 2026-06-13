@@ -2,11 +2,14 @@ import os
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import chain_provider
+import data_provider
 
 
 class _Resp:
@@ -95,7 +98,79 @@ def test_tradier_fetch_normalizes_chain():
     assert call["delta"] == 0.42
 
 
+def test_fetch_chain_records_free_provider_diagnostics():
+    old_env = {
+        key: os.environ.get(key)
+        for key in ("OPTEDGE_TRADIER_TOKEN", "TRADIER_TOKEN", "TRADIER_ACCESS_TOKEN")
+    }
+    for key in old_env:
+        os.environ.pop(key, None)
+    old_cache_get = data_provider.cache_get
+    old_cache_put = data_provider.cache_put
+    old_get_session = data_provider.get_session
+    old_cboe = chain_provider._fetch_cboe
+    old_nasdaq = chain_provider._fetch_nasdaq
+    old_yfinance = chain_provider._fetch_yfinance
+    cached = {}
+
+    def fake_nasdaq(ticker, session, asset_class="stocks"):
+        if asset_class != "etf":
+            return None
+        return {
+            "spot": 450.0,
+            "div_yield": 0.0,
+            "expirations": ["2026-09-18"],
+            "chains": {"2026-09-18": pd.DataFrame([{
+                "strike": 450,
+                "side": "call",
+                "bid": 5.0,
+                "ask": 5.2,
+                "lastPrice": 5.1,
+                "volume": 10,
+                "openInterest": 200,
+            }])},
+            "source": f"nasdaq_{asset_class}",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+        }
+
+    data_provider.cache_get = lambda *args, **kwargs: None
+    data_provider.cache_put = lambda key, blob: cached.update({key: blob})
+    data_provider.get_session = lambda: object()
+    chain_provider._fetch_cboe = lambda *args, **kwargs: None
+    chain_provider._fetch_nasdaq = fake_nasdaq
+    chain_provider._fetch_yfinance = lambda *args, **kwargs: None
+    try:
+        blob = chain_provider.fetch_chain("SPY", cache_age=0, include_diagnostics=True)
+    finally:
+        data_provider.cache_get = old_cache_get
+        data_provider.cache_put = old_cache_put
+        data_provider.get_session = old_get_session
+        chain_provider._fetch_cboe = old_cboe
+        chain_provider._fetch_nasdaq = old_nasdaq
+        chain_provider._fetch_yfinance = old_yfinance
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert blob["source"] == "nasdaq_etf"
+    assert blob["quote_quality"] == "free_or_delayed"
+    assert blob["data_delay"] == "delayed"
+    assert [row["provider"] for row in blob["source_attempts"]] == [
+        "cboe",
+        "nasdaq_stocks",
+        "nasdaq_etf",
+    ]
+    assert blob["source_attempts"][0]["status"] == "warn"
+    assert blob["source_attempts"][-1]["status"] == "ok"
+    assert "chain:SPY" in cached
+    assert cached["chain:SPY"]["source_attempts"][-1]["provider"] == "nasdaq_etf"
+
+
 if __name__ == "__main__":
     test_tradier_disabled_without_token()
     test_tradier_fetch_normalizes_chain()
-    print("2/2 Tradier chain provider tests passed")
+    test_fetch_chain_records_free_provider_diagnostics()
+    print("3/3 Tradier chain provider tests passed")
