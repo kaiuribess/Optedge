@@ -643,6 +643,86 @@ def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: in
     }
 
 
+def _saved_contract_review(row: dict[str, Any]) -> dict[str, Any]:
+    score = 100
+    reasons: list[str] = []
+    dte = _float_value(row.get("dte"), default=math.nan)
+    quote_status = str(row.get("quote_status") or "not_checked")
+    spread = _float_value(row.get("current_spread_pct"), default=math.nan)
+    quote_score = _float_value(row.get("quote_readiness_score"), default=math.nan)
+    quote_label = str(row.get("quote_readiness_label") or "").lower()
+    paper_status = str(row.get("paper_readiness") or row.get("status") or "").lower()
+    warnings = _float_value(row.get("warning_count"), default=0.0)
+
+    if not math.isfinite(dte):
+        score -= 25
+        reasons.append("expiry needs review")
+    elif dte < 0:
+        score -= 100
+        reasons.append("expired")
+    elif dte < MIN_SWING_OPTION_DTE:
+        score -= 35
+        reasons.append("below 90 DTE")
+    else:
+        reasons.append("3m+ DTE")
+
+    if quote_status == "matched":
+        reasons.append("quote matched")
+    elif quote_status == "not_checked":
+        score -= 18
+        reasons.append("refresh quote first")
+    elif quote_status == "not_checked_limit":
+        score -= 16
+        reasons.append("quote refresh limit")
+    else:
+        score -= 35
+        reasons.append(str(quote_status).replace("_", " "))
+
+    if math.isfinite(spread):
+        if spread > 0.25:
+            score -= 30
+            reasons.append(f"spread {spread * 100:.1f}%")
+        elif spread > 0.15:
+            score -= 15
+            reasons.append(f"spread {spread * 100:.1f}%")
+        else:
+            reasons.append(f"spread {spread * 100:.1f}%")
+    elif quote_status == "matched":
+        score -= 12
+        reasons.append("spread missing")
+
+    if math.isfinite(quote_score):
+        if quote_score < 65:
+            score -= 18
+            reasons.append(f"quote score {quote_score:g}")
+        elif quote_score >= 80:
+            reasons.append(f"quote score {quote_score:g}")
+    if quote_label == "wait":
+        score -= 20
+        reasons.append("quote readiness wait")
+    if "blocked" in paper_status:
+        score -= 15
+        reasons.append("local readiness blocked")
+    if warnings >= 5:
+        score -= 10
+        reasons.append(f"{int(warnings)} local warning(s)")
+
+    clean_score = max(0, min(100, int(round(score))))
+    if clean_score >= 80 and quote_status == "matched":
+        action = "review_now"
+    elif quote_status != "matched":
+        action = "refresh_quote"
+    elif clean_score >= 60:
+        action = "watch"
+    else:
+        action = "wait"
+    return {
+        "review_score": clean_score,
+        "review_action": action,
+        "review_reasons": reasons[:6],
+    }
+
+
 def build_saved_option_contracts(
     data_dir: Path = DATA_DIR,
     enrich: bool = True,
@@ -689,6 +769,7 @@ def build_saved_option_contracts(
             quote_checked_count += 1
         else:
             row["quote_status"] = "not_checked" if not refresh_quotes else "not_checked_limit"
+        row.update(_saved_contract_review(row))
         rows.append({k: _clean_value(v) for k, v in row.items()})
 
     rows = sorted(
@@ -703,11 +784,14 @@ def build_saved_option_contracts(
     )[:limit]
     status_counts: dict[str, int] = {}
     quote_status_counts: dict[str, int] = {}
+    review_action_counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
         quote_status = str(row.get("quote_status") or "unknown")
         quote_status_counts[quote_status] = quote_status_counts.get(quote_status, 0) + 1
+        review_action = str(row.get("review_action") or "unknown")
+        review_action_counts[review_action] = review_action_counts.get(review_action, 0) + 1
     return {
         "generated_at": _now_iso(),
         "count": len(rows),
@@ -717,6 +801,7 @@ def build_saved_option_contracts(
         "quote_checked_count": quote_checked_count,
         "status_counts": status_counts,
         "quote_status_counts": quote_status_counts,
+        "review_action_counts": review_action_counts,
         "call_count": sum(row.get("side") == "call" for row in rows),
         "put_count": sum(row.get("side") == "put" for row in rows),
         "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
@@ -4686,10 +4771,12 @@ function watchlistTable(rows) {
 function savedContractsSummary(data) {
   const status = data.status_counts || {};
   const quote = data.quote_status_counts || {};
+  const review = data.review_action_counts || {};
   const fields = [
     ['Saved contracts', data.count || 0],
     ['3m+ swing', data.swing_count || 0],
     ['Calls / puts', `${data.call_count || 0} / ${data.put_count || 0}`],
+    ['Review now', review.review_now || 0],
     ['Quotes checked', data.quote_checked_count || 0],
     ['Quote matched', quote.matched || 0],
     ['Ready review', status.ready_review || 0],
@@ -4709,6 +4796,9 @@ function savedContractsTable(rows) {
     <td>${cell(r.side_code)} ${cell(r.strike)}</td>
     <td>${cell(r.expiry)}</td>
     <td>${cell(r.dte)}</td>
+    <td>${cell(r.review_action)}</td>
+    <td>${cell(r.review_score)}</td>
+    <td>${cell(Array.isArray(r.review_reasons) ? r.review_reasons.join(', ') : r.review_reasons)}</td>
     <td>${cell(r.status)}</td>
     <td>${cell(r.quote_status || 'not_checked')}</td>
     <td>${cell(r.current_mid)}</td>
@@ -4724,7 +4814,7 @@ function savedContractsTable(rows) {
     <td>${cell(r.query)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Status</th><th>Quote</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
+    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Action</th><th>Review score</th><th>Reasons</th><th>Status</th><th>Quote</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {

@@ -137,6 +137,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "savedContractsTable" in html
     assert "loadSavedContracts" in html
     assert "Refresh quotes" in html
+    assert "Review now" in html
+    assert "Review score" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
@@ -1527,8 +1529,13 @@ def test_saved_option_contracts_extracts_watchlist_option_requests():
         assert by_symbol["AAPL"]["side_code"] == "C"
         assert by_symbol["AAPL"]["dte"] >= 90
         assert by_symbol["AAPL"]["status"] == "saved_review"
+        assert by_symbol["AAPL"]["review_action"] == "refresh_quote"
+        assert by_symbol["AAPL"]["review_score"] < 100
+        assert "refresh quote first" in by_symbol["AAPL"]["review_reasons"]
         assert by_symbol["MSFT"]["status"] == "expired"
+        assert by_symbol["MSFT"]["review_action"] == "refresh_quote"
         assert contracts["status_counts"]["expired"] == 1
+        assert contracts["review_action_counts"]["refresh_quote"] == 2
         assert contracts["swing_count"] == 1
 
 
@@ -1577,6 +1584,9 @@ def test_saved_option_contracts_can_refresh_exact_chain_quotes():
     assert contracts["quote_checked_count"] == 1
     assert contracts["quote_status_counts"]["matched"] == 1
     assert row["quote_status"] == "matched"
+    assert row["review_action"] == "review_now"
+    assert row["review_score"] >= 80
+    assert "quote matched" in row["review_reasons"]
     assert row["current_mid"] == 5.0
     assert row["current_premium_dollars"] == 500.0
     assert row["current_spread_pct"] < 0.10
