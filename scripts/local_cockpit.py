@@ -4252,6 +4252,21 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .pill.pass { border-color:rgba(16,185,129,.75); color:#bbf7d0; background:rgba(16,185,129,.14); }
 .pill.hold { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.14); }
 .setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
+.review-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; margin-top:12px; }
+.review-card { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:12px; display:grid; gap:10px; min-height:168px; }
+.review-card.setup { border-left:4px solid var(--accent); }
+.review-card.saved_contract { border-left:4px solid var(--good); }
+.review-card.position_risk { border-left:4px solid var(--warn); }
+.review-card.data_health { border-left:4px solid var(--bad); }
+.review-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.review-card h3 { margin:0; font-size:15px; line-height:1.25; }
+.review-card p { margin:0; color:#cbd5e1; font-size:12px; line-height:1.45; }
+.review-meta { display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; }
+.priority-badge { display:inline-flex; align-items:center; justify-content:center; min-width:34px; border:1px solid var(--border); border-radius:999px; padding:4px 8px; font-size:12px; font-weight:700; color:var(--text); background:#111827; }
+.priority-badge.hot { border-color:rgba(239,68,68,.75); color:#fecaca; background:rgba(239,68,68,.12); }
+.priority-badge.warm { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.12); }
+.priority-badge.cool { border-color:rgba(56,189,248,.65); color:#bae6fd; background:rgba(56,189,248,.10); }
+.review-card .btn { justify-content:center; width:100%; align-self:end; }
 .chain-preset.active { border-color:var(--accent); background:#102033; color:var(--text); }
 .brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
 .brief-list { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
@@ -4812,13 +4827,50 @@ function todayReviewHtml(data) {
     <div class="brief-tile"><span>Saved contracts</span><strong>${cell(data.saved_contract_count || counts.saved_contract || 0)}</strong></div>
     <div class="brief-tile"><span>Risk items</span><strong>${cell(data.risk_count || counts.position_risk || 0)}</strong></div>
   </div>`;
+  const cards = rows.length
+    ? `<div class="review-grid">${rows.slice(0, 6).map(todayReviewCard).join('')}</div>`
+    : '<div class="empty">No urgent review items surfaced. Check the detailed panels or run a fresh scan.</div>';
   const tableRows = rows.length
     ? todayReviewTable(rows)
-    : '<div class="empty">No urgent review items surfaced. Check the detailed panels or run a fresh scan.</div>';
+    : '<div class="empty">No today-review rows.</div>';
   const notes = (data.notes || []).length
     ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
     : '';
-  return `<div style="padding:12px">${tiles}<div class="brief-list" style="margin-top:10px"><h4>Priority queue</h4>${tableRows}</div>${notes}</div>`;
+  return `<div style="padding:12px">${tiles}${cards}<div class="brief-list" style="margin-top:10px"><h4>Full queue</h4>${tableRows}</div>${notes}</div>`;
+}
+function reviewPriorityClass(priority) {
+  const p = Number(priority || 0);
+  if (p >= 90) return 'hot';
+  if (p >= 70) return 'warm';
+  return 'cool';
+}
+function reviewCategoryClass(category) {
+  return String(category || 'action_item').replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+function todayReviewActionLabel(action, route) {
+  if (action === 'scan_swing_chain') return 'Scan 3m+ chain';
+  if (action === 'refresh_saved_quote') return 'Refresh quote';
+  if (action === 'open_position_monitor' || route === 'positions') return 'Review position';
+  if (route === 'paper') return 'Open paper queue';
+  if (route === 'data_health') return 'Check health';
+  return 'Open research';
+}
+function todayReviewCard(r) {
+  const q = r.query || r.symbol || '';
+  const category = reviewCategoryClass(r.category);
+  const priorityClass = reviewPriorityClass(r.priority);
+  return `<article class="review-card ${escAttr(category)}">
+    <header>
+      <div><h3>${cell(r.label || 'Review item')}</h3><small class="muted">${cell(r.symbol || r.query || r.source || '-')}</small></div>
+      <span class="priority-badge ${priorityClass}">${cell(r.priority)}</span>
+    </header>
+    <div class="review-meta">
+      <span class="pill">${cell(r.category || 'action')}</span>
+      <span>${cell(r.source || '-')}</span>
+    </div>
+    <p>${cell(r.detail || '')}</p>
+    <button class="btn today-review-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-route="${escAttr(r.route || '')}" data-query="${escAttr(q)}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(todayReviewActionLabel(r.action, r.route))}</button>
+  </article>`;
 }
 function todayReviewTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No today-review rows.</div>';

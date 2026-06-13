@@ -68,6 +68,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Today review" in html
     assert "/api/today-review" in html
     assert "todayReviewHtml" in html
+    assert "todayReviewCard" in html
+    assert "review-grid" in html
+    assert "priority-badge" in html
+    assert "Scan 3m+ chain" in html
     assert "loadTodayReview" in html
     assert "today-review-action-btn" in html
     assert "routeTodayReviewAction" in html
