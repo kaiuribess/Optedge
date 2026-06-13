@@ -4075,6 +4075,9 @@ function bestSetupCard(row) {
   const status = row.trade_status || 'Review';
   const readiness = row.readiness_label || 'review';
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
+  const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
+    ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
@@ -4092,6 +4095,7 @@ function bestSetupCard(row) {
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Status</span><b>${cell(status)}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${chainBtn}
   </article>`;
 }
 function bestSetupsHtml(data) {
@@ -4119,6 +4123,9 @@ function climateGatedCard(row) {
   const symbol = row.ticker_or_symbol || '';
   const gate = row.climate_gate_status || 'hold';
   const reasons = Array.isArray(row.climate_gate_reasons) ? row.climate_gate_reasons.join(', ') : (row.climate_gate_reasons || '');
+  const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
+    ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
@@ -4134,6 +4141,7 @@ function climateGatedCard(row) {
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
     <div class="row"><span>Gate reason</span><b>${cell(reasons || 'passes climate gates')}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${chainBtn}
   </article>`;
 }
 function climateGatedSetupsHtml(data) {
@@ -4448,6 +4456,13 @@ function wireClickableRows(root=document) {
     });
   });
 }
+function canScanOptionChainSymbol(symbol, asset='') {
+  const clean = String(symbol || '').trim().toUpperCase();
+  const kind = String(asset || '').trim().toLowerCase();
+  if (!clean || kind === 'futures') return false;
+  if (clean.endsWith('=F') || clean.startsWith('^')) return false;
+  return true;
+}
 function wireSetupCards(root=document) {
   root.querySelectorAll('.setup-lookup-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -4457,6 +4472,17 @@ function wireSetupCards(root=document) {
       $('symbol').value = symbol;
       await lookup();
       window.location.hash = 'lookup';
+    });
+  });
+  root.querySelectorAll('.setup-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol || '';
+      if (!symbol) return;
+      setView('chains');
+      $('chain-query').value = symbol;
+      applyChainPreset('swing');
+      window.location.hash = 'chains';
+      await scanOptionChain();
     });
   });
 }
