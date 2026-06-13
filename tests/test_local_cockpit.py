@@ -12,8 +12,9 @@ if str(ROOT) not in sys.path:
 import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
-    build_action_queue, build_data_health, build_performance_summary, build_positions,
-    build_risk_summary, build_summary, build_symbol_suggestions,
+    build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
+    build_positions, build_risk_summary, build_robinhood_agentic_queue_report, build_summary,
+    build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -65,6 +66,13 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/paper-candidates" in html
     assert "/api/export-paper" in html
     assert "Write export files" in html
+    assert "Agentic options queue" in html
+    assert "/api/robinhood-queue" in html
+    assert "/api/build-robinhood-queue" in html
+    assert "loadRobinhoodQueue" in html
+    assert "Option chain scan" in html
+    assert "/api/option-chain-scan" in html
+    assert "scanOptionChain" in html
     assert "Research watchlist" in html
     assert "Readiness" in html
     assert "/api/watchlist" in html
@@ -780,6 +788,138 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         assert (data_dir / "external_paper_orders.json").exists()
 
 
+def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "contract": "AAPL 2027-01-15 C 200",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2027-01-15",
+                "mid": 0.75,
+                "suggested_contracts": 1,
+                "actual_dollars": 75,
+                "stop_price": 0.35,
+                "target_price": 1.6,
+                "confidence": 72,
+                "rank_score": 2.0,
+                "fused_score": 1.5,
+                "trade_status": "Trade",
+                "spread_pct": 0.04,
+            },
+            {
+                "ticker": "MSFT",
+                "contract": "MSFT 2026-06-18 C 500",
+                "side": "call",
+                "strike": 500,
+                "expiry": "2026-06-18",
+                "mid": 0.65,
+                "suggested_contracts": 1,
+                "actual_dollars": 65,
+                "stop_price": 0.3,
+                "target_price": 1.4,
+                "confidence": 70,
+                "rank_score": 1.8,
+                "trade_status": "Trade",
+                "spread_pct": 0.04,
+            },
+        ]).to_parquet(data_dir / "top_options_20260613_120000.parquet")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+
+        preview = build_robinhood_agentic_queue_report(
+            data_dir,
+            account_budget=500,
+            max_candidates=5,
+            max_orders=2,
+            min_dte=180,
+        )
+        assert preview["candidate_count"] == 1
+        assert preview["orders"][0]["symbol"] == "AAPL"
+        assert preview["orders"][0]["dte"] >= 180
+        assert any("dte below 180" in row["reasons"] for row in preview["rejected"])
+
+        written = build_robinhood_agentic_queue_report(data_dir, write=True)
+        assert written["wrote_files"] is True
+        assert (data_dir / "robinhood_agentic_queue.json").exists()
+        assert (data_dir / "robinhood_agentic_prompt.md").exists()
+
+
+def test_option_chain_scan_fetches_and_filters_contracts():
+    original = cockpit_module._fetch_option_chain
+
+    def fake_fetch(ticker: str, cache_age: int = 600):
+        assert ticker == "AAPL"
+        return {
+            "spot": 200.0,
+            "source": "cboe",
+            "expirations": ["2027-01-15", "2026-06-18"],
+            "chains": {
+                "2027-01-15": pd.DataFrame([
+                    {
+                        "strike": 220.0,
+                        "side": "call",
+                        "bid": 4.90,
+                        "ask": 5.10,
+                        "lastPrice": 5.00,
+                        "volume": 50,
+                        "openInterest": 1000,
+                        "impliedVolatility": 0.30,
+                        "delta": 0.42,
+                    },
+                    {
+                        "strike": 300.0,
+                        "side": "call",
+                        "bid": 1.00,
+                        "ask": 2.00,
+                        "lastPrice": 1.50,
+                        "volume": 10,
+                        "openInterest": 25,
+                    },
+                ]),
+                "2026-06-18": pd.DataFrame([
+                    {
+                        "strike": 180.0,
+                        "side": "put",
+                        "bid": 2.00,
+                        "ask": 2.10,
+                        "lastPrice": 2.05,
+                        "volume": 20,
+                        "openInterest": 150,
+                    },
+                ]),
+            },
+        }
+
+    try:
+        cockpit_module._fetch_option_chain = fake_fetch
+        report = build_option_chain_scan(
+            "AAPL",
+            side="call",
+            min_dte=180,
+            max_dte=400,
+            max_spread_pct=0.10,
+            max_premium=600,
+        )
+    finally:
+        cockpit_module._fetch_option_chain = original
+
+    assert report["ok"] is True
+    assert report["symbol"] == "AAPL"
+    assert report["source"] == "cboe"
+    assert report["total_contracts"] == 3
+    assert report["filtered_count"] == 1
+    assert report["rejected_count"] == 2
+    row = report["rows"][0]
+    assert row["side"] == "call"
+    assert row["strike"] == 220.0
+    assert row["premium_dollars"] == 500.0
+    assert row["spread_pct"] < 0.10
+
+
 def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -859,5 +999,7 @@ if __name__ == "__main__":
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
+    test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
+    test_option_chain_scan_fetches_and_filters_contracts()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("17/17 local cockpit tests passed")
+    print("19/19 local cockpit tests passed")

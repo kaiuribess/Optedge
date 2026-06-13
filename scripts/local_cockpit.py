@@ -28,7 +28,10 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
 
 import data_provider
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
-from scripts.export_external_paper_track import build_external_orders, write_outputs
+from scripts.export_external_paper_track import build_external_orders, write_outputs as write_paper_outputs
+from scripts.export_robinhood_agentic_queue import (
+    build_robinhood_queue, write_outputs as write_robinhood_queue_outputs,
+)
 from scripts.research_jobs import (
     create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
 )
@@ -49,6 +52,8 @@ ARTIFACTS = {
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
     "external-paper-orders": ("external_paper_orders.csv", "text/csv; charset=utf-8"),
+    "robinhood-agentic-queue": ("robinhood_agentic_queue.json", "application/json; charset=utf-8"),
+    "robinhood-agentic-prompt": ("robinhood_agentic_prompt.md", "text/markdown; charset=utf-8"),
 }
 
 OPPORTUNITY_SPECS = {
@@ -596,6 +601,191 @@ def _opportunity_score(row: pd.Series) -> float:
     return _float_value(row.get("confidence"), default=0.0) / 100.0
 
 
+def _fetch_option_chain(ticker: str, cache_age: int = 600) -> dict[str, Any]:
+    import chain_provider
+
+    return chain_provider.fetch_chain(ticker, cache_age=cache_age)
+
+
+def _option_mid(row: pd.Series) -> float:
+    bid = _float_value(row.get("bid"), default=math.nan)
+    ask = _float_value(row.get("ask"), default=math.nan)
+    last = _float_value(row.get("lastPrice"), default=math.nan)
+    if math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask >= bid:
+        return (bid + ask) / 2.0
+    if math.isfinite(last) and last > 0:
+        return last
+    return float("nan")
+
+
+def _option_spread_pct(row: pd.Series, mid: float) -> float | None:
+    bid = _float_value(row.get("bid"), default=math.nan)
+    ask = _float_value(row.get("ask"), default=math.nan)
+    if not (math.isfinite(bid) and math.isfinite(ask) and math.isfinite(mid)):
+        return None
+    if bid < 0 or ask <= 0 or ask < bid or mid <= 0:
+        return None
+    return (ask - bid) / mid
+
+
+def _option_chain_score(row: dict[str, Any]) -> float:
+    oi = _float_value(row.get("openInterest"), default=0.0)
+    volume = _float_value(row.get("volume"), default=0.0)
+    spread = _float_value(row.get("spread_pct"), default=0.50)
+    premium = _float_value(row.get("premium_dollars"), default=0.0)
+    moneyness = abs(_float_value(row.get("moneyness_pct"), default=0.0))
+    return (
+        math.log1p(max(0.0, oi))
+        + 0.65 * math.log1p(max(0.0, volume))
+        - 8.0 * max(0.0, spread)
+        - 0.04 * moneyness
+        - 0.0002 * max(0.0, premium)
+    )
+
+
+def build_option_chain_scan(
+    query: str,
+    data_dir: Path = DATA_DIR,
+    side: str = "all",
+    min_dte: int = 0,
+    max_dte: int = 900,
+    max_spread_pct: float = 0.25,
+    max_premium: float = 0.0,
+    min_open_interest: int = 0,
+    limit: int = 80,
+) -> dict[str, Any]:
+    """Inspect a ticker's current option chain using the existing free chain stack."""
+    clean = str(query or "").strip()
+    if not clean:
+        return {"ok": False, "error": "ticker or company name is required", "rows": []}
+    resolution = resolve_symbol(clean)
+    ticker = str(resolution.get("symbol") or "").upper()
+    if not ticker:
+        return {"ok": False, "error": resolution.get("error") or "could not resolve ticker", "rows": []}
+    if ticker.endswith("=F") or ticker.startswith("^"):
+        return {"ok": False, "error": f"{ticker} is not an equity or ETF option-chain symbol", "rows": []}
+
+    side_norm = str(side or "all").strip().lower()
+    if side_norm in {"c", "calls"}:
+        side_norm = "call"
+    elif side_norm in {"p", "puts"}:
+        side_norm = "put"
+    if side_norm not in {"all", "call", "put"}:
+        side_norm = "all"
+
+    try:
+        blob = _fetch_option_chain(ticker, cache_age=600)
+    except Exception as exc:
+        return {"ok": False, "error": f"option-chain fetch failed: {exc}", "symbol": ticker, "rows": []}
+    if not blob or not blob.get("chains"):
+        return {"ok": False, "error": "no option-chain data returned", "symbol": ticker, "rows": []}
+
+    spot = _float_value(blob.get("spot"), default=math.nan)
+    today = datetime.now(timezone.utc).date()
+    rows: list[dict[str, Any]] = []
+    rejected = 0
+    total_contracts = 0
+
+    for expiry, chain_df in (blob.get("chains") or {}).items():
+        if not isinstance(chain_df, pd.DataFrame) or chain_df.empty:
+            continue
+        exp_ts = pd.to_datetime(str(expiry), errors="coerce", utc=True)
+        if pd.isna(exp_ts):
+            continue
+        dte = int((exp_ts.date() - today).days)
+        for _, raw in chain_df.iterrows():
+            total_contracts += 1
+            contract_side = str(raw.get("side") or "").strip().lower()
+            if contract_side in {"c"}:
+                contract_side = "call"
+            elif contract_side in {"p"}:
+                contract_side = "put"
+            strike = _float_value(raw.get("strike"), default=math.nan)
+            mid = _option_mid(raw)
+            spread_pct = _option_spread_pct(raw, mid)
+            oi = int(_float_value(raw.get("openInterest"), default=0.0))
+            volume = int(_float_value(raw.get("volume"), default=0.0))
+            premium = mid * 100.0 if math.isfinite(mid) else float("nan")
+            moneyness = ((strike - spot) / spot) if math.isfinite(strike) and math.isfinite(spot) and spot > 0 else None
+
+            keep = True
+            if side_norm != "all" and contract_side != side_norm:
+                keep = False
+            if dte < min_dte or dte > max_dte:
+                keep = False
+            if not math.isfinite(strike) or not math.isfinite(mid) or mid <= 0:
+                keep = False
+            if max_premium > 0 and (not math.isfinite(premium) or premium > max_premium):
+                keep = False
+            if spread_pct is not None and max_spread_pct > 0 and spread_pct > max_spread_pct:
+                keep = False
+            if oi < min_open_interest:
+                keep = False
+            if not keep:
+                rejected += 1
+                continue
+
+            row = {
+                "symbol": ticker,
+                "side": contract_side,
+                "expiry": str(expiry),
+                "dte": dte,
+                "strike": strike,
+                "bid": _clean_value(raw.get("bid")),
+                "ask": _clean_value(raw.get("ask")),
+                "mid": round(mid, 4),
+                "premium_dollars": round(premium, 2),
+                "spread_pct": _clean_value(spread_pct),
+                "volume": volume,
+                "openInterest": oi,
+                "impliedVolatility": _clean_value(raw.get("impliedVolatility")),
+                "delta": _clean_value(raw.get("delta")),
+                "moneyness_pct": _clean_value(moneyness),
+            }
+            row["contract_quality_score"] = round(_option_chain_score(row), 3)
+            rows.append(row)
+
+    rows = sorted(
+        rows,
+        key=lambda r: (
+            _float_value(r.get("contract_quality_score"), default=-999.0),
+            -abs(_float_value(r.get("moneyness_pct"), default=99.0)),
+            -_float_value(r.get("dte"), default=9999.0),
+        ),
+        reverse=True,
+    )
+    limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
+    source = str(blob.get("source") or "unknown")
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "query": clean,
+        "symbol": ticker,
+        "resolution": resolution,
+        "source": source,
+        "quote_quality": blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed"),
+        "spot": _clean_value(spot),
+        "total_expirations": len(blob.get("expirations") or []),
+        "total_contracts": total_contracts,
+        "filtered_count": len(rows),
+        "rejected_count": rejected,
+        "filters": {
+            "side": side_norm,
+            "min_dte": min_dte,
+            "max_dte": max_dte,
+            "max_spread_pct": max_spread_pct,
+            "max_premium": max_premium,
+            "min_open_interest": min_open_interest,
+        },
+        "rows": limited,
+        "notes": [
+            "Option-chain scan uses Optedge's existing provider stack.",
+            "Free/keyless sources may be delayed, incomplete, or blocked for some tickers.",
+            "This view inspects contracts only; it does not place trades.",
+        ],
+    }
+
+
 def _is_actionable(row: pd.Series) -> bool:
     status = str(row.get("trade_status") or "").strip().lower()
     if status in {"watch", "skip", "blocked"}:
@@ -821,7 +1011,7 @@ def build_paper_candidates(
     )
     paths: dict[str, str] = {}
     if write and not dry_run:
-        csv_path, json_path = write_outputs(df, data_dir)
+        csv_path, json_path = write_paper_outputs(df, data_dir)
         paths = {"csv": str(csv_path), "json": str(json_path)}
     selected_count = 0
     excluded_count = 0
@@ -851,6 +1041,55 @@ def build_paper_candidates(
             "Use the filter box to preview candidates for one ticker, futures symbol, or option contract.",
             "This creates manual paper-tracking files only; no trades are placed.",
             "Dry-run review includes rejected rows and exclusion reasons.",
+        ],
+    }
+
+
+def build_robinhood_agentic_queue_report(
+    data_dir: Path = DATA_DIR,
+    account_budget: float = 500.0,
+    max_candidates: int = 5,
+    max_orders: int = 2,
+    min_dte: int = 180,
+    min_confidence: float = 55.0,
+    query: str = "",
+    write: bool = False,
+) -> dict[str, Any]:
+    """Build or write the long-dated option candidate queue for agent review."""
+    queue = build_robinhood_queue(
+        data_dir=data_dir,
+        account_budget=account_budget,
+        max_candidates=max_candidates,
+        max_orders=max_orders,
+        min_dte=min_dte,
+        min_confidence=min_confidence,
+        query=query,
+    )
+    paths: dict[str, str] = {}
+    if write:
+        queue_path, prompt_path = write_robinhood_queue_outputs(queue, data_dir)
+        paths = {"queue": str(queue_path), "prompt": str(prompt_path)}
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "wrote_files": bool(paths),
+        "paths": paths,
+        "status": queue.get("status"),
+        "account_budget": queue.get("account_budget"),
+        "max_candidates": queue.get("max_candidates"),
+        "max_orders_to_submit": queue.get("max_orders_to_submit"),
+        "max_total_premium": queue.get("max_total_premium"),
+        "max_premium_per_order": queue.get("max_premium_per_order"),
+        "min_dte": queue.get("min_dte"),
+        "min_confidence": queue.get("min_confidence"),
+        "estimated_total_candidate_premium": queue.get("estimated_total_candidate_premium"),
+        "candidate_count": len(queue.get("orders") or []),
+        "rejected_count": len(queue.get("rejected") or []),
+        "orders": queue.get("orders") or [],
+        "rejected": (queue.get("rejected") or [])[:25],
+        "notes": [
+            "This is a long-dated options handoff queue for an external agent.",
+            "It does not place trades or store broker credentials.",
+            "The agent should verify live quotes, spread, positions, buying power, and current news.",
         ],
     }
 
@@ -1771,6 +2010,8 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "dashboard": artifact_path("latest-dashboard", data_dir),
         "validation_report": artifact_path("validation-report", data_dir),
         "external_paper_orders": artifact_path("external-paper-orders", data_dir),
+        "robinhood_agentic_queue": artifact_path("robinhood-agentic-queue", data_dir),
+        "robinhood_agentic_prompt": artifact_path("robinhood-agentic-prompt", data_dir),
         "equity_curve": artifact_path("equity-curve", data_dir),
     }
     snapshots = {
@@ -1888,6 +2129,8 @@ tr.clickable-row:hover { background:#111c31; }
     <a class="btn" href="/artifact/validation-summary" target="_blank">Validation JSON</a>
     <a class="btn" href="/artifact/equity-curve" target="_blank">Equity curve</a>
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
+    <a class="btn" href="/artifact/robinhood-agentic-queue" target="_blank">Agentic queue</a>
+    <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
   <section class="panel">
@@ -1984,6 +2227,47 @@ tr.clickable-row:hover { background:#111c31; }
     </div>
     <div class="status" id="paper-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="paper-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Agentic options queue</h2>
+    <div class="muted">Build a long-dated options shortlist for Codex/Robinhood agent review. This creates queue and prompt files only; it does not place trades.</div>
+    <div class="scan-controls">
+      <input id="rh-budget" type="number" min="1" step="25" value="500" aria-label="Robinhood budget">
+      <input id="rh-max-candidates" type="number" min="1" max="20" step="1" value="5" aria-label="Max candidates">
+      <input id="rh-max-orders" type="number" min="1" max="10" step="1" value="2" aria-label="Max orders">
+      <input id="rh-min-dte" type="number" min="0" max="1200" step="1" value="180" aria-label="Minimum DTE">
+      <input id="rh-min-confidence" type="number" min="0" max="100" step="1" value="55" aria-label="Minimum confidence">
+      <input id="rh-query" placeholder="Filter ticker/contract">
+      <button class="btn" type="button" id="rh-preview">Preview queue</button>
+      <button class="btn" type="button" id="rh-write">Write queue files</button>
+    </div>
+    <div class="status" id="rh-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="rh-summary"></div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Candidate orders</h4><div id="rh-results" class="table-wrap"></div></div>
+      <div class="brief-list"><h4>Rejected</h4><div id="rh-rejected" class="table-wrap"></div></div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2 style="margin:0 0 8px;font-size:18px">Option chain scan</h2>
+    <div class="muted">Inspect current contracts for any equity or ETF using Optedge's existing option-chain provider stack. This is read-only research, not execution.</div>
+    <div class="scan-controls">
+      <input id="chain-query" placeholder="Ticker or company, e.g. AAPL, Nvidia, SPY">
+      <select id="chain-side" aria-label="Option side">
+        <option value="all">Calls + puts</option>
+        <option value="call">Calls</option>
+        <option value="put">Puts</option>
+      </select>
+      <input id="chain-min-dte" type="number" min="0" max="1200" step="1" value="0" aria-label="Minimum DTE">
+      <input id="chain-max-dte" type="number" min="1" max="1600" step="1" value="900" aria-label="Maximum DTE">
+      <input id="chain-max-spread" type="number" min="0" max="100" step="1" value="25" aria-label="Maximum spread percent">
+      <input id="chain-max-premium" type="number" min="0" step="25" value="500" aria-label="Maximum premium dollars">
+      <input id="chain-min-oi" type="number" min="0" step="1" value="0" aria-label="Minimum open interest">
+      <button class="btn" type="button" id="chain-scan">Scan chain</button>
+    </div>
+    <div class="status" id="chain-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
+    <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
   </section>
   <section class="panel">
     <h2 style="margin:0 0 8px;font-size:18px">Research watchlist</h2>
@@ -2534,6 +2818,91 @@ async function loadPaperCandidates(write=false) {
   $('paper-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('paper-results'));
 }
+function robinhoodQueueSummary(data) {
+  const fields = [
+    ['Status', data.status || '-'],
+    ['Candidates', data.candidate_count || 0],
+    ['Max orders', data.max_orders_to_submit || 0],
+    ['Min DTE', data.min_dte || 0],
+    ['Budget', '$' + (data.account_budget || 0)],
+    ['Max premium', '$' + (data.max_total_premium || 0)]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+async function loadRobinhoodQueue(write=false) {
+  $('rh-status-text').textContent = write ? 'Writing agentic queue files...' : 'Building agentic options queue...';
+  const payload = {
+    account_budget: $('rh-budget').value || 500,
+    max_candidates: $('rh-max-candidates').value || 5,
+    max_orders: $('rh-max-orders').value || 2,
+    min_dte: $('rh-min-dte').value || 180,
+    min_confidence: $('rh-min-confidence').value || 55,
+    query: $('rh-query').value.trim()
+  };
+  const res = write
+    ? await fetch('/api/build-robinhood-queue', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      })
+    : await fetch('/api/robinhood-queue?' + new URLSearchParams(payload).toString());
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('rh-status-text').textContent = 'Agentic queue failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const fileNote = data.wrote_files ? ` Files written: ${data.paths.queue || ''}` : '';
+  $('rh-status-text').textContent = `${data.candidate_count || 0} candidate(s), ${data.rejected_count || 0} rejected.${fileNote}`;
+  $('rh-summary').innerHTML = robinhoodQueueSummary(data);
+  $('rh-results').innerHTML = table(data.orders || [], true);
+  $('rh-rejected').innerHTML = table(data.rejected || [], true);
+  wireClickableRows($('rh-results'));
+  wireClickableRows($('rh-rejected'));
+}
+function optionChainSummary(data) {
+  const filters = data.filters || {};
+  const fields = [
+    ['Symbol', data.symbol || '-'],
+    ['Source', data.source || '-'],
+    ['Quality', data.quote_quality || '-'],
+    ['Spot', data.spot || '-'],
+    ['Expirations', data.total_expirations || 0],
+    ['Contracts', data.total_contracts || 0],
+    ['Shown', data.filtered_count || 0],
+    ['Max spread', ((Number(filters.max_spread_pct || 0) * 100).toFixed(0)) + '%']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+async function scanOptionChain() {
+  const query = $('chain-query').value.trim() || $('symbol').value.trim() || $('rh-query').value.trim();
+  if (!query) {
+    $('chain-status-text').textContent = 'Type a ticker or company first.';
+    return;
+  }
+  $('chain-query').value = query;
+  $('chain-status-text').textContent = 'Fetching option chain...';
+  $('chain-summary').innerHTML = '';
+  $('chain-results').innerHTML = '';
+  const params = new URLSearchParams({
+    query,
+    side: $('chain-side').value,
+    min_dte: $('chain-min-dte').value || 0,
+    max_dte: $('chain-max-dte').value || 900,
+    max_spread_pct: String((Number($('chain-max-spread').value || 0) / 100)),
+    max_premium: $('chain-max-premium').value || 0,
+    min_open_interest: $('chain-min-oi').value || 0,
+    limit: '120'
+  });
+  const res = await fetch('/api/option-chain-scan?' + params.toString());
+  const data = await res.json();
+  if (!res.ok || data.ok === false) {
+    $('chain-status-text').textContent = 'Option-chain scan failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('chain-status-text').textContent = `${data.filtered_count || 0} contract(s) matched from ${data.total_contracts || 0} total.`;
+  $('chain-summary').innerHTML = optionChainSummary(data);
+  $('chain-results').innerHTML = table(data.rows || []);
+}
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';
   const params = new URLSearchParams({
@@ -2596,6 +2965,10 @@ $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
+$('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
+$('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
+$('chain-scan').addEventListener('click', scanOptionChain);
+$('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
 $('watchlist-add').addEventListener('click', addWatchlist);
 $('watchlist-run').addEventListener('click', runWatchlist);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
@@ -2608,6 +2981,7 @@ loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summa
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
+loadRobinhoodQueue(false).catch(err => { $('rh-status-text').textContent = 'Agentic queue preview failed'; console.error(err); });
 loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
@@ -2724,6 +3098,48 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 query=query,
             ))
             return
+        if parsed.path == "/api/robinhood-queue":
+            params = parse_qs(parsed.query)
+            account_budget = _float_param(params.get("account_budget", ["500"])[0], 500.0, 1.0, 1_000_000.0)
+            max_candidates = _int_param(params.get("max_candidates", ["5"])[0], 5, 1, 20)
+            max_orders = _int_param(params.get("max_orders", ["2"])[0], 2, 1, 10)
+            min_dte = _int_param(params.get("min_dte", ["180"])[0], 180, 0, 1200)
+            min_conf = _float_param(params.get("min_confidence", ["55"])[0], 55.0, 0.0, 100.0)
+            query = params.get("query", [""])[0]
+            self._send_json(build_robinhood_agentic_queue_report(
+                self.data_dir,
+                account_budget=account_budget,
+                max_candidates=max_candidates,
+                max_orders=max_orders,
+                min_dte=min_dte,
+                min_confidence=min_conf,
+                query=query,
+                write=False,
+            ))
+            return
+        if parsed.path == "/api/option-chain-scan":
+            params = parse_qs(parsed.query)
+            query = params.get("query", [""])[0]
+            side = params.get("side", ["all"])[0]
+            min_dte = _int_param(params.get("min_dte", ["0"])[0], 0, 0, 1200)
+            max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
+            max_spread = _float_param(params.get("max_spread_pct", ["0.25"])[0], 0.25, 0.0, 5.0)
+            max_premium = _float_param(params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0)
+            min_oi = _int_param(params.get("min_open_interest", ["0"])[0], 0, 0, 1_000_000)
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 500)
+            report = build_option_chain_scan(
+                query,
+                self.data_dir,
+                side=side,
+                min_dte=min_dte,
+                max_dte=max_dte,
+                max_spread_pct=max_spread,
+                max_premium=max_premium,
+                min_open_interest=min_oi,
+                limit=limit,
+            )
+            self._send_json(report, status=200 if report.get("ok") else 400)
+            return
         if parsed.path == "/api/watchlist":
             params = parse_qs(parsed.query)
             enrich = _bool_param(params.get("enrich", ["false"])[0])
@@ -2785,7 +3201,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         parsed = urlparse(self.path)
         if parsed.path not in {
-            "/api/run-symbol", "/api/export-paper",
+            "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
             "/api/watchlist-add", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache",
         }:
@@ -2838,6 +3254,19 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 dry_run=dry_run,
                 write=not dry_run,
                 query=str(body.get("query") or ""),
+            )
+            self._send_json(report)
+            return
+        if parsed.path == "/api/build-robinhood-queue":
+            report = build_robinhood_agentic_queue_report(
+                self.data_dir,
+                account_budget=_float_param(str(body.get("account_budget") or "500"), 500.0, 1.0, 1_000_000.0),
+                max_candidates=_int_param(str(body.get("max_candidates") or "5"), 5, 1, 20),
+                max_orders=_int_param(str(body.get("max_orders") or "2"), 2, 1, 10),
+                min_dte=_int_param(str(body.get("min_dte") or "180"), 180, 0, 1200),
+                min_confidence=_float_param(str(body.get("min_confidence") or "55"), 55.0, 0.0, 100.0),
+                query=str(body.get("query") or ""),
+                write=True,
             )
             self._send_json(report)
             return
