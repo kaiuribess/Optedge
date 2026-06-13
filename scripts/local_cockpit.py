@@ -1064,6 +1064,10 @@ def build_option_chain_scan(
                 "delta": _clean_value(raw.get("delta")),
                 "moneyness_pct": _clean_value(moneyness),
             }
+            row["contract_query"] = (
+                f"{ticker} {expiry} {'C' if contract_side == 'call' else 'P'} {strike:g}"
+                if math.isfinite(strike) else ""
+            )
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
             row.update(_option_contract_readiness(row, str(quote_quality)))
             rows.append(row)
@@ -4003,6 +4007,13 @@ function moneyShort(v) {
   if (a >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
   return `$${n.toFixed(0)}`;
 }
+function optionContractQuery(row) {
+  const symbol = String(row.symbol || '').trim().toUpperCase();
+  const expiry = String(row.expiry || '').trim();
+  const side = String(row.side || '').toLowerCase().startsWith('p') ? 'P' : 'C';
+  const strike = row.strike === null || row.strike === undefined ? '' : String(row.strike).trim();
+  return [symbol, expiry, side, strike].filter(Boolean).join(' ');
+}
 function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
@@ -4486,6 +4497,30 @@ function wireSetupCards(root=document) {
     });
   });
 }
+function wireOptionChainActions(root=document) {
+  root.querySelectorAll('.contract-watchlist-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      btn.disabled = true;
+      $('chain-status-text').textContent = `Saving ${query} to research watchlist...`;
+      const res = await fetch('/api/watchlist-add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      if (!res.ok || data.ok === false) {
+        $('chain-status-text').textContent = 'Could not save contract: ' + (data.error || 'unknown error');
+        return;
+      }
+      $('watchlist-query').value = '';
+      $('chain-status-text').textContent = `${query} saved to research watchlist.`;
+      await loadWatchlist();
+    });
+  });
+}
 function setView(view) {
   const target = view || 'overview';
   document.body.className = document.body.className
@@ -4913,6 +4948,7 @@ function optionContractCard(row) {
   const readiness = row.readiness_label || 'review';
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
   const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
+  const query = row.contract_query || optionContractQuery(row);
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
@@ -4926,6 +4962,8 @@ function optionContractCard(row) {
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
+    <div class="row"><span>Request</span><b>${cell(query)}</b></div>
+    <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}">Save contract</button>
   </article>`;
 }
 function optionChainResultsHtml(data) {
@@ -4972,6 +5010,7 @@ async function scanOptionChain() {
   $('chain-summary').innerHTML = optionChainSummary(data);
   $('chain-results').innerHTML = optionChainResultsHtml(data);
   wireClickableRows($('chain-results'));
+  wireOptionChainActions($('chain-results'));
 }
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';

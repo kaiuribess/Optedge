@@ -77,6 +77,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Scan 3m+ chain" in html
     assert "setup-chain-btn" in html
     assert "canScanOptionChainSymbol" in html
+    assert "Save contract" in html
+    assert "contract-watchlist-btn" in html
+    assert "optionContractQuery" in html
+    assert "wireOptionChainActions" in html
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
@@ -1357,6 +1361,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["side"] == "call"
     assert row["strike"] == 220.0
     assert row["premium_dollars"] == 500.0
+    assert row["contract_query"] == "AAPL 2027-01-15 C 220"
     assert row["spread_pct"] < 0.10
     assert row["dte_bucket"] in {"180-364d", "365d+"}
     assert row["readiness_label"] in {"ready", "review"}
