@@ -1364,6 +1364,9 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "stop_price": _clean_value(row.get("stop_price")),
         "target_price": _clean_value(row.get("target_price")),
         "size": _setup_size(row, asset),
+        "suggested_contracts": _clean_value(row.get("suggested_contracts")),
+        "suggested_dollars": _clean_value(row.get("suggested_dollars")),
+        "spread_pct": _clean_value(row.get("spread_pct")),
         "risk_dollars": _clean_value(row.get("risk_dollars")),
         "reward_dollars": _clean_value(row.get("reward_dollars")),
         "dte": _clean_value(row.get("dte")),
@@ -2498,6 +2501,164 @@ def build_swing_climate(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     return _swing_climate_from_pulses(market, breadth, sector)
 
 
+def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_score: int) -> dict[str, Any]:
+    asset = str(row.get("asset") or "").strip().lower()
+    blockers: list[str] = []
+    confirmations: list[str] = []
+    readiness = _float_value(row.get("readiness_score"), default=0.0)
+    min_readiness = _float_value(playbook.get("min_readiness_score"), default=80.0)
+    readiness_label = str(row.get("readiness_label") or "").strip().lower()
+    status = str(row.get("trade_status") or "").strip().lower()
+
+    if readiness < min_readiness:
+        blockers.append(f"readiness {readiness:g} below climate gate {min_readiness:g}")
+    else:
+        confirmations.append(f"readiness {readiness:g} passes climate gate")
+    if readiness_label == "wait":
+        blockers.append("setup readiness is wait")
+    if status in {"watch", "skip", "blocked"}:
+        blockers.append(f"trade status is {status}")
+
+    if asset == "option":
+        dte = _float_value(row.get("dte"), default=math.nan)
+        min_dte = _float_value(playbook.get("option_min_dte"), default=MIN_SWING_OPTION_DTE)
+        spread = _float_value(row.get("spread_pct"), default=math.nan)
+        max_spread = _float_value(playbook.get("option_max_spread_pct"), default=0.20)
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        if not math.isfinite(dte) or dte < min_dte:
+            blockers.append(f"DTE below climate floor {min_dte:g}")
+        else:
+            confirmations.append(f"DTE {dte:g}+ fits swing window")
+        if math.isfinite(spread):
+            if spread > max_spread:
+                blockers.append(f"spread {spread * 100:.1f}% above climate max {max_spread * 100:.0f}%")
+            else:
+                confirmations.append(f"spread {spread * 100:.1f}% inside climate max")
+        else:
+            blockers.append("missing option spread")
+        if contracts <= 0:
+            blockers.append("no sized option contracts")
+    elif asset == "share":
+        dollars = _float_value(row.get("suggested_dollars"), default=0.0)
+        if dollars <= 0:
+            blockers.append("no suggested share size")
+        else:
+            confirmations.append("share sizing is present")
+    elif asset == "futures":
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        direction = str(row.get("action") or "").strip().lower()
+        if contracts <= 0:
+            blockers.append("no sized futures contracts")
+        else:
+            confirmations.append("futures sizing is present")
+        if direction not in {"long", "short"}:
+            blockers.append("missing futures direction")
+    elif asset == "value":
+        if readiness >= min_readiness:
+            confirmations.append("value thesis clears readiness gate")
+
+    penalty = len(blockers) * 12.0
+    gate_score = int(round(_clamp(readiness + (climate_score - 50) * 0.15 - penalty, 0.0, 100.0)))
+    return {
+        "climate_gate_status": "pass" if not blockers else "hold",
+        "climate_gate_score": gate_score,
+        "climate_gate_reasons": confirmations[:4] if not blockers else blockers[:5],
+        "climate_gate_blockers": blockers[:5],
+    }
+
+
+def build_climate_gated_setups(
+    data_dir: Path = DATA_DIR,
+    per_asset: int = 4,
+    limit: int = 12,
+    include_held: bool = True,
+) -> dict[str, Any]:
+    """Gate the latest local setup shortlist against the current swing climate playbook."""
+    per_asset = max(1, min(int(per_asset or 4), 10))
+    limit = max(1, min(int(limit or 12), 40))
+    climate = build_swing_climate(data_dir)
+    playbook = climate.get("playbook") if isinstance(climate.get("playbook"), dict) else _swing_playbook("")
+    climate_score = int(_float_value(climate.get("climate_score"), default=50.0))
+    setup_report = build_best_setups(data_dir, per_asset=per_asset, limit=40)
+
+    reviewed: list[dict[str, Any]] = []
+    for raw in setup_report.get("rows", []):
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        row.update(_climate_gate_review(row, playbook, climate_score))
+        row["climate_label"] = climate.get("climate_label")
+        row["playbook_min_readiness"] = playbook.get("min_readiness_score")
+        row["playbook_option_min_dte"] = playbook.get("option_min_dte")
+        row["playbook_option_max_spread_pct"] = playbook.get("option_max_spread_pct")
+        reviewed.append(row)
+
+    reviewed = sorted(
+        reviewed,
+        key=lambda row: (
+            1 if row.get("climate_gate_status") == "pass" else 0,
+            _float_value(row.get("climate_gate_score")),
+            _float_value(row.get("readiness_score")),
+            _float_value(row.get("score")),
+        ),
+        reverse=True,
+    )
+    max_candidates = int(_float_value(playbook.get("max_new_candidates"), default=limit))
+    max_candidates = max(1, min(limit, max_candidates))
+    passed = [row for row in reviewed if row.get("climate_gate_status") == "pass"]
+    selected = passed[:max_candidates]
+    overflow = passed[max_candidates:]
+    for row in overflow:
+        row["climate_gate_status"] = "hold"
+        row["climate_gate_reasons"] = ["candidate cap reached for current climate"]
+        row["climate_gate_blockers"] = ["candidate cap reached for current climate"]
+    held = [row for row in reviewed if row.get("climate_gate_status") != "pass"]
+    held = sorted(
+        held,
+        key=lambda row: (
+            _float_value(row.get("climate_gate_score")),
+            _float_value(row.get("readiness_score")),
+            _float_value(row.get("score")),
+        ),
+        reverse=True,
+    )
+
+    asset_counts: dict[str, dict[str, int]] = {}
+    for row in selected:
+        asset = str(row.get("asset") or "unknown")
+        asset_counts.setdefault(asset, {"pass": 0, "hold": 0})["pass"] += 1
+    for row in held:
+        asset = str(row.get("asset") or "unknown")
+        asset_counts.setdefault(asset, {"pass": 0, "hold": 0})["hold"] += 1
+
+    clean_selected = [{k: _clean_value(v) for k, v in row.items()} for row in selected]
+    clean_held = [{k: _clean_value(v) for k, v in row.items()} for row in held[:25]] if include_held else []
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "climate_label": climate.get("climate_label"),
+        "climate_score": climate.get("climate_score"),
+        "posture": climate.get("posture"),
+        "playbook": playbook,
+        "trade_gates": climate.get("trade_gates") or [],
+        "asset_bias": climate.get("asset_bias") or [],
+        "count": len(clean_selected),
+        "selected_count": len(clean_selected),
+        "held_count": len(held),
+        "source_setup_count": len(reviewed),
+        "max_new_candidates": max_candidates,
+        "asset_counts": asset_counts,
+        "rows": clean_selected,
+        "held": clean_held,
+        "asset_summaries": setup_report.get("asset_summaries") or [],
+        "sources": setup_report.get("sources") or {},
+        "notes": [
+            "Climate-gated setups combine the latest best setups with the current Swing Climate playbook.",
+            "Held rows are not rejected forever; they need cleaner readiness, liquidity, DTE, sizing, or climate conditions.",
+            "This remains local research only and does not place trades.",
+        ],
+    }
+
+
 def _avg(values: list[float]) -> float | None:
     clean = [v for v in values if math.isfinite(v)]
     return (sum(clean) / len(clean)) if clean else None
@@ -3506,6 +3667,8 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .pill.ready { border-color:rgba(16,185,129,.7); color:#bbf7d0; background:rgba(16,185,129,.12); }
 .pill.review { border-color:rgba(245,158,11,.7); color:#fde68a; background:rgba(245,158,11,.12); }
 .pill.wait { border-color:rgba(239,68,68,.7); color:#fecaca; background:rgba(239,68,68,.12); }
+.pill.pass { border-color:rgba(16,185,129,.75); color:#bbf7d0; background:rgba(16,185,129,.14); }
+.pill.hold { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.14); }
 .setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
 .chain-preset.active { border-color:var(--accent); background:#102033; color:var(--text); }
 .brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
@@ -3581,6 +3744,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="muted">Decision-first shortlist from the latest option, share, futures, and value snapshots. Click a setup to open the research brief.</div>
     <div class="status" id="best-setups-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="best-setups-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Climate-gated setups</h2>
+    <div class="muted">Best setups filtered through the current swing climate gates, including DTE, spread, readiness, sizing, and candidate-count limits.</div>
+    <div class="status" id="climate-gated-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="climate-gated-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Action queue</h2>
@@ -3944,6 +4113,76 @@ function bestSetupsHtml(data) {
     ${cards}
     ${notes}
     <div class="brief-list" style="margin-top:10px"><h4>Detail</h4>${table(rows, true)}</div>
+  </div>`;
+}
+function climateGatedCard(row) {
+  const symbol = row.ticker_or_symbol || '';
+  const gate = row.climate_gate_status || 'hold';
+  const reasons = Array.isArray(row.climate_gate_reasons) ? row.climate_gate_reasons.join(', ') : (row.climate_gate_reasons || '');
+  return `<article class="setup-card">
+    <header>
+      <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
+      <span class="pill ${escAttr(gate)}">${cell(gate)}</span>
+    </header>
+    <div class="row"><span>Asset</span><b>${cell(row.asset)}</b></div>
+    <div class="row"><span>Gate score</span><b>${cell(row.climate_gate_score)}</b></div>
+    <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)} / ${cell(row.playbook_min_readiness)}</b></div>
+    <div class="row"><span>Action</span><b>${cell(row.action)}</b></div>
+    <div class="row"><span>Confidence</span><b>${cell(row.confidence)}</b></div>
+    <div class="row"><span>Entry</span><b>${cell(row.entry_price)}</b></div>
+    <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
+    <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
+    <div class="row"><span>Gate reason</span><b>${cell(reasons || 'passes climate gates')}</b></div>
+    <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+  </article>`;
+}
+function climateGatedSetupsHtml(data) {
+  if (!data) return '<div class="empty">No climate-gated setup data available.</div>';
+  const playbook = data.playbook || {};
+  const rows = data.rows || [];
+  const held = data.held || [];
+  const counts = data.asset_counts || {};
+  const countRows = Object.keys(counts).sort().map(asset => ({
+    asset,
+    pass: counts[asset].pass || 0,
+    hold: counts[asset].hold || 0
+  }));
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label)}</strong></div>
+    <div class="brief-tile"><span>Score</span><strong>${cell(data.climate_score)}/100</strong></div>
+    <div class="brief-tile"><span>Passed</span><strong>${cell(data.selected_count || 0)} / ${cell(data.source_setup_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Held</span><strong>${cell(data.held_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Min readiness</span><strong>${cell(playbook.min_readiness_score)}</strong></div>
+    <div class="brief-tile"><span>Option gates</span><strong>${cell(playbook.option_min_dte)}d / ${pct(playbook.option_max_spread_pct)}</strong></div>
+    <div class="brief-tile"><span>Candidate cap</span><strong>${cell(data.max_new_candidates)}</strong></div>
+    <div class="brief-tile"><span>Posture</span><strong>${cell(data.posture)}</strong></div>
+  </div>`;
+  const selectedCards = rows.length
+    ? `<div class="setup-grid">${rows.map(climateGatedCard).join('')}</div>`
+    : '<div class="empty">No setup clears today\\'s climate gates. That is useful information: wait for cleaner rows or a better tape.</div>';
+  const heldTable = held.length
+    ? table(held.map(row => ({
+        asset: row.asset,
+        setup: row.setup,
+        gate_score: row.climate_gate_score,
+        readiness: row.readiness_score,
+        reasons: Array.isArray(row.climate_gate_reasons) ? row.climate_gate_reasons.join(', ') : row.climate_gate_reasons,
+        status: row.trade_status,
+        source_file: row.source_file
+      })), true)
+    : '<div class="empty">No held setup rows.</div>';
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  return `<div style="padding:12px">
+    ${tiles}
+    ${selectedCards}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Pass / hold by asset</h4>${table(countRows)}</div>
+      <div class="brief-list"><h4>Climate gates</h4>${table(data.trade_gates || [])}</div>
+    </div>
+    <div class="brief-list" style="margin-top:10px"><h4>Held for review</h4>${heldTable}</div>
+    ${notes}
   </div>`;
 }
 function actionQueueTable(rows) {
@@ -4386,6 +4625,15 @@ async function loadBestSetups() {
   wireClickableRows($('best-setups-results'));
   wireSetupCards($('best-setups-results'));
 }
+async function loadClimateGatedSetups() {
+  $('climate-gated-status-text').textContent = 'Checking setups against swing climate gates...';
+  const res = await fetch('/api/climate-gated-setups?per_asset=4&limit=12&include_held=true');
+  const data = await res.json();
+  $('climate-gated-status-text').textContent = `${data.selected_count || 0} passed, ${data.held_count || 0} held under ${data.climate_label || 'unknown'} climate.`;
+  $('climate-gated-results').innerHTML = climateGatedSetupsHtml(data);
+  wireClickableRows($('climate-gated-results'));
+  wireSetupCards($('climate-gated-results'));
+}
 async function loadActionQueue() {
   $('queue-status-text').textContent = 'Building local action queue...';
   const res = await fetch('/api/action-queue?limit=20');
@@ -4754,7 +5002,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -4796,6 +5044,7 @@ loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
+loadClimateGatedSetups().catch(err => { $('climate-gated-status-text').textContent = 'Climate-gated setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
 loadBreadthPulse().catch(err => { $('breadth-pulse-status-text').textContent = 'Breadth pulse failed'; console.error(err); });
@@ -4902,6 +5151,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             per_asset = _int_param(params.get("per_asset", ["3"])[0], 3, 1, 10)
             limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
             self._send_json(build_best_setups(self.data_dir, per_asset=per_asset, limit=limit))
+            return
+        if parsed.path == "/api/climate-gated-setups":
+            params = parse_qs(parsed.query)
+            per_asset = _int_param(params.get("per_asset", ["4"])[0], 4, 1, 10)
+            limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
+            include_held = _bool_param(params.get("include_held", ["true"])[0], True)
+            self._send_json(build_climate_gated_setups(
+                self.data_dir, per_asset=per_asset, limit=limit, include_held=include_held,
+            ))
             return
         if parsed.path == "/api/opportunities":
             params = parse_qs(parsed.query)

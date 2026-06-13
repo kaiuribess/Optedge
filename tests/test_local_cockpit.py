@@ -13,8 +13,8 @@ import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
-    build_best_setups, build_breadth_pulse, build_market_pulse, build_positions,
-    build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
+    build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
+    build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
@@ -70,6 +70,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "loadSwingClimate" in html
     assert "Trade gates" in html
     assert "Asset bias" in html
+    assert "Climate-gated setups" in html
+    assert "/api/climate-gated-setups" in html
+    assert "climateGatedSetupsHtml" in html
+    assert "loadClimateGatedSetups" in html
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
@@ -706,6 +710,118 @@ def test_best_setups_marks_clean_long_dated_option_ready():
         assert row["readiness_label"] == "ready"
         assert row["readiness_score"] >= 80
         assert row["risk_flags"] == []
+
+
+def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
+    old_history = cockpit_module.data_provider.get_history
+
+    def fake_history(ticker: str, period: str = "6mo", interval: str = "1d", cache_age: int = 1800):
+        del period, interval, cache_age
+        idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
+        slopes = {
+            "SPY": 1.0,
+            "RSP": 1.2,
+            "IWM": 1.35,
+            "QQQ": 1.4,
+            "SMH": 1.8,
+            "XLK": 1.5,
+            "XLY": 1.4,
+            "XLP": 0.2,
+            "HYG": 0.6,
+            "LQD": 0.1,
+            "XLU": 0.1,
+            "^VIX": -0.35,
+            "TLT": -0.05,
+            "GLD": 0.05,
+            "UUP": -0.05,
+        }
+        slope = slopes.get(ticker, 0.45)
+        close = [100 + i * slope for i in range(80)]
+        return pd.DataFrame({"Close": close}, index=idx)
+
+    try:
+        cockpit_module.data_provider.get_history = fake_history
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            pd.DataFrame([
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 220,
+                    "expiry": "2026-12-18",
+                    "dte": 180,
+                    "mid": 4.2,
+                    "confidence": 86,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                    "suggested_contracts": 1,
+                    "spread_pct": 0.05,
+                    "stop_price": 2.4,
+                    "target_price": 8.0,
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                },
+                {
+                    "ticker": "WIDE",
+                    "side": "call",
+                    "strike": 40,
+                    "expiry": "2026-09-18",
+                    "dte": 100,
+                    "mid": 1.0,
+                    "confidence": 80,
+                    "rank_score": 2.0,
+                    "trade_status": "Trade",
+                    "suggested_contracts": 1,
+                    "spread_pct": 0.30,
+                    "stop_price": 0.5,
+                    "target_price": 2.0,
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                },
+            ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+            pd.DataFrame([{
+                "ticker": "NVDA",
+                "spot": 120,
+                "confidence": 88,
+                "rank_score": 1.8,
+                "fused_score": 1.7,
+                "trade_status": "Trade",
+                "suggested_dollars": 600,
+                "stop_price": 110,
+                "target_price": 145,
+            }]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+            pd.DataFrame([{
+                "symbol": "CL=F",
+                "name": "Crude Oil WTI",
+                "direction": "long",
+                "contract": "/MCL",
+                "using_micro": True,
+                "futures_score": 1.3,
+                "rank_score": 1.3,
+                "confidence": 78,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "entry_price": 74.5,
+                "stop_price": 72.0,
+                "target_price": 79.0,
+                "risk_dollars": 250,
+                "reward_dollars": 450,
+            }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+
+            gated = build_climate_gated_setups(data_dir, per_asset=3, limit=5)
+    finally:
+        cockpit_module.data_provider.get_history = old_history
+
+    passed = {row["ticker_or_symbol"]: row for row in gated["rows"]}
+    held = {row["ticker_or_symbol"]: row for row in gated["held"]}
+    assert gated["climate_label"] in {"aggressive_swing", "constructive_selective"}
+    assert "AAPL" in passed
+    assert passed["AAPL"]["climate_gate_status"] == "pass"
+    assert "WIDE" in held
+    assert held["WIDE"]["climate_gate_status"] == "hold"
+    assert any("spread" in reason for reason in held["WIDE"]["climate_gate_reasons"])
+    assert gated["asset_counts"]["option"]["pass"] >= 1
+    assert gated["trade_gates"]
 
 
 def test_position_monitor_reads_dedupes_and_filters_open_state():
@@ -1460,6 +1576,7 @@ if __name__ == "__main__":
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_best_setups_builds_decision_shortlist_from_latest_snapshots()
     test_best_setups_marks_clean_long_dated_option_ready()
+    test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
@@ -1473,4 +1590,4 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("27/27 local cockpit tests passed")
+    print("28/28 local cockpit tests passed")
