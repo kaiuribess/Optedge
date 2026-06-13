@@ -1036,11 +1036,118 @@ def _setup_reason(row: pd.Series, asset: str) -> str:
     return ", ".join(parts)
 
 
+def _readiness(score: int, flags: list[str]) -> dict[str, Any]:
+    clean_score = max(0, min(100, int(score)))
+    if clean_score >= 80 and not flags:
+        label = "ready"
+        next_step = "Review exact quote and thesis."
+    elif clean_score >= 65:
+        label = "review"
+        next_step = "Check flagged items before acting."
+    else:
+        label = "wait"
+        next_step = "Do not act until flags improve."
+    return {
+        "readiness_score": clean_score,
+        "readiness_label": label,
+        "risk_flags": flags[:5],
+        "next_step": next_step,
+    }
+
+
+def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
+    score = 100
+    flags: list[str] = []
+    confidence = _float_value(row.get("confidence"), default=math.nan)
+    status = str(row.get("trade_status") or "").strip().lower()
+    freshness = str(row.get("snapshot_freshness") or "").strip().lower()
+    stop = _float_value(row.get("stop_price"), default=math.nan)
+    target = _float_value(row.get("target_price"), default=math.nan)
+
+    if status in {"watch", "skip", "blocked"}:
+        score -= 35
+        flags.append(f"status {status}")
+    if math.isfinite(confidence):
+        if confidence < 55:
+            score -= 25
+            flags.append("low confidence")
+        elif confidence < 70:
+            score -= 10
+            flags.append("medium confidence")
+    elif asset != "value":
+        score -= 10
+        flags.append("missing confidence")
+    if freshness == "stale":
+        score -= 20
+        flags.append("stale snapshot")
+    elif freshness == "aging":
+        score -= 8
+        flags.append("aging snapshot")
+
+    if asset in {"option", "share", "futures"}:
+        if not math.isfinite(stop) or stop <= 0:
+            score -= 15
+            flags.append("missing stop")
+        if not math.isfinite(target) or target <= 0:
+            score -= 10
+            flags.append("missing target")
+
+    if asset == "option":
+        dte = _float_value(row.get("dte"), default=math.nan)
+        spread = _float_value(row.get("spread_pct"), default=math.nan)
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        quote_quality = str(row.get("quote_quality") or row.get("chain_source") or "").lower()
+        if not math.isfinite(dte) or dte < MIN_SWING_OPTION_DTE:
+            score -= 45
+            flags.append("below 90 DTE")
+        if math.isfinite(spread):
+            if spread > 0.25:
+                score -= 30
+                flags.append("very wide spread")
+            elif spread > 0.15:
+                score -= 12
+                flags.append("wide spread")
+        else:
+            score -= 8
+            flags.append("missing spread")
+        if contracts <= 0:
+            score -= 40
+            flags.append("no contract size")
+        if quote_quality in {"", "unknown"}:
+            score -= 8
+            flags.append("unknown quote source")
+        elif "delayed" in quote_quality or "free" in quote_quality:
+            score -= 6
+            flags.append("verify live quote")
+    elif asset == "share":
+        dollars = _float_value(row.get("suggested_dollars"), default=0.0)
+        if dollars <= 0:
+            score -= 30
+            flags.append("no share size")
+    elif asset == "futures":
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        risk = _float_value(row.get("risk_dollars"), default=math.nan)
+        reward = _float_value(row.get("reward_dollars"), default=math.nan)
+        if contracts <= 0:
+            score -= 35
+            flags.append("no contract size")
+        if math.isfinite(risk) and math.isfinite(reward) and risk > 0 and reward / risk < 1.5:
+            score -= 12
+            flags.append("weak reward/risk")
+    elif asset == "value":
+        if not str(row.get("value_bucket") or "").strip():
+            score -= 10
+            flags.append("missing value bucket")
+
+    return _readiness(score, flags)
+
+
 def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
     spec = OPPORTUNITY_SPECS[asset]
     symbol = _setup_symbol(row, asset, spec)
     score = _opportunity_score(row)
-    return {
+    readiness = _setup_readiness(row, asset)
+    record = {
         "asset": asset,
         "ticker_or_symbol": symbol,
         "setup": _setup_label(row, asset, symbol),
@@ -1063,6 +1170,8 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "reason_selected": _setup_reason(row, asset),
         "_sort_score": score,
     }
+    record.update(readiness)
+    return record
 
 
 def build_best_setups(
@@ -2728,6 +2837,9 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .setup-card .row { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
 .setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
 .pill { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid var(--border); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:11px; background:#111827; }
+.pill.ready { border-color:rgba(16,185,129,.7); color:#bbf7d0; background:rgba(16,185,129,.12); }
+.pill.review { border-color:rgba(245,158,11,.7); color:#fde68a; background:rgba(245,158,11,.12); }
+.pill.wait { border-color:rgba(239,68,68,.7); color:#fecaca; background:rgba(239,68,68,.12); }
 .setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
 .chain-preset.active { border-color:var(--accent); background:#102033; color:var(--text); }
 .brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
@@ -3108,11 +3220,15 @@ function bestSetupCard(row) {
   const symbol = row.ticker_or_symbol || '';
   const action = row.action || row.asset || '';
   const status = row.trade_status || 'Review';
+  const readiness = row.readiness_label || 'review';
+  const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
-      <span class="pill">${cell(row.asset)}</span>
+      <span class="pill ${escAttr(readiness)}">${cell(readiness)}</span>
     </header>
+    <div class="row"><span>Asset</span><b>${cell(row.asset)}</b></div>
+    <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
     <div class="row"><span>Action</span><b>${cell(action)}</b></div>
     <div class="row"><span>Score</span><b>${cell(row.score)}</b></div>
     <div class="row"><span>Confidence</span><b>${cell(row.confidence)}</b></div>
@@ -3120,6 +3236,7 @@ function bestSetupCard(row) {
     <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
     <div class="row"><span>Quality</span><b>${cell(row.quality)}</b></div>
+    <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Status</span><b>${cell(status)}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
   </article>`;

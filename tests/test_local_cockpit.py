@@ -77,6 +77,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/best-setups" in html
     assert "bestSetupsHtml" in html
     assert "loadBestSetups" in html
+    assert "readiness_label" in html
+    assert "risk_flags" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -650,11 +652,43 @@ def test_best_setups_builds_decision_shortlist_from_latest_snapshots():
         assert report["by_asset"]["option"][0]["ticker_or_symbol"] == "AAPL"
         assert all(row["ticker_or_symbol"] != "WEEKLY" for row in report["rows"])
         assert report["by_asset"]["option"][0]["quality"] == "spread 8.0% | tradier"
+        assert report["by_asset"]["option"][0]["readiness_label"] == "review"
+        assert report["by_asset"]["option"][0]["readiness_score"] >= 65
+        assert "missing stop" in report["by_asset"]["option"][0]["risk_flags"]
         assert report["asset_summaries"][0]["rows"] == 3
         assert report["asset_summaries"][0]["actionable_rows"] == 1
         assert {row["asset"] for row in report["rows"]} == {"option", "share", "futures", "value"}
         scores = [row["score"] for row in report["rows"]]
         assert scores == sorted(scores, reverse=True)
+
+
+def test_best_setups_marks_clean_long_dated_option_ready():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 220,
+            "expiry": "2026-12-18",
+            "dte": 180,
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 1.5,
+            "trade_status": "Trade",
+            "suggested_contracts": 1,
+            "spread_pct": 0.08,
+            "stop_price": 2.5,
+            "target_price": 8.0,
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        report = build_best_setups(data_dir, per_asset=1, limit=1)
+        row = report["rows"][0]
+        assert row["ticker_or_symbol"] == "AAPL"
+        assert row["readiness_label"] == "ready"
+        assert row["readiness_score"] >= 80
+        assert row["risk_flags"] == []
 
 
 def test_position_monitor_reads_dedupes_and_filters_open_state():
@@ -1278,6 +1312,7 @@ if __name__ == "__main__":
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_best_setups_builds_decision_shortlist_from_latest_snapshots()
+    test_best_setups_marks_clean_long_dated_option_ready()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
@@ -1288,4 +1323,4 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("23/23 local cockpit tests passed")
+    print("24/24 local cockpit tests passed")
