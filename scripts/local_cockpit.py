@@ -814,6 +814,209 @@ def _opportunity_records(df: pd.DataFrame, asset: str, limit: int) -> list[dict[
     return records
 
 
+def _short_number(value: Any) -> str:
+    number = _float_value(value, default=math.nan)
+    if math.isfinite(number):
+        return f"{number:g}"
+    return str(value or "").strip()
+
+
+def _setup_symbol(row: pd.Series, asset: str, spec: dict[str, Any]) -> str:
+    symbol_col = str(spec.get("symbol_col") or "ticker")
+    return str(row.get(symbol_col) or row.get("ticker") or row.get("symbol") or "").strip().upper()
+
+
+def _setup_label(row: pd.Series, asset: str, symbol: str) -> str:
+    if asset == "option":
+        side_raw = str(row.get("side") or "").strip().lower()
+        side = "C" if side_raw.startswith("c") else "P" if side_raw.startswith("p") else side_raw.upper()
+        strike = _short_number(row.get("strike"))
+        expiry = str(row.get("expiry") or "").strip()
+        return " ".join(part for part in (symbol, side, strike, expiry) if part)
+    if asset == "futures":
+        direction = str(row.get("direction") or "").strip().upper()
+        name = str(row.get("name") or row.get("contract") or "").strip()
+        return " ".join(part for part in (symbol, direction or None, name or None) if part)
+    if asset == "value":
+        bucket = str(row.get("value_bucket") or "value").strip()
+        return f"{symbol} {bucket}".strip()
+    return f"{symbol} share".strip()
+
+
+def _setup_entry_price(row: pd.Series, asset: str) -> Any:
+    for col in ("mid", "entry_price", "spot", "price", "last"):
+        if col in row and _clean_value(row.get(col)) is not None:
+            return _clean_value(row.get(col))
+    return None
+
+
+def _setup_size(row: pd.Series, asset: str) -> str:
+    if asset in {"option", "futures"}:
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        if contracts > 0:
+            return f"{contracts:g} contract(s)"
+        return "-"
+    if asset == "share":
+        dollars = _float_value(row.get("suggested_dollars"), default=0.0)
+        if dollars > 0:
+            return f"${dollars:,.0f}"
+    return "-"
+
+
+def _setup_quality(row: pd.Series, asset: str) -> str:
+    pieces: list[str] = []
+    if asset == "option":
+        spread = _float_value(row.get("spread_pct"), default=math.nan)
+        if math.isfinite(spread):
+            pieces.append(f"spread {spread * 100:.1f}%")
+        source = str(row.get("chain_source") or row.get("quote_quality") or "").strip()
+        if source:
+            pieces.append(source)
+    elif asset == "futures":
+        hv20 = _float_value(row.get("hv20"), default=math.nan)
+        if math.isfinite(hv20):
+            pieces.append(f"HV20 {hv20:.2f}")
+        if row.get("using_micro") is not None:
+            pieces.append("micro" if bool(row.get("using_micro")) else "full")
+    elif asset == "share":
+        ev = _float_value(row.get("ev_pct"), default=math.nan)
+        if math.isfinite(ev):
+            pieces.append(f"EV {ev * 100:.1f}%")
+    elif asset == "value":
+        pe = _float_value(row.get("pe"), default=math.nan)
+        if math.isfinite(pe):
+            pieces.append(f"P/E {pe:.1f}")
+        fcf = _float_value(row.get("fcf_yield"), default=math.nan)
+        if math.isfinite(fcf):
+            pieces.append(f"FCF {fcf * 100:.1f}%")
+    return " | ".join(pieces[:3]) or "-"
+
+
+def _setup_reason(row: pd.Series, asset: str) -> str:
+    confidence = _float_value(row.get("confidence"), default=math.nan)
+    score = _opportunity_score(row)
+    parts = [f"score {score:.2f}"]
+    if math.isfinite(confidence) and confidence > 0:
+        parts.append(f"conf {confidence:.0f}")
+    if asset == "option":
+        edge = _float_value(row.get("net_edge_pct"), default=math.nan)
+        if math.isfinite(edge):
+            parts.append(f"edge {edge * 100:.1f}%")
+    elif asset == "futures":
+        fut_score = _float_value(row.get("futures_score"), default=math.nan)
+        if math.isfinite(fut_score):
+            parts.append(f"futures {fut_score:.2f}")
+    elif asset == "value":
+        bucket = str(row.get("value_bucket") or "").strip()
+        if bucket:
+            parts.append(bucket)
+    return ", ".join(parts)
+
+
+def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
+    spec = OPPORTUNITY_SPECS[asset]
+    symbol = _setup_symbol(row, asset, spec)
+    score = _opportunity_score(row)
+    return {
+        "asset": asset,
+        "ticker_or_symbol": symbol,
+        "setup": _setup_label(row, asset, symbol),
+        "action": _clean_value(row.get("side") or row.get("direction") or ("buy" if asset != "value" else "review")),
+        "score": round(score, 4),
+        "confidence": _clean_value(row.get("confidence")),
+        "trade_status": _clean_value(row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")),
+        "entry_price": _setup_entry_price(row, asset),
+        "stop_price": _clean_value(row.get("stop_price")),
+        "target_price": _clean_value(row.get("target_price")),
+        "size": _setup_size(row, asset),
+        "risk_dollars": _clean_value(row.get("risk_dollars")),
+        "reward_dollars": _clean_value(row.get("reward_dollars")),
+        "dte": _clean_value(row.get("dte")),
+        "expiry": _clean_value(row.get("expiry")),
+        "quality": _setup_quality(row, asset),
+        "source_file": source_file,
+        "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+        "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
+        "reason_selected": _setup_reason(row, asset),
+        "_sort_score": score,
+    }
+
+
+def build_best_setups(
+    data_dir: Path = DATA_DIR,
+    per_asset: int = 3,
+    limit: int = 12,
+) -> dict[str, Any]:
+    """Build a compact decision surface from the latest local opportunity snapshots."""
+    per_asset = max(1, min(int(per_asset or 3), 10))
+    limit = max(1, min(int(limit or 12), 40))
+    rows: list[dict[str, Any]] = []
+    by_asset: dict[str, list[dict[str, Any]]] = {}
+    summaries: list[dict[str, Any]] = []
+    sources: dict[str, str | None] = {}
+
+    for asset_name, spec in OPPORTUNITY_SPECS.items():
+        path = _latest_file(data_dir, spec["pattern"])
+        source_file = path.name if path else None
+        sources[asset_name] = source_file
+        df = _read_parquet(path)
+        if df.empty:
+            by_asset[asset_name] = []
+            summaries.append({
+                "asset": asset_name,
+                "source_file": source_file,
+                "rows": 0,
+                "actionable_rows": 0,
+                "selected": 0,
+                "status": "missing",
+            })
+            continue
+
+        out = df.copy()
+        out["asset"] = asset_name
+        out["actionable"] = out.apply(_is_actionable, axis=1)
+        out["_opportunity_score"] = out.apply(_opportunity_score, axis=1)
+        actionable = out[out["actionable"]].copy()
+        candidates = actionable if not actionable.empty else out.copy()
+        candidates = candidates.sort_values("_opportunity_score", ascending=False, kind="mergesort")
+
+        asset_records = [
+            _best_setup_record(row, asset_name, source_file)
+            for _, row in candidates.head(per_asset).iterrows()
+        ]
+        by_asset[asset_name] = [
+            {k: v for k, v in record.items() if not k.startswith("_")}
+            for record in asset_records
+        ]
+        rows.extend(asset_records)
+        summaries.append({
+            "asset": asset_name,
+            "source_file": source_file,
+            "rows": int(len(out)),
+            "actionable_rows": int(len(actionable)),
+            "selected": int(len(asset_records)),
+            "status": "actionable" if len(actionable) else "review_only",
+            "snapshot_freshness": _clean_value(out["snapshot_freshness"].iloc[0]) if "snapshot_freshness" in out.columns else None,
+            "snapshot_age_min": _clean_value(out["snapshot_age_min"].iloc[0]) if "snapshot_age_min" in out.columns else None,
+        })
+
+    rows = sorted(rows, key=lambda row: _float_value(row.get("_sort_score")), reverse=True)[:limit]
+    clean_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(clean_rows),
+        "rows": clean_rows,
+        "by_asset": by_asset,
+        "asset_summaries": summaries,
+        "sources": sources,
+        "notes": [
+            "Best setups read the latest local top_* snapshots and apply Optedge sizing/status filters.",
+            "Options include chain-source and spread quality when available.",
+            "This is a research shortlist only; no orders are placed.",
+        ],
+    }
+
+
 def _suggestion_text(row: dict[str, Any]) -> str:
     return " ".join(str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")).lower()
 
@@ -2228,6 +2431,15 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .brief-tile { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
 .brief-tile span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
 .brief-tile strong { display:block; margin-top:5px; font-size:14px; }
+.setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-top:12px; }
+.setup-card { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:10px; min-height:176px; }
+.setup-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.setup-card h3 { border:0; padding:0; margin:0; font-size:16px; line-height:1.25; display:block; }
+.setup-card small { color:var(--muted); display:block; margin-top:3px; }
+.setup-card .row { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
+.setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
+.pill { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid var(--border); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:11px; background:#111827; }
+.setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
 .brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
 .brief-list { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
 .brief-list h4 { margin:0 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
@@ -2290,6 +2502,12 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="view-tab" type="button" data-view="research">Research</button>
     <button class="view-tab" type="button" data-view="all">All</button>
   </nav>
+  <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Best setups</h2>
+    <div class="muted">Decision-first shortlist from the latest option, share, futures, and value snapshots. Click a setup to open the research brief.</div>
+    <div class="status" id="best-setups-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="best-setups-results"></div></div>
+  </section>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Action queue</h2>
     <div class="muted">Highest-priority local research items from data health, open positions, paper candidates, and watchlist context.</div>
@@ -2583,6 +2801,47 @@ function table(rows, clickRows=false) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function bestSetupCard(row) {
+  const symbol = row.ticker_or_symbol || '';
+  const action = row.action || row.asset || '';
+  const status = row.trade_status || 'Review';
+  return `<article class="setup-card">
+    <header>
+      <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
+      <span class="pill">${cell(row.asset)}</span>
+    </header>
+    <div class="row"><span>Action</span><b>${cell(action)}</b></div>
+    <div class="row"><span>Score</span><b>${cell(row.score)}</b></div>
+    <div class="row"><span>Confidence</span><b>${cell(row.confidence)}</b></div>
+    <div class="row"><span>Entry</span><b>${cell(row.entry_price)}</b></div>
+    <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
+    <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
+    <div class="row"><span>Quality</span><b>${cell(row.quality)}</b></div>
+    <div class="row"><span>Status</span><b>${cell(status)}</b></div>
+    <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+  </article>`;
+}
+function bestSetupsHtml(data) {
+  const summaries = data.asset_summaries || [];
+  const summaryTiles = summaries.map(row => `<div class="brief-tile">
+    <span>${cell(row.asset)}</span>
+    <strong>${cell(row.actionable_rows || 0)} / ${cell(row.rows || 0)}</strong>
+    <small class="muted">${cell(row.status || '-')} ${row.snapshot_freshness ? ' | ' + cell(row.snapshot_freshness) : ''}</small>
+  </div>`).join('');
+  const rows = data.rows || [];
+  const cards = rows.length
+    ? `<div class="setup-grid">${rows.map(bestSetupCard).join('')}</div>`
+    : '<div class="empty">No best setups found yet. Run a scan to create top_* snapshots.</div>';
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  return `<div style="padding:12px">
+    <div class="brief-grid">${summaryTiles}</div>
+    ${cards}
+    ${notes}
+    <div class="brief-list" style="margin-top:10px"><h4>Detail</h4>${table(rows, true)}</div>
+  </div>`;
+}
 function actionQueueTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
   const body = rows.map(r => {
@@ -2746,6 +3005,18 @@ function wireClickableRows(root=document) {
     });
   });
 }
+function wireSetupCards(root=document) {
+  root.querySelectorAll('.setup-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol || '';
+      if (!symbol) return;
+      setView('research');
+      $('symbol').value = symbol;
+      await lookup();
+      window.location.hash = 'lookup';
+    });
+  });
+}
 function setView(view) {
   const target = view || 'overview';
   document.body.className = document.body.className
@@ -2901,6 +3172,15 @@ async function loadExplorer() {
   $('explorer-status-text').textContent = `${data.count || 0} latest local opportunity row(s).`;
   $('explorer-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('explorer-results'));
+}
+async function loadBestSetups() {
+  $('best-setups-status-text').textContent = 'Loading best local setups...';
+  const res = await fetch('/api/best-setups?per_asset=3&limit=12');
+  const data = await res.json();
+  $('best-setups-status-text').textContent = `${data.count || 0} highlighted setup(s) from latest local snapshots.`;
+  $('best-setups-results').innerHTML = bestSetupsHtml(data);
+  wireClickableRows($('best-setups-results'));
+  wireSetupCards($('best-setups-results'));
 }
 async function loadActionQueue() {
   $('queue-status-text').textContent = 'Building local action queue...';
@@ -3171,7 +3451,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadActionQueue(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -3203,6 +3483,7 @@ $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchl
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
+loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
@@ -3280,6 +3561,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             limit = _int_param(params.get("limit", ["16"])[0], 16, 1, 50)
             self._send_json(build_symbol_suggestions(self.data_dir, query=query, limit=limit))
+            return
+        if parsed.path == "/api/best-setups":
+            params = parse_qs(parsed.query)
+            per_asset = _int_param(params.get("per_asset", ["3"])[0], 3, 1, 10)
+            limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
+            self._send_json(build_best_setups(self.data_dir, per_asset=per_asset, limit=limit))
             return
         if parsed.path == "/api/opportunities":
             params = parse_qs(parsed.query)

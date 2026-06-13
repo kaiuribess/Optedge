@@ -13,7 +13,7 @@ import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
-    build_positions, build_provider_status, build_risk_summary,
+    build_best_setups, build_positions, build_provider_status, build_risk_summary,
     build_robinhood_agentic_queue_report, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
@@ -69,6 +69,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Performance" in html
     assert "/api/performance-summary" in html
     assert "performanceSummaryHtml" in html
+    assert "Best setups" in html
+    assert "/api/best-setups" in html
+    assert "bestSetupsHtml" in html
+    assert "loadBestSetups" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -547,6 +551,89 @@ def test_opportunity_explorer_reads_and_filters_latest_snapshots():
         assert filtered["rows"][0]["quote_quality"] == "live_or_broker"
         assert filtered["rows"][0]["snapshot_age_min"] >= 0
         assert filtered["rows"][0]["snapshot_freshness"] in {"fresh", "aging", "stale"}
+
+
+def test_best_setups_builds_decision_shortlist_from_latest_snapshots():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "TSLA",
+                "side": "put",
+                "strike": 300,
+                "expiry": "2026-06-18",
+                "confidence": 80,
+                "rank_score": 9.0,
+                "trade_status": "Watch",
+                "suggested_contracts": 0,
+            },
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 220,
+                "expiry": "2026-12-18",
+                "dte": 180,
+                "mid": 4.2,
+                "confidence": 76,
+                "rank_score": 1.5,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "spread_pct": 0.08,
+                "net_edge_pct": 0.18,
+                "chain_source": "tradier",
+                "quote_quality": "live_or_broker",
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([
+            {
+                "ticker": "NVDA",
+                "spot": 120,
+                "confidence": 88,
+                "rank_score": 2.0,
+                "trade_status": "Trade",
+                "suggested_dollars": 600,
+                "ev_pct": 0.07,
+            },
+        ]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame([
+            {
+                "symbol": "CL=F",
+                "name": "Crude Oil WTI",
+                "direction": "LONG",
+                "contract": "/MCL",
+                "using_micro": True,
+                "futures_score": 1.3,
+                "rank_score": 1.3,
+                "confidence": 70,
+                "trade_status": "Trade",
+                "suggested_contracts": 2,
+                "entry_price": 74.5,
+                "stop_price": 72.0,
+                "target_price": 79.0,
+                "risk_dollars": 500,
+                "reward_dollars": 900,
+                "hv20": 0.21,
+            },
+        ]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+        pd.DataFrame([
+            {
+                "ticker": "LYFT",
+                "value_score": 2.4,
+                "value_bucket": "deep value",
+                "pe": 2.0,
+                "fcf_yield": 0.12,
+            },
+        ]).to_parquet(data_dir / "top_value_20260603_120000.parquet")
+
+        report = build_best_setups(data_dir, per_asset=2, limit=4)
+        assert report["count"] == 4
+        assert report["by_asset"]["option"][0]["ticker_or_symbol"] == "AAPL"
+        assert report["by_asset"]["option"][0]["quality"] == "spread 8.0% | tradier"
+        assert report["asset_summaries"][0]["rows"] == 2
+        assert report["asset_summaries"][0]["actionable_rows"] == 1
+        assert {row["asset"] for row in report["rows"]} == {"option", "share", "futures", "value"}
+        scores = [row["score"] for row in report["rows"]]
+        assert scores == sorted(scores, reverse=True)
 
 
 def test_position_monitor_reads_dedupes_and_filters_open_state():
@@ -1062,6 +1149,7 @@ if __name__ == "__main__":
     test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
+    test_best_setups_builds_decision_shortlist_from_latest_snapshots()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
@@ -1070,4 +1158,4 @@ if __name__ == "__main__":
     test_option_chain_scan_fetches_and_filters_contracts()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("20/20 local cockpit tests passed")
+    print("21/21 local cockpit tests passed")
