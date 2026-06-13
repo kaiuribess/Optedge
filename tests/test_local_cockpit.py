@@ -13,8 +13,9 @@ import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
-    build_best_setups, build_market_pulse, build_positions, build_provider_status, build_risk_summary,
-    build_robinhood_agentic_queue_report, build_sector_pulse, build_summary, build_symbol_suggestions,
+    build_best_setups, build_breadth_pulse, build_market_pulse, build_positions,
+    build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
+    build_sector_pulse, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -67,6 +68,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
     assert "loadMarketPulse" in html
+    assert "Breadth pulse" in html
+    assert "/api/breadth-pulse" in html
+    assert "breadthPulseHtml" in html
+    assert "loadBreadthPulse" in html
     assert "Sector pulse" in html
     assert "/api/sector-pulse" in html
     assert "sectorPulseHtml" in html
@@ -858,6 +863,45 @@ def test_market_pulse_uses_free_history_context_and_regime_labels():
     assert pulse["leaders"][0]["symbol"] in {"SPY", "QQQ", "IWM", "DIA"}
 
 
+def test_breadth_pulse_uses_free_etf_pair_confirmation():
+    old_history = cockpit_module.data_provider.get_history
+
+    slopes = {
+        "SPY": 1.0,
+        "RSP": 1.25,
+        "IWM": 1.45,
+        "QQQ": 1.35,
+        "XLY": 1.50,
+        "XLP": 0.40,
+        "HYG": 0.55,
+        "LQD": 0.10,
+        "SMH": 1.85,
+        "XLU": 0.20,
+    }
+
+    def fake_history(ticker: str, period: str = "6mo", interval: str = "1d", cache_age: int = 1800):
+        del period, interval, cache_age
+        idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
+        slope = slopes.get(ticker, 0.8)
+        close = [100 + i * slope for i in range(80)]
+        return pd.DataFrame({"Close": close}, index=idx)
+
+    try:
+        cockpit_module.data_provider.get_history = fake_history
+        pulse = build_breadth_pulse(period="6mo")
+    finally:
+        cockpit_module.data_provider.get_history = old_history
+
+    assert pulse["coverage"] == "7/7"
+    assert pulse["regime"] in {"broad_risk_on", "selective_risk_on"}
+    assert pulse["breadth_score"] > 0
+    assert pulse["supportive_count"] >= 5
+    rows = {row["label"]: row for row in pulse["rows"]}
+    assert rows["Small-cap breadth"]["signal"] == "supportive"
+    assert rows["Defensive pressure"]["signal"] == "supportive"
+    assert rows["Credit risk appetite"]["pair"] == "HYG/LQD"
+
+
 def test_sector_pulse_ranks_free_sector_etf_context():
     old_history = cockpit_module.data_provider.get_history
 
@@ -1362,6 +1406,7 @@ if __name__ == "__main__":
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
+    test_breadth_pulse_uses_free_etf_pair_confirmation()
     test_sector_pulse_ranks_free_sector_etf_context()
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
@@ -1370,4 +1415,4 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("25/25 local cockpit tests passed")
+    print("26/26 local cockpit tests passed")

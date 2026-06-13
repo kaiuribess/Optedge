@@ -176,6 +176,65 @@ SECTOR_PULSE_SYMBOLS = [
     {"symbol": "IYT", "sector": "Transports", "group": "industry_proxy"},
 ]
 
+BREADTH_PULSE_PAIRS = [
+    {
+        "label": "Equal-weight breadth",
+        "numerator": "RSP",
+        "denominator": "SPY",
+        "kind": "participation",
+        "bullish_when": "positive",
+        "description": "Equal-weight S&P 500 outperforming cap-weighted SPY means participation is broadening.",
+    },
+    {
+        "label": "Small-cap breadth",
+        "numerator": "IWM",
+        "denominator": "SPY",
+        "kind": "risk_breadth",
+        "bullish_when": "positive",
+        "description": "Small caps outperforming SPY usually supports risk-on swing conditions.",
+    },
+    {
+        "label": "Growth leadership",
+        "numerator": "QQQ",
+        "denominator": "SPY",
+        "kind": "growth",
+        "bullish_when": "positive",
+        "description": "QQQ outperforming SPY shows growth leadership.",
+    },
+    {
+        "label": "Consumer risk appetite",
+        "numerator": "XLY",
+        "denominator": "XLP",
+        "kind": "risk_appetite",
+        "bullish_when": "positive",
+        "description": "Discretionary outperforming staples is a classic risk-appetite check.",
+    },
+    {
+        "label": "Credit risk appetite",
+        "numerator": "HYG",
+        "denominator": "LQD",
+        "kind": "credit",
+        "bullish_when": "positive",
+        "description": "High-yield credit outperforming investment-grade credit supports risk appetite.",
+    },
+    {
+        "label": "Semiconductor leadership",
+        "numerator": "SMH",
+        "denominator": "QQQ",
+        "kind": "leadership",
+        "bullish_when": "positive",
+        "description": "Semis leading QQQ can support tech and AI-related swing setups.",
+    },
+    {
+        "label": "Defensive pressure",
+        "numerator": "XLU",
+        "denominator": "SPY",
+        "kind": "defensive",
+        "bullish_when": "negative",
+        "description": "Utilities outperforming SPY can signal defensive pressure; lower is better for risk-on longs.",
+    },
+]
+
 WATCHLIST_FILENAME = "cockpit_watchlist.json"
 
 
@@ -1957,6 +2016,84 @@ def _sector_pulse_row(spec: dict[str, Any], history: pd.DataFrame) -> dict[str, 
     }
 
 
+def _relative_return(numerator: pd.Series, denominator: pd.Series, periods: int) -> float | None:
+    if len(numerator) <= periods or len(denominator) <= periods:
+        return None
+    n0 = _float_value(numerator.iloc[-1 - periods], default=math.nan)
+    n1 = _float_value(numerator.iloc[-1], default=math.nan)
+    d0 = _float_value(denominator.iloc[-1 - periods], default=math.nan)
+    d1 = _float_value(denominator.iloc[-1], default=math.nan)
+    if not all(math.isfinite(v) and v > 0 for v in (n0, n1, d0, d1)):
+        return None
+    return (n1 / n0) / (d1 / d0) - 1.0
+
+
+def _breadth_signal_label(score: float) -> str:
+    if score >= 0.015:
+        return "supportive"
+    if score <= -0.015:
+        return "warning"
+    return "neutral"
+
+
+def _breadth_pulse_row(
+    spec: dict[str, Any],
+    histories: dict[str, pd.DataFrame],
+) -> dict[str, Any]:
+    numerator_symbol = str(spec["numerator"])
+    denominator_symbol = str(spec["denominator"])
+    numerator = _history_close_series(histories.get(numerator_symbol, pd.DataFrame()))
+    denominator = _history_close_series(histories.get(denominator_symbol, pd.DataFrame()))
+    if numerator.empty or denominator.empty:
+        return {
+            "label": spec["label"],
+            "pair": f"{numerator_symbol}/{denominator_symbol}",
+            "kind": spec["kind"],
+            "status": "missing",
+            "signal": "unknown",
+            "note": "One or both free histories were unavailable.",
+        }
+
+    rel_5d = _relative_return(numerator, denominator, 5)
+    rel_20d = _relative_return(numerator, denominator, 20)
+    rel_60d = _relative_return(numerator, denominator, 60)
+    raw_score = (
+        0.15 * (rel_5d if rel_5d is not None and math.isfinite(rel_5d) else 0.0)
+        + 0.55 * (rel_20d if rel_20d is not None and math.isfinite(rel_20d) else 0.0)
+        + 0.30 * (rel_60d if rel_60d is not None and math.isfinite(rel_60d) else 0.0)
+    )
+    orientation = -1.0 if str(spec.get("bullish_when")) == "negative" else 1.0
+    score = raw_score * orientation
+    last_date = _history_last_date(histories.get(numerator_symbol, pd.DataFrame()), numerator)
+    return {
+        "label": spec["label"],
+        "pair": f"{numerator_symbol}/{denominator_symbol}",
+        "kind": spec["kind"],
+        "status": "ok",
+        "signal": _breadth_signal_label(score),
+        "breadth_score": _clean_value(round(score, 4)),
+        "relative_5d": _clean_value(rel_5d),
+        "relative_20d": _clean_value(rel_20d),
+        "relative_60d": _clean_value(rel_60d),
+        "bullish_when": spec.get("bullish_when"),
+        "description": spec.get("description"),
+        "rows": int(min(len(numerator), len(denominator))),
+        "last_date": last_date,
+    }
+
+
+def _breadth_regime_label(score: float, rows: list[dict[str, Any]]) -> str:
+    supportive = sum(row.get("signal") == "supportive" for row in rows)
+    warnings = sum(row.get("signal") == "warning" for row in rows)
+    if score >= 0.025 and supportive >= warnings + 2:
+        return "broad_risk_on"
+    if score <= -0.025 or warnings > supportive:
+        return "narrow_or_defensive"
+    if supportive > warnings:
+        return "selective_risk_on"
+    return "mixed"
+
+
 def _risk_score_from_market_rows(rows: list[dict[str, Any]]) -> float:
     total_weight = 0.0
     score = 0.0
@@ -2084,6 +2221,67 @@ def build_sector_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
             "Sector Pulse uses free ETF and industry-proxy histories through data_provider.get_history.",
             "Use it as context for ticker and option-chain review; it is not an order signal by itself.",
             "ETF histories may be delayed or temporarily unavailable depending on the free source.",
+        ],
+    }
+
+
+def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
+    """Build free ETF-pair breadth confirmation for swing-trade context."""
+    del data_dir  # reserved for future persisted pulse snapshots
+    symbols = sorted({
+        str(spec["numerator"]) for spec in BREADTH_PULSE_PAIRS
+    } | {
+        str(spec["denominator"]) for spec in BREADTH_PULSE_PAIRS
+    })
+    histories: dict[str, pd.DataFrame] = {}
+    warnings: list[str] = []
+    for symbol in symbols:
+        try:
+            histories[symbol] = data_provider.get_history(symbol, period=period, interval="1d", cache_age=1800)
+        except Exception as exc:
+            histories[symbol] = pd.DataFrame()
+            warnings.append(f"{symbol} history unavailable: {str(exc)[:80]}")
+
+    rows = [_breadth_pulse_row(spec, histories) for spec in BREADTH_PULSE_PAIRS]
+    for row in rows:
+        if row.get("status") != "ok":
+            warnings.append(f"{row.get('pair')} history unavailable.")
+    ok_rows = [row for row in rows if row.get("status") == "ok"]
+    scores = [
+        _float_value(row.get("breadth_score"), default=math.nan)
+        for row in ok_rows
+        if math.isfinite(_float_value(row.get("breadth_score"), default=math.nan))
+    ]
+    breadth_score = sum(scores) / len(scores) if scores else 0.0
+    regime = _breadth_regime_label(breadth_score, ok_rows)
+    supportive = sum(row.get("signal") == "supportive" for row in ok_rows)
+    warning_count = sum(row.get("signal") == "warning" for row in ok_rows)
+    neutral = sum(row.get("signal") == "neutral" for row in ok_rows)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": period,
+        "coverage": f"{len(ok_rows)}/{len(rows)}",
+        "regime": regime,
+        "breadth_score": _clean_value(round(breadth_score, 4)),
+        "supportive_count": supportive,
+        "warning_count": warning_count,
+        "neutral_count": neutral,
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "supportive": [
+            {k: _clean_value(v) for k, v in row.items()}
+            for row in sorted(ok_rows, key=lambda item: _float_value(item.get("breadth_score")), reverse=True)
+            if row.get("signal") == "supportive"
+        ][:5],
+        "warnings_list": [
+            {k: _clean_value(v) for k, v in row.items()}
+            for row in sorted(ok_rows, key=lambda item: _float_value(item.get("breadth_score")))
+            if row.get("signal") == "warning"
+        ][:5],
+        "warnings": warnings,
+        "notes": [
+            "Breadth Pulse uses free ETF-pair histories through data_provider.get_history.",
+            "It checks whether swing longs are broad, narrow, or defensive using relative ETF performance.",
+            "ETF histories may be delayed or unavailable depending on the free source.",
         ],
     }
 
@@ -3179,6 +3377,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="market-pulse-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Breadth pulse</h2>
+    <div class="muted">Free ETF-pair confirmation for broad participation, small caps, credit, growth, and defensive pressure.</div>
+    <div class="status" id="breadth-pulse-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="breadth-pulse-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Sector pulse</h2>
     <div class="muted">Free ETF strength map for checking whether option, share, and futures ideas have sector support.</div>
     <div class="status" id="sector-pulse-status-text"></div>
@@ -3553,6 +3757,26 @@ function marketPulseHtml(data) {
     <div class="brief-list" style="margin-top:10px"><h4>Full pulse</h4>${table(data.rows || [])}</div>
   </div>`;
 }
+function breadthPulseHtml(data) {
+  if (!data) return '<div class="empty">No breadth pulse available.</div>';
+  const warnings = (data.warnings && data.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Provider warnings</h4><ul>${data.warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Regime</span><strong>${cell(data.regime)}</strong></div>
+    <div class="brief-tile"><span>Breadth score</span><strong>${cell(data.breadth_score)}</strong></div>
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(data.coverage)}</strong></div>
+    <div class="brief-tile"><span>Supportive / warning</span><strong>${cell(data.supportive_count || 0)} / ${cell(data.warning_count || 0)}</strong></div>
+  </div>`;
+  return `<div style="padding:12px">
+    ${tiles}${warnings}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Supportive checks</h4>${table(data.supportive || [])}</div>
+      <div class="brief-list"><h4>Warnings</h4>${table(data.warnings_list || [])}</div>
+    </div>
+    <div class="brief-list" style="margin-top:10px"><h4>Full breadth map</h4>${table(data.rows || [])}</div>
+  </div>`;
+}
 function sectorPulseHtml(data) {
   if (!data) return '<div class="empty">No sector pulse available.</div>';
   const leaders = data.leaders || [];
@@ -3925,6 +4149,14 @@ async function loadMarketPulse() {
   $('market-pulse-status-text').textContent = `Regime: ${data.regime || 'unknown'}; coverage ${data.coverage || '0/0'}.${warningText}`;
   $('market-pulse-results').innerHTML = marketPulseHtml(data);
 }
+async function loadBreadthPulse() {
+  $('breadth-pulse-status-text').textContent = 'Loading free breadth context...';
+  const res = await fetch('/api/breadth-pulse');
+  const data = await res.json();
+  const warningText = (data.warnings || []).length ? ` ${data.warnings.length} provider warning(s).` : '';
+  $('breadth-pulse-status-text').textContent = `Regime: ${data.regime || 'unknown'}; coverage ${data.coverage || '0/0'}.${warningText}`;
+  $('breadth-pulse-results').innerHTML = breadthPulseHtml(data);
+}
 async function loadSectorPulse() {
   $('sector-pulse-status-text').textContent = 'Loading free sector context...';
   const res = await fetch('/api/sector-pulse');
@@ -4260,7 +4492,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -4303,6 +4535,7 @@ loadPositions().catch(err => { $('positions-status-text').textContent = 'Positio
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
+loadBreadthPulse().catch(err => { $('breadth-pulse-status-text').textContent = 'Breadth pulse failed'; console.error(err); });
 loadSectorPulse().catch(err => { $('sector-pulse-status-text').textContent = 'Sector pulse failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
@@ -4358,6 +4591,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             period = params.get("period", ["6mo"])[0]
             self._send_json(build_market_pulse(self.data_dir, period=period))
+            return
+        if parsed.path == "/api/breadth-pulse":
+            params = parse_qs(parsed.query)
+            period = params.get("period", ["6mo"])[0]
+            self._send_json(build_breadth_pulse(self.data_dir, period=period))
             return
         if parsed.path == "/api/sector-pulse":
             params = parse_qs(parsed.query)
