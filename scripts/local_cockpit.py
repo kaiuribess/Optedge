@@ -2286,6 +2286,141 @@ def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     }
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _swing_climate_label(score: int) -> tuple[str, str]:
+    if score >= 75:
+        return "aggressive_swing", "Risk-on enough to press only the cleanest ready setups."
+    if score >= 60:
+        return "constructive_selective", "Constructive, but stay selective and respect stops."
+    if score >= 45:
+        return "mixed_selective", "Mixed tape; prefer smaller size, cleaner liquidity, and stronger sectors."
+    return "defensive_wait", "Defensive tape; wait for cleaner breadth or use only exceptional setups."
+
+
+def _swing_climate_from_pulses(
+    market: dict[str, Any],
+    breadth: dict[str, Any],
+    sector: dict[str, Any],
+) -> dict[str, Any]:
+    market_score = _float_value(market.get("risk_score"), default=0.0)
+    breadth_score = _float_value(breadth.get("breadth_score"), default=0.0)
+    sector_leaders = sector.get("leaders") if isinstance(sector.get("leaders"), list) else []
+    sector_laggards = sector.get("laggards") if isinstance(sector.get("laggards"), list) else []
+    leader_scores = [
+        _float_value(row.get("strength_score"), default=math.nan)
+        for row in sector_leaders[:3]
+        if isinstance(row, dict) and math.isfinite(_float_value(row.get("strength_score"), default=math.nan))
+    ]
+    top_sector_score = sum(leader_scores) / len(leader_scores) if leader_scores else 0.0
+
+    components = {
+        "market": round((_clamp(market_score, -0.60, 0.60) / 0.60) * 35.0, 2),
+        "breadth": round((_clamp(breadth_score, -0.08, 0.08) / 0.08) * 30.0, 2),
+        "sector": round((_clamp(top_sector_score, -0.12, 0.12) / 0.12) * 15.0, 2),
+    }
+    raw_score = 50.0 + components["market"] + components["breadth"] + components["sector"]
+
+    market_regime = str(market.get("regime") or "unknown")
+    breadth_regime = str(breadth.get("regime") or "unknown")
+    warning_count = int(_float_value(breadth.get("warning_count"), default=0.0))
+    if market_regime in {"risk_off", "defensive"}:
+        raw_score -= 15.0
+    if breadth_regime == "narrow_or_defensive":
+        raw_score -= 15.0
+    raw_score -= min(12.0, warning_count * 4.0)
+
+    score = int(round(_clamp(raw_score, 0.0, 100.0)))
+    label, posture = _swing_climate_label(score)
+
+    positives: list[str] = []
+    warnings_out: list[str] = []
+    if market_regime in {"risk_on", "constructive"}:
+        positives.append(f"Market pulse is {market_regime}.")
+    elif market_regime in {"risk_off", "defensive"}:
+        warnings_out.append(f"Market pulse is {market_regime}.")
+    if breadth_regime in {"broad_risk_on", "selective_risk_on"}:
+        positives.append(f"Breadth pulse is {breadth_regime}.")
+    elif breadth_regime == "narrow_or_defensive":
+        warnings_out.append("Breadth is narrow or defensive.")
+    supportive_count = int(_float_value(breadth.get("supportive_count"), default=0.0))
+    if supportive_count:
+        positives.append(f"{supportive_count} breadth pair(s) are supportive.")
+    if warning_count:
+        warnings_out.append(f"{warning_count} breadth pair(s) are warning.")
+
+    top_sector = sector_leaders[0] if sector_leaders and isinstance(sector_leaders[0], dict) else {}
+    weak_sector = sector_laggards[0] if sector_laggards and isinstance(sector_laggards[0], dict) else {}
+    if top_sector:
+        positives.append(f"Strongest group: {top_sector.get('symbol')} {top_sector.get('sector')}.")
+    if weak_sector:
+        warnings_out.append(f"Weakest group: {weak_sector.get('symbol')} {weak_sector.get('sector')}.")
+    warnings_out.extend(str(item) for item in (market.get("warnings") or [])[:2])
+    warnings_out.extend(str(item) for item in (breadth.get("warnings") or [])[:2])
+    warnings_out.extend(str(item) for item in (sector.get("warnings") or [])[:2])
+
+    focus = [
+        {
+            "label": "Best setup filter",
+            "detail": "Prefer ready setups with 90+ DTE options, tight spreads, and sector support.",
+        },
+        {
+            "label": "Sizing posture",
+            "detail": "Use normal sizing only when validation, liquidity, and open-position risk agree.",
+        },
+    ]
+    if top_sector:
+        focus.insert(0, {
+            "label": "Leading group",
+            "detail": f"Prioritize tickers tied to {top_sector.get('sector')} when their own thesis confirms.",
+        })
+    if label in {"mixed_selective", "defensive_wait"}:
+        focus.append({
+            "label": "Risk control",
+            "detail": "Avoid forcing marginal Watch rows; require cleaner contract readiness before acting.",
+        })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": market.get("period") or breadth.get("period") or sector.get("period"),
+        "climate_score": score,
+        "climate_label": label,
+        "posture": posture,
+        "market_regime": market_regime,
+        "breadth_regime": breadth_regime,
+        "market_risk_score": _clean_value(market.get("risk_score")),
+        "breadth_score": _clean_value(breadth.get("breadth_score")),
+        "top_sector": _clean_value(top_sector.get("sector")),
+        "top_sector_symbol": _clean_value(top_sector.get("symbol")),
+        "weak_sector": _clean_value(weak_sector.get("sector")),
+        "weak_sector_symbol": _clean_value(weak_sector.get("symbol")),
+        "components": components,
+        "coverage": {
+            "market": market.get("coverage"),
+            "breadth": breadth.get("coverage"),
+            "sector": sector.get("coverage"),
+        },
+        "positives": positives[:6],
+        "warnings": warnings_out[:8],
+        "focus": focus[:5],
+        "notes": [
+            "Swing Climate combines the free Market, Breadth, and Sector Pulse context.",
+            "It is a review posture, not a trade signal or broker instruction.",
+            "Use it to decide how strict to be with setup readiness, liquidity, and sizing.",
+        ],
+    }
+
+
+def build_swing_climate(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
+    """Combine free context panels into a single swing-trading posture."""
+    market = build_market_pulse(data_dir, period=period)
+    breadth = build_breadth_pulse(data_dir, period=period)
+    sector = build_sector_pulse(data_dir, period=period)
+    return _swing_climate_from_pulses(market, breadth, sector)
+
+
 def _avg(values: list[float]) -> float | None:
     clean = [v for v in values if math.isfinite(v)]
     return (sum(clean) / len(clean)) if clean else None
@@ -3359,6 +3494,12 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="view-tab" type="button" data-view="all">All</button>
   </nav>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Swing climate</h2>
+    <div class="muted">One-page posture from free market, breadth, and sector context. Use this to decide how strict to be with setup readiness.</div>
+    <div class="status" id="swing-climate-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="swing-climate-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Best setups</h2>
     <div class="muted">Decision-first shortlist from the latest option, share, futures, and value snapshots. Click a setup to open the research brief.</div>
     <div class="status" id="best-setups-status-text"></div>
@@ -3736,6 +3877,36 @@ function actionQueueTable(rows) {
     return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function swingClimateHtml(data) {
+  if (!data) return '<div class="empty">No swing climate available.</div>';
+  const coverage = data.coverage || {};
+  const positives = (data.positives || []).length
+    ? `<ul>${data.positives.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>`
+    : '<div class="empty">No supportive context surfaced.</div>';
+  const warnings = (data.warnings || []).length
+    ? `<ul>${data.warnings.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>`
+    : '<div class="empty">No climate warnings surfaced.</div>';
+  const focusRows = (data.focus || []).map(row => ({ label: row.label, detail: row.detail }));
+  const components = data.components || {};
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label)}</strong></div>
+    <div class="brief-tile"><span>Score</span><strong>${cell(data.climate_score)}/100</strong></div>
+    <div class="brief-tile"><span>Posture</span><strong>${cell(data.posture)}</strong></div>
+    <div class="brief-tile"><span>Market / breadth</span><strong>${cell(data.market_regime)} / ${cell(data.breadth_regime)}</strong></div>
+    <div class="brief-tile"><span>Top group</span><strong>${cell(data.top_sector_symbol)} ${cell(data.top_sector)}</strong></div>
+    <div class="brief-tile"><span>Weak group</span><strong>${cell(data.weak_sector_symbol)} ${cell(data.weak_sector)}</strong></div>
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(coverage.market)} | ${cell(coverage.breadth)} | ${cell(coverage.sector)}</strong></div>
+    <div class="brief-tile"><span>Components</span><strong>M ${cell(components.market)} / B ${cell(components.breadth)} / S ${cell(components.sector)}</strong></div>
+  </div>`;
+  return `<div style="padding:12px">
+    ${tiles}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Supportive</h4>${positives}</div>
+      <div class="brief-list"><h4>Warnings</h4>${warnings}</div>
+    </div>
+    <div class="brief-list" style="margin-top:10px"><h4>Review focus</h4>${table(focusRows)}</div>
+  </div>`;
 }
 function marketPulseHtml(data) {
   if (!data) return '<div class="empty">No market pulse available.</div>';
@@ -4141,6 +4312,14 @@ async function loadActionQueue() {
   wireClickableRows($('queue-results'));
   wireActionQueueRows();
 }
+async function loadSwingClimate() {
+  $('swing-climate-status-text').textContent = 'Loading swing climate...';
+  const res = await fetch('/api/swing-climate');
+  const data = await res.json();
+  const warnings = (data.warnings || []).length ? ` ${data.warnings.length} warning(s).` : '';
+  $('swing-climate-status-text').textContent = `${data.climate_label || 'unknown'} at ${data.climate_score || 0}/100.${warnings}`;
+  $('swing-climate-results').innerHTML = swingClimateHtml(data);
+}
 async function loadMarketPulse() {
   $('market-pulse-status-text').textContent = 'Loading free market context...';
   const res = await fetch('/api/market-pulse');
@@ -4492,7 +4671,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -4532,6 +4711,7 @@ $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchl
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
+loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
@@ -4586,6 +4766,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["20"])[0], 20, 1, 100)
             self._send_json(build_action_queue(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/swing-climate":
+            params = parse_qs(parsed.query)
+            period = params.get("period", ["6mo"])[0]
+            self._send_json(build_swing_climate(self.data_dir, period=period))
             return
         if parsed.path == "/api/market-pulse":
             params = parse_qs(parsed.query)

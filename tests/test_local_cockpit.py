@@ -15,7 +15,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_best_setups, build_breadth_pulse, build_market_pulse, build_positions,
     build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
-    build_sector_pulse, build_summary, build_symbol_suggestions,
+    build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -64,6 +64,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
     assert "routeQueueAction" in html
+    assert "Swing climate" in html
+    assert "/api/swing-climate" in html
+    assert "swingClimateHtml" in html
+    assert "loadSwingClimate" in html
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
@@ -902,6 +906,53 @@ def test_breadth_pulse_uses_free_etf_pair_confirmation():
     assert rows["Credit risk appetite"]["pair"] == "HYG/LQD"
 
 
+def test_swing_climate_combines_free_context_into_posture():
+    old_history = cockpit_module.data_provider.get_history
+
+    slopes = {
+        "SPY": 1.0,
+        "RSP": 1.25,
+        "IWM": 1.45,
+        "DIA": 0.95,
+        "QQQ": 1.35,
+        "XLY": 1.50,
+        "XLP": 0.40,
+        "HYG": 0.55,
+        "LQD": 0.10,
+        "SMH": 1.85,
+        "XLU": 0.20,
+        "XLK": 1.60,
+        "XLE": -0.20,
+        "^VIX": -0.30,
+        "TLT": -0.05,
+        "GLD": 0.05,
+        "USO": 0.10,
+        "UUP": -0.05,
+    }
+
+    def fake_history(ticker: str, period: str = "6mo", interval: str = "1d", cache_age: int = 1800):
+        del period, interval, cache_age
+        idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
+        slope = slopes.get(ticker, 0.45)
+        close = [100 + i * slope for i in range(80)]
+        return pd.DataFrame({"Close": close}, index=idx)
+
+    try:
+        cockpit_module.data_provider.get_history = fake_history
+        climate = build_swing_climate(period="6mo")
+    finally:
+        cockpit_module.data_provider.get_history = old_history
+
+    assert climate["climate_score"] >= 60
+    assert climate["climate_label"] in {"aggressive_swing", "constructive_selective"}
+    assert climate["market_regime"] in {"risk_on", "constructive"}
+    assert climate["breadth_regime"] in {"broad_risk_on", "selective_risk_on"}
+    assert climate["coverage"] == {"market": "9/9", "breadth": "7/7", "sector": "13/13"}
+    assert climate["top_sector_symbol"] in {"SMH", "XLK"}
+    assert climate["focus"]
+    assert any("Breadth pulse" in item for item in climate["positives"])
+
+
 def test_sector_pulse_ranks_free_sector_etf_context():
     old_history = cockpit_module.data_provider.get_history
 
@@ -1407,6 +1458,7 @@ if __name__ == "__main__":
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
     test_breadth_pulse_uses_free_etf_pair_confirmation()
+    test_swing_climate_combines_free_context_into_posture()
     test_sector_pulse_ranks_free_sector_etf_context()
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
@@ -1415,4 +1467,4 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("26/26 local cockpit tests passed")
+    print("27/27 local cockpit tests passed")
