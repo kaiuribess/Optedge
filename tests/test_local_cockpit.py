@@ -14,7 +14,7 @@ from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_best_setups, build_market_pulse, build_positions, build_provider_status, build_risk_summary,
-    build_robinhood_agentic_queue_report, build_summary, build_symbol_suggestions,
+    build_robinhood_agentic_queue_report, build_sector_pulse, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -67,6 +67,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
     assert "loadMarketPulse" in html
+    assert "Sector pulse" in html
+    assert "/api/sector-pulse" in html
+    assert "sectorPulseHtml" in html
+    assert "loadSectorPulse" in html
     assert "Portfolio risk" in html
     assert "/api/risk-summary" in html
     assert "riskSummaryHtml" in html
@@ -852,6 +856,35 @@ def test_market_pulse_uses_free_history_context_and_regime_labels():
     assert pulse["leaders"][0]["symbol"] in {"SPY", "QQQ", "IWM", "DIA"}
 
 
+def test_sector_pulse_ranks_free_sector_etf_context():
+    old_history = cockpit_module.data_provider.get_history
+
+    def fake_history(ticker: str, period: str = "6mo", interval: str = "1d", cache_age: int = 1800):
+        del period, interval, cache_age
+        idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
+        if ticker == "XLK":
+            close = [100 + i * 1.5 for i in range(80)]
+        elif ticker == "XLE":
+            close = [100 - i * 0.8 for i in range(80)]
+        else:
+            close = [100 + i * 0.2 for i in range(80)]
+        return pd.DataFrame({"Close": close}, index=idx)
+
+    try:
+        cockpit_module.data_provider.get_history = fake_history
+        pulse = build_sector_pulse(period="6mo")
+    finally:
+        cockpit_module.data_provider.get_history = old_history
+
+    assert pulse["coverage"] == "13/13"
+    assert pulse["leaders"][0]["symbol"] == "XLK"
+    assert pulse["laggards"][0]["symbol"] == "XLE"
+    rows = {row["symbol"]: row for row in pulse["rows"]}
+    assert rows["XLK"]["trend"] == "uptrend"
+    assert rows["XLK"]["strength_score"] > rows["XLE"]["strength_score"]
+    assert rows["XLK"]["last_date"] == "2026-03-21"
+
+
 def test_performance_summary_reads_engine_perf_health_cache_and_finbert_state():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1316,6 +1349,7 @@ if __name__ == "__main__":
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
+    test_sector_pulse_ranks_free_sector_etf_context()
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
@@ -1323,4 +1357,4 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("24/24 local cockpit tests passed")
+    print("25/25 local cockpit tests passed")

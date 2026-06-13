@@ -160,6 +160,22 @@ MARKET_PULSE_SYMBOLS = [
     {"symbol": "^VIX", "label": "VIX", "kind": "volatility", "risk_weight": -1.0},
 ]
 
+SECTOR_PULSE_SYMBOLS = [
+    {"symbol": "XLK", "sector": "Technology", "group": "sector"},
+    {"symbol": "XLF", "sector": "Financials", "group": "sector"},
+    {"symbol": "XLE", "sector": "Energy", "group": "sector"},
+    {"symbol": "XLV", "sector": "Healthcare", "group": "sector"},
+    {"symbol": "XLY", "sector": "Consumer Discretionary", "group": "sector"},
+    {"symbol": "XLP", "sector": "Consumer Staples", "group": "sector"},
+    {"symbol": "XLI", "sector": "Industrials", "group": "sector"},
+    {"symbol": "XLC", "sector": "Communication Services", "group": "sector"},
+    {"symbol": "XLB", "sector": "Materials", "group": "sector"},
+    {"symbol": "XLU", "sector": "Utilities", "group": "sector"},
+    {"symbol": "XLRE", "sector": "Real Estate", "group": "sector"},
+    {"symbol": "SMH", "sector": "Semiconductors", "group": "industry_proxy"},
+    {"symbol": "IYT", "sector": "Transports", "group": "industry_proxy"},
+]
+
 WATCHLIST_FILENAME = "cockpit_watchlist.json"
 
 
@@ -1678,6 +1694,26 @@ def _history_close_series(df: pd.DataFrame) -> pd.Series:
     return close[close > 0]
 
 
+def _history_last_date(df: pd.DataFrame, close: pd.Series) -> str | None:
+    if close.empty:
+        return None
+    idx = close.index[-1]
+    if hasattr(idx, "date"):
+        try:
+            return str(idx.date())
+        except Exception:
+            pass
+    if df is not None and not df.empty and "Date" in df.columns:
+        try:
+            return str(df.loc[idx, "Date"])
+        except Exception:
+            try:
+                return str(df["Date"].dropna().iloc[-1])
+            except Exception:
+                return None
+    return None
+
+
 def _period_return(close: pd.Series, periods: int) -> float | None:
     if len(close) <= periods:
         return None
@@ -1728,11 +1764,7 @@ def _market_pulse_row(spec: dict[str, Any], history: pd.DataFrame) -> dict[str, 
     ret_60d = _period_return(close, 60)
     vol_20d = _realized_vol_20d(close)
     trend = _market_trend_label(ret_5d, ret_20d)
-    last_date = None
-    try:
-        last_date = str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1])
-    except Exception:
-        last_date = None
+    last_date = _history_last_date(history, close)
     return {
         "symbol": spec["symbol"],
         "label": spec["label"],
@@ -1744,6 +1776,52 @@ def _market_pulse_row(spec: dict[str, Any], history: pd.DataFrame) -> dict[str, 
         "ret_60d": _clean_value(ret_60d),
         "vol_20d": _clean_value(vol_20d),
         "trend": trend,
+        "rows": int(len(close)),
+        "last_date": last_date,
+    }
+
+
+def _sector_strength_score(
+    ret_20d: float | None,
+    ret_60d: float | None,
+    vol_20d: float | None,
+) -> float:
+    r20 = ret_20d if ret_20d is not None and math.isfinite(ret_20d) else 0.0
+    r60 = ret_60d if ret_60d is not None and math.isfinite(ret_60d) else 0.0
+    vol = vol_20d if vol_20d is not None and math.isfinite(vol_20d) else 0.0
+    return (0.65 * r20) + (0.35 * r60) - (0.10 * vol)
+
+
+def _sector_pulse_row(spec: dict[str, Any], history: pd.DataFrame) -> dict[str, Any]:
+    close = _history_close_series(history)
+    if close.empty:
+        return {
+            "symbol": spec["symbol"],
+            "sector": spec["sector"],
+            "group": spec["group"],
+            "status": "missing",
+            "trend": "unknown",
+            "note": "No free history returned.",
+        }
+    ret_5d = _period_return(close, 5)
+    ret_20d = _period_return(close, 20)
+    ret_60d = _period_return(close, 60)
+    vol_20d = _realized_vol_20d(close)
+    trend = _market_trend_label(ret_5d, ret_20d)
+    last_date = _history_last_date(history, close)
+    strength = _sector_strength_score(ret_20d, ret_60d, vol_20d)
+    return {
+        "symbol": spec["symbol"],
+        "sector": spec["sector"],
+        "group": spec["group"],
+        "status": "ok",
+        "last_close": _clean_value(round(_float_value(close.iloc[-1]), 4)),
+        "ret_5d": _clean_value(ret_5d),
+        "ret_20d": _clean_value(ret_20d),
+        "ret_60d": _clean_value(ret_60d),
+        "vol_20d": _clean_value(vol_20d),
+        "trend": trend,
+        "strength_score": _clean_value(round(strength, 4)),
         "rows": int(len(close)),
         "last_date": last_date,
     }
@@ -1828,6 +1906,54 @@ def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
             "Market Pulse uses free/no-key historical price providers through data_provider.get_history.",
             "It gives regime context for swing-trade review; it is not a trading signal by itself.",
             "VIX and ETF proxies may be delayed or unavailable depending on the free source.",
+        ],
+    }
+
+
+def build_sector_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
+    """Build a free no-key sector and industry proxy strength map."""
+    del data_dir  # reserved for future persisted pulse snapshots
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for spec in SECTOR_PULSE_SYMBOLS:
+        try:
+            history = data_provider.get_history(spec["symbol"], period=period, interval="1d", cache_age=1800)
+            row = _sector_pulse_row(spec, history)
+        except Exception as exc:
+            row = {
+                "symbol": spec["symbol"],
+                "sector": spec["sector"],
+                "group": spec["group"],
+                "status": "error",
+                "trend": "unknown",
+                "note": str(exc)[:160],
+            }
+        rows.append(row)
+        if row.get("status") != "ok":
+            warnings.append(f"{row['symbol']} history unavailable.")
+
+    ok_rows = [row for row in rows if row.get("status") == "ok"]
+    leaders = sorted(
+        ok_rows,
+        key=lambda row: _float_value(row.get("strength_score"), default=-999.0),
+        reverse=True,
+    )[:5]
+    laggards = sorted(
+        ok_rows,
+        key=lambda row: _float_value(row.get("strength_score"), default=999.0),
+    )[:5]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": period,
+        "coverage": f"{len(ok_rows)}/{len(rows)}",
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "leaders": [{k: _clean_value(v) for k, v in row.items()} for row in leaders],
+        "laggards": [{k: _clean_value(v) for k, v in row.items()} for row in laggards],
+        "warnings": warnings,
+        "notes": [
+            "Sector Pulse uses free ETF and industry-proxy histories through data_provider.get_history.",
+            "Use it as context for ticker and option-chain review; it is not an order signal by itself.",
+            "ETF histories may be delayed or temporarily unavailable depending on the free source.",
         ],
     }
 
@@ -2923,6 +3049,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="market-pulse-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Sector pulse</h2>
+    <div class="muted">Free ETF strength map for checking whether option, share, and futures ideas have sector support.</div>
+    <div class="status" id="sector-pulse-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="sector-pulse-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
     <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
     <div class="status" id="risk-status-text"></div>
@@ -3291,6 +3423,30 @@ function marketPulseHtml(data) {
     <div class="brief-list" style="margin-top:10px"><h4>Full pulse</h4>${table(data.rows || [])}</div>
   </div>`;
 }
+function sectorPulseHtml(data) {
+  if (!data) return '<div class="empty">No sector pulse available.</div>';
+  const leaders = data.leaders || [];
+  const laggards = data.laggards || [];
+  const top = leaders.length ? `${leaders[0].symbol} ${leaders[0].sector || ''}` : '-';
+  const weak = laggards.length ? `${laggards[0].symbol} ${laggards[0].sector || ''}` : '-';
+  const warnings = (data.warnings && data.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Provider warnings</h4><ul>${data.warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(data.coverage)}</strong></div>
+    <div class="brief-tile"><span>Period</span><strong>${cell(data.period)}</strong></div>
+    <div class="brief-tile"><span>Top group</span><strong>${cell(top)}</strong></div>
+    <div class="brief-tile"><span>Weakest group</span><strong>${cell(weak)}</strong></div>
+  </div>`;
+  return `<div style="padding:12px">
+    ${tiles}${warnings}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Strongest groups</h4>${table(leaders)}</div>
+      <div class="brief-list"><h4>Weakest groups</h4>${table(laggards)}</div>
+    </div>
+    <div class="brief-list" style="margin-top:10px"><h4>Full sector map</h4>${table(data.rows || [])}</div>
+  </div>`;
+}
 function countMapText(map) {
   if (!map || typeof map !== 'object') return '-';
   const entries = Object.entries(map).filter(([k, v]) => k && Number(v) > 0);
@@ -3639,6 +3795,15 @@ async function loadMarketPulse() {
   $('market-pulse-status-text').textContent = `Regime: ${data.regime || 'unknown'}; coverage ${data.coverage || '0/0'}.${warningText}`;
   $('market-pulse-results').innerHTML = marketPulseHtml(data);
 }
+async function loadSectorPulse() {
+  $('sector-pulse-status-text').textContent = 'Loading free sector context...';
+  const res = await fetch('/api/sector-pulse');
+  const data = await res.json();
+  const warningText = (data.warnings || []).length ? ` ${data.warnings.length} provider warning(s).` : '';
+  const top = (data.leaders && data.leaders[0]) ? `${data.leaders[0].symbol} ${data.leaders[0].sector || ''}` : 'unknown';
+  $('sector-pulse-status-text').textContent = `Coverage ${data.coverage || '0/0'}; strongest ${top}.${warningText}`;
+  $('sector-pulse-results').innerHTML = sectorPulseHtml(data);
+}
 async function loadRiskSummary() {
   $('risk-status-text').textContent = 'Loading portfolio risk...';
   const res = await fetch('/api/risk-summary');
@@ -3928,7 +4093,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -3971,6 +4136,7 @@ loadPositions().catch(err => { $('positions-status-text').textContent = 'Positio
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
+loadSectorPulse().catch(err => { $('sector-pulse-status-text').textContent = 'Sector pulse failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
@@ -4025,6 +4191,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             period = params.get("period", ["6mo"])[0]
             self._send_json(build_market_pulse(self.data_dir, period=period))
+            return
+        if parsed.path == "/api/sector-pulse":
+            params = parse_qs(parsed.query)
+            period = params.get("period", ["6mo"])[0]
+            self._send_json(build_sector_pulse(self.data_dir, period=period))
             return
         if parsed.path == "/api/risk-summary":
             self._send_json(build_risk_summary(self.data_dir))
