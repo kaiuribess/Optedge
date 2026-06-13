@@ -710,6 +710,76 @@ def _option_chain_score(row: dict[str, Any]) -> float:
     )
 
 
+def _option_dte_bucket(dte: float) -> str:
+    if dte < 30:
+        return "0-29d"
+    if dte < MIN_SWING_OPTION_DTE:
+        return "30-89d"
+    if dte < 180:
+        return "90-179d"
+    if dte < 365:
+        return "180-364d"
+    return "365d+"
+
+
+def _option_contract_readiness(row: dict[str, Any], quote_quality: str) -> dict[str, Any]:
+    score = 100
+    flags: list[str] = []
+    dte = _float_value(row.get("dte"), default=math.nan)
+    spread = _float_value(row.get("spread_pct"), default=math.nan)
+    oi = _float_value(row.get("openInterest"), default=0.0)
+    volume = _float_value(row.get("volume"), default=0.0)
+    premium = _float_value(row.get("premium_dollars"), default=math.nan)
+    moneyness = abs(_float_value(row.get("moneyness_pct"), default=0.0))
+    quote_norm = str(quote_quality or "").lower()
+
+    if not math.isfinite(dte) or dte < MIN_SWING_OPTION_DTE:
+        score -= 35
+        flags.append("below 90 DTE")
+    elif dte > 900:
+        score -= 8
+        flags.append("very far expiry")
+    if math.isfinite(spread):
+        if spread > 0.30:
+            score -= 35
+            flags.append("very wide spread")
+        elif spread > 0.20:
+            score -= 22
+            flags.append("wide spread")
+        elif spread > 0.12:
+            score -= 8
+            flags.append("spread check")
+    else:
+        score -= 14
+        flags.append("missing spread")
+    if oi < 25:
+        score -= 18
+        flags.append("thin open interest")
+    elif oi < 100:
+        score -= 8
+        flags.append("light open interest")
+    if volume <= 0:
+        score -= 8
+        flags.append("no volume today")
+    if not math.isfinite(premium) or premium <= 0:
+        score -= 30
+        flags.append("invalid premium")
+    elif premium > 1000:
+        score -= 8
+        flags.append("large premium")
+    if moneyness > 0.35:
+        score -= 8
+        flags.append("far from spot")
+    if quote_norm in {"", "unknown"}:
+        score -= 8
+        flags.append("unknown quote source")
+    elif "free" in quote_norm or "delayed" in quote_norm:
+        score -= 6
+        flags.append("verify live quote")
+
+    return _readiness(score, flags)
+
+
 def _chain_preset_config(preset: str) -> tuple[str, dict[str, Any]]:
     preset_norm = str(preset or "custom").strip().lower().replace("-", "_")
     if preset_norm in {"long", "long_dated", "leap"}:
@@ -735,11 +805,15 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         return {
             "best_call": None,
             "best_put": None,
+            "best_reviewable": None,
             "median_spread_pct": None,
             "under_budget_count": 0,
             "liquid_count": 0,
             "swing_count": 0,
             "long_dated_count": 0,
+            "ready_count": 0,
+            "review_count": 0,
+            "wait_count": 0,
         }
     spreads = sorted(
         _float_value(row.get("spread_pct"), default=math.nan)
@@ -752,10 +826,15 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         median_spread = spreads[mid_idx] if len(spreads) % 2 else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
     best_call = next((row for row in rows if str(row.get("side") or "").lower().startswith("call")), None)
     best_put = next((row for row in rows if str(row.get("side") or "").lower().startswith("put")), None)
+    best_reviewable = next(
+        (row for row in rows if str(row.get("readiness_label") or "") in {"ready", "review"}),
+        None,
+    )
     budget = max_premium if max_premium > 0 else 500.0
     return {
         "best_call": _chain_contract_label(best_call),
         "best_put": _chain_contract_label(best_put),
+        "best_reviewable": _chain_contract_label(best_reviewable),
         "median_spread_pct": _clean_value(median_spread),
         "under_budget_count": sum(_float_value(row.get("premium_dollars"), default=math.inf) <= budget for row in rows),
         "liquid_count": sum(
@@ -765,7 +844,53 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         ),
         "swing_count": sum(MIN_SWING_OPTION_DTE <= _float_value(row.get("dte"), default=-1.0) <= 180 for row in rows),
         "long_dated_count": sum(_float_value(row.get("dte"), default=0.0) >= 180 for row in rows),
+        "ready_count": sum(str(row.get("readiness_label") or "") == "ready" for row in rows),
+        "review_count": sum(str(row.get("readiness_label") or "") == "review" for row in rows),
+        "wait_count": sum(str(row.get("readiness_label") or "") == "wait" for row in rows),
     }
+
+
+def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_expiry: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_expiry.setdefault(str(row.get("expiry") or ""), []).append(row)
+
+    summaries: list[dict[str, Any]] = []
+    for expiry, items in by_expiry.items():
+        if not expiry:
+            continue
+        spreads = sorted(
+            _float_value(row.get("spread_pct"), default=math.nan)
+            for row in items
+            if math.isfinite(_float_value(row.get("spread_pct"), default=math.nan))
+        )
+        mid_idx = len(spreads) // 2
+        median_spread = None
+        if spreads:
+            median_spread = spreads[mid_idx] if len(spreads) % 2 else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
+        dte_values = [_float_value(row.get("dte"), default=math.nan) for row in items]
+        dte_values = [value for value in dte_values if math.isfinite(value)]
+        dte = int(min(dte_values)) if dte_values else None
+        best_call = next((row for row in items if str(row.get("side") or "") == "call"), None)
+        best_put = next((row for row in items if str(row.get("side") or "") == "put"), None)
+        summaries.append({
+            "expiry": expiry,
+            "dte": dte,
+            "dte_bucket": _option_dte_bucket(float(dte or 0)),
+            "contracts": len(items),
+            "calls": sum(str(row.get("side") or "") == "call" for row in items),
+            "puts": sum(str(row.get("side") or "") == "put" for row in items),
+            "median_spread_pct": _clean_value(median_spread),
+            "reviewable_count": sum(str(row.get("readiness_label") or "") in {"ready", "review"} for row in items),
+            "liquid_count": sum(
+                _float_value(row.get("openInterest"), default=0.0) >= 100
+                and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
+                for row in items
+            ),
+            "best_call": _chain_contract_label(best_call),
+            "best_put": _chain_contract_label(best_put),
+        })
+    return sorted(summaries, key=lambda row: _float_value(row.get("dte"), default=9999.0))[:12]
 
 
 def build_option_chain_scan(
@@ -816,6 +941,8 @@ def build_option_chain_scan(
         return {"ok": False, "error": "no option-chain data returned", "symbol": ticker, "rows": []}
 
     spot = _float_value(blob.get("spot"), default=math.nan)
+    source = str(blob.get("source") or "unknown")
+    quote_quality = blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed")
     today = datetime.now(timezone.utc).date()
     rows: list[dict[str, Any]] = []
     rejected = 0
@@ -865,6 +992,7 @@ def build_option_chain_scan(
                 "side": contract_side,
                 "expiry": str(expiry),
                 "dte": dte,
+                "dte_bucket": _option_dte_bucket(float(dte)),
                 "strike": strike,
                 "bid": _clean_value(raw.get("bid")),
                 "ask": _clean_value(raw.get("ask")),
@@ -878,6 +1006,7 @@ def build_option_chain_scan(
                 "moneyness_pct": _clean_value(moneyness),
             }
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
+            row.update(_option_contract_readiness(row, str(quote_quality)))
             rows.append(row)
 
     rows = sorted(
@@ -890,8 +1019,8 @@ def build_option_chain_scan(
         reverse=True,
     )
     limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
-    source = str(blob.get("source") or "unknown")
     summary = _option_chain_scan_summary(rows, max_premium)
+    expiry_summary = _option_chain_expiry_summary(rows)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -899,7 +1028,7 @@ def build_option_chain_scan(
         "symbol": ticker,
         "resolution": resolution,
         "source": source,
-        "quote_quality": blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed"),
+        "quote_quality": quote_quality,
         "spot": _clean_value(spot),
         "total_expirations": len(blob.get("expirations") or []),
         "total_contracts": total_contracts,
@@ -909,6 +1038,7 @@ def build_option_chain_scan(
         "preset_label": preset_cfg.get("label"),
         "preset_description": preset_cfg.get("description"),
         "scan_summary": summary,
+        "expiry_summary": expiry_summary,
         "filters": {
             "side": side_norm,
             "min_dte": min_dte,
@@ -4001,11 +4131,47 @@ function optionChainSummary(data) {
     ['Liquid', scan.liquid_count || 0],
     ['3m+ swing', scan.swing_count || 0],
     ['Long dated', scan.long_dated_count || 0],
+    ['Ready', scan.ready_count || 0],
+    ['Review', scan.review_count || 0],
+    ['Wait', scan.wait_count || 0],
     ['Best call', scan.best_call || '-'],
     ['Best put', scan.best_put || '-'],
+    ['Best reviewable', scan.best_reviewable || '-'],
     ['Max spread', ((Number(filters.max_spread_pct || 0) * 100).toFixed(0)) + '%']
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function optionContractCard(row) {
+  const readiness = row.readiness_label || 'review';
+  const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
+  const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
+  return `<article class="setup-card">
+    <header>
+      <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
+      <span class="pill ${escAttr(readiness)}">${cell(readiness)}</span>
+    </header>
+    <div class="row"><span>Mid / premium</span><b>${cell(row.mid)} / ${moneyShort(row.premium_dollars)}</b></div>
+    <div class="row"><span>Spread</span><b>${pct(row.spread_pct)}</b></div>
+    <div class="row"><span>Open interest</span><b>${cell(row.openInterest)}</b></div>
+    <div class="row"><span>Volume</span><b>${cell(row.volume)}</b></div>
+    <div class="row"><span>Delta</span><b>${cell(row.delta)}</b></div>
+    <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
+    <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
+    <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
+  </article>`;
+}
+function optionChainResultsHtml(data) {
+  const rows = data.rows || [];
+  if (!rows.length) return '<div class="empty">No contracts matched these filters.</div>';
+  const topCards = rows.slice(0, 6).map(optionContractCard).join('');
+  const expiryRows = data.expiry_summary || [];
+  return `<div style="padding:12px">
+    <div class="setup-grid">${topCards}</div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Expiration quality</h4>${table(expiryRows)}</div>
+      <div class="brief-list"><h4>Top contracts</h4>${table(rows, true)}</div>
+    </div>
+  </div>`;
 }
 async function scanOptionChain() {
   const query = $('chain-query').value.trim() || $('symbol').value.trim() || $('rh-query').value.trim();
@@ -4036,7 +4202,8 @@ async function scanOptionChain() {
   }
   $('chain-status-text').textContent = `${data.filtered_count || 0} contract(s) matched from ${data.total_contracts || 0} total.`;
   $('chain-summary').innerHTML = optionChainSummary(data);
-  $('chain-results').innerHTML = table(data.rows || []);
+  $('chain-results').innerHTML = optionChainResultsHtml(data);
+  wireClickableRows($('chain-results'));
 }
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';

@@ -100,6 +100,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "applyChainPreset" in html
     assert "/api/option-chain-scan" in html
     assert "scanOptionChain" in html
+    assert "optionChainResultsHtml" in html
+    assert "Expiration quality" in html
     assert "Provider status" in html
     assert "/api/provider-status" in html
     assert "loadProviderStatus" in html
@@ -1136,9 +1138,16 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["strike"] == 220.0
     assert row["premium_dollars"] == 500.0
     assert row["spread_pct"] < 0.10
+    assert row["dte_bucket"] in {"180-364d", "365d+"}
+    assert row["readiness_label"] in {"ready", "review"}
+    assert row["readiness_score"] >= 65
     assert report["preset"] == "custom"
     assert report["scan_summary"]["best_call"].startswith("C 220")
     assert report["scan_summary"]["under_budget_count"] == 1
+    assert report["scan_summary"]["review_count"] >= 1
+    assert report["scan_summary"]["best_reviewable"].startswith("C 220")
+    assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
+    assert report["expiry_summary"][0]["reviewable_count"] == 1
 
 
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
@@ -1212,6 +1221,10 @@ def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
     assert report["scan_summary"]["long_dated_count"] == 2
     assert report["scan_summary"]["best_call"].startswith("C 220")
     assert report["scan_summary"]["best_put"].startswith("P 180")
+    assert report["scan_summary"]["review_count"] >= 1
+    assert report["expiry_summary"][0]["contracts"] == 2
+    assert report["expiry_summary"][0]["calls"] == 1
+    assert report["expiry_summary"][0]["puts"] == 1
 
 
 def test_provider_status_checks_free_sources_without_running_scan():
