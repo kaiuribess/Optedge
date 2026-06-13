@@ -13,8 +13,8 @@ import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
-    build_positions, build_risk_summary, build_robinhood_agentic_queue_report, build_summary,
-    build_symbol_suggestions,
+    build_positions, build_provider_status, build_risk_summary,
+    build_robinhood_agentic_queue_report, build_summary, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -52,6 +52,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert 'data-view="positions"' in html
     assert 'data-view="explore"' in html
     assert 'data-view="chains"' in html
+    assert 'data-view="providers"' in html
     assert 'data-view="paper"' in html
     assert 'data-view="research"' in html
     assert "setView" in html
@@ -81,6 +82,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Option chain scan" in html
     assert "/api/option-chain-scan" in html
     assert "scanOptionChain" in html
+    assert "Provider status" in html
+    assert "/api/provider-status" in html
+    assert "loadProviderStatus" in html
     assert "Research watchlist" in html
     assert "Readiness" in html
     assert "/api/watchlist" in html
@@ -928,6 +932,61 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["spread_pct"] < 0.10
 
 
+def test_provider_status_checks_free_sources_without_running_scan():
+    old_yahoo = cockpit_module.data_provider._yahoo_v8_history
+    old_nasdaq = cockpit_module.data_provider._nasdaq_history
+    old_stooq = cockpit_module.data_provider._stooq_history
+    old_chain = cockpit_module._fetch_option_chain
+    idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
+    hist = pd.DataFrame({
+        "Open": [10.0, 11.0],
+        "High": [11.0, 13.0],
+        "Low": [9.0, 10.0],
+        "Close": [10.5, 12.5],
+        "Volume": [1000, 1500],
+    }, index=idx)
+
+    try:
+        cockpit_module.data_provider._yahoo_v8_history = lambda *args, **kwargs: hist
+        cockpit_module.data_provider._nasdaq_history = lambda *args, **kwargs: hist
+        cockpit_module.data_provider._stooq_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module._fetch_option_chain = lambda *args, **kwargs: {
+            "spot": 200.0,
+            "source": "cboe",
+            "chains": {
+                "2027-01-15": pd.DataFrame([
+                    {"strike": 200, "side": "call", "bid": 4.9, "ask": 5.1},
+                    {"strike": 180, "side": "put", "bid": 3.0, "ask": 3.2},
+                ])
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            (data_dir / "sec_company_tickers.json").write_text(
+                json.dumps({"rows": [{"symbol": "AAPL", "name": "Apple Inc."}]}),
+                encoding="utf-8",
+            )
+            report = build_provider_status(data_dir, query="Apple")
+            no_chain = build_provider_status(data_dir, query="Apple", include_chain=False)
+    finally:
+        cockpit_module.data_provider._yahoo_v8_history = old_yahoo
+        cockpit_module.data_provider._nasdaq_history = old_nasdaq
+        cockpit_module.data_provider._stooq_history = old_stooq
+        cockpit_module._fetch_option_chain = old_chain
+
+    assert report["symbol"] == "AAPL"
+    assert report["provider_count"] == 5
+    assert report["ok_count"] == 4
+    providers = {row["provider"]: row for row in report["rows"]}
+    assert providers["Yahoo chart"]["rows"] == 2
+    assert providers["Nasdaq historical"]["last_close"] == 12.5
+    assert providers["Stooq CSV"]["status"] == "warn"
+    assert providers["Option chain stack"]["rows"] == 2
+    assert providers["SEC company ticker cache"]["status"] == "ok"
+    assert no_chain["provider_count"] == 4
+    assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
+
+
 def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1009,5 +1068,6 @@ if __name__ == "__main__":
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
     test_option_chain_scan_fetches_and_filters_contracts()
+    test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("19/19 local cockpit tests passed")
+    print("20/20 local cockpit tests passed")

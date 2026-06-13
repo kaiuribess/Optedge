@@ -13,6 +13,7 @@ import math
 import mimetypes
 import struct
 import sys
+import time
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1498,6 +1499,141 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     }
 
 
+def _provider_probe(label: str, category: str, fn) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        result = fn()
+        ok = bool(result.get("ok")) if isinstance(result, dict) else bool(result)
+        row = result if isinstance(result, dict) else {}
+    except Exception as exc:
+        ok = False
+        row = {"note": str(exc)[:180]}
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+    status = "ok" if ok else "warn"
+    return {
+        "provider": label,
+        "category": category,
+        "status": status,
+        "latency_ms": elapsed_ms,
+        **{k: _clean_value(v) for k, v in row.items() if k != "ok"},
+    }
+
+
+def _history_probe_result(df: pd.DataFrame, note: str = "") -> dict[str, Any]:
+    if df is None or df.empty:
+        return {"ok": False, "rows": 0, "note": note or "No rows returned."}
+    close = None
+    try:
+        close = float(df["Close"].dropna().iloc[-1])
+    except Exception:
+        close = None
+    return {
+        "ok": True,
+        "rows": int(len(df)),
+        "last_close": _clean_value(round(close, 4) if close is not None else None),
+        "note": note or "Returned OHLCV rows.",
+    }
+
+
+def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
+    chains = blob.get("chains") if isinstance(blob, dict) else None
+    if not chains:
+        return {"ok": False, "rows": 0, "note": "No option-chain rows returned."}
+    total = 0
+    for df in chains.values():
+        if isinstance(df, pd.DataFrame):
+            total += len(df)
+        elif isinstance(df, list):
+            total += len(df)
+    return {
+        "ok": total > 0,
+        "rows": total,
+        "source": blob.get("source"),
+        "quote_quality": blob.get("quote_quality") or ("free_or_delayed" if blob.get("source") else None),
+        "spot": _clean_value(blob.get("spot")),
+        "note": f"{len(chains)} expiration(s) returned.",
+    }
+
+
+def build_provider_status(
+    data_dir: Path = DATA_DIR,
+    query: str = "AAPL",
+    include_chain: bool = True,
+) -> dict[str, Any]:
+    """Check the health of free/no-key providers without running a scan."""
+    resolution = resolve_symbol(query or "AAPL")
+    symbol = str(resolution.get("symbol") or query or "AAPL").upper()
+    rows = [
+        _provider_probe(
+            "Yahoo chart",
+            "history",
+            lambda: _history_probe_result(data_provider._yahoo_v8_history(symbol, "1mo", "1d")),
+        ),
+        _provider_probe(
+            "Nasdaq historical",
+            "history",
+            lambda: _history_probe_result(data_provider._nasdaq_history(symbol, "1mo", "1d")),
+        ),
+        _provider_probe(
+            "Stooq CSV",
+            "history",
+            lambda: _history_probe_result(
+                data_provider._stooq_history(symbol, "1mo", "1d"),
+                "Last-resort fallback; can be blocked by browser verification.",
+            ),
+        ),
+    ]
+
+    if include_chain and not symbol.endswith("=F") and not symbol.startswith("^"):
+        rows.append(_provider_probe(
+            "Option chain stack",
+            "options",
+            lambda: _chain_probe_result(_fetch_option_chain(symbol, cache_age=600)),
+        ))
+    elif include_chain:
+        rows.append({
+            "provider": "Option chain stack",
+            "category": "options",
+            "status": "warn",
+            "latency_ms": 0,
+            "rows": 0,
+            "note": "Skipped because this symbol is not an equity/ETF option-chain request.",
+        })
+
+    sec_meta = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
+    rows.append({
+        "provider": "SEC company ticker cache",
+        "category": "symbol_search",
+        "status": "ok" if sec_meta.get("status") in {"fresh", "stale"} else "warn",
+        "latency_ms": 0,
+        "rows": sec_meta.get("row_count"),
+        "source": sec_meta.get("status"),
+        "note": "Local free company-name search cache.",
+    })
+
+    ok_count = sum(1 for row in rows if row.get("status") == "ok")
+    warnings = [
+        f"{row.get('provider')} did not return usable data."
+        for row in rows if row.get("status") != "ok"
+    ]
+    return {
+        "generated_at": _now_iso(),
+        "query": query,
+        "symbol": symbol,
+        "resolution": resolution,
+        "status": "ok" if ok_count >= 2 and not warnings else "warn",
+        "ok_count": ok_count,
+        "provider_count": len(rows),
+        "rows": rows,
+        "warnings": warnings,
+        "notes": [
+            "Provider status checks public/free sources only.",
+            "History checks are research-grade delayed data, not live execution quotes.",
+            "Use this before a focused scan when free providers look flaky.",
+        ],
+    }
+
+
 def _queue_item(priority: int, category: str, label: str, detail: str,
                 action: str, symbol: Any = None, query: Any = None) -> dict[str, Any]:
     return {
@@ -2073,6 +2209,7 @@ body.view-overview .panel[data-view="overview"],
 body.view-positions .panel[data-view="positions"],
 body.view-explore .panel[data-view="explore"],
 body.view-chains .panel[data-view="chains"],
+body.view-providers .panel[data-view="providers"],
 body.view-paper .panel[data-view="paper"],
 body.view-research .panel[data-view="research"] { display:block; }
 .search { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; margin-top:10px; }
@@ -2148,6 +2285,7 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="view-tab" type="button" data-view="positions">Positions</button>
     <button class="view-tab" type="button" data-view="explore">Explore</button>
     <button class="view-tab" type="button" data-view="chains">Chains</button>
+    <button class="view-tab" type="button" data-view="providers">Providers</button>
     <button class="view-tab" type="button" data-view="paper">Paper queue</button>
     <button class="view-tab" type="button" data-view="research">Research</button>
     <button class="view-tab" type="button" data-view="all">All</button>
@@ -2287,6 +2425,18 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="chain-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
     <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel" data-view="providers">
+    <h2 style="margin:0 0 8px;font-size:18px">Provider status</h2>
+    <div class="muted">Check free/no-key data sources before trusting a scan. This does not run engines or place trades.</div>
+    <div class="scan-controls">
+      <input id="provider-query" placeholder="Ticker or company, e.g. AAPL, SPY, Nvidia" value="AAPL">
+      <label class="check"><input id="provider-chain" type="checkbox" checked> include option-chain check</label>
+      <button class="btn" type="button" id="provider-check">Check providers</button>
+    </div>
+    <div class="status" id="provider-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="provider-summary"></div>
+    <div class="section" style="margin-top:12px"><div id="provider-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Research watchlist</h2>
@@ -2510,6 +2660,15 @@ function performanceSummaryHtml(perf) {
       <div class="brief-list"><h4>Cache hit rates</h4>${table(perf.cache_prefixes || [])}</div>
       <div class="brief-list"><h4>Weakest engine health</h4>${table(perf.engine_health || [])}</div>
     </div>`;
+}
+function providerSummaryHtml(data) {
+  const fields = [
+    ['Status', data.status || '-'],
+    ['Symbol', data.symbol || '-'],
+    ['Working', `${data.ok_count || 0}/${data.provider_count || 0}`],
+    ['Warnings', (data.warnings || []).length]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
 }
 function healthClass(level) {
   if (level === 'bad') return 'bad';
@@ -2768,6 +2927,24 @@ async function loadPerformanceSummary() {
   $('performance-status-text').textContent = `RAM cache ${ram.ram_cache_enabled ? 'on' : 'off'}; latest engine seconds ${data.total_latest_engine_sec || 0}.`;
   $('performance-results').innerHTML = performanceSummaryHtml(data);
 }
+async function loadProviderStatus() {
+  $('provider-status-text').textContent = 'Checking free providers...';
+  const params = new URLSearchParams({
+    query: $('provider-query').value.trim() || 'AAPL',
+    include_chain: $('provider-chain').checked ? 'true' : 'false'
+  });
+  const res = await fetch('/api/provider-status?' + params.toString());
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('provider-status-text').textContent = 'Provider check failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const warningText = (data.warnings || []).length ? ` ${data.warnings.length} warning(s).` : '';
+  $('provider-status-text').textContent = `${data.ok_count || 0}/${data.provider_count || 0} provider checks usable.${warningText}`;
+  $('provider-summary').innerHTML = providerSummaryHtml(data);
+  $('provider-results').innerHTML = table(data.rows || []);
+  $('provider-results').dataset.loaded = '1';
+}
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
@@ -3005,8 +3182,19 @@ $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
+$('provider-check').addEventListener('click', loadProviderStatus);
+$('provider-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadProviderStatus(); });
 document.querySelectorAll('.view-tab').forEach(btn => {
-  btn.addEventListener('click', () => setView(btn.dataset.view || 'overview'));
+  btn.addEventListener('click', () => {
+    const view = btn.dataset.view || 'overview';
+    setView(view);
+    if (view === 'providers' && !$('provider-results').dataset.loaded) {
+      loadProviderStatus().catch(err => {
+        $('provider-status-text').textContent = 'Provider check failed';
+        console.error(err);
+      });
+    }
+  });
 });
 $('watchlist-add').addEventListener('click', addWatchlist);
 $('watchlist-run').addEventListener('click', runWatchlist);
@@ -3071,6 +3259,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/performance-summary":
             self._send_json(build_performance_summary(self.data_dir))
+            return
+        if parsed.path == "/api/provider-status":
+            params = parse_qs(parsed.query)
+            query = params.get("query", ["AAPL"])[0]
+            include_chain = _bool_param(params.get("include_chain", ["true"])[0], True)
+            self._send_json(build_provider_status(
+                self.data_dir, query=query, include_chain=include_chain,
+            ))
             return
         if parsed.path == "/api/lookup":
             symbol = parse_qs(parsed.query).get("symbol", [""])[0]
