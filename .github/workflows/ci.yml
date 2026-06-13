@@ -50,6 +50,7 @@ jobs:
           python tests/test_sec_companyfacts.py
           python tests/test_local_cockpit.py
           python tests/test_fred_public.py
+          python tests/test_data_provider_stooq.py
           python tests/test_performance_cache.py
           python tests/test_finbert_batching.py
           python tests/test_chain_provider_tradier.py

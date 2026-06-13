@@ -2065,6 +2065,16 @@ h1 { margin:0; font-size:28px; font-weight:650; }
 a, button { color:var(--text); }
 .btn { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--border); background:var(--panel2); border-radius:999px; padding:8px 12px; text-decoration:none; font-size:13px; cursor:pointer; }
 .btn:hover { border-color:var(--accent); }
+.view-nav { position:sticky; top:0; z-index:20; display:flex; gap:8px; overflow:auto; padding:10px 0 12px; margin:0 0 8px; background:rgba(8,11,16,.92); backdrop-filter:blur(12px); border-bottom:1px solid rgba(34,48,68,.7); }
+.view-tab { white-space:nowrap; border:1px solid var(--border); background:#0b1220; color:var(--muted); border-radius:999px; padding:9px 13px; font-size:13px; cursor:pointer; }
+.view-tab.active { color:var(--text); border-color:var(--accent); background:#102033; }
+body:not(.view-all) .panel[data-view] { display:none; }
+body.view-overview .panel[data-view="overview"],
+body.view-positions .panel[data-view="positions"],
+body.view-explore .panel[data-view="explore"],
+body.view-chains .panel[data-view="chains"],
+body.view-paper .panel[data-view="paper"],
+body.view-research .panel[data-view="research"] { display:block; }
 .search { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; margin-top:10px; }
 .scan-controls { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; align-items:center; }
 input, select { background:var(--panel2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:12px 14px; font-size:15px; }
@@ -2107,7 +2117,7 @@ tr.clickable-row:hover { background:#111c31; }
 @media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } }
 </style>
 </head>
-<body>
+<body class="view-overview">
 <div class="wrap">
   <header>
     <div>
@@ -2133,30 +2143,39 @@ tr.clickable-row:hover { background:#111c31; }
     <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
-  <section class="panel">
+  <nav class="view-nav" aria-label="Cockpit sections">
+    <button class="view-tab active" type="button" data-view="overview">Overview</button>
+    <button class="view-tab" type="button" data-view="positions">Positions</button>
+    <button class="view-tab" type="button" data-view="explore">Explore</button>
+    <button class="view-tab" type="button" data-view="chains">Chains</button>
+    <button class="view-tab" type="button" data-view="paper">Paper queue</button>
+    <button class="view-tab" type="button" data-view="research">Research</button>
+    <button class="view-tab" type="button" data-view="all">All</button>
+  </nav>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Action queue</h2>
     <div class="muted">Highest-priority local research items from data health, open positions, paper candidates, and watchlist context.</div>
     <div class="status" id="queue-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="queue-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
     <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
     <div class="status" id="risk-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="risk-results"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Performance</h2>
     <div class="muted">Local speed telemetry: slow engines, RAM cache, GPU sentiment status, and cache hit rates.</div>
     <div class="status" id="performance-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="performance-results"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Data health</h2>
     <div class="muted">Checks whether validation, open positions, snapshots, and images line up before you trust the screen.</div>
     <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="positions">
     <h2 style="margin:0 0 8px;font-size:18px">Open position monitor</h2>
     <div class="muted">Review current lifecycle positions across options, shares, and futures. Click a row to look it up.</div>
     <div class="scan-controls">
@@ -2181,7 +2200,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="positions-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="positions-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="explore">
     <h2 style="margin:0 0 8px;font-size:18px">Opportunity explorer</h2>
     <div class="muted">Filter the latest ranked options, shares, futures, and value ideas. Click a row to look it up.</div>
     <div class="scan-controls">
@@ -2206,7 +2225,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="explorer-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="explorer-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="paper">
     <h2 style="margin:0 0 8px;font-size:18px">External paper candidates</h2>
     <div class="muted">Create a small executable candidate list for manual paper tracking. This is intentionally filtered down from the full internal signal stream.</div>
     <div class="scan-controls">
@@ -2228,7 +2247,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="paper-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="paper-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="paper">
     <h2 style="margin:0 0 8px;font-size:18px">Agentic options queue</h2>
     <div class="muted">Build a long-dated options shortlist for Codex/Robinhood agent review. This creates queue and prompt files only; it does not place trades.</div>
     <div class="scan-controls">
@@ -2248,7 +2267,7 @@ tr.clickable-row:hover { background:#111c31; }
       <div class="brief-list"><h4>Rejected</h4><div id="rh-rejected" class="table-wrap"></div></div>
     </div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="chains">
     <h2 style="margin:0 0 8px;font-size:18px">Option chain scan</h2>
     <div class="muted">Inspect current contracts for any equity or ETF using Optedge's existing option-chain provider stack. This is read-only research, not execution.</div>
     <div class="scan-controls">
@@ -2269,7 +2288,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
     <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Research watchlist</h2>
     <div class="muted">Save tickers, company names, futures, or option requests you want checked again. Run focused scans from the list when you are ready.</div>
     <div class="search">
@@ -2291,7 +2310,7 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="watchlist-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="watchlist-results" class="table-wrap"></div></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Symbol lookup</h2>
     <div class="muted">Search the latest local scan snapshots and open positions. For a new symbol, run a focused scan first.</div>
     <div class="search">
@@ -2313,13 +2332,13 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="lookup-status"></div>
     <div class="sections" id="lookup-results"></div>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Focused scan jobs</h2>
     <div class="muted">Runs started from this cockpit use <code>python run.py --universe SYMBOL --no-open</code> in the background.</div>
     <div class="job-list" id="jobs"></div>
     <pre class="logbox" id="job-log"></pre>
   </section>
-  <section class="panel">
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">System notes</h2>
     <ul class="muted" id="notes"></ul>
   </section>
@@ -2561,14 +2580,28 @@ function watchlistTable(rows) {
 function wireClickableRows(root=document) {
   root.querySelectorAll('.clickable-row').forEach(row => {
     row.addEventListener('click', async () => {
+      setView('research');
       $('symbol').value = row.dataset.symbol || '';
       await lookup();
       window.location.hash = 'lookup';
     });
   });
 }
+function setView(view) {
+  const target = view || 'overview';
+  document.body.className = document.body.className
+    .split(/\\s+/)
+    .filter(c => c && !c.startsWith('view-'))
+    .concat(['view-' + target])
+    .join(' ');
+  document.querySelectorAll('.view-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === target);
+  });
+}
 function scrollToId(id) {
   const el = $(id);
+  const panel = el ? el.closest('[data-view]') : null;
+  if (panel && panel.dataset.view) setView(panel.dataset.view);
   if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
 }
 async function routeQueueAction(action, query, symbol) {
@@ -2605,6 +2638,7 @@ async function routeQueueAction(action, query, symbol) {
     return;
   }
   if (action === 'run_focused_scan') {
+    setView('research');
     $('symbol').value = q;
     await lookup();
     $('lookup-status').textContent += ' Ready for focused scan review.';
@@ -2634,6 +2668,7 @@ function wireActionQueueRows() {
 function wireWatchlistRows() {
   document.querySelectorAll('.watch-lookup-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
+      setView('research');
       $('symbol').value = btn.dataset.query || '';
       await lookup();
     });
@@ -2687,6 +2722,7 @@ async function loadJobs() {
   });
   document.querySelectorAll('.job-match-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
+      setView('research');
       $('symbol').value = btn.dataset.query || '';
       await lookup();
     });
@@ -2969,6 +3005,9 @@ $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
+document.querySelectorAll('.view-tab').forEach(btn => {
+  btn.addEventListener('click', () => setView(btn.dataset.view || 'overview'));
+});
 $('watchlist-add').addEventListener('click', addWatchlist);
 $('watchlist-run').addEventListener('click', runWatchlist);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });

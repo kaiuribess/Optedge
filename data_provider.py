@@ -5,6 +5,10 @@ most rate limiting), adds disk caching, and exposes a uniform API.
 If you have a Polygon.io free API key (set POLYGON_API_KEY env var), this
 module will prefer Polygon for options chains and prices — Polygon's free
 tier is more reliable than yfinance and doesn't get rate-limited the same way.
+
+Free no-key history fallbacks are layered behind Yahoo/yfinance so the app can
+keep repricing and backtesting when Yahoo throttles. These fallbacks are not
+treated as live quotes.
 """
 from __future__ import annotations
 import logging
@@ -12,6 +16,7 @@ import os
 import time
 import json
 import hashlib
+import io
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
@@ -166,15 +171,33 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
     try:
         tk = yf_ticker(ticker)
         h = tk.history(period=period, interval=interval)
-        if h.empty:
-            return pd.DataFrame()
+        if not h.empty:
+            out = h.reset_index()
+            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+            cache_put(key, out.to_dict("records"))
+            return h
+    except Exception as e:
+        log.debug("yfinance history fail %s: %s", ticker, e)
+
+    # --- Public Nasdaq historical endpoint. No key, not a live quote. ---
+    h = _nasdaq_history(ticker, period, interval)
+    if not h.empty:
         out = h.reset_index()
-        out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+        if "Date" in out.columns:
+            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
         cache_put(key, out.to_dict("records"))
         return h
-    except Exception as e:
-        log.debug("get_history fail %s: %s", ticker, e)
-        return pd.DataFrame()
+
+    # --- Final no-key fallback: Stooq public CSV. Not live quotes. ---
+    h = _stooq_history(ticker, period, interval)
+    if not h.empty:
+        out = h.reset_index()
+        if "Date" in out.columns:
+            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+        cache_put(key, out.to_dict("records"))
+        return h
+
+    return pd.DataFrame()
 
 
 def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
@@ -222,6 +245,252 @@ def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     except Exception as e:
         log.debug("yahoo v8 parse %s: %s", ticker, e)
         return pd.DataFrame()
+
+
+_NASDAQ_ETF_HINTS = {
+    "SPY", "QQQ", "IWM", "DIA", "VXX", "UVXY", "TLT", "IEF", "HYG", "LQD",
+    "XLF", "XLK", "XLE", "XLV", "XLY", "XLI", "XLP", "XLB", "XLU", "XLRE",
+    "IBIT", "GBTC", "ETHA",
+}
+
+_NASDAQ_INDEX_MAP = {
+    "^IXIC": "COMP",
+    "^NDX": "NDX",
+    "^GSPC": "SPX",
+    "^SPX": "SPX",
+    "^DJI": "DJI",
+    "^RUT": "RUT",
+}
+
+
+def _nasdaq_symbol_and_assetclasses(ticker: str) -> tuple[str | None, list[str]]:
+    raw = str(ticker or "").strip().upper()
+    if not raw or raw.endswith("=F") or raw.endswith("=X"):
+        return None, []
+    if raw in _NASDAQ_INDEX_MAP:
+        return _NASDAQ_INDEX_MAP[raw], ["index"]
+    if raw.startswith("^"):
+        return None, []
+    symbol = raw.replace("-", ".")
+    if not symbol.replace(".", "").isalnum():
+        return None, []
+    if symbol in _NASDAQ_ETF_HINTS:
+        return symbol, ["etf", "stocks"]
+    return symbol, ["stocks", "etf"]
+
+
+def _nasdaq_clean_number(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return float("nan")
+    text = text.replace("$", "").replace(",", "")
+    text = text.replace("N/A", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        return float("nan")
+
+
+def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    if str(interval or "1d").strip().lower() not in {"1d", "d", "daily"}:
+        return pd.DataFrame()
+    symbol, assetclasses = _nasdaq_symbol_and_assetclasses(ticker)
+    if not symbol:
+        return pd.DataFrame()
+
+    import urllib.parse
+    import urllib.request
+
+    today = datetime.now(timezone.utc).date()
+    start_ts = _period_start(period)
+    if start_ts is None:
+        start_date = today - timedelta(days=3650)
+    else:
+        start_date = start_ts.date()
+    params_base = {
+        "fromdate": start_date.isoformat(),
+        "todate": today.isoformat(),
+        "limit": "9999",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Origin": "https://www.nasdaq.com",
+        "Referer": "https://www.nasdaq.com/",
+    }
+    for assetclass in assetclasses:
+        params = urllib.parse.urlencode({**params_base, "assetclass": assetclass})
+        safe_symbol = urllib.parse.quote(symbol, safe="")
+        req = urllib.request.Request(
+            f"https://api.nasdaq.com/api/quote/{safe_symbol}/historical?{params}",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as e:
+            log.debug("nasdaq history %s/%s: %s", ticker, assetclass, e)
+            continue
+        rows = (
+            ((payload or {}).get("data") or {})
+            .get("tradesTable", {})
+            .get("rows", [])
+        )
+        if not rows:
+            continue
+        parsed = []
+        for row in rows:
+            try:
+                dt = pd.to_datetime(row.get("date"), format="%m/%d/%Y", errors="coerce", utc=True)
+            except Exception:
+                dt = pd.NaT
+            if pd.isna(dt):
+                continue
+            parsed.append({
+                "Date": dt,
+                "Open": _nasdaq_clean_number(row.get("open")),
+                "High": _nasdaq_clean_number(row.get("high")),
+                "Low": _nasdaq_clean_number(row.get("low")),
+                "Close": _nasdaq_clean_number(row.get("close")),
+                "Volume": _nasdaq_clean_number(row.get("volume")),
+            })
+        df = pd.DataFrame(parsed)
+        if df.empty:
+            continue
+        df = df.dropna(subset=["Close"]).set_index("Date").sort_index()
+        if not df.empty:
+            return df[["Open", "High", "Low", "Close", "Volume"]]
+    return pd.DataFrame()
+
+
+_STOOQ_INDEX_MAP = {
+    "^GSPC": "^spx",
+    "^SPX": "^spx",
+    "^DJI": "^dji",
+    "^IXIC": "^ndq",
+    "^NDX": "^ndx",
+    "^RUT": "^rut",
+    "^VIX": "^vix",
+}
+
+_STOOQ_FUTURES_MAP = {
+    "ES=F": "es.f",
+    "NQ=F": "nq.f",
+    "YM=F": "ym.f",
+    "RTY=F": "rty.f",
+    "CL=F": "cl.f",
+    "NG=F": "ng.f",
+    "GC=F": "gc.f",
+    "SI=F": "si.f",
+    "HG=F": "hg.f",
+    "ZW=F": "zw.f",
+    "ZC=F": "zc.f",
+    "ZS=F": "zs.f",
+    "ZB=F": "zb.f",
+    "ZN=F": "zn.f",
+    "DX=F": "dx.f",
+}
+
+
+def _stooq_symbol(ticker: str) -> str | None:
+    raw = str(ticker or "").strip().upper()
+    if not raw:
+        return None
+    if raw in _STOOQ_INDEX_MAP:
+        return _STOOQ_INDEX_MAP[raw]
+    if raw in _STOOQ_FUTURES_MAP:
+        return _STOOQ_FUTURES_MAP[raw]
+    if raw.startswith("^") or raw.endswith("=F") or raw.endswith("=X"):
+        return None
+    normalized = raw.replace("-", ".")
+    if not normalized.replace(".", "").isalnum():
+        return None
+    return f"{normalized.lower()}.us"
+
+
+def _period_start(period: str) -> pd.Timestamp | None:
+    text = str(period or "").strip().lower()
+    now = pd.Timestamp.now(tz="UTC").normalize()
+    if text in {"", "max"}:
+        return None
+    if text == "ytd":
+        return pd.Timestamp(year=now.year, month=1, day=1, tz="UTC")
+    units = {"d": "days", "mo": "months", "y": "years"}
+    for suffix, unit in units.items():
+        if not text.endswith(suffix):
+            continue
+        try:
+            n = int(text[: -len(suffix)])
+        except ValueError:
+            return None
+        if n <= 0:
+            return None
+        if unit == "days":
+            return now - pd.Timedelta(days=n)
+        if unit == "months":
+            return now - pd.DateOffset(months=n)
+        if unit == "years":
+            return now - pd.DateOffset(years=n)
+    return None
+
+
+def _stooq_interval(interval: str) -> str | None:
+    text = str(interval or "1d").strip().lower()
+    if text in {"1d", "d", "daily"}:
+        return "d"
+    if text in {"1wk", "1w", "wk", "weekly"}:
+        return "w"
+    if text in {"1mo", "1m", "mo", "monthly"}:
+        return "m"
+    return None
+
+
+def _stooq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    stooq_symbol = _stooq_symbol(ticker)
+    stooq_interval = _stooq_interval(interval)
+    if not stooq_symbol or not stooq_interval:
+        return pd.DataFrame()
+
+    import urllib.parse
+    import urllib.request
+
+    params = urllib.parse.urlencode({"s": stooq_symbol, "i": stooq_interval})
+    req = urllib.request.Request(
+        f"https://stooq.com/q/d/l/?{params}",
+        headers={"User-Agent": "Mozilla/5.0 (compatible; Optedge/1.0)"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        log.debug("stooq history %s/%s: %s", ticker, stooq_symbol, e)
+        return pd.DataFrame()
+
+    if not raw.strip() or raw.lower().startswith("no data"):
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(io.StringIO(raw))
+    except Exception as e:
+        log.debug("stooq parse %s/%s: %s", ticker, stooq_symbol, e)
+        return pd.DataFrame()
+    if df.empty or "Date" not in df.columns or "Close" not in df.columns:
+        return pd.DataFrame()
+
+    rename = {col: col.title() for col in df.columns}
+    df = df.rename(columns=rename)
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
+    df = df.dropna(subset=["Date", "Close"]).set_index("Date").sort_index()
+    if df.empty:
+        return pd.DataFrame()
+
+    start = _period_start(period)
+    if start is not None:
+        df = df[df.index >= start]
+    cols = [col for col in ("Open", "High", "Low", "Close", "Volume") if col in df.columns]
+    return df[cols]
 
 
 def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:

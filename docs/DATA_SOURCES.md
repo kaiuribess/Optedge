@@ -4,7 +4,8 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 
 ## Core Sources
 
-- Options chains and market history through configured providers and `yfinance`.
+- Options chains through the layered chain provider: optional broker/live sources first, then free CBOE/Nasdaq/yfinance fallbacks.
+- Market history through Yahoo chart data and `yfinance`, then public no-key Nasdaq historical JSON, then Stooq CSV as a final best-effort fallback.
 - Reddit and retail-attention signals from WSB, r/options, and related public endpoints.
 - SEC data for insider transactions, recent filings, companyfacts fundamentals, Form 144, buybacks, and 13F-style institutional context.
 - Public macro and market structure inputs such as keyless FRED CSV series, yield curve, credit spreads, CFTC CoT, FINRA short volume, EIA, WASDE, VIX term structure, and sector ETF flows.
@@ -13,6 +14,8 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 ## Reliability
 
 Source failures should not silently become bullish or bearish signals. Engines return empty data or neutral rows when they cannot collect enough evidence, and the research guard can warn when key engines fail.
+
+Free public endpoints can be delayed, rate-limited, incomplete, or temporarily blocked. Optedge treats them as research inputs, not guaranteed live execution quotes.
 
 ## Local Files
 
