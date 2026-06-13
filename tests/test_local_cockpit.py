@@ -15,7 +15,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
     build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
-    build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
+    build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
 )
@@ -132,6 +132,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/watchlist" in html
     assert "/api/watchlist-add" in html
     assert "/api/watchlist-run" in html
+    assert "Saved option contracts" in html
+    assert "/api/saved-option-contracts" in html
+    assert "savedContractsTable" in html
+    assert "loadSavedContracts" in html
     assert "Open position monitor" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
@@ -1507,6 +1511,26 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
 
 
+def test_saved_option_contracts_extracts_watchlist_option_requests():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        assert add_watchlist_query("AAPL 20991218 C 220", data_dir)["ok"] is True
+        assert add_watchlist_query("MSFT 20200117 P 300", data_dir)["ok"] is True
+        assert add_watchlist_query("NVDA", data_dir)["ok"] is True
+
+        contracts = build_saved_option_contracts(data_dir, enrich=False)
+        assert contracts["count"] == 2
+        assert contracts["call_count"] == 1
+        assert contracts["put_count"] == 1
+        by_symbol = {row["symbol"]: row for row in contracts["rows"]}
+        assert by_symbol["AAPL"]["side_code"] == "C"
+        assert by_symbol["AAPL"]["dte"] >= 90
+        assert by_symbol["AAPL"]["status"] == "saved_review"
+        assert by_symbol["MSFT"]["status"] == "expired"
+        assert contracts["status_counts"]["expired"] == 1
+        assert contracts["swing_count"] == 1
+
+
 def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1597,5 +1621,6 @@ if __name__ == "__main__":
     test_option_chain_scan_fetches_and_filters_contracts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
+    test_saved_option_contracts_extracts_watchlist_option_requests()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("28/28 local cockpit tests passed")
+    print("29/29 local cockpit tests passed")

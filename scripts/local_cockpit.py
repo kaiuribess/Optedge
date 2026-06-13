@@ -516,6 +516,98 @@ def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str,
     }
 
 
+def _request_dte(expiry: Any) -> int | None:
+    exp = pd.to_datetime(str(expiry or ""), errors="coerce", utc=True)
+    if pd.isna(exp):
+        return None
+    return int((exp.date() - datetime.now(timezone.utc).date()).days)
+
+
+def _saved_contract_status(dte: int | None, readiness: Any) -> str:
+    if dte is None:
+        return "needs_expiry_check"
+    if dte < 0:
+        return "expired"
+    if dte < MIN_SWING_OPTION_DTE:
+        return "below_3m"
+    ready = str(readiness or "").strip().lower()
+    if ready == "ready":
+        return "ready_review"
+    if ready in {"caution", "blocked"}:
+        return ready
+    return "saved_review"
+
+
+def build_saved_option_contracts(
+    data_dir: Path = DATA_DIR,
+    enrich: bool = True,
+    limit: int = 80,
+) -> dict[str, Any]:
+    """Return saved option-request watchlist entries as a clean contract review queue."""
+    limit = max(1, min(int(limit or 80), 250))
+    watchlist = load_watchlist(data_dir, enrich=enrich)
+    rows: list[dict[str, Any]] = []
+    for entry in watchlist.get("entries", []):
+        request = entry.get("request") if isinstance(entry, dict) else None
+        if not isinstance(request, dict) or request.get("asset") != "option":
+            continue
+        dte = _request_dte(request.get("expiry"))
+        side = str(request.get("side") or "").strip().lower()
+        row = {
+            "id": entry.get("id"),
+            "query": entry.get("query"),
+            "symbol": str(entry.get("symbol") or request.get("ticker") or "").upper(),
+            "side": side,
+            "side_code": "C" if side == "call" else "P" if side == "put" else None,
+            "expiry": request.get("expiry"),
+            "strike": _clean_value(request.get("strike")),
+            "dte": dte,
+            "dte_bucket": _option_dte_bucket(float(dte if dte is not None else -1)),
+            "status": _saved_contract_status(dte, entry.get("paper_readiness_status")),
+            "paper_readiness": _clean_value(entry.get("paper_readiness_label") or entry.get("paper_readiness_status")),
+            "paper_readiness_score": _clean_value(entry.get("paper_readiness_score")),
+            "best_idea": _clean_value(entry.get("best_idea")),
+            "best_status": _clean_value(entry.get("best_status")),
+            "best_confidence": _clean_value(entry.get("best_confidence")),
+            "local_hits": _clean_value(entry.get("local_hits")),
+            "open_count": _clean_value(entry.get("open_count")),
+            "warning_count": _clean_value(entry.get("warning_count")),
+            "added_at": entry.get("added_at"),
+            "updated_at": entry.get("updated_at"),
+        }
+        rows.append({k: _clean_value(v) for k, v in row.items()})
+
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _float_value(row.get("dte"), default=-9999.0) >= MIN_SWING_OPTION_DTE,
+            _float_value(row.get("paper_readiness_score"), default=0.0),
+            _float_value(row.get("dte"), default=-9999.0),
+            str(row.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )[:limit]
+    status_counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    return {
+        "generated_at": _now_iso(),
+        "count": len(rows),
+        "enriched": enrich,
+        "status_counts": status_counts,
+        "call_count": sum(row.get("side") == "call" for row in rows),
+        "put_count": sum(row.get("side") == "put" for row in rows),
+        "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
+        "rows": rows,
+        "notes": [
+            "Saved contracts come from the local research watchlist option requests.",
+            "3m+ status uses the current calendar date and Optedge's 90 DTE swing floor.",
+            "Use Chain to refresh the underlying option chain before acting; no trades are placed.",
+        ],
+    }
+
+
 def _save_watchlist(entries: list[dict[str, Any]], data_dir: Path = DATA_DIR) -> None:
     path = _watchlist_file(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -3916,6 +4008,17 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
     <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
   </section>
+  <section class="panel" data-view="chains">
+    <h2 style="margin:0 0 8px;font-size:18px">Saved option contracts</h2>
+    <div class="muted">Exact option requests saved from chain scans and research search. Review DTE, readiness, and refresh the underlying chain before acting.</div>
+    <div class="scan-controls">
+      <button class="btn" type="button" id="saved-contracts-refresh">Refresh saved contracts</button>
+      <button class="btn" type="button" id="saved-contracts-run">Run saved scans</button>
+    </div>
+    <div class="status" id="saved-contracts-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="saved-contracts-summary"></div>
+    <div class="section" style="margin-top:12px"><div id="saved-contracts-results" class="table-wrap"></div></div>
+  </section>
   <section class="panel" data-view="providers">
     <h2 style="margin:0 0 8px;font-size:18px">Provider status</h2>
     <div class="muted">Check free/no-key data sources before trusting a scan. This does not run engines or place trades.</div>
@@ -4457,6 +4560,41 @@ function watchlistTable(rows) {
     <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Readiness</th><th>Score</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function savedContractsSummary(data) {
+  const status = data.status_counts || {};
+  const fields = [
+    ['Saved contracts', data.count || 0],
+    ['3m+ swing', data.swing_count || 0],
+    ['Calls / puts', `${data.call_count || 0} / ${data.put_count || 0}`],
+    ['Ready review', status.ready_review || 0],
+    ['Below 3m', status.below_3m || 0],
+    ['Expired', status.expired || 0]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function savedContractsTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No saved option contracts yet. Save one from an option-chain card.</div>';
+  const body = rows.map(r => `<tr>
+    <td>
+      <button class="btn saved-contract-lookup-btn" type="button" data-query="${escAttr(r.query || '')}">Lookup</button>
+      <button class="btn saved-contract-chain-btn" type="button" data-symbol="${escAttr(r.symbol || '')}">Chain</button>
+    </td>
+    <td><strong>${cell(r.symbol)}</strong></td>
+    <td>${cell(r.side_code)} ${cell(r.strike)}</td>
+    <td>${cell(r.expiry)}</td>
+    <td>${cell(r.dte)}</td>
+    <td>${cell(r.status)}</td>
+    <td>${cell(r.paper_readiness || '-')}</td>
+    <td>${cell(r.paper_readiness_score)}</td>
+    <td>${cell(r.best_idea || '-')}</td>
+    <td>${cell(r.open_count || 0)}</td>
+    <td>${cell(r.warning_count || 0)}</td>
+    <td>${cell(r.query)}</td>
+  </tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr>
+    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Status</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
+  </tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function wireClickableRows(root=document) {
   root.querySelectorAll('.clickable-row').forEach(row => {
     row.addEventListener('click', async () => {
@@ -4518,6 +4656,30 @@ function wireOptionChainActions(root=document) {
       $('watchlist-query').value = '';
       $('chain-status-text').textContent = `${query} saved to research watchlist.`;
       await loadWatchlist();
+      await loadSavedContracts();
+    });
+  });
+}
+function wireSavedContractRows() {
+  document.querySelectorAll('.saved-contract-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      setView('research');
+      $('symbol').value = query;
+      await lookup();
+      window.location.hash = 'lookup';
+    });
+  });
+  document.querySelectorAll('.saved-contract-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol || '';
+      if (!symbol) return;
+      setView('chains');
+      $('chain-query').value = symbol;
+      applyChainPreset('swing');
+      window.location.hash = 'chains';
+      await scanOptionChain();
     });
   });
 }
@@ -4779,6 +4941,15 @@ async function loadWatchlist() {
   $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
   wireWatchlistRows();
 }
+async function loadSavedContracts() {
+  $('saved-contracts-status-text').textContent = 'Loading saved option contracts...';
+  const res = await fetch('/api/saved-option-contracts?enrich=1&limit=80');
+  const data = await res.json();
+  $('saved-contracts-status-text').textContent = `${data.count || 0} saved option contract(s), ${data.swing_count || 0} at 3m+ DTE.`;
+  $('saved-contracts-summary').innerHTML = savedContractsSummary(data);
+  $('saved-contracts-results').innerHTML = savedContractsTable(data.rows || []);
+  wireSavedContractRows();
+}
 async function addWatchlist() {
   const query = $('watchlist-query').value.trim() || $('symbol').value.trim();
   if (!query) return;
@@ -4796,6 +4967,7 @@ async function addWatchlist() {
   $('watchlist-query').value = '';
   $('watchlist-status-text').textContent = `${data.entry.symbol} saved to watchlist.`;
   await loadWatchlist();
+  await loadSavedContracts();
 }
 async function removeWatchlist(id) {
   if (!id) return;
@@ -4807,6 +4979,7 @@ async function removeWatchlist(id) {
   const data = await res.json();
   $('watchlist-status-text').textContent = data.removed ? 'Removed watchlist target.' : 'Target was not found.';
   await loadWatchlist();
+  await loadSavedContracts();
 }
 async function runWatchlist() {
   $('watchlist-status-text').textContent = 'Starting focused scans for saved targets...';
@@ -5067,7 +5240,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -5086,6 +5259,8 @@ document.querySelectorAll('.chain-preset').forEach(btn => {
 });
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
+$('saved-contracts-refresh').addEventListener('click', loadSavedContracts);
+$('saved-contracts-run').addEventListener('click', runWatchlist);
 $('provider-check').addEventListener('click', loadProviderStatus);
 $('provider-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadProviderStatus(); });
 document.querySelectorAll('.view-tab').forEach(btn => {
@@ -5120,6 +5295,7 @@ loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer 
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 loadRobinhoodQueue(false).catch(err => { $('rh-status-text').textContent = 'Agentic queue preview failed'; console.error(err); });
 loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
+loadSavedContracts().catch(err => { $('saved-contracts-status-text').textContent = 'Saved contracts failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
 </body>
@@ -5331,6 +5507,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             enrich = _bool_param(params.get("enrich", ["false"])[0])
             self._send_json(load_watchlist(self.data_dir, enrich=enrich))
+            return
+        if parsed.path == "/api/saved-option-contracts":
+            params = parse_qs(parsed.query)
+            enrich = _bool_param(params.get("enrich", ["true"])[0], True)
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
+            self._send_json(build_saved_option_contracts(self.data_dir, enrich=enrich, limit=limit))
             return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})
