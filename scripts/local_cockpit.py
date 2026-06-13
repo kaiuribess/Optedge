@@ -44,6 +44,7 @@ from scripts.symbol_resolver import (
 
 FRESH_SNAPSHOT_MINUTES = 90.0
 STALE_SNAPSHOT_MINUTES = 360.0
+MIN_SWING_OPTION_DTE = 90
 
 ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
@@ -101,6 +102,43 @@ OPPORTUNITY_SPECS = {
             "earnings_yield", "rev_growth", "op_margin", "insider_score",
             "n_buys", "n_sells", "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
+    },
+}
+
+CHAIN_PRESETS = {
+    "custom": {
+        "label": "Custom",
+        "description": "Use the filter controls as entered.",
+    },
+    "swing": {
+        "label": "3m+ swing",
+        "description": "90-180 DTE, moderate spreads, under about $500 premium.",
+        "side": "all",
+        "min_dte": MIN_SWING_OPTION_DTE,
+        "max_dte": 180,
+        "max_spread_pct": 0.20,
+        "max_premium": 500.0,
+        "min_open_interest": 25,
+    },
+    "leaps": {
+        "label": "Long dated",
+        "description": "180-900 DTE contracts for slower swing/LEAPS-style review.",
+        "side": "all",
+        "min_dte": 180,
+        "max_dte": 900,
+        "max_spread_pct": 0.25,
+        "max_premium": 750.0,
+        "min_open_interest": 10,
+    },
+    "liquid": {
+        "label": "Liquid",
+        "description": "Higher open interest and tighter spreads for 90+ DTE review.",
+        "side": "all",
+        "min_dte": MIN_SWING_OPTION_DTE,
+        "max_dte": 365,
+        "max_spread_pct": 0.12,
+        "max_premium": 0.0,
+        "min_open_interest": 100,
     },
 }
 
@@ -644,16 +682,75 @@ def _option_chain_score(row: dict[str, Any]) -> float:
     )
 
 
+def _chain_preset_config(preset: str) -> tuple[str, dict[str, Any]]:
+    preset_norm = str(preset or "custom").strip().lower().replace("-", "_")
+    if preset_norm in {"long", "long_dated", "leap"}:
+        preset_norm = "leaps"
+    if preset_norm not in CHAIN_PRESETS:
+        preset_norm = "custom"
+    return preset_norm, CHAIN_PRESETS[preset_norm]
+
+
+def _chain_contract_label(row: dict[str, Any] | None) -> str | None:
+    if not row:
+        return None
+    side = str(row.get("side") or "").upper()[:1]
+    strike = _short_number(row.get("strike"))
+    expiry = str(row.get("expiry") or "").strip()
+    premium = _float_value(row.get("premium_dollars"), default=math.nan)
+    premium_text = f" ${premium:.0f}" if math.isfinite(premium) else ""
+    return " ".join(part for part in (side, strike, expiry + premium_text) if part)
+
+
+def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -> dict[str, Any]:
+    if not rows:
+        return {
+            "best_call": None,
+            "best_put": None,
+            "median_spread_pct": None,
+            "under_budget_count": 0,
+            "liquid_count": 0,
+            "swing_count": 0,
+            "long_dated_count": 0,
+        }
+    spreads = sorted(
+        _float_value(row.get("spread_pct"), default=math.nan)
+        for row in rows
+        if math.isfinite(_float_value(row.get("spread_pct"), default=math.nan))
+    )
+    mid_idx = len(spreads) // 2
+    median_spread = None
+    if spreads:
+        median_spread = spreads[mid_idx] if len(spreads) % 2 else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
+    best_call = next((row for row in rows if str(row.get("side") or "").lower().startswith("call")), None)
+    best_put = next((row for row in rows if str(row.get("side") or "").lower().startswith("put")), None)
+    budget = max_premium if max_premium > 0 else 500.0
+    return {
+        "best_call": _chain_contract_label(best_call),
+        "best_put": _chain_contract_label(best_put),
+        "median_spread_pct": _clean_value(median_spread),
+        "under_budget_count": sum(_float_value(row.get("premium_dollars"), default=math.inf) <= budget for row in rows),
+        "liquid_count": sum(
+            _float_value(row.get("openInterest"), default=0.0) >= 100
+            and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
+            for row in rows
+        ),
+        "swing_count": sum(MIN_SWING_OPTION_DTE <= _float_value(row.get("dte"), default=-1.0) <= 180 for row in rows),
+        "long_dated_count": sum(_float_value(row.get("dte"), default=0.0) >= 180 for row in rows),
+    }
+
+
 def build_option_chain_scan(
     query: str,
     data_dir: Path = DATA_DIR,
     side: str = "all",
-    min_dte: int = 0,
+    min_dte: int = MIN_SWING_OPTION_DTE,
     max_dte: int = 900,
     max_spread_pct: float = 0.25,
     max_premium: float = 0.0,
     min_open_interest: int = 0,
     limit: int = 80,
+    preset: str = "custom",
 ) -> dict[str, Any]:
     """Inspect a ticker's current option chain using the existing free chain stack."""
     clean = str(query or "").strip()
@@ -665,6 +762,15 @@ def build_option_chain_scan(
         return {"ok": False, "error": resolution.get("error") or "could not resolve ticker", "rows": []}
     if ticker.endswith("=F") or ticker.startswith("^"):
         return {"ok": False, "error": f"{ticker} is not an equity or ETF option-chain symbol", "rows": []}
+
+    preset_norm, preset_cfg = _chain_preset_config(preset)
+    if preset_norm != "custom":
+        side = str(preset_cfg.get("side", side))
+        min_dte = int(preset_cfg.get("min_dte", min_dte))
+        max_dte = int(preset_cfg.get("max_dte", max_dte))
+        max_spread_pct = float(preset_cfg.get("max_spread_pct", max_spread_pct))
+        max_premium = float(preset_cfg.get("max_premium", max_premium))
+        min_open_interest = int(preset_cfg.get("min_open_interest", min_open_interest))
 
     side_norm = str(side or "all").strip().lower()
     if side_norm in {"c", "calls"}:
@@ -757,6 +863,7 @@ def build_option_chain_scan(
     )
     limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
     source = str(blob.get("source") or "unknown")
+    summary = _option_chain_scan_summary(rows, max_premium)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -770,6 +877,10 @@ def build_option_chain_scan(
         "total_contracts": total_contracts,
         "filtered_count": len(rows),
         "rejected_count": rejected,
+        "preset": preset_norm,
+        "preset_label": preset_cfg.get("label"),
+        "preset_description": preset_cfg.get("description"),
+        "scan_summary": summary,
         "filters": {
             "side": side_norm,
             "min_dte": min_dte,
@@ -977,7 +1088,12 @@ def build_best_setups(
         out["actionable"] = out.apply(_is_actionable, axis=1)
         out["_opportunity_score"] = out.apply(_opportunity_score, axis=1)
         actionable = out[out["actionable"]].copy()
-        candidates = actionable if not actionable.empty else out.copy()
+        if asset_name == "option" and "dte" in actionable.columns:
+            actionable = actionable[
+                pd.to_numeric(actionable["dte"], errors="coerce").fillna(MIN_SWING_OPTION_DTE)
+                >= MIN_SWING_OPTION_DTE
+            ]
+        candidates = actionable if (asset_name == "option" or not actionable.empty) else out.copy()
         candidates = candidates.sort_values("_opportunity_score", ascending=False, kind="mergesort")
 
         asset_records = [
@@ -2440,6 +2556,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
 .pill { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid var(--border); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:11px; background:#111827; }
 .setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
+.chain-preset.active { border-color:var(--accent); background:#102033; color:var(--text); }
 .brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
 .brief-list { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:10px; }
 .brief-list h4 { margin:0 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
@@ -2626,6 +2743,13 @@ tr.clickable-row:hover { background:#111c31; }
   <section class="panel" data-view="chains">
     <h2 style="margin:0 0 8px;font-size:18px">Option chain scan</h2>
     <div class="muted">Inspect current contracts for any equity or ETF using Optedge's existing option-chain provider stack. This is read-only research, not execution.</div>
+    <div class="scan-controls" aria-label="Option-chain presets">
+      <input id="chain-preset" type="hidden" value="custom">
+      <button class="btn chain-preset active" type="button" data-preset="custom">Custom</button>
+      <button class="btn chain-preset" type="button" data-preset="swing">3m+ swing preset</button>
+      <button class="btn chain-preset" type="button" data-preset="leaps">Long-dated preset</button>
+      <button class="btn chain-preset" type="button" data-preset="liquid">Liquid preset</button>
+    </div>
     <div class="scan-controls">
       <input id="chain-query" placeholder="Ticker or company, e.g. AAPL, Nvidia, SPY">
       <select id="chain-side" aria-label="Option side">
@@ -2633,7 +2757,7 @@ tr.clickable-row:hover { background:#111c31; }
         <option value="call">Calls</option>
         <option value="put">Puts</option>
       </select>
-      <input id="chain-min-dte" type="number" min="0" max="1200" step="1" value="0" aria-label="Minimum DTE">
+      <input id="chain-min-dte" type="number" min="0" max="1200" step="1" value="90" aria-label="Minimum DTE">
       <input id="chain-max-dte" type="number" min="1" max="1600" step="1" value="900" aria-label="Maximum DTE">
       <input id="chain-max-spread" type="number" min="0" max="100" step="1" value="25" aria-label="Maximum spread percent">
       <input id="chain-max-premium" type="number" min="0" step="25" value="500" aria-label="Maximum premium dollars">
@@ -3352,16 +3476,44 @@ async function loadRobinhoodQueue(write=false) {
   wireClickableRows($('rh-results'));
   wireClickableRows($('rh-rejected'));
 }
+function applyChainPreset(preset) {
+  const configs = {
+    custom: null,
+    swing: { side: 'all', minDte: 90, maxDte: 180, maxSpread: 20, maxPremium: 500, minOi: 25 },
+    leaps: { side: 'all', minDte: 180, maxDte: 900, maxSpread: 25, maxPremium: 750, minOi: 10 },
+    liquid: { side: 'all', minDte: 90, maxDte: 365, maxSpread: 12, maxPremium: 0, minOi: 100 }
+  };
+  const name = configs[preset] === undefined ? 'custom' : preset;
+  $('chain-preset').value = name;
+  document.querySelectorAll('.chain-preset').forEach(btn => btn.classList.toggle('active', btn.dataset.preset === name));
+  const cfg = configs[name];
+  if (!cfg) return;
+  $('chain-side').value = cfg.side;
+  $('chain-min-dte').value = cfg.minDte;
+  $('chain-max-dte').value = cfg.maxDte;
+  $('chain-max-spread').value = cfg.maxSpread;
+  $('chain-max-premium').value = cfg.maxPremium;
+  $('chain-min-oi').value = cfg.minOi;
+}
 function optionChainSummary(data) {
   const filters = data.filters || {};
+  const scan = data.scan_summary || {};
   const fields = [
     ['Symbol', data.symbol || '-'],
+    ['Preset', data.preset_label || data.preset || '-'],
     ['Source', data.source || '-'],
     ['Quality', data.quote_quality || '-'],
     ['Spot', data.spot || '-'],
     ['Expirations', data.total_expirations || 0],
     ['Contracts', data.total_contracts || 0],
     ['Shown', data.filtered_count || 0],
+    ['Median spread', scan.median_spread_pct === null || scan.median_spread_pct === undefined ? '-' : ((Number(scan.median_spread_pct || 0) * 100).toFixed(1)) + '%'],
+    ['Under budget', scan.under_budget_count || 0],
+    ['Liquid', scan.liquid_count || 0],
+    ['3m+ swing', scan.swing_count || 0],
+    ['Long dated', scan.long_dated_count || 0],
+    ['Best call', scan.best_call || '-'],
+    ['Best put', scan.best_put || '-'],
     ['Max spread', ((Number(filters.max_spread_pct || 0) * 100).toFixed(0)) + '%']
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
@@ -3378,8 +3530,9 @@ async function scanOptionChain() {
   $('chain-results').innerHTML = '';
   const params = new URLSearchParams({
     query,
+    preset: $('chain-preset').value || 'custom',
     side: $('chain-side').value,
-    min_dte: $('chain-min-dte').value || 0,
+    min_dte: $('chain-min-dte').value || 90,
     max_dte: $('chain-max-dte').value || 900,
     max_spread_pct: String((Number($('chain-max-spread').value || 0) / 100)),
     max_premium: $('chain-max-premium').value || 0,
@@ -3460,6 +3613,14 @@ $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
+document.querySelectorAll('.chain-preset').forEach(btn => {
+  btn.addEventListener('click', () => applyChainPreset(btn.dataset.preset || 'custom'));
+});
+['chain-side', 'chain-min-dte', 'chain-max-dte', 'chain-max-spread', 'chain-max-premium', 'chain-min-oi'].forEach(id => {
+  $(id).addEventListener('change', () => {
+    if ($('chain-preset').value !== 'custom') applyChainPreset('custom');
+  });
+});
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
 $('provider-check').addEventListener('click', loadProviderStatus);
@@ -3642,8 +3803,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/option-chain-scan":
             params = parse_qs(parsed.query)
             query = params.get("query", [""])[0]
+            preset = params.get("preset", ["custom"])[0]
             side = params.get("side", ["all"])[0]
-            min_dte = _int_param(params.get("min_dte", ["0"])[0], 0, 0, 1200)
+            min_dte = _int_param(
+                params.get("min_dte", [str(MIN_SWING_OPTION_DTE)])[0],
+                MIN_SWING_OPTION_DTE,
+                0,
+                1200,
+            )
             max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
             max_spread = _float_param(params.get("max_spread_pct", ["0.25"])[0], 0.25, 0.0, 5.0)
             max_premium = _float_param(params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0)
@@ -3659,6 +3826,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 max_premium=max_premium,
                 min_open_interest=min_oi,
                 limit=limit,
+                preset=preset,
             )
             self._send_json(report, status=200 if report.get("ok") else 400)
             return

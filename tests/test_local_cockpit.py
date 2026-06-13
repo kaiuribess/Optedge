@@ -84,6 +84,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/build-robinhood-queue" in html
     assert "loadRobinhoodQueue" in html
     assert "Option chain scan" in html
+    assert "3m+ swing preset" in html
+    assert "Long-dated preset" in html
+    assert "Liquid preset" in html
+    assert "applyChainPreset" in html
     assert "/api/option-chain-scan" in html
     assert "scanOptionChain" in html
     assert "Provider status" in html
@@ -330,10 +334,10 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
         pd.DataFrame([{
             "ticker": "NVDA",
-            "contract": "NVDA 2026-06-18 C 200",
+            "contract": "NVDA 2026-09-18 C 200",
             "side": "call",
             "strike": 200,
-            "expiry": "2026-06-18",
+            "expiry": "2026-09-18",
             "mid": 2.5,
             "suggested_contracts": 1,
             "actual_dollars": 250,
@@ -583,6 +587,18 @@ def test_best_setups_builds_decision_shortlist_from_latest_snapshots():
                 "chain_source": "tradier",
                 "quote_quality": "live_or_broker",
             },
+            {
+                "ticker": "WEEKLY",
+                "side": "call",
+                "strike": 10,
+                "expiry": "2026-07-01",
+                "dte": 18,
+                "mid": 1.0,
+                "confidence": 99,
+                "rank_score": 8.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+            },
         ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
         pd.DataFrame([
             {
@@ -628,8 +644,9 @@ def test_best_setups_builds_decision_shortlist_from_latest_snapshots():
         report = build_best_setups(data_dir, per_asset=2, limit=4)
         assert report["count"] == 4
         assert report["by_asset"]["option"][0]["ticker_or_symbol"] == "AAPL"
+        assert all(row["ticker_or_symbol"] != "WEEKLY" for row in report["rows"])
         assert report["by_asset"]["option"][0]["quality"] == "spread 8.0% | tradier"
-        assert report["asset_summaries"][0]["rows"] == 2
+        assert report["asset_summaries"][0]["rows"] == 3
         assert report["asset_summaries"][0]["actionable_rows"] == 1
         assert {row["asset"] for row in report["rows"]} == {"option", "share", "futures", "value"}
         scores = [row["score"] for row in report["rows"]]
@@ -819,10 +836,10 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         pd.DataFrame([
             {
                 "ticker": "AAPL",
-                "contract": "AAPL 2026-06-18 C 200",
+                "contract": "AAPL 2026-09-18 C 200",
                 "side": "call",
                 "strike": 200,
-                "expiry": "2026-06-18",
+                "expiry": "2026-09-18",
                 "mid": 2.5,
                 "suggested_contracts": 1,
                 "actual_dollars": 250,
@@ -836,10 +853,10 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
             },
             {
                 "ticker": "MSFT",
-                "contract": "MSFT 2026-06-18 C 500",
+                "contract": "MSFT 2026-09-18 C 500",
                 "side": "call",
                 "strike": 500,
-                "expiry": "2026-06-18",
+                "expiry": "2026-09-18",
                 "mid": 1.0,
                 "suggested_contracts": 0,
                 "stop_price": 0.5,
@@ -872,8 +889,8 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         symbols = {row["ticker_or_symbol"] for row in preview["rows"]}
         assert symbols == {"AAPL", "NVDA"}
 
-        filtered = build_paper_candidates(data_dir, max_new=5, query="AAPL 20260618 C 200")
-        assert filtered["query"] == "AAPL 20260618 C 200"
+        filtered = build_paper_candidates(data_dir, max_new=5, query="AAPL 20260918 C 200")
+        assert filtered["query"] == "AAPL 20260918 C 200"
         assert filtered["selected_count"] == 1
         assert filtered["rows"][0]["ticker_or_symbol"] == "AAPL"
 
@@ -910,10 +927,10 @@ def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
             },
             {
                 "ticker": "MSFT",
-                "contract": "MSFT 2026-06-18 C 500",
+                "contract": "MSFT 2026-10-16 C 500",
                 "side": "call",
                 "strike": 500,
-                "expiry": "2026-06-18",
+                "expiry": "2026-10-16",
                 "mid": 0.65,
                 "suggested_contracts": 1,
                 "actual_dollars": 65,
@@ -1017,6 +1034,82 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["strike"] == 220.0
     assert row["premium_dollars"] == 500.0
     assert row["spread_pct"] < 0.10
+    assert report["preset"] == "custom"
+    assert report["scan_summary"]["best_call"].startswith("C 220")
+    assert report["scan_summary"]["under_budget_count"] == 1
+
+
+def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
+    original = cockpit_module._fetch_option_chain
+
+    def fake_fetch(ticker: str, cache_age: int = 600):
+        assert ticker == "AAPL"
+        return {
+            "spot": 200.0,
+            "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "expirations": ["2027-01-15", "2026-06-18"],
+            "chains": {
+                "2027-01-15": pd.DataFrame([
+                    {
+                        "strike": 220.0,
+                        "side": "call",
+                        "bid": 4.90,
+                        "ask": 5.10,
+                        "lastPrice": 5.00,
+                        "volume": 50,
+                        "openInterest": 1000,
+                    },
+                    {
+                        "strike": 180.0,
+                        "side": "put",
+                        "bid": 3.00,
+                        "ask": 3.50,
+                        "lastPrice": 3.20,
+                        "volume": 15,
+                        "openInterest": 120,
+                    },
+                ]),
+                "2026-06-18": pd.DataFrame([
+                    {
+                        "strike": 205.0,
+                        "side": "call",
+                        "bid": 1.00,
+                        "ask": 1.05,
+                        "lastPrice": 1.02,
+                        "volume": 500,
+                        "openInterest": 5000,
+                    },
+                ]),
+            },
+        }
+
+    try:
+        cockpit_module._fetch_option_chain = fake_fetch
+        report = build_option_chain_scan(
+            "AAPL",
+            side="put",
+            min_dte=0,
+            max_dte=1,
+            max_spread_pct=0.01,
+            max_premium=1,
+            min_open_interest=0,
+            preset="leaps",
+        )
+    finally:
+        cockpit_module._fetch_option_chain = original
+
+    assert report["ok"] is True
+    assert report["preset"] == "leaps"
+    assert report["preset_label"] == "Long dated"
+    assert report["filters"]["min_dte"] == 180
+    assert report["filters"]["max_dte"] == 900
+    assert report["filters"]["max_premium"] == 750.0
+    assert report["filtered_count"] == 2
+    assert {row["side"] for row in report["rows"]} == {"call", "put"}
+    assert report["scan_summary"]["long_dated_count"] == 2
+    assert report["scan_summary"]["best_call"].startswith("C 220")
+    assert report["scan_summary"]["best_put"].startswith("P 180")
 
 
 def test_provider_status_checks_free_sources_without_running_scan():
@@ -1156,6 +1249,7 @@ if __name__ == "__main__":
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
     test_option_chain_scan_fetches_and_filters_contracts()
+    test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("21/21 local cockpit tests passed")
+    print("22/22 local cockpit tests passed")

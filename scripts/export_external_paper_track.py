@@ -48,6 +48,7 @@ NORMALIZED_COLUMNS = [
 DEFAULT_MAX_SPREAD = 0.15
 DEFAULT_MAX_AGE_HOURS = 24
 DEFAULT_MAX_PER_SECTOR = 2
+DEFAULT_MIN_OPTION_DTE = 90
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -129,6 +130,19 @@ def _parse_time(value: Any) -> datetime | None:
         return pd.to_datetime(text, utc=True).to_pydatetime()
     except Exception:
         return None
+
+
+def _option_dte(row: pd.Series, generated_at: str) -> int | None:
+    direct = row.get("dte")
+    if _text(direct):
+        dte = _safe_int(direct, -1)
+        if dte >= 0:
+            return dte
+    expiry = _parse_time(row.get("expiry"))
+    asof = _parse_time(generated_at)
+    if expiry is None or asof is None:
+        return None
+    return int((expiry.date() - asof.date()).days)
 
 
 def _is_stale(row: pd.Series, now: datetime, max_age_hours: int = DEFAULT_MAX_AGE_HOURS) -> bool:
@@ -385,6 +399,7 @@ def _candidate_rows(
     open_key_set: set[tuple[str, str, str]],
     now: datetime,
     query: str = "",
+    min_option_dte: int = DEFAULT_MIN_OPTION_DTE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     selected: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -402,6 +417,12 @@ def _candidate_rows(
             reasons.append(guard_reason)
         if asset == "option" and "spread_pct" in row.index and _safe_float(row.get("spread_pct"), 0.0) > max_spread:
             reasons.append("option spread above max acceptable spread")
+        if asset == "option":
+            dte = _option_dte(row, generated_at)
+            if dte is None:
+                reasons.append("missing option DTE/expiry")
+            elif dte < min_option_dte:
+                reasons.append(f"dte below {min_option_dte}")
 
         if asset == "option":
             normalized, reason = _normalize_option(row, generated_at, allow_zero_size_placeholder)
@@ -459,6 +480,7 @@ def export_candidates(
     generated_at: str | None = None,
     now: datetime | None = None,
     query: str = "",
+    min_option_dte: int = DEFAULT_MIN_OPTION_DTE,
 ) -> pd.DataFrame:
     """Return normalized paper-tracking candidates.
 
@@ -492,6 +514,7 @@ def export_candidates(
             open_key_set,
             now,
             query=query,
+            min_option_dte=min_option_dte,
         )
         selected.extend(picked)
         excluded.extend(dropped)
@@ -564,6 +587,7 @@ def build_external_orders(
     asset: str = "all",
     dry_run: bool = False,
     query: str = "",
+    min_option_dte: int = DEFAULT_MIN_OPTION_DTE,
 ) -> pd.DataFrame:
     data_dir = Path(data_dir)
     options = _load_latest_parquet(data_dir, "top_options_*.parquet")
@@ -591,6 +615,7 @@ def build_external_orders(
         asset=asset,
         dry_run=dry_run,
         query=query,
+        min_option_dte=min_option_dte,
     )
 
 
@@ -613,6 +638,7 @@ def main() -> int:
     parser.add_argument("--asset", choices=["option", "share", "futures", "all"], default="all")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--query", default="", help="Optional ticker, symbol, or contract filter")
+    parser.add_argument("--min-option-dte", type=int, default=DEFAULT_MIN_OPTION_DTE)
     args = parser.parse_args()
     df = build_external_orders(
         max_new=args.max_new,
@@ -622,6 +648,7 @@ def main() -> int:
         asset=args.asset,
         dry_run=args.dry_run,
         query=args.query,
+        min_option_dte=args.min_option_dte,
     )
     if args.dry_run:
         print(df.to_csv(index=False))

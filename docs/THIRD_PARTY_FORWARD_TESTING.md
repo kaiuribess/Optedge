@@ -44,6 +44,12 @@ The exporter reads the latest:
 
 It filters down to a small executable subset. By default it removes watch/skip rows, zero-size options/futures, shares without calculable quantity, stale rows, blocked guardrail rows, wide-spread options, malformed contracts, and duplicate names already open in the same direction.
 
+Options in the external paper export default to a minimum of `90` DTE, so the paper track avoids weeklies and very short-dated contracts unless you explicitly override it:
+
+```bash
+python scripts/export_external_paper_track.py --min-option-dte 90
+```
+
 Default run caps:
 
 - `5` new candidates per run

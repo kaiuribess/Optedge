@@ -13,10 +13,10 @@ from scripts.export_external_paper_track import export_candidates
 def _option(**overrides):
     row = {
         "ticker": "AAPL",
-        "contract": "AAPL 2026-06-18 C 200",
+        "contract": "AAPL 2026-09-18 C 200",
         "side": "call",
         "strike": 200,
-        "expiry": "2026-06-18",
+        "expiry": "2026-09-18",
         "mid": 2.5,
         "suggested_contracts": 1,
         "actual_dollars": 250,
@@ -96,7 +96,7 @@ def test_includes_watch_only_with_include_watch():
 
 
 def test_caps_max_new_orders():
-    opts = [_option(ticker=f"T{i}", contract=f"T{i} 2026-06-18 C 10", rank_score=10 - i) for i in range(7)]
+    opts = [_option(ticker=f"T{i}", contract=f"T{i} 2026-09-18 C 10", rank_score=10 - i) for i in range(7)]
     out = _export(options=opts, max_new=3, max_options=10)
     assert len(out) == 3
 
@@ -141,14 +141,20 @@ def test_dry_run_includes_exclusion_reasons():
     assert "suggested_contracts <= 0" in out.loc[0, "reason_excluded"]
 
 
+def test_excludes_short_dated_options_by_default():
+    out = _export(options=[_option(expiry="2026-06-18", contract="AAPL 2026-06-18 C 200")], dry_run=True)
+    assert len(out) == 1
+    assert "dte below 90" in out.loc[0, "reason_excluded"]
+
+
 def test_query_filters_to_matching_ticker_or_contract():
     out = _export(
         options=[
-            _option(ticker="AAPL", contract="AAPL 2026-06-18 C 200"),
-            _option(ticker="MSFT", contract="MSFT 2026-06-18 C 500", rank_score=5.0),
+            _option(ticker="AAPL", contract="AAPL 2026-09-18 C 200"),
+            _option(ticker="MSFT", contract="MSFT 2026-09-18 C 500", rank_score=5.0),
         ],
         shares=[_share(ticker="NVDA", rank_score=10.0)],
-        query="AAPL 20260618 C 200",
+        query="AAPL 20260918 C 200",
         max_new=5,
         max_options=5,
         max_shares=5,
@@ -166,5 +172,6 @@ if __name__ == "__main__":
     test_normalizes_shares_correctly()
     test_normalizes_futures_correctly()
     test_dry_run_includes_exclusion_reasons()
+    test_excludes_short_dated_options_by_default()
     test_query_filters_to_matching_ticker_or_contract()
-    print("9/9 external paper track tests passed")
+    print("10/10 external paper track tests passed")
