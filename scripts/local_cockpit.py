@@ -2300,6 +2300,71 @@ def _swing_climate_label(score: int) -> tuple[str, str]:
     return "defensive_wait", "Defensive tape; wait for cleaner breadth or use only exceptional setups."
 
 
+def _swing_playbook(label: str) -> dict[str, Any]:
+    if label == "aggressive_swing":
+        return {
+            "min_readiness_score": 75,
+            "option_min_dte": MIN_SWING_OPTION_DTE,
+            "option_max_spread_pct": 0.20,
+            "max_new_candidates": 5,
+            "candidate_status": "ready or strong review",
+            "sizing_bias": "normal research sizing only when validation and open-risk checks agree",
+        }
+    if label == "constructive_selective":
+        return {
+            "min_readiness_score": 80,
+            "option_min_dte": MIN_SWING_OPTION_DTE,
+            "option_max_spread_pct": 0.15,
+            "max_new_candidates": 3,
+            "candidate_status": "ready preferred",
+            "sizing_bias": "modest sizing; avoid crowded exposure",
+        }
+    if label == "mixed_selective":
+        return {
+            "min_readiness_score": 85,
+            "option_min_dte": 120,
+            "option_max_spread_pct": 0.12,
+            "max_new_candidates": 2,
+            "candidate_status": "ready only",
+            "sizing_bias": "small sizing; require unusually clean liquidity and thesis",
+        }
+    return {
+        "min_readiness_score": 90,
+        "option_min_dte": 180,
+        "option_max_spread_pct": 0.10,
+        "max_new_candidates": 1,
+        "candidate_status": "exceptional ready only",
+        "sizing_bias": "capital preservation; mostly wait",
+    }
+
+
+def _swing_asset_bias(label: str, top_sector: dict[str, Any]) -> list[dict[str, str]]:
+    top_name = str(top_sector.get("sector") or "leading groups")
+    if label == "aggressive_swing":
+        return [
+            {"asset": "options", "bias": "allowed", "rule": "Favor 90+ DTE calls/puts only when contract readiness is clean."},
+            {"asset": "shares", "bias": "allowed", "rule": f"Favor strong setups tied to {top_name} when factor thesis agrees."},
+            {"asset": "futures", "bias": "selective", "rule": "Use only futures rows with clear macro/risk confirmation and defined stops."},
+        ]
+    if label == "constructive_selective":
+        return [
+            {"asset": "options", "bias": "selective", "rule": "Prefer 90+ DTE, tighter spreads, and smaller candidate count."},
+            {"asset": "shares", "bias": "allowed", "rule": f"Prefer leading-sector shares, especially {top_name}, with trend support."},
+            {"asset": "futures", "bias": "selective", "rule": "Require clean reward/risk and no macro conflict."},
+        ]
+    if label == "mixed_selective":
+        return [
+            {"asset": "options", "bias": "strict", "rule": "Use 120+ DTE and tight spreads; skip marginal review rows."},
+            {"asset": "shares", "bias": "selective", "rule": "Favor smaller, cleaner share ideas over wide option contracts."},
+            {"asset": "futures", "bias": "strict", "rule": "Only take strongest macro-aligned futures setups."},
+        ]
+    return [
+        {"asset": "options", "bias": "mostly wait", "rule": "Use 180+ DTE only for exceptional ready setups; otherwise skip."},
+        {"asset": "shares", "bias": "mostly wait", "rule": "Preserve capital unless thesis, trend, and guardrails are unusually strong."},
+        {"asset": "futures", "bias": "mostly wait", "rule": "Avoid forcing futures trades while breadth or market regime is defensive."},
+    ]
+
+
 def _swing_climate_from_pulses(
     market: dict[str, Any],
     breadth: dict[str, Any],
@@ -2381,6 +2446,8 @@ def _swing_climate_from_pulses(
             "label": "Risk control",
             "detail": "Avoid forcing marginal Watch rows; require cleaner contract readiness before acting.",
         })
+    playbook = _swing_playbook(label)
+    asset_bias = _swing_asset_bias(label, top_sector)
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2402,6 +2469,16 @@ def _swing_climate_from_pulses(
             "breadth": breadth.get("coverage"),
             "sector": sector.get("coverage"),
         },
+        "playbook": playbook,
+        "trade_gates": [
+            {"gate": "Minimum readiness", "value": f"{playbook['min_readiness_score']}/100"},
+            {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
+            {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
+            {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
+            {"gate": "Candidate status", "value": str(playbook["candidate_status"])},
+            {"gate": "Sizing bias", "value": str(playbook["sizing_bias"])},
+        ],
+        "asset_bias": asset_bias,
         "positives": positives[:6],
         "warnings": warnings_out[:8],
         "focus": focus[:5],
@@ -3888,6 +3965,8 @@ function swingClimateHtml(data) {
     ? `<ul>${data.warnings.map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>`
     : '<div class="empty">No climate warnings surfaced.</div>';
   const focusRows = (data.focus || []).map(row => ({ label: row.label, detail: row.detail }));
+  const tradeGates = data.trade_gates || [];
+  const assetBias = data.asset_bias || [];
   const components = data.components || {};
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label)}</strong></div>
@@ -3904,6 +3983,10 @@ function swingClimateHtml(data) {
     <div class="brief-cols">
       <div class="brief-list"><h4>Supportive</h4>${positives}</div>
       <div class="brief-list"><h4>Warnings</h4>${warnings}</div>
+    </div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Trade gates</h4>${table(tradeGates)}</div>
+      <div class="brief-list"><h4>Asset bias</h4>${table(assetBias)}</div>
     </div>
     <div class="brief-list" style="margin-top:10px"><h4>Review focus</h4>${table(focusRows)}</div>
   </div>`;

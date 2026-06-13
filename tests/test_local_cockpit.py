@@ -68,6 +68,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/swing-climate" in html
     assert "swingClimateHtml" in html
     assert "loadSwingClimate" in html
+    assert "Trade gates" in html
+    assert "Asset bias" in html
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
@@ -950,6 +952,10 @@ def test_swing_climate_combines_free_context_into_posture():
     assert climate["coverage"] == {"market": "9/9", "breadth": "7/7", "sector": "13/13"}
     assert climate["top_sector_symbol"] in {"SMH", "XLK"}
     assert climate["focus"]
+    assert climate["playbook"]["option_min_dte"] >= 90
+    assert climate["playbook"]["max_new_candidates"] >= 3
+    assert any(row["gate"] == "Options DTE floor" for row in climate["trade_gates"])
+    assert any(row["asset"] == "options" for row in climate["asset_bias"])
     assert any("Breadth pulse" in item for item in climate["positives"])
 
 
