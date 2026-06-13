@@ -148,6 +148,18 @@ POSITION_FILES = {
     "futures": "open_futures_positions.json",
 }
 
+MARKET_PULSE_SYMBOLS = [
+    {"symbol": "SPY", "label": "S&P 500", "kind": "equity_index", "risk_weight": 1.0},
+    {"symbol": "QQQ", "label": "Nasdaq 100", "kind": "growth_index", "risk_weight": 1.0},
+    {"symbol": "IWM", "label": "Small caps", "kind": "risk_breadth", "risk_weight": 1.0},
+    {"symbol": "DIA", "label": "Dow", "kind": "large_caps", "risk_weight": 0.6},
+    {"symbol": "TLT", "label": "Long bonds", "kind": "rates", "risk_weight": -0.4},
+    {"symbol": "GLD", "label": "Gold", "kind": "safe_haven", "risk_weight": -0.2},
+    {"symbol": "USO", "label": "Oil", "kind": "energy", "risk_weight": 0.2},
+    {"symbol": "UUP", "label": "Dollar", "kind": "dollar", "risk_weight": -0.3},
+    {"symbol": "^VIX", "label": "VIX", "kind": "volatility", "risk_weight": -1.0},
+]
+
 WATCHLIST_FILENAME = "cockpit_watchlist.json"
 
 
@@ -1550,6 +1562,167 @@ def build_positions(
     }
 
 
+def _history_close_series(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty or "Close" not in df.columns:
+        return pd.Series(dtype="float64")
+    close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    return close[close > 0]
+
+
+def _period_return(close: pd.Series, periods: int) -> float | None:
+    if len(close) <= periods:
+        return None
+    end = _float_value(close.iloc[-1], default=math.nan)
+    start = _float_value(close.iloc[-1 - periods], default=math.nan)
+    if not (math.isfinite(end) and math.isfinite(start)) or start <= 0:
+        return None
+    return (end / start) - 1.0
+
+
+def _realized_vol_20d(close: pd.Series) -> float | None:
+    if len(close) < 22:
+        return None
+    returns = close.pct_change().dropna().tail(20)
+    if returns.empty:
+        return None
+    vol = float(returns.std()) * math.sqrt(252.0)
+    return vol if math.isfinite(vol) else None
+
+
+def _market_trend_label(ret_5d: float | None, ret_20d: float | None) -> str:
+    r5 = ret_5d if ret_5d is not None else 0.0
+    r20 = ret_20d if ret_20d is not None else 0.0
+    if r5 > 0.01 and r20 > 0.02:
+        return "uptrend"
+    if r5 < -0.01 and r20 < -0.02:
+        return "downtrend"
+    if r20 > 0.02:
+        return "constructive"
+    if r20 < -0.02:
+        return "weak"
+    return "mixed"
+
+
+def _market_pulse_row(spec: dict[str, Any], history: pd.DataFrame) -> dict[str, Any]:
+    close = _history_close_series(history)
+    if close.empty:
+        return {
+            "symbol": spec["symbol"],
+            "label": spec["label"],
+            "kind": spec["kind"],
+            "status": "missing",
+            "trend": "unknown",
+            "note": "No free history returned.",
+        }
+    ret_5d = _period_return(close, 5)
+    ret_20d = _period_return(close, 20)
+    ret_60d = _period_return(close, 60)
+    vol_20d = _realized_vol_20d(close)
+    trend = _market_trend_label(ret_5d, ret_20d)
+    last_date = None
+    try:
+        last_date = str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1])
+    except Exception:
+        last_date = None
+    return {
+        "symbol": spec["symbol"],
+        "label": spec["label"],
+        "kind": spec["kind"],
+        "status": "ok",
+        "last_close": _clean_value(round(_float_value(close.iloc[-1]), 4)),
+        "ret_5d": _clean_value(ret_5d),
+        "ret_20d": _clean_value(ret_20d),
+        "ret_60d": _clean_value(ret_60d),
+        "vol_20d": _clean_value(vol_20d),
+        "trend": trend,
+        "rows": int(len(close)),
+        "last_date": last_date,
+    }
+
+
+def _risk_score_from_market_rows(rows: list[dict[str, Any]]) -> float:
+    total_weight = 0.0
+    score = 0.0
+    weights = {str(item["symbol"]).upper(): _float_value(item.get("risk_weight")) for item in MARKET_PULSE_SYMBOLS}
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        symbol = str(row.get("symbol") or "").upper()
+        weight = weights.get(symbol, 0.0)
+        ret_20d = _float_value(row.get("ret_20d"), default=math.nan)
+        if not math.isfinite(ret_20d) or weight == 0:
+            continue
+        clipped = max(-0.08, min(0.08, ret_20d)) / 0.08
+        score += clipped * weight
+        total_weight += abs(weight)
+    return score / total_weight if total_weight else 0.0
+
+
+def _market_regime_label(score: float, rows: list[dict[str, Any]]) -> str:
+    vix_row = next((row for row in rows if row.get("symbol") == "^VIX"), None)
+    vix_20d = _float_value(vix_row.get("ret_20d"), default=0.0) if vix_row else 0.0
+    if score >= 0.30 and vix_20d < 0.15:
+        return "risk_on"
+    if score <= -0.25 or vix_20d > 0.20:
+        return "risk_off"
+    if score >= 0.10:
+        return "constructive"
+    if score <= -0.10:
+        return "defensive"
+    return "mixed"
+
+
+def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
+    """Build a free no-key market regime snapshot for swing-trade context."""
+    del data_dir  # reserved for future persisted pulse snapshots
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for spec in MARKET_PULSE_SYMBOLS:
+        try:
+            history = data_provider.get_history(spec["symbol"], period=period, interval="1d", cache_age=1800)
+            row = _market_pulse_row(spec, history)
+        except Exception as exc:
+            row = {
+                "symbol": spec["symbol"],
+                "label": spec["label"],
+                "kind": spec["kind"],
+                "status": "error",
+                "trend": "unknown",
+                "note": str(exc)[:160],
+            }
+        rows.append(row)
+        if row.get("status") != "ok":
+            warnings.append(f"{row['symbol']} history unavailable.")
+
+    risk_score = _risk_score_from_market_rows(rows)
+    regime = _market_regime_label(risk_score, rows)
+    leaders = sorted(
+        [row for row in rows if row.get("status") == "ok"],
+        key=lambda row: _float_value(row.get("ret_20d"), default=-999.0),
+        reverse=True,
+    )[:3]
+    laggards = sorted(
+        [row for row in rows if row.get("status") == "ok"],
+        key=lambda row: _float_value(row.get("ret_20d"), default=999.0),
+    )[:3]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "period": period,
+        "regime": regime,
+        "risk_score": _clean_value(round(risk_score, 4)),
+        "coverage": f"{sum(1 for row in rows if row.get('status') == 'ok')}/{len(rows)}",
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "leaders": [{k: _clean_value(v) for k, v in row.items()} for row in leaders],
+        "laggards": [{k: _clean_value(v) for k, v in row.items()} for row in laggards],
+        "warnings": warnings,
+        "notes": [
+            "Market Pulse uses free/no-key historical price providers through data_provider.get_history.",
+            "It gives regime context for swing-trade review; it is not a trading signal by itself.",
+            "VIX and ETF proxies may be delayed or unavailable depending on the free source.",
+        ],
+    }
+
+
 def _avg(values: list[float]) -> float | None:
     clean = [v for v in values if math.isfinite(v)]
     return (sum(clean) / len(clean)) if clean else None
@@ -2632,6 +2805,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="queue-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Market pulse</h2>
+    <div class="muted">Free no-key regime context for swing-trade review: indexes, volatility, rates, dollar, gold, and oil proxies.</div>
+    <div class="status" id="market-pulse-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="market-pulse-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
     <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
     <div class="status" id="risk-status-text"></div>
@@ -2975,6 +3154,26 @@ function actionQueueTable(rows) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function marketPulseHtml(data) {
+  if (!data) return '<div class="empty">No market pulse available.</div>';
+  const warnings = (data.warnings && data.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Provider warnings</h4><ul>${data.warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Regime</span><strong>${cell(data.regime)}</strong></div>
+    <div class="brief-tile"><span>Risk score</span><strong>${cell(data.risk_score)}</strong></div>
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(data.coverage)}</strong></div>
+    <div class="brief-tile"><span>Period</span><strong>${cell(data.period)}</strong></div>
+  </div>`;
+  return `<div style="padding:12px">
+    ${tiles}${warnings}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Leaders 20d</h4>${table(data.leaders || [])}</div>
+      <div class="brief-list"><h4>Laggards 20d</h4>${table(data.laggards || [])}</div>
+    </div>
+    <div class="brief-list" style="margin-top:10px"><h4>Full pulse</h4>${table(data.rows || [])}</div>
+  </div>`;
+}
 function countMapText(map) {
   if (!map || typeof map !== 'object') return '-';
   const entries = Object.entries(map).filter(([k, v]) => k && Number(v) > 0);
@@ -3315,6 +3514,14 @@ async function loadActionQueue() {
   wireClickableRows($('queue-results'));
   wireActionQueueRows();
 }
+async function loadMarketPulse() {
+  $('market-pulse-status-text').textContent = 'Loading free market context...';
+  const res = await fetch('/api/market-pulse');
+  const data = await res.json();
+  const warningText = (data.warnings || []).length ? ` ${data.warnings.length} provider warning(s).` : '';
+  $('market-pulse-status-text').textContent = `Regime: ${data.regime || 'unknown'}; coverage ${data.coverage || '0/0'}.${warningText}`;
+  $('market-pulse-results').innerHTML = marketPulseHtml(data);
+}
 async function loadRiskSummary() {
   $('risk-status-text').textContent = 'Loading portfolio risk...';
   const res = await fetch('/api/risk-summary');
@@ -3604,7 +3811,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadRiskSummary(); loadPerformanceSummary(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadBestSetups(); loadActionQueue(); loadMarketPulse(); loadRiskSummary(); loadPerformanceSummary(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -3646,6 +3853,7 @@ loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
+loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
@@ -3695,6 +3903,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["20"])[0], 20, 1, 100)
             self._send_json(build_action_queue(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/market-pulse":
+            params = parse_qs(parsed.query)
+            period = params.get("period", ["6mo"])[0]
+            self._send_json(build_market_pulse(self.data_dir, period=period))
             return
         if parsed.path == "/api/risk-summary":
             self._send_json(build_risk_summary(self.data_dir))
