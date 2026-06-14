@@ -51,6 +51,7 @@ jobs:
           python tests/test_news.py
           python tests/test_local_cockpit.py
           python tests/test_fred_public.py
+          python tests/test_treasury_yield_curve.py
           python tests/test_data_provider_stooq.py
           python tests/test_performance_cache.py
           python tests/test_finbert_batching.py

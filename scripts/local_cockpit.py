@@ -417,6 +417,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "caveat": "Economic series update on official release cadence.",
     },
     {
+        "name": "Treasury yield XML",
+        "category": "macro/rates",
+        "coverage": "official daily Treasury par yield curve",
+        "credential": "none",
+        "quality": "official_public",
+        "used_by": "yield curve fallback and rates context",
+        "primary": False,
+        "caveat": "Official end-of-day curve data, not intraday rates.",
+    },
+    {
         "name": "Hyperliquid public API",
         "category": "crypto",
         "coverage": "crypto market context and futures proxies",

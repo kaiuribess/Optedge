@@ -1752,6 +1752,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Google News RSS" in names
     assert "Yahoo Finance RSS" in names
     assert "SEC EDGAR" in names
+    assert "Treasury yield XML" in names
     assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
     assert report["sec_cache"]["row_count"] >= 1

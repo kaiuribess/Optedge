@@ -16,6 +16,18 @@ Why it helps:
 - Improves futures, shares, value, and risk-regime scoring because macro context no longer disappears when a FRED key is missing.
 - Uses FRED as context and factor evidence, not as a standalone trade trigger.
 
+### Official Treasury yield-curve fallback
+
+Status: implemented in `engines/yield_curve_pca.py` and used when the FRED-backed curve panel is too thin.
+
+Source:
+- https://home.treasury.gov/treasury-daily-interest-rate-xml-feed
+
+Why it helps:
+- Adds a second official no-key source for the daily Treasury par yield curve.
+- Keeps rates/curve context available for financials, REITs, bonds, futures, value, and swing-climate scoring.
+- Uses end-of-day official curve data as context, not as an intraday quote feed.
+
 ### SEC EDGAR recent filings
 
 Status: implemented in `scripts/sec_filings.py` and surfaced in ticker lookup.
@@ -40,6 +52,7 @@ Notes:
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
 - Keyless FRED CSV macro/rates/credit series.
+- Official Treasury XML yield-curve feed.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.
