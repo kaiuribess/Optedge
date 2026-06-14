@@ -31,6 +31,7 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 import data_provider
+from engines.fred_public import fred_csv_history
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import build_external_orders, write_outputs as write_paper_outputs
 from scripts.export_robinhood_agentic_queue import (
@@ -343,6 +344,65 @@ BREADTH_PULSE_PAIRS = [
         "kind": "defensive",
         "bullish_when": "negative",
         "description": "Utilities outperforming SPY can signal defensive pressure; lower is better for risk-on longs.",
+    },
+]
+
+MACRO_STRESS_SERIES = [
+    {
+        "series_id": "BAMLH0A0HYM2",
+        "label": "High-yield credit spread",
+        "category": "credit",
+        "unit": "%",
+        "days": 90,
+        "description": "Wider junk-bond spreads usually mean risk appetite is weakening.",
+    },
+    {
+        "series_id": "T10Y3M",
+        "label": "10Y-3M yield curve",
+        "category": "rates",
+        "unit": "%",
+        "days": 180,
+        "description": "A deeply inverted curve is a macro warning for swing risk.",
+    },
+    {
+        "series_id": "UNRATE",
+        "label": "Unemployment rate",
+        "category": "labor",
+        "unit": "%",
+        "days": 420,
+        "description": "A rising unemployment rate can signal late-cycle deterioration.",
+    },
+    {
+        "series_id": "ICSA",
+        "label": "Initial jobless claims",
+        "category": "labor",
+        "unit": "claims",
+        "days": 180,
+        "description": "Claims above trend can point to weakening labor conditions.",
+    },
+    {
+        "series_id": "CPIAUCSL",
+        "label": "CPI inflation YoY",
+        "category": "inflation",
+        "unit": "%",
+        "days": 520,
+        "description": "High inflation can keep policy tighter for longer.",
+    },
+    {
+        "series_id": "INDPRO",
+        "label": "Industrial production YoY",
+        "category": "growth",
+        "unit": "%",
+        "days": 520,
+        "description": "Negative production growth can warn that economic momentum is fading.",
+    },
+    {
+        "series_id": "M2SL",
+        "label": "M2 liquidity YoY",
+        "category": "liquidity",
+        "unit": "%",
+        "days": 520,
+        "description": "Rising money supply can be a liquidity tailwind; contraction is a headwind.",
     },
 ]
 
@@ -4169,6 +4229,185 @@ def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     }
 
 
+def _fred_series_values(series_id: str, days: int) -> list[dict[str, Any]]:
+    try:
+        rows = fred_csv_history(series_id, days=days, cache_hours=12)
+    except Exception:
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def _series_latest(rows: list[dict[str, Any]]) -> tuple[float, str | None]:
+    for row in rows:
+        value = _float_value(row.get("value"), default=math.nan) if isinstance(row, dict) else math.nan
+        if math.isfinite(value):
+            return value, str(row.get("date") or "") or None
+    return math.nan, None
+
+
+def _series_prior(rows: list[dict[str, Any]], offset: int) -> float:
+    clean = [
+        _float_value(row.get("value"), default=math.nan)
+        for row in rows
+        if isinstance(row, dict) and math.isfinite(_float_value(row.get("value"), default=math.nan))
+    ]
+    if len(clean) <= offset:
+        return math.nan
+    return clean[offset]
+
+
+def _series_yoy(rows: list[dict[str, Any]]) -> float:
+    latest, _ = _series_latest(rows)
+    prior = _series_prior(rows, 12)
+    if not math.isfinite(latest) or not math.isfinite(prior) or prior == 0:
+        return math.nan
+    return (latest / prior) - 1.0
+
+
+def _macro_signal_for_series(series_id: str, latest: float, change_4: float, yoy: float) -> tuple[str, int, str]:
+    if not math.isfinite(latest):
+        return "missing", 6, "No recent FRED observation."
+    if series_id == "BAMLH0A0HYM2":
+        if latest >= 5.0:
+            return "stress", 18, "High-yield spreads are stress-level wide."
+        if latest >= 4.0 or change_4 >= 0.60:
+            return "warning", 11, "Credit spreads are elevated or widening."
+        if latest <= 3.0:
+            return "supportive", 0, "Credit spreads are contained."
+        return "neutral", 4, "Credit spreads are middle-of-range."
+    if series_id == "T10Y3M":
+        if latest <= -0.75:
+            return "stress", 14, "Yield curve is deeply inverted."
+        if latest < 0.0:
+            return "warning", 9, "Yield curve is inverted."
+        if latest >= 0.75:
+            return "supportive", 0, "Yield curve is positively sloped."
+        return "neutral", 3, "Yield curve is near flat."
+    if series_id == "UNRATE":
+        if latest >= 5.0 or change_4 >= 0.50:
+            return "stress", 14, "Labor market deterioration is meaningful."
+        if latest >= 4.3 or change_4 >= 0.25:
+            return "warning", 8, "Unemployment is elevated or rising."
+        return "supportive", 0, "Unemployment is not flashing stress."
+    if series_id == "ICSA":
+        if latest >= 275_000 or change_4 >= 35_000:
+            return "stress", 12, "Initial claims are materially elevated."
+        if latest >= 240_000 or change_4 >= 20_000:
+            return "warning", 7, "Initial claims are rising or above comfort."
+        return "supportive", 0, "Initial claims are contained."
+    if series_id == "CPIAUCSL":
+        if not math.isfinite(yoy):
+            return "missing", 6, "CPI YoY could not be computed."
+        if yoy >= 0.045:
+            return "stress", 12, "Inflation is hot enough to keep policy restrictive."
+        if yoy >= 0.032:
+            return "warning", 7, "Inflation is above comfort."
+        if yoy <= 0.025:
+            return "supportive", 0, "Inflation pressure is more manageable."
+        return "neutral", 3, "Inflation is moderate."
+    if series_id == "INDPRO":
+        if not math.isfinite(yoy):
+            return "missing", 5, "Industrial production YoY could not be computed."
+        if yoy <= -0.025:
+            return "stress", 11, "Industrial production is contracting."
+        if yoy < 0.0:
+            return "warning", 6, "Industrial production growth is negative."
+        return "supportive", 0, "Industrial production is expanding."
+    if series_id == "M2SL":
+        if not math.isfinite(yoy):
+            return "missing", 5, "M2 liquidity YoY could not be computed."
+        if yoy <= -0.02:
+            return "stress", 10, "Money supply is contracting."
+        if yoy < 0.0:
+            return "warning", 6, "Money supply is still a liquidity headwind."
+        if yoy >= 0.06:
+            return "supportive", 0, "Money supply is a liquidity tailwind."
+        return "neutral", 3, "Money supply growth is modest."
+    return "neutral", 3, "No specific macro rule for this series."
+
+
+def _macro_stress_label(score: int) -> tuple[str, str]:
+    if score >= 65:
+        return "macro_stress", "Macro backdrop is stressed; require exceptional setups only."
+    if score >= 40:
+        return "macro_caution", "Macro backdrop is cautious; tighten filters and sizing."
+    if score <= 15:
+        return "macro_supportive", "Macro backdrop is supportive enough for normal review gates."
+    return "macro_neutral", "Macro backdrop is mixed; let setup quality decide."
+
+
+def _macro_stress_component(score: int, regime: str) -> float:
+    if regime == "macro_stress":
+        return -10.0
+    if regime == "macro_caution":
+        return -5.0
+    if regime == "macro_supportive":
+        return 3.0
+    if score <= 25:
+        return 1.0
+    return 0.0
+
+
+def build_macro_stress_pulse(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Build a keyless FRED macro-stress pulse for swing-trade context."""
+    del data_dir
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_points = 0
+    max_points = 0
+    for spec in MACRO_STRESS_SERIES:
+        series_id = str(spec["series_id"])
+        raw_rows = _fred_series_values(series_id, int(spec.get("days") or 180))
+        latest, latest_date = _series_latest(raw_rows)
+        prior_4 = _series_prior(raw_rows, 4)
+        change_4 = latest - prior_4 if math.isfinite(latest) and math.isfinite(prior_4) else math.nan
+        yoy = _series_yoy(raw_rows) if int(spec.get("days") or 0) >= 365 else math.nan
+        signal, points, note = _macro_signal_for_series(series_id, latest, change_4, yoy)
+        max_points += 18
+        total_points += points
+        row = {
+            "series_id": series_id,
+            "label": spec.get("label"),
+            "category": spec.get("category"),
+            "latest": _clean_value(round(latest, 4) if math.isfinite(latest) else None),
+            "latest_date": latest_date,
+            "change_4obs": _clean_value(round(change_4, 4) if math.isfinite(change_4) else None),
+            "yoy": _clean_value(round(yoy, 4) if math.isfinite(yoy) else None),
+            "unit": spec.get("unit"),
+            "signal": signal,
+            "stress_points": points,
+            "note": note,
+            "description": spec.get("description"),
+            "source": "FRED public CSV",
+        }
+        rows.append(row)
+        if signal in {"missing", "stress", "warning"}:
+            warnings.append(f"{spec.get('label')}: {note}")
+    stress_score = int(round(_clamp((total_points / max_points) * 100.0 if max_points else 0.0, 0.0, 100.0)))
+    regime, posture = _macro_stress_label(stress_score)
+    counts: dict[str, int] = {}
+    for row in rows:
+        signal = str(row.get("signal") or "unknown")
+        counts[signal] = counts.get(signal, 0) + 1
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "FRED public CSV",
+        "status": "ok" if any(row.get("signal") != "missing" for row in rows) else "missing",
+        "regime": regime,
+        "stress_score": stress_score,
+        "posture": posture,
+        "coverage": f"{sum(row.get('signal') != 'missing' for row in rows)}/{len(rows)}",
+        "signal_counts": counts,
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "warnings": warnings[:8],
+        "notes": [
+            "Macro Stress uses FRED's public graph CSV endpoint, so it does not require a FRED API key.",
+            "It is slower-moving economic context for swing review, not an intraday signal.",
+            "Stress tightens filters; it does not place trades or override hard risk rules.",
+        ],
+    }
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -4252,7 +4491,9 @@ def _swing_climate_from_pulses(
     market: dict[str, Any],
     breadth: dict[str, Any],
     sector: dict[str, Any],
+    macro: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    macro = macro if isinstance(macro, dict) else {}
     market_score = _float_value(market.get("risk_score"), default=0.0)
     breadth_score = _float_value(breadth.get("breadth_score"), default=0.0)
     options_sentiment = market.get("options_sentiment") if isinstance(market.get("options_sentiment"), dict) else {}
@@ -4264,6 +4505,9 @@ def _swing_climate_from_pulses(
         "call_demand_high": 3.0,
         "balanced": 0.0,
     }.get(options_regime, 0.0)
+    macro_regime = str(macro.get("regime") or "unknown")
+    macro_stress_score = int(_float_value(macro.get("stress_score"), default=0.0))
+    macro_component = _macro_stress_component(macro_stress_score, macro_regime)
     sector_leaders = sector.get("leaders") if isinstance(sector.get("leaders"), list) else []
     sector_laggards = sector.get("laggards") if isinstance(sector.get("laggards"), list) else []
     leader_scores = [
@@ -4278,6 +4522,7 @@ def _swing_climate_from_pulses(
         "breadth": round((_clamp(breadth_score, -0.08, 0.08) / 0.08) * 30.0, 2),
         "sector": round((_clamp(top_sector_score, -0.12, 0.12) / 0.12) * 15.0, 2),
         "options_sentiment": round(options_component, 2),
+        "macro": round(macro_component, 2),
     }
     raw_score = (
         50.0
@@ -4285,6 +4530,7 @@ def _swing_climate_from_pulses(
         + components["breadth"]
         + components["sector"]
         + components["options_sentiment"]
+        + components["macro"]
     )
 
     market_regime = str(market.get("regime") or "unknown")
@@ -4320,6 +4566,10 @@ def _swing_climate_from_pulses(
             warnings_out.append("Call demand is hot; avoid chasing wide or illiquid option contracts.")
     elif options_regime in {"defensive_hedging", "hedging_rising"}:
         warnings_out.append(f"Cboe options sentiment is {options_regime}.")
+    if macro_regime == "macro_supportive":
+        positives.append("FRED macro stress pulse is supportive.")
+    elif macro_regime in {"macro_caution", "macro_stress"}:
+        warnings_out.append(f"FRED macro stress pulse is {macro_regime}.")
 
     top_sector = sector_leaders[0] if sector_leaders and isinstance(sector_leaders[0], dict) else {}
     weak_sector = sector_laggards[0] if sector_laggards and isinstance(sector_laggards[0], dict) else {}
@@ -4362,6 +4612,15 @@ def _swing_climate_from_pulses(
         "posture": posture,
         "market_regime": market_regime,
         "breadth_regime": breadth_regime,
+        "macro_regime": macro_regime,
+        "macro_stress_score": _clean_value(macro.get("stress_score")),
+        "macro_coverage": _clean_value(macro.get("coverage")),
+        "macro_stress": {
+            "regime": macro_regime,
+            "stress_score": _clean_value(macro.get("stress_score")),
+            "coverage": _clean_value(macro.get("coverage")),
+            "signal_counts": _clean_value(macro.get("signal_counts")),
+        },
         "options_sentiment_regime": options_regime,
         "options_sentiment_coverage": _clean_value(options_sentiment.get("coverage")),
         "options_put_call": {
@@ -4389,6 +4648,7 @@ def _swing_climate_from_pulses(
             "breadth": breadth.get("coverage"),
             "sector": sector.get("coverage"),
             "options_sentiment": options_sentiment.get("coverage"),
+            "macro": macro.get("coverage"),
         },
         "playbook": playbook,
         "trade_gates": [
@@ -4396,6 +4656,7 @@ def _swing_climate_from_pulses(
             {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
             {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
             {"gate": "Options sentiment", "value": options_regime},
+            {"gate": "Macro stress", "value": f"{macro_regime} ({macro_stress_score}/100)"},
             {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
             {"gate": "Candidate status", "value": str(playbook["candidate_status"])},
             {"gate": "Sizing bias", "value": str(playbook["sizing_bias"])},
@@ -4405,7 +4666,7 @@ def _swing_climate_from_pulses(
         "warnings": warnings_out[:8],
         "focus": focus[:5],
         "notes": [
-            "Swing Climate combines the free Market, Breadth, Sector, and Cboe options sentiment context.",
+            "Swing Climate combines the free Market, Breadth, Sector, Cboe options sentiment, and FRED macro stress context.",
             "It is a review posture, not a trade signal or broker instruction.",
             "Use it to decide how strict to be with setup readiness, liquidity, and sizing.",
         ],
@@ -4417,7 +4678,8 @@ def build_swing_climate(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     market = build_market_pulse(data_dir, period=period)
     breadth = build_breadth_pulse(data_dir, period=period)
     sector = build_sector_pulse(data_dir, period=period)
-    return _swing_climate_from_pulses(market, breadth, sector)
+    macro = build_macro_stress_pulse(data_dir)
+    return _swing_climate_from_pulses(market, breadth, sector, macro)
 
 
 def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_score: int) -> dict[str, Any]:
@@ -6295,6 +6557,12 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="section" style="margin-top:12px"><div id="sector-pulse-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Macro stress</h2>
+    <div class="muted">Keyless FRED credit, curve, labor, inflation, growth, and liquidity context for swing-trade review.</div>
+    <div class="status" id="macro-stress-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="macro-stress-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
     <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
     <div class="status" id="risk-status-text"></div>
@@ -6998,6 +7266,24 @@ function sectorPulseHtml(data) {
       <div class="brief-list"><h4>Weakest groups</h4>${table(laggards)}</div>
     </div>
     <div class="brief-list" style="margin-top:10px"><h4>Full sector map</h4>${table(data.rows || [])}</div>
+  </div>`;
+}
+function macroStressHtml(data) {
+  if (!data) return '<div class="empty">No macro stress data available.</div>';
+  const warnings = (data.warnings && data.warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Macro warnings</h4><ul>${data.warnings.slice(0, 6).map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '<div class="empty">No macro stress warnings surfaced.</div>';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Regime</span><strong>${cell(data.regime || '-')}</strong></div>
+    <div class="brief-tile"><span>Stress score</span><strong>${cell(data.stress_score || 0)}/100</strong></div>
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(data.coverage || '-')}</strong></div>
+    <div class="brief-tile"><span>Signals</span><strong>${countMapText(data.signal_counts || {})}</strong></div>
+  </div>`;
+  return `<div style="padding:12px">
+    ${tiles}
+    <div class="brief-list" style="margin-top:10px"><h4>Posture</h4><ul><li>${cell(data.posture || '-')}</li></ul></div>
+    ${warnings}
+    <div class="brief-list" style="margin-top:10px"><h4>FRED macro checks</h4>${table(data.rows || [], true)}</div>
   </div>`;
 }
 function countMapText(map) {
@@ -7744,6 +8030,14 @@ async function loadSectorPulse() {
   $('sector-pulse-status-text').textContent = `Coverage ${data.coverage || '0/0'}; strongest ${top}.${warningText}`;
   $('sector-pulse-results').innerHTML = sectorPulseHtml(data);
 }
+async function loadMacroStress() {
+  $('macro-stress-status-text').textContent = 'Loading keyless FRED macro stress...';
+  const res = await fetch('/api/macro-stress');
+  const data = await res.json();
+  const warningText = (data.warnings || []).length ? ` ${data.warnings.length} warning(s).` : '';
+  $('macro-stress-status-text').textContent = `${data.regime || 'unknown'} at ${data.stress_score || 0}/100; coverage ${data.coverage || '0/0'}.${warningText}`;
+  $('macro-stress-results').innerHTML = macroStressHtml(data);
+}
 async function loadRiskSummary() {
   $('risk-status-text').textContent = 'Loading portfolio risk...';
   const res = await fetch('/api/risk-summary');
@@ -8397,7 +8691,7 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -8458,6 +8752,7 @@ loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action qu
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
 loadBreadthPulse().catch(err => { $('breadth-pulse-status-text').textContent = 'Breadth pulse failed'; console.error(err); });
 loadSectorPulse().catch(err => { $('sector-pulse-status-text').textContent = 'Sector pulse failed'; console.error(err); });
+loadMacroStress().catch(err => { $('macro-stress-status-text').textContent = 'Macro stress failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
 loadFreeDataSources().catch(err => { $('free-sources-status-text').textContent = 'Free source map failed'; console.error(err); });
@@ -8537,6 +8832,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             period = params.get("period", ["6mo"])[0]
             self._send_json(build_sector_pulse(self.data_dir, period=period))
+            return
+        if parsed.path == "/api/macro-stress":
+            self._send_json(build_macro_stress_pulse(self.data_dir))
             return
         if parsed.path == "/api/risk-summary":
             self._send_json(build_risk_summary(self.data_dir))

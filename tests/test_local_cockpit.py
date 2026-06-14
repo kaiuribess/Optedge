@@ -16,7 +16,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
-    build_options_sentiment,
+    build_macro_stress_pulse, build_options_sentiment,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     build_watchlist_sec_filings,
@@ -116,6 +116,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
+    assert "Macro stress" in html
+    assert "/api/macro-stress" in html
+    assert "macroStressHtml" in html
     assert "Options sentiment" in html
     assert "Cboe options sentiment" in html
     assert "loadMarketPulse" in html
@@ -1381,6 +1384,64 @@ def test_options_sentiment_marks_stale_when_daily_fallback_missing():
     assert {row["status"] for row in sentiment["rows"]} == {"stale"}
 
 
+def test_macro_stress_pulse_uses_keyless_fred_series():
+    old_fred = cockpit_module.fred_csv_history
+
+    def monthly_rows(latest: float, year_ago: float) -> list[dict[str, float | str]]:
+        rows = []
+        for idx in range(13):
+            value = latest if idx == 0 else year_ago if idx == 12 else latest - idx * 0.1
+            rows.append({"date": f"2026-{max(1, 12 - idx):02d}-01", "value": value})
+        return rows
+
+    def fake_fred(series_id: str, days: int = 90, cache_hours: int = 12):
+        del days, cache_hours
+        data = {
+            "BAMLH0A0HYM2": [
+                {"date": "2026-06-12", "value": 2.8},
+                {"date": "2026-06-05", "value": 2.9},
+                {"date": "2026-05-29", "value": 3.0},
+                {"date": "2026-05-22", "value": 3.0},
+                {"date": "2026-05-15", "value": 2.9},
+            ],
+            "T10Y3M": [
+                {"date": "2026-06-12", "value": 0.9},
+                {"date": "2026-06-05", "value": 0.8},
+                {"date": "2026-05-29", "value": 0.7},
+                {"date": "2026-05-22", "value": 0.6},
+                {"date": "2026-05-15", "value": 0.5},
+            ],
+            "UNRATE": monthly_rows(4.0, 4.1),
+            "ICSA": [
+                {"date": "2026-06-06", "value": 220000},
+                {"date": "2026-05-30", "value": 218000},
+                {"date": "2026-05-23", "value": 216000},
+                {"date": "2026-05-16", "value": 214000},
+                {"date": "2026-05-09", "value": 215000},
+            ],
+            "CPIAUCSL": monthly_rows(320.0, 310.0),
+            "INDPRO": monthly_rows(105.0, 103.0),
+            "M2SL": monthly_rows(22000.0, 21000.0),
+        }
+        return data.get(series_id, [])
+
+    try:
+        cockpit_module.fred_csv_history = fake_fred
+        pulse = build_macro_stress_pulse()
+    finally:
+        cockpit_module.fred_csv_history = old_fred
+
+    assert pulse["source"] == "FRED public CSV"
+    assert pulse["coverage"] == "7/7"
+    assert pulse["regime"] == "macro_supportive"
+    assert pulse["stress_score"] <= 15
+    assert pulse["signal_counts"]["supportive"] >= 4
+    assert pulse["signal_counts"]["warning"] >= 2
+    cpi = [row for row in pulse["rows"] if row["series_id"] == "CPIAUCSL"][0]
+    assert cpi["signal"] == "warning"
+    assert cpi["yoy"] > 0.03
+
+
 def test_breadth_pulse_uses_free_etf_pair_confirmation():
     old_history = cockpit_module.data_provider.get_history
 
@@ -1423,6 +1484,7 @@ def test_breadth_pulse_uses_free_etf_pair_confirmation():
 def test_swing_climate_combines_free_context_into_posture():
     old_history = cockpit_module.data_provider.get_history
     old_options = cockpit_module.build_options_sentiment
+    old_macro = cockpit_module.build_macro_stress_pulse
 
     slopes = {
         "SPY": 1.0,
@@ -1465,26 +1527,43 @@ def test_swing_climate_combines_free_context_into_posture():
             "warnings": [],
         }
 
+    def fake_macro_stress(data_dir=None):
+        del data_dir
+        return {
+            "status": "ok",
+            "regime": "macro_supportive",
+            "stress_score": 10,
+            "coverage": "7/7",
+            "signal_counts": {"supportive": 6, "warning": 1},
+            "warnings": [],
+        }
+
     try:
         cockpit_module.data_provider.get_history = fake_history
         cockpit_module.build_options_sentiment = fake_options_sentiment
+        cockpit_module.build_macro_stress_pulse = fake_macro_stress
         climate = build_swing_climate(period="6mo")
     finally:
         cockpit_module.data_provider.get_history = old_history
         cockpit_module.build_options_sentiment = old_options
+        cockpit_module.build_macro_stress_pulse = old_macro
 
     assert climate["climate_score"] >= 60
     assert climate["climate_label"] in {"aggressive_swing", "constructive_selective"}
     assert climate["market_regime"] in {"risk_on", "constructive"}
     assert climate["breadth_regime"] in {"broad_risk_on", "selective_risk_on"}
     assert climate["options_sentiment_regime"] == "call_demand_rising"
+    assert climate["macro_regime"] == "macro_supportive"
+    assert climate["macro_stress_score"] == 10
     assert climate["options_sentiment"]["total_pc"] == 0.76
     assert climate["components"]["options_sentiment"] == 4.0
+    assert climate["components"]["macro"] == 3.0
     assert climate["coverage"] == {
         "market": "9/9",
         "breadth": "7/7",
         "sector": "13/13",
         "options_sentiment": "3/3",
+        "macro": "7/7",
     }
     assert climate["top_sector_symbol"] in {"SMH", "XLK"}
     assert climate["focus"]
@@ -1492,8 +1571,10 @@ def test_swing_climate_combines_free_context_into_posture():
     assert climate["playbook"]["max_new_candidates"] >= 3
     assert any(row["gate"] == "Options DTE floor" for row in climate["trade_gates"])
     assert any(row["gate"] == "Options sentiment" for row in climate["trade_gates"])
+    assert any(row["gate"] == "Macro stress" for row in climate["trade_gates"])
     assert any(row["asset"] == "options" for row in climate["asset_bias"])
     assert any("Cboe options sentiment" in item for item in climate["positives"])
+    assert any("FRED macro stress pulse" in item for item in climate["positives"])
     assert any("Breadth pulse" in item for item in climate["positives"])
 
 
@@ -2518,6 +2599,7 @@ if __name__ == "__main__":
     test_options_sentiment_uses_cboe_put_call_snapshots()
     test_cboe_daily_put_call_parser_handles_escaped_nextjs_payload()
     test_options_sentiment_marks_stale_when_daily_fallback_missing()
+    test_macro_stress_pulse_uses_keyless_fred_series()
     test_breadth_pulse_uses_free_etf_pair_confirmation()
     test_swing_climate_combines_free_context_into_posture()
     test_sector_pulse_ranks_free_sector_etf_context()
@@ -2535,4 +2617,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("40/40 local cockpit tests passed")
+    print("41/41 local cockpit tests passed")
