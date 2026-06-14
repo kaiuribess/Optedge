@@ -5336,12 +5336,18 @@ tr.clickable-row:hover { background:#111c31; }
 .job small { color:var(--muted); display:block; margin-top:3px; }
 .logbox { display:none; white-space:pre-wrap; overflow:auto; max-height:280px; border:1px solid var(--border); background:#050812; border-radius:8px; padding:12px; margin-top:10px; font:12px/1.45 Consolas,monospace; color:#cbd5e1; }
 .logbox.active { display:block; }
+.global-command { border:1px solid #26364c; background:#0b111c; border-radius:8px; padding:12px; margin:14px 0 4px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:start; }
+.global-command-main { display:grid; grid-template-columns:170px minmax(0,1fr); gap:10px; align-items:start; }
+.global-command-label span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.5px; }
+.global-command-label strong { display:block; margin-top:5px; font-size:16px; }
+.global-command-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+.global-command .status { grid-column:1 / -1; margin-top:0; }
 .suggestions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; min-height:30px; }
 .suggestion { border:1px solid var(--border); background:#0b1220; border-radius:999px; padding:7px 10px; cursor:pointer; font-size:12px; color:var(--text); }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } }
 </style>
 </head>
 <body class="view-overview">
@@ -5370,6 +5376,22 @@ tr.clickable-row:hover { background:#111c31; }
     <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
+  <section class="global-command" aria-label="Quick research command">
+    <div class="global-command-main">
+      <div class="global-command-label"><span>Command</span><strong>Search, scan, save</strong></div>
+      <div>
+        <input id="global-query" placeholder="Ticker, company, or option idea, e.g. AAPL, Nvidia, SPY 20261218 C 600" autocomplete="off">
+        <div class="suggestions" id="global-suggestions"></div>
+      </div>
+    </div>
+    <div class="global-command-actions">
+      <button class="btn" type="button" id="global-lookup">Lookup</button>
+      <button class="btn" type="button" id="global-run">Run scan</button>
+      <button class="btn" type="button" id="global-chain">3m+ chain</button>
+      <button class="btn" type="button" id="global-save">Save</button>
+    </div>
+    <div class="status" id="global-status"></div>
+  </section>
   <nav class="view-nav" aria-label="Cockpit sections">
     <button class="view-tab active" type="button" data-view="overview">Overview</button>
     <button class="view-tab" type="button" data-view="positions">Positions</button>
@@ -6676,6 +6698,59 @@ function wireSecFilingRows() {
     });
   });
 }
+function syncGlobalQueryTargets(query) {
+  const q = String(query || '').trim();
+  ['symbol', 'watchlist-query', 'chain-query', 'explorer-query', 'paper-query', 'rh-query'].forEach(id => {
+    const el = $(id);
+    if (el) el.value = q;
+  });
+}
+function globalCommandQuery() {
+  const q = $('global-query').value.trim();
+  syncGlobalQueryTargets(q);
+  return q;
+}
+async function globalLookup() {
+  const q = globalCommandQuery();
+  if (!q) {
+    $('global-status').textContent = 'Type a ticker, company, or option idea first.';
+    return;
+  }
+  $('global-status').textContent = `Opening research for ${q}...`;
+  setView('research');
+  await lookup();
+}
+async function globalRunScan() {
+  const q = globalCommandQuery();
+  if (!q) {
+    $('global-status').textContent = 'Type a ticker, company, or option idea first.';
+    return;
+  }
+  $('global-status').textContent = `Starting focused scan for ${q}...`;
+  setView('research');
+  await runSymbol();
+}
+async function globalScanChain() {
+  const q = globalCommandQuery();
+  if (!q) {
+    $('global-status').textContent = 'Type an equity or ETF ticker/company first.';
+    return;
+  }
+  $('global-status').textContent = `Scanning 3m+ option chain for ${q}...`;
+  setView('chains');
+  applyChainPreset('swing');
+  await scanOptionChain();
+}
+async function globalSaveWatchlist() {
+  const q = globalCommandQuery();
+  if (!q) {
+    $('global-status').textContent = 'Type a ticker, company, or option idea first.';
+    return;
+  }
+  $('global-status').textContent = `Saving ${q} to the research watchlist...`;
+  setView('research');
+  await addWatchlist();
+}
 async function loadSummary() {
   const res = await fetch('/api/summary');
   const data = await res.json();
@@ -7336,6 +7411,12 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
+$('global-lookup').addEventListener('click', globalLookup);
+$('global-run').addEventListener('click', globalRunScan);
+$('global-chain').addEventListener('click', globalScanChain);
+$('global-save').addEventListener('click', globalSaveWatchlist);
+$('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
+$('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
 $('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });

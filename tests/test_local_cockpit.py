@@ -52,6 +52,13 @@ def test_cockpit_artifact_path_finds_latest_dashboard():
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
+    assert "Quick research command" in html
+    assert "global-query" in html
+    assert "globalLookup" in html
+    assert "globalRunScan" in html
+    assert "globalScanChain" in html
+    assert "globalSaveWatchlist" in html
+    assert "global-suggestions" in html
     assert "Cockpit sections" in html
     assert 'data-view="overview"' in html
     assert 'data-view="positions"' in html
