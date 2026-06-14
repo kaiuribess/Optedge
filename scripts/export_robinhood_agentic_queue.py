@@ -122,6 +122,25 @@ def _rejection(
     }
 
 
+def _reason_counts(rejected: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rejected:
+        reasons = row.get("reasons") if isinstance(row, dict) else None
+        if not isinstance(reasons, list):
+            continue
+        for reason in reasons:
+            clean = _text(reason) or "unknown"
+            counts[clean] = counts.get(clean, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _top_rejection_reasons(rejected: list[dict[str, Any]], limit: int = 6) -> list[dict[str, Any]]:
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in list(_reason_counts(rejected).items())[: max(1, int(limit or 6))]
+    ]
+
+
 def _order_from_row(
     row: dict[str, Any],
     quantity: int,
@@ -261,6 +280,9 @@ def build_queue_from_candidates(
             qty = min(suggested_qty, qty_by_order)
             if qty <= 0 and not reasons:
                 reasons.append("premium cap leaves no buyable contracts")
+            projected_premium = entry * max(qty, 0) * 100.0
+            if qty > 0 and total_premium + projected_premium > max_total_premium:
+                reasons.append("max total premium reached")
         if len(orders) >= max_candidates and not reasons:
             reasons.append("max candidate count reached")
 
@@ -273,6 +295,34 @@ def build_queue_from_candidates(
         total_premium = round(total_premium + _float(order["estimated_premium_dollars"]), 2)
 
     status = "disabled" if kill_switch_present else "ready" if orders else "empty"
+    reason_counts = _reason_counts(rejected)
+    top_reasons = _top_rejection_reasons(rejected)
+    readiness_notes: list[str] = []
+    if kill_switch_present:
+        readiness_notes.append("Kill switch is present, so all candidates are disabled.")
+    elif not orders:
+        readiness_notes.append("No option candidates passed the queue filters.")
+    else:
+        readiness_notes.append(
+            f"{min(len(orders), max_orders)} of {len(orders)} candidate(s) may be submitted after agent checks."
+        )
+    if top_reasons:
+        readiness_notes.append(
+            "Top rejection reason: "
+            + f"{top_reasons[0]['reason']} ({top_reasons[0]['count']})"
+        )
+    readiness = {
+        "label": status,
+        "ready_to_submit_count": min(len(orders), max_orders),
+        "review_candidate_count": len(orders),
+        "rejected_count": len(rejected),
+        "estimated_total_candidate_premium": round(total_premium, 2),
+        "premium_cap_remaining": round(max(0.0, max_total_premium - total_premium), 2),
+        "budget_remaining_after_candidates": round(max(0.0, account_budget - total_premium), 2),
+        "rejection_reason_counts": reason_counts,
+        "top_rejection_reasons": top_reasons,
+        "notes": readiness_notes,
+    }
     return {
         "generated_at": generated_at,
         "schema": "optedge_robinhood_agentic_options_queue_v1",
@@ -291,6 +341,9 @@ def build_queue_from_candidates(
         "limit_buffer_pct": limit_buffer_pct,
         "estimated_total_candidate_premium": round(total_premium, 2),
         "kill_switch_file": str(DATA_DIR / KILL_SWITCH),
+        "readiness": readiness,
+        "rejection_reason_counts": reason_counts,
+        "top_rejection_reasons": top_reasons,
         "orders": orders,
         "rejected": rejected,
         "required_agent_checks": [
@@ -309,6 +362,8 @@ def build_queue_from_candidates(
 
 def render_agent_prompt(queue: dict[str, Any]) -> str:
     orders = queue.get("orders") or []
+    readiness = queue.get("readiness") if isinstance(queue.get("readiness"), dict) else {}
+    top_reasons = queue.get("top_rejection_reasons") or readiness.get("top_rejection_reasons") or []
     lines = [
         "# Optedge Robinhood Agentic Options Queue",
         "",
@@ -338,10 +393,16 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
         f"- Minimum DTE: {queue.get('min_dte')}",
         f"- Max orders to submit: {queue.get('max_orders_to_submit')}",
         f"- Candidate orders: {len(orders)}",
+        f"- Ready-to-submit cap: {readiness.get('ready_to_submit_count', min(len(orders), queue.get('max_orders_to_submit') or 0))}",
+        f"- Rejected candidates: {readiness.get('rejected_count', len(queue.get('rejected') or []))}",
+        f"- Premium cap remaining: ${readiness.get('premium_cap_remaining', '-')}",
         "",
         "## Required Double Checks",
     ]
     lines.extend(f"- {check}" for check in queue.get("required_agent_checks", []))
+    if top_reasons:
+        lines.extend(["", "## Top Rejection Reasons"])
+        lines.extend(f"- {row.get('reason')}: {row.get('count')}" for row in top_reasons[:6])
     lines.extend(["", "## Candidate Orders"])
     if not orders:
         lines.append("No candidate orders passed the queue filters.")

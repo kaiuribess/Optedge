@@ -2101,6 +2101,7 @@ def build_option_chain_scan(
     today = datetime.now(timezone.utc).date()
     rows: list[dict[str, Any]] = []
     rejected = 0
+    rejection_reason_counts: dict[str, int] = {}
     total_contracts = 0
 
     for expiry, chain_df in (blob.get("chains") or {}).items():
@@ -2125,21 +2126,24 @@ def build_option_chain_scan(
             premium = mid * 100.0 if math.isfinite(mid) else float("nan")
             moneyness = ((strike - spot) / spot) if math.isfinite(strike) and math.isfinite(spot) and spot > 0 else None
 
-            keep = True
             if side_norm != "all" and contract_side != side_norm:
-                keep = False
+                reasons = [f"side is not {side_norm}"]
+            else:
+                reasons = []
             if dte < min_dte or dte > max_dte:
-                keep = False
+                reasons.append("outside DTE range")
             if not math.isfinite(strike) or not math.isfinite(mid) or mid <= 0:
-                keep = False
+                reasons.append("missing strike or mid")
             if max_premium > 0 and (not math.isfinite(premium) or premium > max_premium):
-                keep = False
+                reasons.append("premium above budget")
             if spread_pct is not None and max_spread_pct > 0 and spread_pct > max_spread_pct:
-                keep = False
+                reasons.append("spread above filter")
             if oi < min_open_interest:
-                keep = False
-            if not keep:
+                reasons.append("open interest below filter")
+            if reasons:
                 rejected += 1
+                for reason in dict.fromkeys(reasons):
+                    rejection_reason_counts[reason] = rejection_reason_counts.get(reason, 0) + 1
                 continue
 
             row = {
@@ -2185,6 +2189,10 @@ def build_option_chain_scan(
     summary = _option_chain_scan_summary(rows, max_premium)
     expiry_summary = _option_chain_expiry_summary(rows)
     decision = _option_chain_decision_pack(rows, str(quote_quality), source)
+    rejection_reason_counts = dict(
+        sorted(rejection_reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    top_rejection_reasons = _top_reason_rows(rejection_reason_counts)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2201,6 +2209,8 @@ def build_option_chain_scan(
         "total_contracts": total_contracts,
         "filtered_count": len(rows),
         "rejected_count": rejected,
+        "rejection_reason_counts": rejection_reason_counts,
+        "top_rejection_reasons": top_rejection_reasons,
         "preset": preset_norm,
         "preset_label": preset_cfg.get("label"),
         "preset_description": preset_cfg.get("description"),
@@ -3006,6 +3016,37 @@ def _records_from_frame(df: pd.DataFrame, limit: int = 100) -> list[dict[str, An
     return records
 
 
+def _split_reason_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_split_reason_values(item))
+        return out
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return []
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _reason_counts_from_frame(df: pd.DataFrame, column: str = "reason_excluded") -> dict[str, int]:
+    if df is None or df.empty or column not in df.columns:
+        return {}
+    counts: dict[str, int] = {}
+    for value in df[column].tolist():
+        for reason in _split_reason_values(value):
+            counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _top_reason_rows(reason_counts: dict[str, int], limit: int = 6) -> list[dict[str, Any]]:
+    return [
+        {"reason": reason, "count": count}
+        for reason, count in list(reason_counts.items())[: max(1, int(limit or 6))]
+    ]
+
+
 def build_paper_candidates(
     data_dir: Path = DATA_DIR,
     max_new: int = 5,
@@ -3040,6 +3081,7 @@ def build_paper_candidates(
         selected_count = int((~excluded_mask).sum())
     else:
         selected_count = int(len(df))
+    reason_counts = _reason_counts_from_frame(df)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "asset": asset,
@@ -3054,6 +3096,8 @@ def build_paper_candidates(
         "count": int(len(df)),
         "selected_count": selected_count,
         "excluded_count": excluded_count,
+        "rejection_reason_counts": reason_counts,
+        "top_rejection_reasons": _top_reason_rows(reason_counts),
         "rows": _records_from_frame(df, limit=150),
         "notes": [
             "External paper candidates are a small filtered subset, not every internal signal.",
@@ -3101,6 +3145,9 @@ def build_robinhood_agentic_queue_report(
         "min_dte": queue.get("min_dte"),
         "min_confidence": queue.get("min_confidence"),
         "estimated_total_candidate_premium": queue.get("estimated_total_candidate_premium"),
+        "readiness": queue.get("readiness") or {},
+        "rejection_reason_counts": queue.get("rejection_reason_counts") or {},
+        "top_rejection_reasons": queue.get("top_rejection_reasons") or [],
         "candidate_count": len(queue.get("orders") or []),
         "rejected_count": len(queue.get("rejected") or []),
         "orders": queue.get("orders") or [],
@@ -5832,6 +5879,7 @@ tr.clickable-row:hover { background:#18201d; }
       <button class="btn" type="button" id="paper-export">Write export files</button>
     </div>
     <div class="status" id="paper-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="paper-summary"></div>
     <div class="section" style="margin-top:12px"><div id="paper-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="paper">
@@ -7342,17 +7390,35 @@ async function loadPaperCandidates(write=false) {
   const fileNote = data.wrote_files ? ` Files written: ${data.paths.csv || ''}` : '';
   const dryNote = data.dry_run ? `, ${data.excluded_count || 0} excluded rows reviewed` : '';
   $('paper-status-text').textContent = `${data.selected_count || 0} selected candidate(s)${dryNote}.${fileNote}`;
+  if ($('paper-summary')) $('paper-summary').innerHTML = paperCandidateSummary(data);
   $('paper-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('paper-results'));
 }
+function paperCandidateSummary(data) {
+  const fields = [
+    ['Selected', data.selected_count || 0],
+    ['Excluded', data.excluded_count || 0],
+    ['Reviewed rows', data.count || 0],
+    ['Asset', data.asset || 'all'],
+    ['Dry run', data.dry_run ? 'yes' : 'no'],
+    ['Top rejects', countMapText(data.rejection_reason_counts || {})]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
 function robinhoodQueueSummary(data) {
+  const readiness = data.readiness || {};
   const fields = [
     ['Status', data.status || '-'],
+    ['Readiness', readiness.label || data.status || '-'],
     ['Candidates', data.candidate_count || 0],
+    ['Rejected', data.rejected_count || 0],
+    ['Submit cap', readiness.ready_to_submit_count ?? data.max_orders_to_submit ?? 0],
     ['Max orders', data.max_orders_to_submit || 0],
     ['Min DTE', data.min_dte || 0],
     ['Budget', '$' + (data.account_budget || 0)],
-    ['Max premium', '$' + (data.max_total_premium || 0)]
+    ['Max premium', '$' + (data.max_total_premium || 0)],
+    ['Premium left', '$' + (readiness.premium_cap_remaining ?? '-')],
+    ['Top rejects', countMapText(data.rejection_reason_counts || readiness.rejection_reason_counts || {})]
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
 }
@@ -7420,6 +7486,8 @@ function optionChainSummary(data) {
     ['Expirations', data.total_expirations || 0],
     ['Contracts', data.total_contracts || 0],
     ['Shown', data.filtered_count || 0],
+    ['Rejected', data.rejected_count || 0],
+    ['Top rejects', countMapText(data.rejection_reason_counts || {})],
     ['Median spread', scan.median_spread_pct === null || scan.median_spread_pct === undefined ? '-' : ((Number(scan.median_spread_pct || 0) * 100).toFixed(1)) + '%'],
     ['Under budget', scan.under_budget_count || 0],
     ['Liquid', scan.liquid_count || 0],

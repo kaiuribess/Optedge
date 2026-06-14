@@ -214,25 +214,46 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
         generated_at = datetime.now(timezone.utc).isoformat()
         (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
             "generated_at": generated_at,
-            "rows": [{
-                "generated_at": generated_at,
-                "symbol": "MSFT",
-                "contract_query": "MSFT 2027-01-15 C 500",
-                "side": "call",
-                "expiry": "2027-01-15",
-                "strike": 500.0,
-                "dte": 216,
-                "mid": 1.10,
-                "premium_dollars": 110.0,
-                "spread_pct": 0.03,
-                "openInterest": 1500,
-                "contract_grade": "A",
-                "readiness_label": "ready",
-                "readiness_score": 92,
-                "contract_quality_score": 95,
-                "chain_source": "cboe",
-                "quote_quality": "free_or_delayed",
-            }],
+            "rows": [
+                {
+                    "generated_at": generated_at,
+                    "symbol": "MSFT",
+                    "contract_query": "MSFT 2027-01-15 C 500",
+                    "side": "call",
+                    "expiry": "2027-01-15",
+                    "strike": 500.0,
+                    "dte": 216,
+                    "mid": 1.10,
+                    "premium_dollars": 110.0,
+                    "spread_pct": 0.03,
+                    "openInterest": 1500,
+                    "contract_grade": "A",
+                    "readiness_label": "ready",
+                    "readiness_score": 92,
+                    "contract_quality_score": 95,
+                    "chain_source": "cboe",
+                    "quote_quality": "free_or_delayed",
+                },
+                {
+                    "generated_at": generated_at,
+                    "symbol": "MSFT",
+                    "contract_query": "MSFT 2026-10-16 C 520",
+                    "side": "call",
+                    "expiry": "2026-10-16",
+                    "strike": 520.0,
+                    "dte": 124,
+                    "mid": 0.55,
+                    "premium_dollars": 55.0,
+                    "spread_pct": 0.04,
+                    "openInterest": 900,
+                    "contract_grade": "B",
+                    "readiness_label": "ready",
+                    "readiness_score": 84,
+                    "contract_quality_score": 80,
+                    "chain_source": "cboe",
+                    "quote_quality": "free_or_delayed",
+                },
+            ],
         }), encoding="utf-8")
 
         queue = build_robinhood_queue(
@@ -249,6 +270,10 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     assert len(queue["orders"]) == 1
     assert queue["orders"][0]["symbol"] == "MSFT"
     assert queue["orders"][0]["max_limit_price"] >= 1.1
+    assert queue["readiness"]["label"] == "ready"
+    assert queue["readiness"]["ready_to_submit_count"] == 1
+    assert queue["rejection_reason_counts"]["dte below 180"] == 1
+    assert queue["top_rejection_reasons"][0]["reason"] == "dte below 180"
 
 
 if __name__ == "__main__":

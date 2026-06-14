@@ -80,7 +80,7 @@ def test_queue_caps_candidate_count_separately_from_order_count():
             _candidate(ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0),
         ],
         max_orders=2,
-        max_total_premium=150,
+        max_total_premium=500,
         max_premium_per_order=100,
         max_candidates=2,
     )
@@ -94,6 +94,24 @@ def test_queue_rejects_short_dated_options_by_default():
     queue = _queue([_candidate(expiry="2026-06-18", contract="AAPL 2026-06-18 CALL 200")])
     assert queue["orders"] == []
     assert "dte below 180" in queue["rejected"][0]["reasons"]
+    assert queue["rejection_reason_counts"]["dte below 180"] == 1
+    assert queue["readiness"]["label"] == "empty"
+
+
+def test_queue_enforces_total_premium_cap_and_summarizes_rejections():
+    queue = _queue(
+        [
+            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0),
+            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0),
+        ],
+        max_total_premium=100,
+        max_premium_per_order=100,
+    )
+    assert len(queue["orders"]) == 1
+    assert queue["orders"][0]["symbol"] == "AAPL"
+    assert queue["rejection_reason_counts"]["max total premium reached"] == 1
+    assert queue["top_rejection_reasons"][0]["reason"] == "max total premium reached"
+    assert queue["readiness"]["premium_cap_remaining"] == 25.0
 
 
 def test_queue_can_give_agent_more_candidates_than_order_cap():
@@ -133,7 +151,8 @@ if __name__ == "__main__":
     test_queue_rejects_contracts_above_500_budget_caps()
     test_queue_caps_candidate_count_separately_from_order_count()
     test_queue_rejects_short_dated_options_by_default()
+    test_queue_enforces_total_premium_cap_and_summarizes_rejections()
     test_queue_can_give_agent_more_candidates_than_order_cap()
     test_queue_prompt_requires_codex_double_check_and_limit_orders()
     test_queue_write_outputs_json_and_prompt()
-    print("7/7 robinhood agentic queue tests passed")
+    print("8/8 robinhood agentic queue tests passed")

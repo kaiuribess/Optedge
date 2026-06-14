@@ -138,6 +138,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
+    assert "paper-summary" in html
+    assert "paperCandidateSummary" in html
     assert "/api/paper-candidates" in html
     assert "/api/export-paper" in html
     assert "Write export files" in html
@@ -147,6 +149,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
     assert "loadRobinhoodQueue" in html
+    assert "Premium left" in html
+    assert "Top rejects" in html
     assert "Option chain scan" in html
     assert "3m+ swing preset" in html
     assert "Long-dated preset" in html
@@ -1492,6 +1496,8 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         dry = build_paper_candidates(data_dir, dry_run=True)
         assert dry["excluded_count"] == 1
         assert any("suggested_contracts <= 0" in row["reason_excluded"] for row in dry["rows"])
+        assert dry["rejection_reason_counts"]["suggested_contracts <= 0"] == 1
+        assert dry["top_rejection_reasons"][0]["reason"] == "suggested_contracts <= 0"
 
         written = build_paper_candidates(data_dir, max_new=5, write=True)
         assert written["wrote_files"] is True
@@ -1552,6 +1558,10 @@ def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
         assert preview["orders"][0]["symbol"] == "AAPL"
         assert preview["orders"][0]["dte"] >= 180
         assert any("dte below 180" in row["reasons"] for row in preview["rejected"])
+        assert preview["readiness"]["label"] == "ready"
+        assert preview["readiness"]["premium_cap_remaining"] >= 0
+        assert preview["rejection_reason_counts"]["dte below 180"] == 1
+        assert preview["top_rejection_reasons"][0]["reason"] == "dte below 180"
 
         written = build_robinhood_agentic_queue_report(data_dir, write=True)
         assert written["wrote_files"] is True
@@ -1633,6 +1643,9 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["total_contracts"] == 3
     assert report["filtered_count"] == 1
     assert report["rejected_count"] == 2
+    assert report["rejection_reason_counts"]["spread above filter"] == 1
+    assert report["rejection_reason_counts"]["side is not call"] == 1
+    assert report["top_rejection_reasons"][0]["count"] == 1
     row = report["rows"][0]
     assert row["side"] == "call"
     assert row["strike"] == 220.0
