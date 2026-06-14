@@ -63,12 +63,26 @@ Why it helps:
 - Helps identify defensive hedging, call-demand/complacency, and balanced options sentiment.
 - Uses Cboe market statistics as delayed/informational context, not as an execution quote.
 
+### Nasdaq public stock screener
+
+Status: implemented in `engines/nasdaq_screener.py` and surfaced in the local cockpit Swing Scout.
+
+Source:
+- https://www.nasdaq.com/market-activity/stocks/screener
+- https://api.nasdaq.com/api/screener/stocks
+
+Why it helps:
+- Adds a no-key small-cap mover radar for names outside the latest Optedge scan files.
+- Captures price, percent change, volume, market cap, sector, and industry context.
+- Keeps these rows as review candidates only; they still need a focused Optedge scan and live quote check before any manual paper/live decision.
+
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
 - Keyless FRED CSV macro/rates/credit series.
 - Official Treasury XML yield-curve feed.
 - Cboe market-wide put/call market statistics.
+- Nasdaq public stock screener for delayed small-cap mover discovery.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.

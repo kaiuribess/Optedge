@@ -339,12 +339,13 @@ Optedge uses free or locally configured sources where possible, including:
 - Cboe daily market statistics and total/equity/index put-call ratio CSVs for delayed options sentiment context.
 - FRED public graph CSV macro stress context for credit, rates, labor, inflation, growth, and liquidity.
 - Nasdaq Trader symbol directory for broader official ticker/ETF search and universe hygiene.
+- Nasdaq public stock screener for delayed small-cap mover discovery in Swing Scout.
 - Reddit and retail-attention feeds.
 - SEC EDGAR filings.
 - News and earnings feeds.
 - Macro, rates, credit, energy, agriculture, volatility, and futures context.
 - Optional FinBERT sentiment scoring when the local environment supports it.
-- Optional Tradier production token for broker/live option chains; free CBOE/NASDAQ/yfinance fallbacks remain the default.
+- Optional Tradier production token for broker/live option chains; free CBOE/NASDAQ/Yahoo/yfinance fallbacks remain the default.
 
 Some sources may rate-limit, return partial data, or require keys in your local `keys.py`. Private keys are ignored by Git.
 

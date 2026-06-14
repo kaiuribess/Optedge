@@ -32,6 +32,7 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
 
 import data_provider
 from engines.fred_public import fred_csv_history
+from engines.nasdaq_screener import small_cap_movers
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
@@ -3652,6 +3653,110 @@ def _swing_scout_query_text(row: dict[str, Any]) -> str:
     return " ".join(str(part or "") for part in parts).lower()
 
 
+def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    pct = _float_value(row.get("pct_change"), default=0.0)
+    volume = _float_value(row.get("volume"), default=0.0)
+    cap = _float_value(row.get("market_cap"), default=0.0)
+    direction = "upside momentum" if pct >= 0 else "downside volatility"
+    reasons = [
+        f"Nasdaq screener {direction}",
+        f"{pct:+.1f}% move",
+        f"{volume:,.0f} volume",
+    ]
+    if cap > 0:
+        reasons.append(f"${cap / 1_000_000:.0f}M market cap")
+    warnings = [
+        "free/delayed screener row",
+        "run focused scan before acting",
+    ]
+    if pct < 0:
+        warnings.append("red mover: confirm reversal thesis")
+    return {
+        "asset": "share",
+        "ticker_or_symbol": symbol,
+        "setup": f"{symbol} small-cap mover",
+        "lane": "nasdaq_small_cap_mover",
+        "swing_scout_score": int(_float_value(row.get("nasdaq_mover_score"), default=0.0)),
+        "market_cap_bucket": _clean_value(row.get("market_cap_bucket")),
+        "market_cap": _clean_value(row.get("market_cap")),
+        "squeeze_score": None,
+        "attention_score": None,
+        "momentum_score": _clean_value(abs(pct)),
+        "value_score_component": None,
+        "execution_score": None,
+        "readiness_score": None,
+        "readiness_label": "review",
+        "confidence": None,
+        "rank_score": None,
+        "trade_status": "Review",
+        "entry_price": _clean_value(row.get("last_price")),
+        "stop_price": None,
+        "target_price": None,
+        "size": None,
+        "dte": None,
+        "expiry": None,
+        "spread_pct": None,
+        "short_pct_of_float": None,
+        "short_vol_ratio": None,
+        "social_score": None,
+        "gtrends_score": None,
+        "tech_score": None,
+        "futures_score": None,
+        "ret_20d": None,
+        "quality": "live-radar review",
+        "pct_change": _clean_value(row.get("pct_change")),
+        "volume": _clean_value(row.get("volume")),
+        "sector": _clean_value(row.get("sector")),
+        "industry": _clean_value(row.get("industry")),
+        "name": _clean_value(row.get("name")),
+        "reasons": reasons[:6],
+        "warnings": warnings[:6],
+        "source_file": "nasdaq_screener",
+        "snapshot_freshness": "live_public_delayed",
+        "snapshot_age_min": 0,
+    }
+
+
+def _append_nasdaq_mover_scout_rows(
+    rows: list[dict[str, Any]],
+    *,
+    asset: str,
+    query_norm: str,
+    lane: str,
+    min_score: float,
+    include_wait: bool,
+    max_rows: int = 24,
+) -> tuple[int, str | None]:
+    if asset not in {"all", "share"}:
+        return 0, None
+    try:
+        movers = small_cap_movers(max_rows=max_rows)
+    except Exception:
+        return 0, None
+    if movers.empty:
+        return 0, None
+    added = 0
+    seen_symbols = {str(row.get("ticker_or_symbol") or "").upper() for row in rows}
+    for _, mover in movers.iterrows():
+        record = _nasdaq_mover_scout_record(mover)
+        symbol = str(record.get("ticker_or_symbol") or "").upper()
+        if not symbol or symbol in seen_symbols:
+            continue
+        if record["swing_scout_score"] < min_score:
+            continue
+        if not include_wait and str(record.get("readiness_label") or "").lower() == "wait":
+            continue
+        if lane != "all" and str(record.get("lane") or "").lower() != lane:
+            continue
+        if query_norm and query_norm not in _swing_scout_query_text(record):
+            continue
+        rows.append(record)
+        seen_symbols.add(symbol)
+        added += 1
+    return added, "nasdaq_screener"
+
+
 def build_swing_scout(
     data_dir: Path = DATA_DIR,
     limit: int = 18,
@@ -3660,6 +3765,7 @@ def build_swing_scout(
     lane: str = "all",
     min_score: float = 45.0,
     include_wait: bool = True,
+    include_nasdaq_movers: bool = False,
 ) -> dict[str, Any]:
     """Surface speculative small/mid-cap and futures swing candidates from local free-factor outputs."""
     limit = max(1, min(int(limit or 18), 60))
@@ -3701,6 +3807,20 @@ def build_swing_scout(
                 continue
             rows.append(record)
             asset_counts[asset_name] = asset_counts.get(asset_name, 0) + 1
+    nasdaq_added = 0
+    nasdaq_source = None
+    if include_nasdaq_movers:
+        nasdaq_added, nasdaq_source = _append_nasdaq_mover_scout_rows(
+            rows,
+            asset=asset,
+            query_norm=query_norm,
+            lane=lane,
+            min_score=min_score,
+            include_wait=include_wait,
+        )
+        if nasdaq_added:
+            asset_counts["share"] = asset_counts.get("share", 0) + nasdaq_added
+            source_files["nasdaq_movers"] = nasdaq_source
     rows = sorted(
         rows,
         key=lambda row: (
@@ -3729,10 +3849,12 @@ def build_swing_scout(
             "lane": lane,
             "min_score": min_score,
             "include_wait": bool(include_wait),
+            "include_nasdaq_movers": bool(include_nasdaq_movers),
             "limit": limit,
         },
         "notes": [
             "Swing scout is a read-only ranking of high-upside review candidates from existing Optedge snapshots.",
+            "When enabled from the cockpit, Nasdaq's public screener adds a capped no-key small-cap mover radar.",
             "Equity-linked rows emphasize small/mid-cap asymmetry, short pressure, retail attention, momentum, value, and execution quality.",
             "Futures rows use the futures/macro momentum lane because market-cap logic does not apply to futures contracts.",
             "Options under 90 DTE are excluded from this scout; use the option-chain panel for exact contract review.",
@@ -8646,9 +8768,11 @@ tr.clickable-row:hover { background:#18201d; }
         <option value="small_cap_options_momentum">Options momentum</option>
         <option value="long_dated_option_swing">Long-dated options</option>
         <option value="futures_macro_swing">Futures macro</option>
+        <option value="nasdaq_small_cap_mover">Nasdaq small-cap movers</option>
       </select>
       <input id="swing-scout-query" placeholder="Filter ticker, lane, warning, or thesis">
       <input id="swing-scout-min-score" type="number" min="0" max="100" step="1" value="45" aria-label="Minimum scout score">
+      <label class="check"><input id="swing-scout-nasdaq" type="checkbox" checked> Nasdaq movers</label>
       <label class="check"><input id="swing-scout-hide-wait" type="checkbox"> hide wait rows</label>
       <button class="btn" type="button" id="swing-scout-load">Apply filters</button>
     </div>
@@ -10432,7 +10556,8 @@ async function loadSwingScout() {
     lane: $('swing-scout-lane').value,
     query: $('swing-scout-query').value.trim(),
     min_score: $('swing-scout-min-score').value || '45',
-    include_wait: $('swing-scout-hide-wait').checked ? 'false' : 'true'
+    include_wait: $('swing-scout-hide-wait').checked ? 'false' : 'true',
+    include_nasdaq_movers: $('swing-scout-nasdaq').checked ? 'true' : 'false'
   });
   const res = await fetch('/api/swing-scout?' + params.toString());
   const data = await res.json();
@@ -11207,7 +11332,7 @@ $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 $('swing-scout-load').addEventListener('click', loadSwingScout);
 $('swing-scout-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadSwingScout(); });
-['swing-scout-asset', 'swing-scout-lane', 'swing-scout-min-score', 'swing-scout-hide-wait'].forEach(id => {
+['swing-scout-asset', 'swing-scout-lane', 'swing-scout-min-score', 'swing-scout-hide-wait', 'swing-scout-nasdaq'].forEach(id => {
   $(id).addEventListener('change', loadSwingScout);
 });
 $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
@@ -11399,6 +11524,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             min_score = _float_param(params.get("min_score", ["45"])[0], 45.0, 0.0, 100.0)
             include_wait = _bool_param(params.get("include_wait", ["true"])[0], True)
+            include_nasdaq_movers = _bool_param(params.get("include_nasdaq_movers", ["true"])[0], True)
             self._send_json(build_swing_scout(
                 self.data_dir,
                 limit=limit,
@@ -11407,6 +11533,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 lane=lane,
                 min_score=min_score,
                 include_wait=include_wait,
+                include_nasdaq_movers=include_nasdaq_movers,
             ))
             return
         if parsed.path == "/api/option-chain-batch":

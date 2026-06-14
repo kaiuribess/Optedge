@@ -166,7 +166,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "swing-scout-asset" in html
     assert "swing-scout-lane" in html
     assert "swing-scout-min-score" in html
+    assert "swing-scout-nasdaq" in html
     assert "swing-scout-hide-wait" in html
+    assert "Nasdaq small-cap movers" in html
     assert "small/mid-cap asymmetry" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
@@ -1692,6 +1694,44 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
     assert [row["ticker_or_symbol"] for row in queried["rows"]] == ["SMOL"]
     assert all(row["readiness_label"] != "wait" for row in hidden_wait["rows"])
     assert all(row["swing_scout_score"] >= 90 for row in high_score["rows"])
+
+
+def test_swing_scout_can_include_nasdaq_small_cap_movers():
+    old_movers = cockpit_module.small_cap_movers
+    cockpit_module.small_cap_movers = lambda max_rows=24: pd.DataFrame([{
+        "symbol": "MOVE",
+        "name": "Move Corp",
+        "last_price": 4.25,
+        "pct_change": 8.4,
+        "volume": 2_500_000,
+        "market_cap": 220_000_000,
+        "sector": "Technology",
+        "industry": "Software",
+        "nasdaq_mover_score": 91,
+        "market_cap_bucket": "micro",
+    }])
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            report = build_swing_scout(
+                Path(td),
+                limit=5,
+                include_nasdaq_movers=True,
+                lane="nasdaq_small_cap_mover",
+            )
+    finally:
+        cockpit_module.small_cap_movers = old_movers
+
+    assert report["count"] == 1
+    row = report["rows"][0]
+    assert row["ticker_or_symbol"] == "MOVE"
+    assert row["asset"] == "share"
+    assert row["lane"] == "nasdaq_small_cap_mover"
+    assert row["trade_status"] == "Review"
+    assert row["source_file"] == "nasdaq_screener"
+    assert row["pct_change"] == 8.4
+    assert "nasdaq_movers" in report["sources"]
+    assert report["asset_counts"]["share"] == 1
+    assert report["filters"]["include_nasdaq_movers"] is True
 
 
 def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
@@ -3492,6 +3532,7 @@ if __name__ == "__main__":
     test_best_setups_marks_clean_long_dated_option_ready()
     test_best_setups_include_saved_chain_shortlist_contracts()
     test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options()
+    test_swing_scout_can_include_nasdaq_small_cap_movers()
     test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_exit_review_summary_reads_jsonl_and_filters_actions()
@@ -3519,4 +3560,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("48/48 local cockpit tests passed")
+    print("49/49 local cockpit tests passed")
