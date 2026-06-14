@@ -1925,6 +1925,93 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, A
     return sorted(summaries, key=lambda row: _float_value(row.get("dte"), default=9999.0))[:12]
 
 
+def _option_chain_decision_pack(
+    rows: list[dict[str, Any]],
+    quote_quality: str,
+    source: str,
+) -> dict[str, Any]:
+    if not rows:
+        return {
+            "status": "empty",
+            "label": "No match",
+            "primary": None,
+            "alternatives": [],
+            "risk_notes": ["No contracts matched the current filters."],
+            "next_step": "Loosen filters or scan a different ticker.",
+            "saveable_count": 0,
+        }
+    saveable = [
+        row for row in rows
+        if str(row.get("contract_grade") or "").upper() in {"A", "B"}
+        and str(row.get("review_lane") or "") != "wait"
+    ]
+    reviewable = [
+        row for row in rows
+        if str(row.get("readiness_label") or "") in {"ready", "review"}
+    ]
+    primary = (saveable or reviewable or rows)[0]
+    alternatives: list[dict[str, Any]] = []
+    seen: set[str] = {str(primary.get("contract_query") or "")}
+    for row in rows:
+        query = str(row.get("contract_query") or "")
+        if not query or query in seen:
+            continue
+        alternatives.append(row)
+        seen.add(query)
+        if len(alternatives) >= 3:
+            break
+
+    grade = str(primary.get("contract_grade") or "D").upper()
+    lane = str(primary.get("review_lane") or "review")
+    readiness = str(primary.get("readiness_label") or "review")
+    risk_notes: list[str] = []
+    if str(quote_quality or "").lower() != "live_or_broker":
+        risk_notes.append("Quote may be free/delayed; refresh before acting.")
+    spread = _float_value(primary.get("spread_pct"), default=math.nan)
+    if math.isfinite(spread) and spread > 0.15:
+        risk_notes.append(f"Spread is wide at {spread * 100:.1f}%.")
+    oi = _float_value(primary.get("openInterest"), default=0.0)
+    if oi < 100:
+        risk_notes.append("Open interest is light.")
+    dte = _float_value(primary.get("dte"), default=0.0)
+    if dte < MIN_SWING_OPTION_DTE:
+        risk_notes.append(f"DTE is below the {MIN_SWING_OPTION_DTE}d swing minimum.")
+    if grade not in {"A", "B"}:
+        risk_notes.append("No A/B contract passed the current filters.")
+    row_flags = primary.get("risk_flags")
+    if isinstance(row_flags, list):
+        risk_notes.extend(str(flag) for flag in row_flags[:3] if flag)
+    risk_notes = list(dict.fromkeys(risk_notes))[:6]
+
+    if saveable and grade == "A":
+        status = "primary_review"
+        label = "Best contract"
+        next_step = "Save this contract, then refresh quotes before any paper/manual review."
+    elif saveable:
+        status = "secondary_review"
+        label = "Reviewable contract"
+        next_step = "Save for watchlist review; require a cleaner quote before acting."
+    else:
+        status = "watch_only"
+        label = "Watch only"
+        next_step = "Do not force this chain; wait for better liquidity, spread, or DTE."
+
+    return {
+        "status": status,
+        "label": label,
+        "source": source,
+        "quote_quality": quote_quality,
+        "primary": {k: _clean_value(v) for k, v in primary.items()},
+        "alternatives": [{k: _clean_value(v) for k, v in row.items()} for row in alternatives],
+        "risk_notes": risk_notes,
+        "next_step": next_step,
+        "saveable_count": len(saveable),
+        "primary_grade": grade,
+        "primary_lane": lane,
+        "primary_readiness": readiness,
+    }
+
+
 def build_option_chain_scan(
     query: str,
     data_dir: Path = DATA_DIR,
@@ -2062,6 +2149,7 @@ def build_option_chain_scan(
     limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
     summary = _option_chain_scan_summary(rows, max_premium)
     expiry_summary = _option_chain_expiry_summary(rows)
+    decision = _option_chain_decision_pack(rows, str(quote_quality), source)
     return {
         "ok": True,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -2082,6 +2170,7 @@ def build_option_chain_scan(
         "preset_label": preset_cfg.get("label"),
         "preset_description": preset_cfg.get("description"),
         "scan_summary": summary,
+        "decision": decision,
         "expiry_summary": expiry_summary,
         "filters": {
             "side": side_norm,
@@ -5284,6 +5373,18 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .pill.pass { border-color:rgba(16,185,129,.75); color:#bbf7d0; background:rgba(16,185,129,.14); }
 .pill.hold { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.14); }
 .setup-card .btn { justify-content:center; margin-top:auto; width:100%; }
+.decision-strip { border:1px solid #28405f; background:#0a1220; border-radius:8px; padding:12px; margin-bottom:12px; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(260px,.85fr); gap:12px; }
+.decision-main { display:grid; gap:10px; }
+.decision-main h3 { margin:0; font-size:18px; }
+.decision-main p { margin:0; color:#cbd5e1; line-height:1.45; font-size:13px; }
+.decision-metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:8px; }
+.decision-metric { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:9px; }
+.decision-metric span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
+.decision-metric strong { display:block; margin-top:5px; font-size:14px; }
+.decision-side { display:grid; gap:10px; align-content:start; }
+.decision-side ul { margin:0; padding-left:18px; color:#cbd5e1; font-size:12px; line-height:1.45; }
+.decision-alt { display:flex; flex-wrap:wrap; gap:6px; }
+.decision-alt .pill { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .review-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; margin-top:12px; }
 .review-card { border:1px solid var(--border); background:#0b1220; border-radius:8px; padding:12px; display:grid; gap:10px; min-height:168px; }
 .review-card.setup { border-left:4px solid var(--accent); }
@@ -5347,7 +5448,7 @@ tr.clickable-row:hover { background:#111c31; }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } }
 </style>
 </head>
 <body class="view-overview">
@@ -7214,12 +7315,53 @@ function optionContractCard(row) {
     <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save contract</button>
   </article>`;
 }
+function optionChainDecisionHtml(data) {
+  const decision = data.decision || {};
+  const primary = decision.primary || null;
+  if (!primary) return '';
+  const query = primary.contract_query || optionContractQuery(primary);
+  const context = optionContractContext(primary);
+  const risks = (decision.risk_notes || []).length
+    ? decision.risk_notes.map(note => `<li>${cell(note)}</li>`).join('')
+    : '<li>No major chain-level warnings surfaced.</li>';
+  const alternatives = (decision.alternatives || []).slice(0, 3).map(row => {
+    const label = row.contract_query || optionContractQuery(row);
+    return `<span class="pill">${cell(row.contract_grade || row.readiness_label || '-')}: ${cell(label)}</span>`;
+  }).join('');
+  return `<div class="decision-strip">
+    <div class="decision-main">
+      <div class="review-meta">
+        <span class="pill ${escAttr(primary.readiness_label || 'review')}">${cell(decision.label || 'Chain decision')}</span>
+        <span class="pill">${cell(decision.status || '-')}</span>
+        <span class="pill">${cell(decision.quote_quality || data.quote_quality || '-')}</span>
+      </div>
+      <h3>${cell(query || `${primary.symbol || ''} ${primary.side || ''} ${primary.strike || ''}`)}</h3>
+      <p>${cell(primary.review_thesis || decision.next_step || 'Review this contract before saving.')}</p>
+      <div class="decision-metrics">
+        <div class="decision-metric"><span>Grade</span><strong>${cell(primary.contract_grade || '-')} / ${cell(primary.review_lane || '-')}</strong></div>
+        <div class="decision-metric"><span>Premium</span><strong>${moneyShort(primary.premium_dollars)}</strong></div>
+        <div class="decision-metric"><span>Spread</span><strong>${pct(primary.spread_pct)}</strong></div>
+        <div class="decision-metric"><span>DTE</span><strong>${cell(primary.dte)}</strong></div>
+        <div class="decision-metric"><span>Open interest</span><strong>${cell(primary.openInterest)}</strong></div>
+        <div class="decision-metric"><span>Quality</span><strong>${cell(primary.contract_quality_score)}</strong></div>
+      </div>
+      <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save primary contract</button>
+    </div>
+    <div class="decision-side">
+      <div class="brief-list"><h4>Review risks</h4><ul>${risks}</ul></div>
+      <div class="brief-list"><h4>Next step</h4><ul><li>${cell(decision.next_step || 'Refresh and compare before acting.')}</li><li>${cell(decision.saveable_count || 0)} A/B contract(s) saveable under these filters.</li></ul></div>
+      <div class="decision-alt">${alternatives || '<span class="pill">No close alternatives</span>'}</div>
+    </div>
+  </div>`;
+}
 function optionChainResultsHtml(data) {
   const rows = data.rows || [];
   if (!rows.length) return '<div class="empty">No contracts matched these filters.</div>';
+  const decision = optionChainDecisionHtml(data);
   const topCards = rows.slice(0, 6).map(optionContractCard).join('');
   const expiryRows = data.expiry_summary || [];
   return `<div style="padding:12px">
+    ${decision}
     <div class="setup-grid">${topCards}</div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Expiration quality</h4>${table(expiryRows)}</div>

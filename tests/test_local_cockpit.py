@@ -153,6 +153,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Shortlist chain sweep" in html
     assert "optionChainResultsHtml" in html
     assert "optionChainBatchResultsHtml" in html
+    assert "optionChainDecisionHtml" in html
+    assert "Save primary contract" in html
+    assert "decision-strip" in html
     assert "Save best A/B contracts" in html
     assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
@@ -1644,6 +1647,11 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["scan_summary"]["best_long_dated"].startswith("C 220")
     assert report["scan_summary"]["grade_counts"]["A"] == 1
     assert report["scan_summary"]["primary_review_count"] == 1
+    assert report["decision"]["status"] == "primary_review"
+    assert report["decision"]["label"] == "Best contract"
+    assert report["decision"]["primary"]["contract_query"] == "AAPL 2027-01-15 C 220"
+    assert report["decision"]["saveable_count"] == 1
+    assert "Quote may be free/delayed" in " ".join(report["decision"]["risk_notes"])
     assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
     assert report["expiry_summary"][0]["reviewable_count"] == 1
 
