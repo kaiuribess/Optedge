@@ -6286,6 +6286,78 @@ def _build_sec_dilution_risk_summary(data_dir: Path, limit: int = 12) -> dict[st
     }
 
 
+def _packet_focus_query(
+    command: dict[str, Any],
+    today: dict[str, Any],
+    gated: dict[str, Any],
+    paper: dict[str, Any],
+    chain: dict[str, Any],
+) -> str | None:
+    action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
+    candidates: list[Any] = [
+        action.get("symbol"),
+        action.get("query"),
+    ]
+    for block, fields in (
+        (paper.get("rows") if isinstance(paper, dict) else [], ["ticker_or_symbol", "contract"]),
+        (gated.get("rows") if isinstance(gated, dict) else [], ["ticker_or_symbol", "ticker", "symbol"]),
+        (today.get("rows") if isinstance(today, dict) else [], ["symbol", "query"]),
+        (chain.get("rows") if isinstance(chain, dict) else [], ["ticker", "symbol", "contract"]),
+    ):
+        for row in block or []:
+            if not isinstance(row, dict):
+                continue
+            candidates.extend(row.get(field) for field in fields)
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text and text.lower() != "nan":
+            return text
+    return None
+
+
+def _build_packet_data_trust_summary(data_dir: Path, query: str | None) -> dict[str, Any]:
+    """Compact provider-readiness check for the swing packet focus symbol."""
+    if not query:
+        return {
+            "status": "missing",
+            "query": None,
+            "symbol": None,
+            "data_trust": {"label": "unknown", "score": 0, "history_source_summary": "none"},
+            "rows": [],
+            "warnings": ["No focus symbol was available for a data-trust probe."],
+            "notes": ["The packet can show source trust once a setup, saved contract, or next action has a symbol."],
+        }
+    report = build_provider_status(data_dir, query=query, include_chain=False)
+    trust = report.get("data_trust") if isinstance(report.get("data_trust"), dict) else {}
+    return {
+        "generated_at": report.get("generated_at"),
+        "status": report.get("status"),
+        "query": report.get("query"),
+        "symbol": report.get("symbol"),
+        "ok_count": report.get("ok_count", 0),
+        "provider_count": report.get("provider_count", 0),
+        "data_trust": {
+            "label": trust.get("label"),
+            "score": trust.get("score"),
+            "history_ok_count": trust.get("history_ok_count"),
+            "history_provider_count": trust.get("history_provider_count"),
+            "history_source_summary": trust.get("history_source_summary"),
+            "history_quality_counts": trust.get("history_quality_counts") or {},
+            "option_chain_status": "handled_by_chain_shortlist",
+            "symbol_cache_ok_count": trust.get("symbol_cache_ok_count"),
+        },
+        "rows": _packet_rows(report.get("rows"), [
+            "provider", "category", "status", "latency_ms", "rows",
+            "history_source", "history_quality", "last_close", "note",
+        ], limit=6),
+        "warnings": report.get("warnings") or [],
+        "notes": [
+            "This quick check probes no-key/free history and symbol-search sources for the packet focus.",
+            "The packet chain shortlist is the option-contract source check; this card skips a duplicate chain pull.",
+        ],
+    }
+
+
 def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     label = str(action.get("label") or "Review local research").strip()
@@ -6300,6 +6372,8 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
     sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
+    data_trust = packet.get("data_trust_check") if isinstance(packet.get("data_trust_check"), dict) else {}
+    trust = data_trust.get("data_trust") if isinstance(data_trust.get("data_trust"), dict) else {}
     lines = [
         "# Optedge Swing Packet",
         "",
@@ -6339,6 +6413,19 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         lines.append(
             f"- {row.get('asset', '-')}: {row.get('ticker_or_symbol', '-')} "
             f"{row.get('action', '')} qty {row.get('quantity', '-')}"
+        )
+    lines.extend([
+        "",
+        "## Focus Data Trust",
+        f"- Symbol: {data_trust.get('symbol') or data_trust.get('query') or '-'}",
+        f"- Status: {data_trust.get('status') or '-'}",
+        f"- Trust: {trust.get('label') or '-'} ({trust.get('score') or 0}/100)",
+        f"- History sources: {trust.get('history_source_summary') or '-'}",
+    ])
+    for row in data_trust.get("rows", [])[:6]:
+        lines.append(
+            f"- {row.get('provider', '-')}: {row.get('status', '-')} "
+            f"{row.get('history_source') or row.get('note') or ''}"
         )
     lines.extend([
         "",
@@ -6490,6 +6577,15 @@ def build_swing_packet(
         if chain_refresh.get("attempted") and not chain_refresh.get("ok") and chain_refresh.get("error"):
             notes.append(f"3m+ chain refresh warning: {chain_refresh.get('error')}")
     chain = _packet_call(notes, "Chain shortlist", {"status": "missing", "rows": []}, _build_chain_shortlist_summary, data_dir)
+    focus_query = _packet_focus_query(command, today, gated, paper, chain)
+    data_trust = _packet_call(
+        notes,
+        "Focus data trust",
+        {"status": "unknown", "rows": [], "data_trust": {"label": "unknown", "score": 0}},
+        _build_packet_data_trust_summary,
+        data_dir,
+        focus_query,
+    )
     artifacts = {
         "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
         "validation_report": str(artifact_path("validation-report", data_dir)) if artifact_path("validation-report", data_dir) else None,
@@ -6552,6 +6648,7 @@ def build_swing_packet(
                 "confidence", "rank_score", "trade_status", "reason_selected",
             ], limit=8),
         },
+        "data_trust_check": data_trust,
         "chain_refresh": chain_refresh,
         "chain_shortlist": chain,
         "sec_dilution_risk": sec_risk,
@@ -7799,11 +7896,22 @@ function swingPacketHtml(data) {
   const chainRefresh = data.chain_refresh || {};
   const paper = data.paper_candidates || {};
   const secRisk = data.sec_dilution_risk || {};
+  const trustCheck = data.data_trust_check || {};
+  const trust = trustCheck.data_trust || {};
   const todayRows = (data.today_review && data.today_review.rows) || [];
   const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
   const paperRows = paper.rows || [];
   const chainRows = chain.rows || [];
   const secRows = secRisk.rows || [];
+  const trustRows = (trustCheck.rows || []).slice(0, 6).map(r => ({
+    provider: r.provider,
+    status: r.status,
+    source: r.history_source || '-',
+    quality: r.history_quality || '-',
+    rows: r.rows,
+    ms: r.latency_ms,
+    note: r.note
+  }));
   const chainCards = chainRows.length
     ? `<div class="setup-grid">${chainRows.slice(0, 6).map(optionContractCard).join('')}</div>
        <div class="brief-list" style="margin-top:10px"><h4>Comparison table</h4>${table(chainRows.slice(0, 8), true)}</div>`
@@ -7822,12 +7930,22 @@ function swingPacketHtml(data) {
     ${secRiskRows.length ? table(secRiskRows, true) : '<div class="empty">No recent offering or dilution filings surfaced for saved research targets.</div>'}
     ${(secRisk.notes || []).length ? `<ul>${secRisk.notes.slice(0, 3).map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>` : ''}
   </div>`;
+  const trustBlock = `<div class="brief-list">
+    <h4>Focus data trust</h4>
+    <div class="review-meta">
+      <span class="pill">${cell(trustCheck.symbol || trustCheck.query || '-')}</span>
+      <span>${cell(trust.label || 'unknown')} ${cell(trust.score || 0)}/100</span>
+      <span>${cell(trust.history_source_summary || 'no history source')}</span>
+    </div>
+    ${trustRows.length ? table(trustRows, true) : '<div class="empty">No focus data-trust probe available yet.</div>'}
+  </div>`;
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
     <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
     <div class="brief-tile"><span>Risk</span><strong>${cell(command.risk_level || '-')}</strong></div>
     <div class="brief-tile"><span>Climate</span><strong>${cell(climate.climate_label || command.climate_label || '-')}</strong></div>
     <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
+    <div class="brief-tile"><span>Focus trust</span><strong>${cell(trust.label || 'unknown')} ${cell(trust.score || 0)}</strong></div>
     <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain refreshed</span><strong>${cell(chainRefresh.attempted ? ((chainRefresh.row_count || 0) + ' rows') : 'no')}</strong></div>
     <div class="brief-tile"><span>SEC offering risk</span><strong>${cell(secRisk.status || 'unknown')}</strong></div>
@@ -7861,6 +7979,7 @@ function swingPacketHtml(data) {
     <div class="brief-cols">
       <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
       <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
+      ${trustBlock}
       ${secRiskBlock}
       <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
       ${notes}

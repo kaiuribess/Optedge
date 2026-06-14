@@ -164,6 +164,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write export files" in html
     assert "Chain shortlist" in html
     assert "/artifact/option-chain-shortlist" in html
+    assert "Focus data trust" in html
     assert "SEC offering risk" in html
     assert "SEC dilution / offering risk" in html
     assert "Agentic options queue" in html
@@ -739,6 +740,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         old_gated = cockpit_module.build_climate_gated_setups
         old_paper = cockpit_module.build_paper_candidates
         old_sec = cockpit_module.build_watchlist_sec_filings
+        old_provider = cockpit_module.build_provider_status
 
         cockpit_module.build_command_center = lambda *args, **kwargs: {
             "status": "ready_to_review",
@@ -847,6 +849,49 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
             }],
             "notes": [],
         }
+        cockpit_module.build_provider_status = lambda *args, **kwargs: {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "query": kwargs.get("query") or "AAPL",
+            "symbol": "AAPL",
+            "status": "ok",
+            "ok_count": 4,
+            "provider_count": 5,
+            "data_trust": {
+                "label": "ready",
+                "score": 88,
+                "history_ok_count": 2,
+                "history_provider_count": 3,
+                "history_source_summary": "yahoo_chart, nasdaq_historical",
+                "history_quality_counts": {"free_or_delayed": 2},
+                "option_chain_status": "skipped",
+                "symbol_cache_ok_count": 2,
+            },
+            "rows": [
+                {
+                    "provider": "Yahoo chart",
+                    "category": "history",
+                    "status": "ok",
+                    "latency_ms": 12.0,
+                    "rows": 22,
+                    "history_source": "yahoo_chart",
+                    "history_quality": "free_or_delayed",
+                    "last_close": 200.0,
+                    "note": "Returned OHLCV rows.",
+                },
+                {
+                    "provider": "Nasdaq historical",
+                    "category": "history",
+                    "status": "ok",
+                    "latency_ms": 9.0,
+                    "rows": 22,
+                    "history_source": "nasdaq_historical",
+                    "history_quality": "free_or_delayed",
+                    "last_close": 200.0,
+                    "note": "Returned OHLCV rows.",
+                },
+            ],
+            "warnings": [],
+        }
         (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
             "generated_at": "2026-06-13T20:00:00+00:00",
             "rows": [{
@@ -891,6 +936,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
             cockpit_module.build_climate_gated_setups = old_gated
             cockpit_module.build_paper_candidates = old_paper
             cockpit_module.build_watchlist_sec_filings = old_sec
+            cockpit_module.build_provider_status = old_provider
 
         assert packet["does_not_place_orders"] is True
         assert packet["wrote_files"] is True
@@ -904,6 +950,9 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["sec_dilution_risk"]["status"] == "block_new_bullish_options"
         assert packet["sec_dilution_risk"]["count"] == 1
         assert packet["sec_dilution_risk"]["rows"][0]["form"] == "S-3"
+        assert packet["data_trust_check"]["symbol"] == "AAPL"
+        assert packet["data_trust_check"]["data_trust"]["label"] == "ready"
+        assert packet["data_trust_check"]["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
         json_path = data_dir / "swing_packet.json"
         md_path = data_dir / "swing_packet.md"
         assert json_path.exists()
@@ -913,6 +962,8 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         md = md_path.read_text(encoding="utf-8")
         assert "No broker execution is performed" in md
         assert "AAPL 2027-01-15 C 220" in md
+        assert "Focus Data Trust" in md
+        assert "yahoo_chart, nasdaq_historical" in md
         assert "SEC Dilution / Offering Risk" in md
         assert "S-3" in md
 
@@ -927,6 +978,7 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
         old_paper = cockpit_module.build_paper_candidates
         old_batch = cockpit_module.build_option_chain_batch
         old_writer = cockpit_module.write_option_chain_shortlist
+        old_provider = cockpit_module.build_provider_status
         calls = {"batch": 0, "writer": 0}
 
         cockpit_module.build_command_center = lambda *args, **kwargs: {
@@ -953,6 +1005,26 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
             "selected_count": 0,
             "excluded_count": 0,
             "rows": [],
+        }
+        cockpit_module.build_provider_status = lambda *args, **kwargs: {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "query": kwargs.get("query") or "AAPL",
+            "symbol": "AAPL",
+            "status": "ok",
+            "ok_count": 3,
+            "provider_count": 5,
+            "data_trust": {
+                "label": "ready",
+                "score": 80,
+                "history_ok_count": 1,
+                "history_provider_count": 3,
+                "history_source_summary": "yahoo_chart",
+                "history_quality_counts": {"free_or_delayed": 1},
+                "option_chain_status": "skipped",
+                "symbol_cache_ok_count": 2,
+            },
+            "rows": [],
+            "warnings": [],
         }
 
         def fake_batch(*args, **kwargs):
@@ -1026,6 +1098,7 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
             cockpit_module.build_paper_candidates = old_paper
             cockpit_module.build_option_chain_batch = old_batch
             cockpit_module.write_option_chain_shortlist = old_writer
+            cockpit_module.build_provider_status = old_provider
 
         assert calls == {"batch": 1, "writer": 1}
         assert packet["chain_refresh"]["attempted"] is True
@@ -1034,6 +1107,7 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
         assert packet["chain_shortlist"]["status"] == "ready"
         assert packet["chain_shortlist"]["count"] == 1
         assert packet["chain_shortlist"]["rows"][0]["contract"] == "AAPL 2027-01-15 C 220"
+        assert packet["data_trust_check"]["data_trust"]["label"] == "ready"
         assert (data_dir / "swing_packet.json").exists()
         assert (data_dir / "swing_packet.md").exists()
 
