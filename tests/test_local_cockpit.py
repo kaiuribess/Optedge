@@ -164,6 +164,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write export files" in html
     assert "Chain shortlist" in html
     assert "/artifact/option-chain-shortlist" in html
+    assert "SEC offering risk" in html
+    assert "SEC dilution / offering risk" in html
     assert "Agentic options queue" in html
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
@@ -736,6 +738,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         old_climate = cockpit_module.build_swing_climate
         old_gated = cockpit_module.build_climate_gated_setups
         old_paper = cockpit_module.build_paper_candidates
+        old_sec = cockpit_module.build_watchlist_sec_filings
 
         cockpit_module.build_command_center = lambda *args, **kwargs: {
             "status": "ready_to_review",
@@ -823,6 +826,27 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
                 "reason_selected": "passed filters",
             }],
         }
+        cockpit_module.build_watchlist_sec_filings = lambda *args, **kwargs: {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "symbols_checked": 1,
+            "filing_count": 1,
+            "fresh_count": 1,
+            "high_impact_count": 1,
+            "error_count": 0,
+            "rows": [{
+                "priority": 99,
+                "ticker": "AAPL",
+                "company_name": "Apple Inc.",
+                "form": "S-3",
+                "filing_date": datetime.now(timezone.utc).date().isoformat(),
+                "days_old": 0,
+                "freshness": "fresh",
+                "signal": "dilution_or_offering_watch",
+                "description": "Shelf registration statement",
+                "url": "https://www.sec.gov/aapl",
+            }],
+            "notes": [],
+        }
         (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
             "generated_at": "2026-06-13T20:00:00+00:00",
             "rows": [{
@@ -866,6 +890,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
             cockpit_module.build_swing_climate = old_climate
             cockpit_module.build_climate_gated_setups = old_gated
             cockpit_module.build_paper_candidates = old_paper
+            cockpit_module.build_watchlist_sec_filings = old_sec
 
         assert packet["does_not_place_orders"] is True
         assert packet["wrote_files"] is True
@@ -876,6 +901,9 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["chain_shortlist"]["rows"][0]["openInterest"] == 1200
         assert packet["chain_shortlist"]["rows"][0]["breakeven_move_pct"] == 0.125
         assert packet["chain_shortlist"]["rows"][0]["contract_grade"] == "A"
+        assert packet["sec_dilution_risk"]["status"] == "block_new_bullish_options"
+        assert packet["sec_dilution_risk"]["count"] == 1
+        assert packet["sec_dilution_risk"]["rows"][0]["form"] == "S-3"
         json_path = data_dir / "swing_packet.json"
         md_path = data_dir / "swing_packet.md"
         assert json_path.exists()
@@ -885,6 +913,8 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         md = md_path.read_text(encoding="utf-8")
         assert "No broker execution is performed" in md
         assert "AAPL 2027-01-15 C 220" in md
+        assert "SEC Dilution / Offering Risk" in md
+        assert "S-3" in md
 
 
 def test_swing_packet_can_refresh_chain_shortlist_on_demand():

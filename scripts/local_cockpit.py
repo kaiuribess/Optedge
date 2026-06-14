@@ -6197,6 +6197,95 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
     }
 
 
+OFFERING_RISK_FORMS = {"S-1", "S-3", "F-1", "F-3", "424B2", "424B3", "424B4", "424B5"}
+
+
+def _is_offering_risk_row(row: dict[str, Any]) -> bool:
+    form = str(row.get("form") or "").upper().strip()
+    signal = str(row.get("signal") or row.get("filing_signal") or "").lower()
+    description = str(row.get("description") or "").lower()
+    return (
+        form in OFFERING_RISK_FORMS
+        or "dilution" in signal
+        or "offering" in signal
+        or "shelf registration" in description
+        or "prospectus" in description
+    )
+
+
+def _build_sec_dilution_risk_summary(data_dir: Path, limit: int = 12) -> dict[str, Any]:
+    """Summarize official no-key SEC offering risk for the swing packet."""
+    limit = max(1, min(int(limit or 12), 25))
+    report = build_watchlist_sec_filings(data_dir, limit=max(40, limit * 3))
+    rows = report.get("rows", []) if isinstance(report, dict) else []
+    risk_rows: list[dict[str, Any]] = []
+    for raw in rows:
+        if not isinstance(raw, dict) or not _is_offering_risk_row(raw):
+            continue
+        days_old = _float_value(raw.get("days_old"), default=9999.0)
+        if days_old <= 14:
+            risk_action = "avoid_new_bullish_options_until_review"
+        elif days_old <= 45:
+            risk_action = "review_before_new_bullish_options"
+        else:
+            risk_action = "monitor_only"
+        risk_rows.append({
+            "priority": raw.get("priority"),
+            "ticker": raw.get("ticker"),
+            "company_name": raw.get("company_name"),
+            "form": raw.get("form"),
+            "filing_date": raw.get("filing_date"),
+            "days_old": raw.get("days_old"),
+            "signal": raw.get("signal"),
+            "risk_action": risk_action,
+            "description": raw.get("description"),
+            "url": raw.get("url"),
+        })
+    risk_rows = sorted(
+        risk_rows,
+        key=lambda row: (
+            _float_value(row.get("priority"), default=0.0),
+            -_float_value(row.get("days_old"), default=9999.0),
+        ),
+        reverse=True,
+    )[:limit]
+    fresh_symbols = sorted({
+        str(row.get("ticker") or "").upper()
+        for row in risk_rows
+        if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 14
+    })
+    watch_symbols = sorted({
+        str(row.get("ticker") or "").upper()
+        for row in risk_rows
+        if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 45
+    })
+    if fresh_symbols:
+        status = "block_new_bullish_options"
+    elif risk_rows:
+        status = "watch_offering_risk"
+    else:
+        status = "clear"
+    notes = [
+        "Uses the official no-key SEC submissions feed already powering the filing monitor.",
+        "Recent shelf/prospectus/offering filings should be reviewed before opening bullish calls.",
+    ]
+    if not report.get("symbols_checked"):
+        notes.append("Add symbols to the research watchlist to monitor SEC filing risk.")
+    return {
+        "generated_at": _now_iso(),
+        "status": status,
+        "count": len(risk_rows),
+        "fresh_symbol_count": len(fresh_symbols),
+        "symbols": watch_symbols,
+        "fresh_symbols": fresh_symbols,
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in risk_rows],
+        "source_filing_count": report.get("filing_count", 0),
+        "symbols_checked": report.get("symbols_checked", 0),
+        "error_count": report.get("error_count", 0),
+        "notes": notes,
+    }
+
+
 def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     label = str(action.get("label") or "Review local research").strip()
@@ -6210,6 +6299,7 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
+    sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
     lines = [
         "# Optedge Swing Packet",
         "",
@@ -6260,6 +6350,18 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         lines.append(
             f"- {row.get('contract', '-')} mid {row.get('mid', '-')} "
             f"DTE {row.get('dte', '-')} fit {row.get('swing_fit_label', '-')}"
+        )
+    lines.extend([
+        "",
+        "## SEC Dilution / Offering Risk",
+        f"- Status: {sec_risk.get('status') or '-'}",
+        f"- Symbols checked: {sec_risk.get('symbols_checked') or 0}",
+        f"- Risk rows: {sec_risk.get('count') or 0}",
+    ])
+    for row in sec_risk.get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('ticker', '-')}: {row.get('form', '-')} "
+            f"{row.get('filing_date', '-')} -> {row.get('risk_action', '-')}"
         )
     lines.extend(["", "## Notes"])
     for note in packet.get("notes", []):
@@ -6361,6 +6463,19 @@ def build_swing_packet(
         dry_run=False,
         write=False,
     )
+    sec_risk = _packet_call(
+        notes,
+        "SEC dilution risk",
+        {"status": "unknown", "count": 0, "rows": [], "notes": []},
+        _build_sec_dilution_risk_summary,
+        data_dir,
+    )
+    if sec_risk.get("status") == "block_new_bullish_options":
+        symbols = ", ".join(sec_risk.get("fresh_symbols") or sec_risk.get("symbols") or [])
+        notes.append(
+            "SEC offering risk active; review before opening new bullish options"
+            + (f" on {symbols}." if symbols else ".")
+        )
     chain_refresh = {"attempted": False}
     if refresh_chains:
         chain_refresh = _packet_call(
@@ -6439,6 +6554,7 @@ def build_swing_packet(
         },
         "chain_refresh": chain_refresh,
         "chain_shortlist": chain,
+        "sec_dilution_risk": sec_risk,
         "artifacts": artifacts,
         "notes": notes,
         "wrote_files": False,
@@ -7682,14 +7798,30 @@ function swingPacketHtml(data) {
   const chain = data.chain_shortlist || {};
   const chainRefresh = data.chain_refresh || {};
   const paper = data.paper_candidates || {};
+  const secRisk = data.sec_dilution_risk || {};
   const todayRows = (data.today_review && data.today_review.rows) || [];
   const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
   const paperRows = paper.rows || [];
   const chainRows = chain.rows || [];
+  const secRows = secRisk.rows || [];
   const chainCards = chainRows.length
     ? `<div class="setup-grid">${chainRows.slice(0, 6).map(optionContractCard).join('')}</div>
        <div class="brief-list" style="margin-top:10px"><h4>Comparison table</h4>${table(chainRows.slice(0, 8), true)}</div>`
     : '<div class="empty">No saved 3m+ chain shortlist yet. Use Write + 3m+ chain scan to build one.</div>';
+  const secRiskRows = secRows.slice(0, 8).map(r => ({
+    ticker: r.ticker,
+    form: r.form,
+    date: r.filing_date,
+    age: r.days_old,
+    action: r.risk_action,
+    signal: r.signal,
+    description: r.description
+  }));
+  const secRiskBlock = `<div class="brief-list">
+    <h4>SEC dilution / offering risk</h4>
+    ${secRiskRows.length ? table(secRiskRows, true) : '<div class="empty">No recent offering or dilution filings surfaced for saved research targets.</div>'}
+    ${(secRisk.notes || []).length ? `<ul>${secRisk.notes.slice(0, 3).map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>` : ''}
+  </div>`;
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
     <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
@@ -7698,6 +7830,7 @@ function swingPacketHtml(data) {
     <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain refreshed</span><strong>${cell(chainRefresh.attempted ? ((chainRefresh.row_count || 0) + ' rows') : 'no')}</strong></div>
+    <div class="brief-tile"><span>SEC offering risk</span><strong>${cell(secRisk.status || 'unknown')}</strong></div>
     <div class="brief-tile"><span>Paper candidates</span><strong>${cell(paper.selected_count || 0)}</strong></div>
     <div class="brief-tile"><span>Files written</span><strong>${cell(data.wrote_files ? 'yes' : 'no')}</strong></div>
   </div>`;
@@ -7728,6 +7861,7 @@ function swingPacketHtml(data) {
     <div class="brief-cols">
       <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
       <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
+      ${secRiskBlock}
       <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
       ${notes}
     </div>
