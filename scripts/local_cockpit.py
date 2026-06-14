@@ -4340,11 +4340,13 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
     notes: list[str] = []
     climate_label = None
     climate_score = None
+    climate_posture = None
 
     try:
         gated = build_climate_gated_setups(data_dir, per_asset=4, limit=12, include_held=True)
         climate_label = gated.get("climate_label")
         climate_score = gated.get("climate_score")
+        climate_posture = gated.get("posture")
         for idx, row in enumerate((gated.get("rows") or [])[:8]):
             symbol = row.get("ticker_or_symbol")
             asset = row.get("asset")
@@ -4515,6 +4517,7 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         "count": len(rows),
         "climate_label": _clean_value(climate_label),
         "climate_score": _clean_value(climate_score),
+        "climate_posture": _clean_value(climate_posture),
         "category_counts": category_counts,
         "action_counts": action_counts,
         "review_now_count": sum(1 for row in rows if row.get("action") in {"scan_swing_chain", "refresh_saved_quote"}),
@@ -4525,6 +4528,106 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         "notes": notes + [
             "Today Review merges local setup gates, saved contracts, open-position risk, and action queue items.",
             "Open moves are routing actions only; no broker execution is performed.",
+        ],
+    }
+
+
+def _command_center_status(health_status: str, risk_level: str, review_count: int) -> tuple[str, str]:
+    health = str(health_status or "unknown").lower()
+    risk = str(risk_level or "unknown").lower()
+    if health == "bad" or risk in {"high", "critical"}:
+        return "fix_first", "Fix data or risk before adding new ideas."
+    if health == "warn" or risk in {"elevated", "medium"}:
+        return "review_first", "Review warnings, then only act on the cleanest setup."
+    if review_count > 0:
+        return "ready_to_review", "Review the top queue item before opening anything new."
+    return "quiet", "No urgent queue items surfaced; wait or run a fresh scan."
+
+
+def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Build a first-screen decision summary from local cockpit artifacts."""
+    health = build_data_health(data_dir)
+    today = build_today_review(data_dir, limit=8)
+    risk = build_risk_summary(data_dir)
+    sources = build_free_data_sources(data_dir)
+    performance = build_performance_summary(data_dir)
+
+    checks = health.get("checks") if isinstance(health.get("checks"), list) else []
+    health_counts = {
+        "ok": sum(1 for row in checks if row.get("level") == "ok"),
+        "warn": sum(1 for row in checks if row.get("level") == "warn"),
+        "bad": sum(1 for row in checks if row.get("level") == "bad"),
+    }
+    first_action = (today.get("rows") or [{}])[0] if isinstance(today.get("rows"), list) else {}
+    status, status_detail = _command_center_status(
+        str(health.get("status") or "unknown"),
+        str(risk.get("risk_level") or "unknown"),
+        int(_float_value(today.get("count"), default=0.0)),
+    )
+    cards = [
+        {
+            "label": "Market posture",
+            "value": today.get("climate_label") or "-",
+            "detail": today.get("climate_posture") or "Use the swing climate panel for the full playbook.",
+            "tone": "good" if _float_value(today.get("climate_score"), default=50.0) >= 60 else "warn",
+        },
+        {
+            "label": "Data trust",
+            "value": health.get("status") or "-",
+            "detail": f"{health_counts['bad']} bad / {health_counts['warn']} warning health checks.",
+            "tone": "bad" if health_counts["bad"] else "warn" if health_counts["warn"] else "good",
+        },
+        {
+            "label": "Open risk",
+            "value": risk.get("risk_level") or "-",
+            "detail": f"{risk.get('attention_count', 0)} attention item(s), {risk.get('high_exit_pressure_count', 0)} high-pressure exit(s).",
+            "tone": "bad" if str(risk.get("risk_level") or "").lower() in {"high", "critical"} else "warn" if risk.get("attention_count") else "good",
+        },
+        {
+            "label": "Free source stack",
+            "value": f"{sources.get('no_key_count', 0)}/{sources.get('source_count', 0)}",
+            "detail": "No-key sources currently wired into the cockpit.",
+            "tone": "good",
+        },
+        {
+            "label": "Runtime",
+            "value": f"{performance.get('total_latest_engine_sec', 0)}s",
+            "detail": f"{len(performance.get('warnings') or [])} speed/data warning(s).",
+            "tone": "warn" if performance.get("warnings") else "good",
+        },
+    ]
+    next_action = {
+        "priority": first_action.get("priority"),
+        "label": first_action.get("label") or "No urgent action",
+        "detail": first_action.get("detail") or status_detail,
+        "action": first_action.get("action") or "open_research",
+        "route": first_action.get("route") or "research",
+        "symbol": first_action.get("symbol"),
+        "query": first_action.get("query") or first_action.get("symbol"),
+        "source": first_action.get("source"),
+    }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "status_detail": status_detail,
+        "climate_label": today.get("climate_label"),
+        "climate_score": today.get("climate_score"),
+        "review_count": today.get("count", 0),
+        "review_now_count": today.get("review_now_count", 0),
+        "data_health_status": health.get("status"),
+        "health_counts": health_counts,
+        "risk_level": risk.get("risk_level"),
+        "total_open": risk.get("total_open", health.get("total_open", 0)),
+        "source_count": sources.get("source_count", 0),
+        "no_key_count": sources.get("no_key_count", 0),
+        "primary_source_count": sources.get("primary_count", 0),
+        "next_action": {k: _clean_value(v) for k, v in next_action.items()},
+        "cards": [{k: _clean_value(v) for k, v in row.items()} for row in cards],
+        "top_queue": today.get("rows", [])[:4],
+        "notes": [
+            "Command Center is a first-pass review surface built from local Optedge artifacts.",
+            "It does not place trades and does not replace the detailed panels below.",
+            "If data trust is warn/bad, refresh or inspect artifacts before acting on any setup.",
         ],
     }
 
@@ -4986,6 +5089,24 @@ input:focus, select:focus { outline:none; border-color:var(--accent); }
 .review-card h3 { margin:0; font-size:15px; line-height:1.25; }
 .review-card p { margin:0; color:#cbd5e1; font-size:12px; line-height:1.45; }
 .review-meta { display:flex; flex-wrap:wrap; gap:6px; align-items:center; color:var(--muted); font-size:11px; }
+.command-shell { border:1px solid #26364c; background:#0b111c; border-radius:8px; padding:14px; margin-top:14px; display:grid; gap:12px; }
+.command-top { display:grid; grid-template-columns:minmax(0,1.3fr) minmax(280px,.7fr); gap:12px; align-items:stretch; }
+.command-hero { border:1px solid var(--border); background:#101827; border-radius:8px; padding:16px; display:flex; flex-direction:column; gap:12px; min-height:190px; }
+.command-eyebrow { color:var(--muted); text-transform:uppercase; letter-spacing:.7px; font-size:11px; }
+.command-title { font-size:26px; line-height:1.08; font-weight:700; margin:0; }
+.command-detail { color:#cbd5e1; line-height:1.45; margin:0; }
+.command-action { border:1px solid var(--border); background:#0a1220; border-radius:8px; padding:14px; display:grid; gap:10px; }
+.command-action h3 { margin:0; font-size:16px; }
+.command-action p { margin:0; color:#cbd5e1; font-size:12px; line-height:1.45; }
+.command-action .pill { justify-self:start; }
+.command-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; }
+.command-card { border:1px solid var(--border); background:#0a1220; border-radius:8px; padding:12px; min-height:104px; }
+.command-card span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
+.command-card strong { display:block; margin-top:6px; font-size:18px; }
+.command-card p { margin:8px 0 0; color:#cbd5e1; font-size:12px; line-height:1.35; }
+.command-card.good { border-color:rgba(16,185,129,.45); }
+.command-card.warn { border-color:rgba(245,158,11,.55); }
+.command-card.bad { border-color:rgba(239,68,68,.55); }
 .priority-badge { display:inline-flex; align-items:center; justify-content:center; min-width:34px; border:1px solid var(--border); border-radius:999px; padding:4px 8px; font-size:12px; font-weight:700; color:var(--text); background:#111827; }
 .priority-badge.hot { border-color:rgba(239,68,68,.75); color:#fecaca; background:rgba(239,68,68,.12); }
 .priority-badge.warm { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.12); }
@@ -5015,7 +5136,7 @@ tr.clickable-row:hover { background:#111c31; }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } }
 </style>
 </head>
 <body class="view-overview">
@@ -5054,6 +5175,12 @@ tr.clickable-row:hover { background:#111c31; }
     <button class="view-tab" type="button" data-view="research">Research</button>
     <button class="view-tab" type="button" data-view="all">All</button>
   </nav>
+  <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Command center</h2>
+    <div class="muted">Fast first read: market posture, data trust, open risk, free-source coverage, and the next review action.</div>
+    <div class="status" id="command-center-status-text"></div>
+    <div id="command-center-results"></div>
+  </section>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Today review</h2>
     <div class="muted">One clean review queue from climate-cleared setups, saved option contracts, open-position risk, and local action items.</div>
@@ -5342,6 +5469,10 @@ tr.clickable-row:hover { background:#111c31; }
 const $ = (id) => document.getElementById(id);
 function escHtml(v) { return String(v || '').replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#39;').replaceAll('<', '&lt;').replaceAll('>', '&gt;'); }
 function cell(v) { return v === null || v === undefined || v === '' ? '-' : escHtml(String(v).slice(0, 220)); }
+function labelText(v) {
+  const text = String(v || '').replaceAll('_', ' ').trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : '-';
+}
 function escAttr(v) { return escHtml(v); }
 function rowSymbol(r) { return r.ticker || r.symbol || ''; }
 function rowLookupSymbol(r) { return r.ticker || r.symbol || r.ticker_or_symbol || ''; }
@@ -5557,6 +5688,49 @@ function climateGatedSetupsHtml(data) {
     </div>
     <div class="brief-list" style="margin-top:10px"><h4>Held for review</h4>${heldTable}</div>
     ${notes}
+  </div>`;
+}
+function commandCenterHtml(data) {
+  if (!data) return '<div class="empty">No command-center data available.</div>';
+  const action = data.next_action || {};
+  const cards = (data.cards || []).map(card => `<article class="command-card ${escAttr(card.tone || '')}">
+    <span>${cell(card.label)}</span>
+    <strong>${cell(labelText(card.value))}</strong>
+    <p>${cell(card.detail)}</p>
+  </article>`).join('');
+  const queue = (data.top_queue || []).length
+    ? `<div class="brief-list"><h4>Top queue</h4>${todayReviewTable(data.top_queue || [])}</div>`
+    : '<div class="empty">No top queue items surfaced.</div>';
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  const title = `${cell(labelText(data.status || 'review'))} - ${cell(labelText(data.climate_label || 'unknown climate'))}`;
+  return `<div class="command-shell">
+    <div class="command-top">
+      <div class="command-hero">
+        <div class="command-eyebrow">Local decision state</div>
+        <h3 class="command-title">${title}</h3>
+        <p class="command-detail">${cell(data.status_detail || '')}</p>
+        <div class="brief-grid">
+          <div class="brief-tile"><span>Climate score</span><strong>${cell(data.climate_score || '-')}</strong></div>
+          <div class="brief-tile"><span>Review queue</span><strong>${cell(data.review_count || 0)}</strong></div>
+          <div class="brief-tile"><span>Total open</span><strong>${cell(data.total_open || 0)}</strong></div>
+          <div class="brief-tile"><span>No-key sources</span><strong>${cell(data.no_key_count || 0)} / ${cell(data.source_count || 0)}</strong></div>
+        </div>
+      </div>
+      <aside class="command-action">
+        <span class="pill ${escAttr(reviewPriorityClass(action.priority))}">${cell(action.priority || 'next')}</span>
+        <h3>${cell(action.label || 'No urgent action')}</h3>
+        <p>${cell(action.detail || data.status_detail || '')}</p>
+        <div class="review-meta">
+          <span class="pill">${cell(action.source || 'local')}</span>
+          <span>${cell(action.symbol || action.query || '-')}</span>
+        </div>
+        <button class="btn command-center-action-btn" type="button" data-action="${escAttr(action.action || '')}" data-route="${escAttr(action.route || '')}" data-query="${escAttr(action.query || '')}" data-symbol="${escAttr(action.symbol || '')}">${escHtml(todayReviewActionLabel(action.action, action.route))}</button>
+      </aside>
+    </div>
+    <div class="command-card-grid">${cards}</div>
+    <div class="brief-cols">${queue}${notes}</div>
   </div>`;
 }
 function todayReviewHtml(data) {
@@ -6211,6 +6385,19 @@ function wireTodayReviewRows() {
     });
   });
 }
+function wireCommandCenter() {
+  document.querySelectorAll('.command-center-action-btn').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await routeTodayReviewAction(
+        btn.dataset.action || '',
+        btn.dataset.route || '',
+        btn.dataset.query || '',
+        btn.dataset.symbol || ''
+      );
+    });
+  });
+}
 function wireActionQueueRows() {
   document.querySelectorAll('.queue-action-btn').forEach(btn => {
     btn.addEventListener('click', async (event) => {
@@ -6245,6 +6432,15 @@ async function loadSummary() {
   $('data-health').className = healthClass((data.data_health && data.data_health.status) || 'ok');
   $('health-results').innerHTML = healthTable(data.data_health);
   $('notes').innerHTML = (data.notes || []).map(n => `<li>${n}</li>`).join('');
+}
+async function loadCommandCenter() {
+  $('command-center-status-text').textContent = 'Building command center...';
+  const res = await fetch('/api/command-center');
+  const data = await res.json();
+  const health = labelText(data.data_health_status || 'unknown').toLowerCase();
+  $('command-center-status-text').textContent = `${labelText(data.status || 'review')} with ${data.review_count || 0} review item(s), data health ${health}.`;
+  $('command-center-results').innerHTML = commandCenterHtml(data);
+  wireCommandCenter();
 }
 function jobClass(status) {
   if (status === 'completed') return 'good';
@@ -6872,7 +7068,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -6915,6 +7111,7 @@ $('watchlist-run').addEventListener('click', runWatchlist);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
 $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchlist-query', 'watchlist-suggestions', false));
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
+loadCommandCenter().catch(err => { $('command-center-status-text').textContent = 'Command center failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
 loadTodayReview().catch(err => { $('today-review-status-text').textContent = 'Today review failed'; console.error(err); });
@@ -6968,6 +7165,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/summary":
             self._send_json(build_summary(self.data_dir))
+            return
+        if parsed.path == "/api/command-center":
+            self._send_json(build_command_center(self.data_dir))
             return
         if parsed.path == "/api/data-health":
             self._send_json(build_data_health(self.data_dir))

@@ -14,7 +14,7 @@ from scripts.local_cockpit import (
     add_watchlist_queries, add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
-    build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
+    build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     build_today_review,
@@ -62,6 +62,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data health" in html
     assert "Opportunity quality" in html
     assert "opportunityQualityTable" in html
+    assert "Command center" in html
+    assert "/api/command-center" in html
+    assert "commandCenterHtml" in html
+    assert "loadCommandCenter" in html
+    assert "command-center-action-btn" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
@@ -566,6 +571,74 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         assert "refresh_saved_quote" in actions
         assert "open_position_monitor" in actions
         assert any(row["route"] == "chains" for row in review["rows"])
+
+
+def test_command_center_summarizes_next_action_and_data_trust():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_health = cockpit_module.build_data_health
+        old_today = cockpit_module.build_today_review
+        old_risk = cockpit_module.build_risk_summary
+        old_sources = cockpit_module.build_free_data_sources
+        old_perf = cockpit_module.build_performance_summary
+
+        cockpit_module.build_data_health = lambda *args, **kwargs: {
+            "status": "warn",
+            "total_open": 4,
+            "checks": [
+                {"level": "ok", "label": "Dashboard freshness", "detail": "fresh"},
+                {"level": "warn", "label": "Validation older than dashboard", "detail": "refresh"},
+            ],
+        }
+        cockpit_module.build_today_review = lambda *args, **kwargs: {
+            "count": 2,
+            "review_now_count": 1,
+            "climate_label": "constructive_selective",
+            "climate_score": 68,
+            "climate_posture": "Constructive, but stay selective.",
+            "rows": [{
+                "priority": 96,
+                "label": "Review saved option contract",
+                "detail": "AAPL 180d call has clean readiness.",
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "symbol": "AAPL",
+                "query": "AAPL 2026-12-18 C 220",
+                "source": "saved_option_contracts",
+            }],
+        }
+        cockpit_module.build_risk_summary = lambda *args, **kwargs: {
+            "risk_level": "elevated",
+            "total_open": 4,
+            "attention_count": 1,
+            "high_exit_pressure_count": 0,
+        }
+        cockpit_module.build_free_data_sources = lambda *args, **kwargs: {
+            "source_count": 17,
+            "no_key_count": 17,
+            "primary_count": 10,
+        }
+        cockpit_module.build_performance_summary = lambda *args, **kwargs: {
+            "total_latest_engine_sec": 92.4,
+            "warnings": [],
+        }
+        try:
+            center = build_command_center(data_dir)
+        finally:
+            cockpit_module.build_data_health = old_health
+            cockpit_module.build_today_review = old_today
+            cockpit_module.build_risk_summary = old_risk
+            cockpit_module.build_free_data_sources = old_sources
+            cockpit_module.build_performance_summary = old_perf
+
+        assert center["status"] == "review_first"
+        assert center["climate_label"] == "constructive_selective"
+        assert center["data_health_status"] == "warn"
+        assert center["health_counts"] == {"ok": 1, "warn": 1, "bad": 0}
+        assert center["next_action"]["action"] == "scan_swing_chain"
+        assert center["next_action"]["route"] == "chains"
+        assert center["no_key_count"] == 17
+        assert len(center["cards"]) == 5
 
 
 def test_enriched_watchlist_sorts_ready_ideas_first():
@@ -2001,6 +2074,7 @@ if __name__ == "__main__":
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
+    test_command_center_summarizes_next_action_and_data_trust()
     test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -2025,4 +2099,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("34/34 local cockpit tests passed")
+    print("35/35 local cockpit tests passed")
