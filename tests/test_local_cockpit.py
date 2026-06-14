@@ -125,6 +125,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "loadClimateGatedSetups" in html
     assert "Scan 3m+ chain" in html
     assert "setup-chain-btn" in html
+    assert "setup-scan-btn" in html
     assert "canScanOptionChainSymbol" in html
     assert "Save contract" in html
     assert "contract-watchlist-btn" in html

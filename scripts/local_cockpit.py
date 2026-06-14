@@ -9181,6 +9181,9 @@ function bestSetupCard(row) {
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
     : '';
+  const scanBtn = symbol
+    ? `<button class="btn setup-scan-btn" type="button" data-symbol="${escAttr(symbol)}">Run focused scan</button>`
+    : '';
   const swingRows = row.asset === 'option' && (row.swing_fit_label || row.swing_fit_score)
     ? `<div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
        <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>
@@ -9204,6 +9207,7 @@ function bestSetupCard(row) {
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Status</span><b>${cell(status)}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${scanBtn}
     ${chainBtn}
   </article>`;
 }
@@ -9235,6 +9239,9 @@ function swingScoutCard(row) {
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
     : '';
+  const scanBtn = symbol
+    ? `<button class="btn setup-scan-btn" type="button" data-symbol="${escAttr(symbol)}">Run focused scan</button>`
+    : '';
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(labelText(row.lane || 'swing scout'))}</small></div>
@@ -9252,6 +9259,7 @@ function swingScoutCard(row) {
     <div class="row"><span>Why</span><b>${cell(reasons || '-')}</b></div>
     <div class="row"><span>Warnings</span><b>${cell(warnings || 'clear')}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${scanBtn}
     ${chainBtn}
   </article>`;
 }
@@ -9288,6 +9296,9 @@ function climateGatedCard(row) {
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
     : '';
+  const scanBtn = symbol
+    ? `<button class="btn setup-scan-btn" type="button" data-symbol="${escAttr(symbol)}">Run focused scan</button>`
+    : '';
   const swingRows = row.asset === 'option' && (row.swing_fit_label || row.swing_fit_score)
     ? `<div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
        <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>`
@@ -9308,6 +9319,7 @@ function climateGatedCard(row) {
     ${swingRows}
     <div class="row"><span>Gate reason</span><b>${cell(reasons || 'passes climate gates')}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${scanBtn}
     ${chainBtn}
   </article>`;
 }
@@ -10143,6 +10155,17 @@ function wireSetupCards(root=document) {
       await scanOptionChain();
     });
   });
+  root.querySelectorAll('.setup-scan-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol || '';
+      if (!symbol) return;
+      setView('research');
+      $('symbol').value = symbol;
+      window.location.hash = 'lookup';
+      await runSymbol();
+      scrollToId('jobs');
+    });
+  });
 }
 function wireOptionChainActions(root=document) {
   root.querySelectorAll('.contract-watchlist-btn').forEach(btn => {
@@ -10268,9 +10291,8 @@ async function routeQueueAction(action, query, symbol) {
   if (action === 'run_focused_scan') {
     setView('research');
     $('symbol').value = q;
-    await lookup();
-    $('lookup-status').textContent += ' Ready for focused scan review.';
-    scrollToId('lookup-results');
+    await runSymbol();
+    scrollToId('jobs');
     return;
   }
   if (action === 'review_watchlist') {
