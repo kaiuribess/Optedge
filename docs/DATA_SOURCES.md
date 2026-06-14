@@ -6,6 +6,7 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 
 - Options chains through the layered chain provider: optional broker/live sources first, then free CBOE/Nasdaq/yfinance fallbacks.
 - Market history through Yahoo chart data and `yfinance`, then public no-key Nasdaq historical JSON, then Stooq CSV as a final best-effort fallback.
+- Symbol search/universe hygiene through the official no-key Nasdaq Trader symbol directory plus SEC company tickers.
 - Reddit and retail-attention signals from WSB, r/options, and related public endpoints.
 - SEC data for insider transactions, recent filings, companyfacts fundamentals, Form 144, buybacks, and 13F-style institutional context.
 - Public macro and market structure inputs such as keyless FRED CSV series, official Treasury XML yield-curve fallback, yield curve, credit spreads, CFTC CoT, FINRA short volume, EIA, WASDE, VIX term structure, and sector ETF flows.

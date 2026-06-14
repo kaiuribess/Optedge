@@ -196,7 +196,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/job-log" in html
     assert "/job-dashboard" in html
     assert "/job-lookup" in html
-    assert "/api/warm-sec-cache" in html
+    assert "/api/warm-symbol-caches" in html
     assert "job-match-btn" in html
     assert "Quick scan" in html
     assert "Bankroll override" in html
@@ -251,7 +251,9 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["Duplicate open positions"]["level"] == "warn"
         assert labels["Equity curve image corrupt"]["level"] == "bad"
         assert labels["SEC ticker cache missing"]["level"] == "warn"
+        assert labels["Nasdaq symbol directory missing"]["level"] == "warn"
         assert health["free_data_caches"]["sec_company_tickers"]["status"] == "missing"
+        assert health["free_data_caches"]["nasdaq_symbol_directory"]["status"] == "missing"
 
 
 def test_data_health_reports_fresh_sec_ticker_cache():
@@ -277,12 +279,21 @@ def test_data_health_reports_fresh_sec_ticker_cache():
                 {"symbol": "AAPL", "name": "Apple Inc.", "cik": 320193},
             ],
         }), encoding="utf-8")
+        (data_dir / "nasdaq_symbol_directory.json").write_text(json.dumps({
+            "rows": [
+                {"symbol": "SNOW", "name": "Snowflake Inc.", "type": "EQUITY"},
+                {"symbol": "QQQ", "name": "Invesco QQQ Trust", "type": "ETF", "is_etf": True},
+            ],
+        }), encoding="utf-8")
 
         health = build_data_health(data_dir)
         labels = {row["label"]: row for row in health["checks"]}
         assert labels["SEC ticker cache"]["level"] == "ok"
+        assert labels["Nasdaq symbol directory"]["level"] == "ok"
         assert health["free_data_caches"]["sec_company_tickers"]["status"] == "fresh"
         assert health["free_data_caches"]["sec_company_tickers"]["row_count"] == 2
+        assert health["free_data_caches"]["nasdaq_symbol_directory"]["status"] == "fresh"
+        assert health["free_data_caches"]["nasdaq_symbol_directory"]["row_count"] == 2
 
 
 def test_data_health_audits_latest_opportunity_duplicates():
@@ -350,6 +361,7 @@ def test_warm_sec_ticker_cache_uses_data_dir_cache():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         old_loader = cockpit_module.load_sec_company_tickers
+        old_nasdaq_loader = cockpit_module.load_nasdaq_symbol_directory
 
         def fake_loader(cache_path, timeout=8.0, fetch_if_stale=True, **kwargs):
             Path(cache_path).write_text(json.dumps({
@@ -359,16 +371,29 @@ def test_warm_sec_ticker_cache_uses_data_dir_cache():
             }), encoding="utf-8")
             return [{"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147}]
 
+        def fake_nasdaq_loader(cache_path, timeout=8.0, fetch_if_stale=True, **kwargs):
+            Path(cache_path).write_text(json.dumps({
+                "rows": [
+                    {"symbol": "QQQ", "name": "Invesco QQQ Trust", "type": "ETF", "is_etf": True},
+                ],
+            }), encoding="utf-8")
+            return [{"symbol": "QQQ", "name": "Invesco QQQ Trust", "type": "ETF"}]
+
         cockpit_module.load_sec_company_tickers = fake_loader
+        cockpit_module.load_nasdaq_symbol_directory = fake_nasdaq_loader
         try:
             result = warm_sec_ticker_cache(data_dir)
         finally:
             cockpit_module.load_sec_company_tickers = old_loader
+            cockpit_module.load_nasdaq_symbol_directory = old_nasdaq_loader
 
         assert result["ok"] is True
         assert result["row_count"] == 1
+        assert result["nasdaq_row_count"] == 1
         assert result["cache"]["status"] == "fresh"
+        assert result["nasdaq_cache"]["status"] == "fresh"
         assert (data_dir / "sec_company_tickers.json").exists()
+        assert (data_dir / "nasdaq_symbol_directory.json").exists()
 
 
 def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
@@ -436,7 +461,12 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         assert queue["rows"][0]["priority"] == 100
         assert any(
             row["label"] == "SEC ticker cache missing"
-            and row["action"] == "warm_sec_ticker_cache"
+            and row["action"] == "warm_symbol_caches"
+            for row in queue["rows"]
+        )
+        assert any(
+            row["label"] == "Nasdaq symbol directory missing"
+            and row["action"] == "warm_symbol_caches"
             for row in queue["rows"]
         )
         assert any(row["category"] == "open_position" and row["symbol"] == "AAPL" for row in queue["rows"])
@@ -680,7 +710,9 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         old_sec = cockpit_module.sec_company_search
+        old_nasdaq = cockpit_module.nasdaq_symbol_search
         cockpit_module.sec_company_search = lambda query, limit=16, fetch_if_stale=True: []
+        cockpit_module.nasdaq_symbol_search = lambda query, limit=16, fetch_if_stale=True: []
         pd.DataFrame([{
             "ticker": "NVDA",
             "side": "call",
@@ -736,10 +768,21 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             cockpit_module.sec_company_search = fake_sec_search
             snow = build_symbol_suggestions(data_dir, query="snowflake")
             assert any(row["symbol"] == "SNOW" and row["kind"] == "sec" for row in snow["rows"])
-            assert "free SEC ticker map" in " ".join(snow["notes"])
+            assert "Nasdaq Trader" in " ".join(snow["notes"])
             assert observed_fetch_modes == [False]
+
+            cockpit_module.sec_company_search = lambda query, limit=16, fetch_if_stale=True: []
+            cockpit_module.nasdaq_symbol_search = lambda query, limit=16, fetch_if_stale=True: [{
+                "symbol": "QQQ",
+                "name": "Invesco QQQ Trust",
+                "type": "ETF",
+                "score": 0.94,
+            }]
+            qqq = build_symbol_suggestions(data_dir, query="invesco")
+            assert any(row["symbol"] == "QQQ" and row["kind"] == "nasdaq" for row in qqq["rows"])
         finally:
             cockpit_module.sec_company_search = old_sec
+            cockpit_module.nasdaq_symbol_search = old_nasdaq
 
 
 def test_opportunity_explorer_reads_and_filters_latest_snapshots():
@@ -1792,6 +1835,10 @@ def test_provider_status_checks_free_sources_without_running_scan():
                 json.dumps({"rows": [{"symbol": "AAPL", "name": "Apple Inc."}]}),
                 encoding="utf-8",
             )
+            (data_dir / "nasdaq_symbol_directory.json").write_text(
+                json.dumps({"rows": [{"symbol": "AAPL", "name": "Apple Inc.", "type": "EQUITY"}]}),
+                encoding="utf-8",
+            )
             report = build_provider_status(data_dir, query="Apple")
             no_chain = build_provider_status(data_dir, query="Apple", include_chain=False)
     finally:
@@ -1801,15 +1848,16 @@ def test_provider_status_checks_free_sources_without_running_scan():
         cockpit_module._fetch_option_chain = old_chain
 
     assert report["symbol"] == "AAPL"
-    assert report["provider_count"] == 5
-    assert report["ok_count"] == 4
+    assert report["provider_count"] == 6
+    assert report["ok_count"] == 5
     providers = {row["provider"]: row for row in report["rows"]}
     assert providers["Yahoo chart"]["rows"] == 2
     assert providers["Nasdaq historical"]["last_close"] == 12.5
     assert providers["Stooq CSV"]["status"] == "warn"
     assert providers["Option chain stack"]["rows"] == 2
     assert providers["SEC company ticker cache"]["status"] == "ok"
-    assert no_chain["provider_count"] == 4
+    assert providers["Nasdaq symbol directory cache"]["status"] == "ok"
+    assert no_chain["provider_count"] == 5
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
 
 
@@ -1818,6 +1866,10 @@ def test_free_data_sources_registry_lists_no_key_coverage():
         data_dir = Path(td)
         (data_dir / "sec_company_tickers.json").write_text(
             json.dumps({"rows": [{"symbol": "AAPL", "name": "Apple Inc."}]}),
+            encoding="utf-8",
+        )
+        (data_dir / "nasdaq_symbol_directory.json").write_text(
+            json.dumps({"rows": [{"symbol": "QQQ", "name": "Invesco QQQ Trust", "type": "ETF"}]}),
             encoding="utf-8",
         )
         report = build_free_data_sources(data_dir)
@@ -1831,10 +1883,12 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Google News RSS" in names
     assert "Yahoo Finance RSS" in names
     assert "SEC EDGAR" in names
+    assert "Nasdaq Trader symbol directory" in names
     assert "Treasury yield XML" in names
     assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
     assert report["sec_cache"]["row_count"] >= 1
+    assert report["nasdaq_symbol_cache"]["row_count"] >= 1
     assert report["ram_cache"]["ram_cache_enabled"] in {True, False}
 
 

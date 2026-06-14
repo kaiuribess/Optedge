@@ -39,7 +39,8 @@ from scripts.research_jobs import (
 )
 from scripts.sec_filings import recent_filings_for_symbol
 from scripts.symbol_resolver import (
-    COMMON_ALIASES, load_sec_company_tickers, resolve_symbol,
+    COMMON_ALIASES, load_nasdaq_symbol_directory, load_sec_company_tickers,
+    nasdaq_symbol_cache_meta, nasdaq_symbol_search, resolve_symbol,
     sec_company_cache_meta, sec_company_search,
 )
 
@@ -346,6 +347,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "insider, form 144, FDA catalyst fallback, 13F, symbol search",
         "primary": True,
         "caveat": "Filing timestamps and issuer mappings need normalization.",
+    },
+    {
+        "name": "Nasdaq Trader symbol directory",
+        "category": "symbol_search/universe",
+        "coverage": "Nasdaq-listed and other-exchange US symbols, ETFs, exchange flags, test-issue flags",
+        "credential": "none",
+        "quality": "official_public",
+        "used_by": "dashboard autocomplete, ticker resolution, universe hygiene",
+        "primary": True,
+        "caveat": "Directory metadata is not a quote feed and does not imply options liquidity.",
     },
     {
         "name": "House/Senate disclosures",
@@ -1449,22 +1460,38 @@ def run_watchlist_scans(
     }
 
 
-def warm_sec_ticker_cache(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[str, Any]:
-    """Warm the free SEC company ticker cache used by company-name search."""
+def warm_symbol_caches(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[str, Any]:
+    """Warm free symbol-search caches used by company-name autocomplete."""
     cache_path = Path(data_dir) / "sec_company_tickers.json"
+    nasdaq_path = Path(data_dir) / "nasdaq_symbol_directory.json"
     rows = load_sec_company_tickers(cache_path=cache_path, timeout=timeout, fetch_if_stale=True)
+    nasdaq_rows = load_nasdaq_symbol_directory(
+        cache_path=nasdaq_path,
+        timeout=timeout,
+        fetch_if_stale=True,
+    )
     meta = sec_company_cache_meta(cache_path)
-    ok = bool(rows) and meta.get("status") in {"fresh", "stale"}
+    nasdaq_meta = nasdaq_symbol_cache_meta(nasdaq_path)
+    sec_ok = bool(rows) and meta.get("status") in {"fresh", "stale"}
+    nasdaq_ok = bool(nasdaq_rows) and nasdaq_meta.get("status") in {"fresh", "stale"}
+    ok = sec_ok or nasdaq_ok
     return {
         "ok": ok,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "row_count": len(rows),
+        "nasdaq_row_count": len(nasdaq_rows),
         "cache": meta,
+        "nasdaq_cache": nasdaq_meta,
         "message": (
-            f"SEC ticker cache ready with {len(rows)} company row(s)."
-            if ok else "SEC ticker cache could not be warmed right now."
+            f"Symbol search caches ready: SEC {len(rows)} row(s), Nasdaq {len(nasdaq_rows)} row(s)."
+            if ok else "Symbol search caches could not be warmed right now."
         ),
     }
+
+
+def warm_sec_ticker_cache(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[str, Any]:
+    """Backward-compatible wrapper for the broader symbol-cache warmer."""
+    return warm_symbol_caches(data_dir, timeout=timeout)
 
 
 def _position_label(row: dict[str, Any]) -> str:
@@ -2731,6 +2758,14 @@ def build_symbol_suggestions(
                 "sec", "SEC company tickers", query=str(item.get("symbol") or ""),
                 name=item.get("name"), score=item.get("score"),
             )
+        for item in nasdaq_symbol_search(query, limit=limit, fetch_if_stale=False):
+            type_label = str(item.get("type") or "symbol").lower()
+            _add_suggestion(
+                rows, seen, item.get("symbol"),
+                f"{item.get('symbol')} - {item.get('name') or 'Nasdaq symbol'}",
+                "nasdaq", "Nasdaq Trader symbol directory", query=str(item.get("symbol") or ""),
+                name=item.get("name"), score=item.get("score"), trade_status=type_label,
+            )
 
     if query_norm:
         rows = [row for row in rows if query_norm in _suggestion_text(row)]
@@ -2749,7 +2784,7 @@ def build_symbol_suggestions(
         "count": len(rows),
         "rows": rows,
         "notes": [
-            "Suggestions are built from local scan snapshots, open positions, watchlist entries, built-in aliases, and the free SEC ticker map.",
+            "Suggestions are built from local scan snapshots, open positions, watchlist entries, built-in aliases, SEC tickers, and Nasdaq Trader's free symbol directory.",
             "Selecting a suggestion only fills or runs local research; it does not place trades.",
         ],
     }
@@ -4137,6 +4172,7 @@ def _fetch_option_chain_for_provider_status(symbol: str) -> dict[str, Any]:
 def build_free_data_sources(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Return the built-in free/no-key data source map used by the local cockpit."""
     sec_meta = sec_company_cache_meta(Path(data_dir) / "sec_company_tickers.json")
+    nasdaq_meta = nasdaq_symbol_cache_meta(Path(data_dir) / "nasdaq_symbol_directory.json")
     cache = data_provider.cache_stats()
     rows: list[dict[str, Any]] = []
     categories: dict[str, int] = {}
@@ -4149,6 +4185,9 @@ def build_free_data_sources(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         if row.get("name") == "SEC EDGAR":
             row["local_cache_status"] = sec_meta.get("status")
             row["local_cache_rows"] = sec_meta.get("row_count")
+        elif row.get("name") == "Nasdaq Trader symbol directory":
+            row["local_cache_status"] = nasdaq_meta.get("status")
+            row["local_cache_rows"] = nasdaq_meta.get("row_count")
         else:
             row["local_cache_status"] = None
             row["local_cache_rows"] = None
@@ -4167,6 +4206,7 @@ def build_free_data_sources(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "category_counts": categories,
         "quality_counts": quality_counts,
         "sec_cache": sec_meta,
+        "nasdaq_symbol_cache": nasdaq_meta,
         "ram_cache": cache,
         "rows": rows,
         "notes": [
@@ -4231,6 +4271,16 @@ def build_provider_status(
         "rows": sec_meta.get("row_count"),
         "source": sec_meta.get("status"),
         "note": "Local free company-name search cache.",
+    })
+    nasdaq_meta = nasdaq_symbol_cache_meta(data_dir / "nasdaq_symbol_directory.json")
+    rows.append({
+        "provider": "Nasdaq symbol directory cache",
+        "category": "symbol_search",
+        "status": "ok" if nasdaq_meta.get("status") in {"fresh", "stale"} else "warn",
+        "latency_ms": 0,
+        "rows": nasdaq_meta.get("row_count"),
+        "source": nasdaq_meta.get("status"),
+        "note": "Official no-key symbol directory for broader ticker search and ETF flags.",
     })
 
     ok_count = sum(1 for row in rows if row.get("status") == "ok")
@@ -4314,12 +4364,12 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             ))
         elif level == "warn":
             action = (
-                "warm_sec_ticker_cache"
-                if str(check.get("label") or "").startswith("SEC ticker cache")
+                "warm_symbol_caches"
+                if str(check.get("label") or "").startswith(("SEC ticker cache", "Nasdaq symbol directory"))
                 else "review_data_health"
             )
             items.append(_queue_item(
-                75 if action == "warm_sec_ticker_cache" else 70,
+                75 if action == "warm_symbol_caches" else 70,
                 "data_health", check.get("label") or "Data health warning",
                 check.get("detail") or "A dashboard data-health warning is active.",
                 action,
@@ -4458,7 +4508,7 @@ def _today_route_for_queue_action(action: Any) -> str:
         return "positions"
     if clean in {"preview_paper_candidate", "review_paper_export"}:
         return "paper"
-    if clean in {"review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache"}:
+    if clean in {"review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache", "warm_symbol_caches"}:
         return "data_health"
     if clean in {"run_focused_scan", "review_watchlist"}:
         return "research"
@@ -5058,6 +5108,7 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     checks.extend(opportunity_quality["checks"])
 
     sec_cache = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
+    nasdaq_cache = nasdaq_symbol_cache_meta(data_dir / "nasdaq_symbol_directory.json")
     if sec_cache.get("status") == "fresh":
         checks.append(_health_check(
             "ok", "SEC ticker cache",
@@ -5079,6 +5130,27 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "Company-name autocomplete uses the free SEC ticker cache after the first company lookup warms it.",
         ))
 
+    if nasdaq_cache.get("status") == "fresh":
+        checks.append(_health_check(
+            "ok", "Nasdaq symbol directory",
+            f"Official Nasdaq Trader symbol directory has {nasdaq_cache.get('row_count', 0)} row(s).",
+        ))
+    elif nasdaq_cache.get("status") == "stale":
+        checks.append(_health_check(
+            "warn", "Nasdaq symbol directory stale",
+            f"Nasdaq symbol directory cache is {nasdaq_cache.get('age_days')} days old; run any company lookup to refresh it.",
+        ))
+    elif nasdaq_cache.get("status") == "corrupt":
+        checks.append(_health_check(
+            "warn", "Nasdaq symbol directory corrupt",
+            "Nasdaq symbol directory cache could not be read; run a company lookup to rebuild it.",
+        ))
+    else:
+        checks.append(_health_check(
+            "warn", "Nasdaq symbol directory missing",
+            "Autocomplete can use Nasdaq Trader's free symbol directory after the first company lookup warms it.",
+        ))
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": _health_status(checks),
@@ -5096,6 +5168,7 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "opportunity_quality": opportunity_quality["rows"],
         "free_data_caches": {
             "sec_company_tickers": sec_cache,
+            "nasdaq_symbol_directory": nasdaq_cache,
         },
         "notes": [
             "Data health reads the same local files used by the cockpit.",
@@ -6452,11 +6525,11 @@ function scrollToId(id) {
 }
 async function routeQueueAction(action, query, symbol) {
   const q = query || symbol || '';
-  if (action === 'warm_sec_ticker_cache') {
-    $('queue-status-text').textContent = 'Warming free SEC company ticker cache...';
-    const res = await fetch('/api/warm-sec-cache', {method: 'POST'});
+  if (action === 'warm_sec_ticker_cache' || action === 'warm_symbol_caches') {
+    $('queue-status-text').textContent = 'Warming free symbol search caches...';
+    const res = await fetch('/api/warm-symbol-caches', {method: 'POST'});
     const data = await res.json();
-    $('queue-status-text').textContent = data.message || (data.ok ? 'SEC ticker cache warmed.' : 'SEC ticker cache warm failed.');
+    $('queue-status-text').textContent = data.message || (data.ok ? 'Symbol search caches warmed.' : 'Symbol cache warm failed.');
     await loadSummary();
     await loadActionQueue();
     scrollToId('health-results');
@@ -7678,8 +7751,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
             body = {}
-        if parsed.path == "/api/warm-sec-cache":
-            result = warm_sec_ticker_cache(self.data_dir)
+        if parsed.path in {"/api/warm-sec-cache", "/api/warm-symbol-caches"}:
+            result = warm_symbol_caches(self.data_dir)
             self._send_json(result, status=200 if result.get("ok") else 502)
             return
         if parsed.path == "/api/watchlist-add":

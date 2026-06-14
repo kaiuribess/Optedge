@@ -17,6 +17,10 @@ DATA_DIR = ROOT / "data"
 SEC_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_TICKER_CACHE = DATA_DIR / "sec_company_tickers.json"
 SEC_CACHE_MAX_AGE_DAYS = 14
+NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt"
+NASDAQ_OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt"
+NASDAQ_SYMBOL_CACHE = DATA_DIR / "nasdaq_symbol_directory.json"
+NASDAQ_SYMBOL_CACHE_MAX_AGE_DAYS = 3
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}(=F)?$")
 _OCCISH_RE = re.compile(
@@ -273,6 +277,205 @@ def _normalize_sec_rows(raw: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _nasdaq_exchange_name(code: str) -> str:
+    return {
+        "Q": "NASDAQ Global Select",
+        "G": "NASDAQ Global Market",
+        "S": "NASDAQ Capital Market",
+        "N": "NYSE",
+        "A": "NYSE American",
+        "P": "NYSE Arca",
+        "Z": "Cboe BZX",
+        "V": "Investors Exchange",
+    }.get(str(code or "").strip().upper(), str(code or "").strip().upper())
+
+
+def _nasdaq_app_symbol(symbol: Any) -> str:
+    text = str(symbol or "").strip().upper()
+    return text.replace("/", "-").replace("$", "-")
+
+
+def _nasdaq_security_type(symbol: str, name: str, etf_flag: str) -> str:
+    if str(etf_flag or "").strip().upper() == "Y":
+        return "ETF"
+    low = f"{symbol} {name}".lower()
+    if "warrant" in low or symbol.endswith("+") or symbol.endswith(".WS"):
+        return "WARRANT"
+    if " unit" in low or symbol.endswith("=") or symbol.endswith(".U"):
+        return "UNIT"
+    if " right" in low or symbol.endswith("^") or symbol.endswith(".R"):
+        return "RIGHT"
+    if "preferred" in low or "-P" in symbol:
+        return "PREFERRED"
+    return "EQUITY"
+
+
+def _parse_nasdaq_symbol_text(text: str, source: str) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    header = lines[0].split("|")
+    rows: list[dict[str, Any]] = []
+    for line in lines[1:]:
+        if line.lower().startswith("file creation time"):
+            continue
+        parts = line.split("|")
+        if len(parts) != len(header):
+            continue
+        raw = dict(zip(header, parts))
+        if source == "nasdaq":
+            symbol = _nasdaq_app_symbol(raw.get("Symbol"))
+            name = str(raw.get("Security Name") or "").strip()
+            exchange = _nasdaq_exchange_name(raw.get("Market Category") or "NASDAQ")
+            raw_exchange = str(raw.get("Market Category") or "").strip()
+            etf = str(raw.get("ETF") or "").strip().upper() == "Y"
+            test_issue = str(raw.get("Test Issue") or "").strip().upper() == "Y"
+            round_lot = raw.get("Round Lot Size")
+        else:
+            symbol = _nasdaq_app_symbol(raw.get("NASDAQ Symbol") or raw.get("ACT Symbol"))
+            name = str(raw.get("Security Name") or "").strip()
+            exchange = _nasdaq_exchange_name(raw.get("Exchange") or "")
+            raw_exchange = str(raw.get("Exchange") or "").strip().upper()
+            etf = str(raw.get("ETF") or "").strip().upper() == "Y"
+            test_issue = str(raw.get("Test Issue") or "").strip().upper() == "Y"
+            round_lot = raw.get("Round Lot Size")
+        if not symbol or not name:
+            continue
+        sec_type = _nasdaq_security_type(symbol, name, "Y" if etf else "N")
+        rows.append({
+            "symbol": symbol,
+            "name": name,
+            "exchange": exchange,
+            "exchange_code": raw_exchange,
+            "type": sec_type,
+            "is_etf": etf,
+            "test_issue": test_issue,
+            "round_lot_size": round_lot,
+            "source": "nasdaq_symbol_directory",
+        })
+    return rows
+
+
+def _normalize_nasdaq_rows(raw: Any) -> list[dict[str, Any]]:
+    iterable = raw.get("rows", raw) if isinstance(raw, dict) else raw
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if not isinstance(iterable, list):
+        return rows
+    for item in iterable:
+        if not isinstance(item, dict):
+            continue
+        symbol = _nasdaq_app_symbol(item.get("symbol") or item.get("ticker"))
+        name = str(item.get("name") or item.get("Security Name") or "").strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        rows.append({
+            "symbol": symbol,
+            "name": name,
+            "exchange": item.get("exchange"),
+            "exchange_code": item.get("exchange_code"),
+            "type": item.get("type") or "EQUITY",
+            "is_etf": bool(item.get("is_etf")),
+            "test_issue": bool(item.get("test_issue")),
+            "round_lot_size": item.get("round_lot_size"),
+            "source": "nasdaq_symbol_directory",
+        })
+    return rows
+
+
+def nasdaq_symbol_cache_meta(cache_path: Path | None = None) -> dict[str, Any]:
+    path = Path(cache_path or NASDAQ_SYMBOL_CACHE)
+    age_days = _cache_age_days(path)
+    if age_days is None:
+        return {
+            "exists": False,
+            "path": str(path),
+            "age_days": None,
+            "status": "missing",
+            "row_count": 0,
+        }
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8-sig"))
+        rows = _normalize_nasdaq_rows(cached)
+    except Exception:
+        return {
+            "exists": True,
+            "path": str(path),
+            "age_days": round(age_days, 2),
+            "status": "corrupt",
+            "row_count": 0,
+        }
+    status = "fresh" if age_days <= NASDAQ_SYMBOL_CACHE_MAX_AGE_DAYS else "stale"
+    return {
+        "exists": True,
+        "path": str(path),
+        "age_days": round(age_days, 2),
+        "status": status,
+        "row_count": len(rows),
+    }
+
+
+def fetch_nasdaq_symbol_directory(timeout: float = 8.0) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for url, source in (
+        (NASDAQ_LISTED_URL, "nasdaq"),
+        (NASDAQ_OTHER_LISTED_URL, "other"),
+    ):
+        req = Request(url, headers={"User-Agent": "optedge-research/0.1"})
+        with urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        rows.extend(_parse_nasdaq_symbol_text(text, source))
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        deduped.append(row)
+    return deduped
+
+
+def load_nasdaq_symbol_directory(
+    cache_path: Path | None = None,
+    max_age_days: int = NASDAQ_SYMBOL_CACHE_MAX_AGE_DAYS,
+    timeout: float = 8.0,
+    fetch_if_stale: bool = True,
+) -> list[dict[str, Any]]:
+    cache_path = Path(cache_path or NASDAQ_SYMBOL_CACHE)
+    age_days = _cache_age_days(cache_path)
+    if age_days is not None and age_days <= max_age_days:
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8-sig"))
+            return _normalize_nasdaq_rows(cached)
+        except Exception:
+            pass
+
+    if fetch_if_stale:
+        try:
+            rows = fetch_nasdaq_symbol_directory(timeout=timeout)
+            if rows:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "source": [NASDAQ_LISTED_URL, NASDAQ_OTHER_LISTED_URL],
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "rows": rows,
+                }
+                cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                return rows
+        except Exception:
+            pass
+
+    if cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8-sig"))
+            return _normalize_nasdaq_rows(cached)
+        except Exception:
+            return []
+    return []
+
+
 def fetch_sec_company_tickers(timeout: float = 6.0) -> list[dict[str, Any]]:
     req = Request(
         SEC_TICKER_URL,
@@ -364,6 +567,62 @@ def sec_company_search(
     scored.sort(key=lambda x: (float(x.get("score") or 0.0), str(x.get("symbol") or "")), reverse=True)
     return scored[:limit]
 
+
+def _nasdaq_candidate_score(query: str, row: dict[str, Any]) -> float:
+    q_symbol = _clean_query(query).upper()
+    q_key = _company_key(query)
+    symbol = str(row.get("symbol") or "").upper()
+    name = str(row.get("name") or "")
+    name_key = _company_key(name)
+    if not q_key and not q_symbol:
+        return 0.0
+    if q_symbol == symbol:
+        return 1.0
+    if symbol.startswith(q_symbol) and len(q_symbol) >= 2:
+        return 0.88
+    if q_key and q_key == name_key:
+        return 0.96
+    if q_key and name_key.startswith(q_key):
+        return 0.89
+    q_words = set(q_key.split())
+    name_words = set(name_key.split())
+    if q_words and q_words.issubset(name_words):
+        return 0.83
+    if q_key and q_key in name_key:
+        return 0.76
+    score = SequenceMatcher(None, q_key, name_key).ratio() * 0.68
+    if str(row.get("type") or "") not in {"EQUITY", "ETF"}:
+        score *= 0.75
+    return score
+
+
+def nasdaq_symbol_search(
+    query: str,
+    limit: int = 8,
+    timeout: float = 8.0,
+    fetch_if_stale: bool = True,
+) -> list[dict[str, Any]]:
+    rows = load_nasdaq_symbol_directory(timeout=timeout, fetch_if_stale=fetch_if_stale)
+    scored: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("test_issue"):
+            continue
+        score = _nasdaq_candidate_score(query, row)
+        if score < 0.55:
+            continue
+        item = dict(row)
+        item["score"] = round(score, 4)
+        scored.append(item)
+    scored.sort(
+        key=lambda x: (
+            str(x.get("type") or "") in {"EQUITY", "ETF"},
+            float(x.get("score") or 0.0),
+            str(x.get("symbol") or ""),
+        ),
+        reverse=True,
+    )
+    return scored[:limit]
+
 def _candidate_from_quote(quote: dict[str, Any]) -> dict[str, Any] | None:
     symbol = str(quote.get("symbol") or "").strip().upper()
     if not symbol or len(symbol) > 12:
@@ -434,6 +693,21 @@ def resolve_symbol(query: str, timeout: float = 6.0) -> dict[str, Any]:
             name=best.get("name"),
             source="sec",
             candidates=sec_candidates,
+            request=option_request,
+        ).to_dict()
+    nasdaq_candidates = nasdaq_symbol_search(search_text, timeout=timeout)
+    if nasdaq_candidates:
+        best = nasdaq_candidates[0]
+        if option_request:
+            option_request["ticker"] = best["symbol"]
+            option_request["ticker_source"] = "nasdaq"
+            option_request["ticker_name"] = best.get("name")
+        return Resolution(
+            query=clean,
+            symbol=best["symbol"],
+            name=best.get("name"),
+            source="nasdaq",
+            candidates=nasdaq_candidates,
             request=option_request,
         ).to_dict()
     try:
