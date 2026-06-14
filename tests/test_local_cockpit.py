@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -263,6 +264,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "symbol-suggestions" in html
     assert "Run focused scan" in html
     assert "/api/run-symbol" in html
+    assert "/api/run-refresh-scan" in html
+    assert "run_refresh_scan" in html
     assert "/api/job-log" in html
     assert "/job-dashboard" in html
     assert "/job-lookup" in html
@@ -547,6 +550,67 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         assert len(aapl_rows) == 1
         assert aapl_rows[0]["grouped_count"] == 2
         assert any(row["category"] == "paper_candidate" and row["symbol"] == "NVDA" for row in queue["rows"])
+
+
+def test_action_queue_groups_stale_snapshots_into_refresh_action():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "open_positions": 0,
+            "assets": {
+                "option": {"open_positions": 0},
+                "share": {"open_positions": 0},
+                "futures": {"open_positions": 0},
+            },
+        }), encoding="utf-8")
+        (data_dir / "position_aging_summary.json").write_text(
+            json.dumps({"open_count": 0}), encoding="utf-8",
+        )
+        (data_dir / "dashboard_20260603_120000.html").write_text("<html></html>", encoding="utf-8")
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-12-18",
+            "mid": 2.5,
+            "suggested_contracts": 1,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "spot": 100,
+            "suggested_dollars": 500,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame([{
+            "symbol": "ES=F",
+            "direction": "long",
+            "entry_price": 5000,
+            "suggested_contracts": 1,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+        pd.DataFrame([{
+            "ticker": "HMY",
+            "value_score": 1.5,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_value_20260603_120000.parquet")
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+        for path in data_dir.glob("top_*_20260603_120000.parquet"):
+            os.utime(path, (old_ts, old_ts))
+
+        queue = build_action_queue(data_dir)
+        refresh = [
+            row for row in queue["rows"]
+            if row["action"] == "run_refresh_scan"
+        ]
+        assert refresh
+        assert refresh[0]["label"] == "Refresh stale market snapshots"
+        assert "snapshot old" in refresh[0]["detail"]
+        assert refresh[0]["priority"] == 82
 
 
 def test_action_queue_surfaces_ready_watchlist_ideas():

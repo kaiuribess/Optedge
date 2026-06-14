@@ -42,7 +42,8 @@ from scripts.export_robinhood_agentic_queue import (
     build_robinhood_queue, write_outputs as write_robinhood_queue_outputs,
 )
 from scripts.research_jobs import (
-    create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
+    create_job, create_refresh_job, job_dashboard_path, job_lookup_path, list_jobs,
+    read_job, read_job_log,
 )
 from scripts.sec_filings import recent_filings_for_symbol
 from scripts.symbol_resolver import (
@@ -1659,6 +1660,15 @@ def warm_symbol_caches(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[
 def warm_sec_ticker_cache(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[str, Any]:
     """Backward-compatible wrapper for the broader symbol-cache warmer."""
     return warm_symbol_caches(data_dir, timeout=timeout)
+
+
+def _is_refreshable_market_warning(label: Any) -> bool:
+    clean = str(label or "").strip().lower()
+    return (
+        clean in {"dashboard is old", "dashboard missing"}
+        or clean.endswith("snapshot old")
+        or clean.endswith("snapshot missing")
+    )
 
 
 def _position_label(row: dict[str, Any]) -> str:
@@ -6097,10 +6107,12 @@ def _dedupe_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, Any]:
     """Prioritize the next research actions from local cockpit state."""
     items: list[dict[str, Any]] = []
+    refresh_warnings: list[str] = []
 
     health = build_data_health(data_dir)
     for check in health.get("checks", []):
         level = str(check.get("level") or "ok")
+        label = str(check.get("label") or "Data health warning")
         if level == "bad":
             items.append(_queue_item(
                 100, "data_health", check.get("label") or "Data health issue",
@@ -6108,9 +6120,12 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 "refresh_or_fix_artifact",
             ))
         elif level == "warn":
+            if _is_refreshable_market_warning(label):
+                refresh_warnings.append(label)
+                continue
             action = (
                 "warm_symbol_caches"
-                if str(check.get("label") or "").startswith(("SEC ticker cache", "Nasdaq symbol directory"))
+                if label.startswith(("SEC ticker cache", "Nasdaq symbol directory"))
                 else "review_data_health"
             )
             items.append(_queue_item(
@@ -6119,6 +6134,17 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 check.get("detail") or "A dashboard data-health warning is active.",
                 action,
             ))
+    if refresh_warnings:
+        preview = ", ".join(refresh_warnings[:4])
+        if len(refresh_warnings) > 4:
+            preview += f", +{len(refresh_warnings) - 4} more"
+        items.append(_queue_item(
+            82,
+            "data_health",
+            "Refresh stale market snapshots",
+            f"{len(refresh_warnings)} freshness warning(s): {preview}.",
+            "run_refresh_scan",
+        ))
 
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
     for row in attention:
@@ -6253,7 +6279,10 @@ def _today_route_for_queue_action(action: Any) -> str:
         return "positions"
     if clean in {"preview_paper_candidate", "review_paper_export"}:
         return "paper"
-    if clean in {"review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache", "warm_symbol_caches"}:
+    if clean in {
+        "review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache",
+        "warm_symbol_caches", "run_refresh_scan",
+    }:
         return "data_health"
     if clean in {"run_focused_scan", "review_watchlist"}:
         return "research"
@@ -9159,6 +9188,7 @@ function reviewCategoryClass(category) {
 function todayReviewActionLabel(action, route) {
   if (action === 'scan_swing_chain') return 'Scan 3m+ chain';
   if (action === 'refresh_saved_quote') return 'Refresh quote';
+  if (action === 'run_refresh_scan') return 'Start refresh';
   if (action === 'open_position_monitor' || route === 'positions') return 'Review position';
   if (route === 'paper') return 'Open paper queue';
   if (route === 'data_health') return 'Check health';
@@ -9741,6 +9771,23 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('health-results');
     return;
   }
+  if (action === 'run_refresh_scan') {
+    $('queue-status-text').textContent = 'Starting full market refresh...';
+    const res = await fetch('/api/run-refresh-scan', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: 'full'})
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      $('queue-status-text').textContent = 'Refresh job failed to start: ' + (data.error || 'unknown error');
+      return;
+    }
+    $('queue-status-text').textContent = `Started full refresh job ${data.job_id || ''}.`;
+    await loadJobs();
+    scrollToId('jobs');
+    return;
+  }
   if (action === 'refresh_or_fix_artifact' || action === 'review_data_health') {
     await loadSummary();
     scrollToId('health-results');
@@ -9784,6 +9831,10 @@ async function routeQueueAction(action, query, symbol) {
 }
 async function routeTodayReviewAction(action, route, query, symbol) {
   const q = query || symbol || '';
+  if (action === 'run_refresh_scan') {
+    await routeQueueAction(action, query, symbol);
+    return;
+  }
   if (action === 'scan_swing_chain' || route === 'chains') {
     setView('chains');
     if (symbol || q) $('chain-query').value = symbol || q;
@@ -11235,7 +11286,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
             "/api/export-chain-shortlist", "/api/build-swing-packet",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
-            "/api/warm-sec-cache",
+            "/api/warm-sec-cache", "/api/warm-symbol-caches", "/api/run-refresh-scan",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
@@ -11279,6 +11330,21 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 launch=True,
             )
             self._send_json(result)
+            return
+        if parsed.path == "/api/run-refresh-scan":
+            mode = str(body.get("mode") or "full").strip().lower()
+            scan_args = _scan_args_from_controls(
+                mode,
+                body.get("bankroll"),
+                _bool_param(body.get("aggressive"), False),
+            )
+            result = create_refresh_job(
+                self.data_dir,
+                launch=True,
+                extra_scan_args=scan_args,
+                scan_mode=mode or "full",
+            )
+            self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/export-paper":
             asset = str(body.get("asset") or "all").strip().lower()

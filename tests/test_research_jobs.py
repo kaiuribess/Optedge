@@ -11,8 +11,8 @@ if str(ROOT) not in sys.path:
 
 import scripts.research_jobs as jobs_module
 from scripts.research_jobs import (
-    create_job, job_dashboard_path, job_log_path, job_lookup_path, list_jobs, read_job,
-    read_job_log, run_job, write_job,
+    create_job, create_refresh_job, job_dashboard_path, job_log_path, job_lookup_path,
+    list_jobs, read_job, read_job_log, run_job, run_refresh_job, write_job,
 )
 
 
@@ -35,6 +35,24 @@ def test_list_jobs_returns_recent_jobs():
         jobs = list_jobs(data_dir)
         assert len(jobs) == 2
         assert {j["symbol"] for j in jobs} == {"AAPL", "MSFT"}
+
+
+def test_create_refresh_job_without_launching():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        job = create_refresh_job(
+            data_dir,
+            launch=False,
+            extra_scan_args=["--minimal"],
+            scan_mode="quick",
+        )
+        assert job["ok"] is True
+        assert job["job_type"] == "market_refresh"
+        assert job["symbol"] == "ALL"
+        assert job["scan_args"] == ["--minimal"]
+        stored = read_job(job["job_id"], data_dir)
+        assert stored is not None
+        assert stored["status"] == "queued"
 
 
 def test_create_job_returns_error_for_empty_query():
@@ -94,6 +112,27 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert any("Requested contract" in line for line in log["lines"])
 
 
+def test_run_refresh_job_uses_full_market_command_without_ticker():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        job = create_refresh_job(data_dir, launch=False, extra_scan_args=["--minimal"])
+
+        old_run = jobs_module.subprocess.run
+        jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+        try:
+            assert run_refresh_job(job["job_id"], data_dir, ["--minimal"]) == 0
+        finally:
+            jobs_module.subprocess.run = old_run
+
+        stored = read_job(job["job_id"], data_dir)
+        command = stored["command"]
+        assert stored["status"] == "completed"
+        assert "--no-open" in command
+        assert "--out-dir" in command
+        assert "--minimal" in command
+        assert "--universe" not in command
+
+
 def test_job_dashboard_path_allows_only_data_dashboard_file():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -111,8 +150,10 @@ def test_job_dashboard_path_allows_only_data_dashboard_file():
 if __name__ == "__main__":
     test_create_job_resolves_ticker_without_launching()
     test_list_jobs_returns_recent_jobs()
+    test_create_refresh_job_without_launching()
     test_create_job_returns_error_for_empty_query()
     test_create_job_preserves_option_request_and_reads_log_tail()
     test_run_job_writes_lookup_summary_for_requested_option()
+    test_run_refresh_job_uses_full_market_command_without_ticker()
     test_job_dashboard_path_allows_only_data_dashboard_file()
-    print("6/6 research job tests passed")
+    print("8/8 research job tests passed")
