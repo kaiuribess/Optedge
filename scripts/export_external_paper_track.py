@@ -199,8 +199,31 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["swing_fit_warnings"] = _series_or_default(df, "swing_fit_warnings")
     out["breakeven_move_label"] = _series_or_default(df, "breakeven_move_label")
     out["liquidity_label"] = _series_or_default(df, "liquidity_label")
+    out["bid"] = pd.to_numeric(_series_or_default(df, "bid", float("nan")), errors="coerce")
+    out["ask"] = pd.to_numeric(_series_or_default(df, "ask", float("nan")), errors="coerce")
+    out["openInterest"] = pd.to_numeric(_series_or_default(df, "openInterest", 0), errors="coerce").fillna(0)
+    out["volume"] = pd.to_numeric(_series_or_default(df, "volume", 0), errors="coerce").fillna(0)
+    out["impliedVolatility"] = pd.to_numeric(_series_or_default(df, "impliedVolatility", float("nan")), errors="coerce")
+    out["delta"] = pd.to_numeric(_series_or_default(df, "delta", float("nan")), errors="coerce")
+    out["breakeven_price"] = pd.to_numeric(_series_or_default(df, "breakeven_price", float("nan")), errors="coerce")
+    out["breakeven_move_pct"] = pd.to_numeric(_series_or_default(df, "breakeven_move_pct", float("nan")), errors="coerce")
+    out["breakeven_direction"] = _series_or_default(df, "breakeven_direction")
+    out["budget_usage_pct"] = pd.to_numeric(_series_or_default(df, "budget_usage_pct", float("nan")), errors="coerce")
+    out["contracts_for_budget"] = pd.to_numeric(_series_or_default(df, "contracts_for_budget", 0), errors="coerce").fillna(0)
+    out["risk_dollars_reference"] = pd.to_numeric(_series_or_default(df, "risk_dollars_reference", float("nan")), errors="coerce")
+    out["reward_dollars_reference"] = pd.to_numeric(_series_or_default(df, "reward_dollars_reference", float("nan")), errors="coerce")
+    out["reward_risk_reference"] = pd.to_numeric(_series_or_default(df, "reward_risk_reference", float("nan")), errors="coerce")
+    out["budget_fit"] = _series_or_default(df, "budget_fit")
+    out["contract_grade"] = grade
+    out["review_lane"] = _series_or_default(df, "review_lane")
+    out["readiness_label"] = readiness_label
+    out["readiness_score"] = readiness
+    out["review_thesis"] = _series_or_default(df, "review_thesis")
+    out["grade_reasons"] = _series_or_default(df, "grade_reasons")
+    out["risk_flags"] = _series_or_default(df, "risk_flags")
     out["chain_source"] = _series_or_default(df, "chain_source")
     out["quote_quality"] = _series_or_default(df, "quote_quality")
+    out["data_delay"] = _series_or_default(df, "data_delay")
     out["top_headline"] = "3m+ option-chain shortlist candidate"
     out["generated_at"] = _series_or_default(df, "generated_at", generated_at)
     out["_source_file"] = source_path.name

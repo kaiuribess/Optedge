@@ -6178,8 +6178,15 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
         "rows": _records_from_frame(top[[
             col for col in [
                 "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "actual_dollars",
-                "confidence", "rank_score", "spread_pct", "swing_fit_label", "chain_source",
-                "quote_quality",
+                "bid", "ask", "confidence", "rank_score", "spread_pct", "openInterest", "volume",
+                "impliedVolatility", "delta", "breakeven_price", "breakeven_move_pct",
+                "breakeven_direction", "budget_usage_pct", "contracts_for_budget",
+                "stop_price", "target_price", "risk_dollars_reference", "reward_dollars_reference",
+                "reward_risk_reference", "budget_fit", "contract_grade", "review_lane",
+                "readiness_label", "readiness_score", "swing_fit_label", "swing_fit_score",
+                "swing_fit_reasons", "swing_fit_warnings", "breakeven_move_label",
+                "liquidity_label", "review_thesis", "grade_reasons", "risk_flags", "chain_source",
+                "quote_quality", "data_delay",
             ]
             if col in top.columns
         ]], limit=8),
@@ -7412,7 +7419,7 @@ function moneyShort(v) {
   return `$${n.toFixed(0)}`;
 }
 function optionContractQuery(row) {
-  const symbol = String(row.symbol || '').trim().toUpperCase();
+  const symbol = String(row.symbol || row.ticker || row.ticker_or_symbol || '').trim().toUpperCase();
   const expiry = String(row.expiry || '').trim();
   const side = String(row.side || '').toLowerCase().startsWith('p') ? 'P' : 'C';
   const strike = row.strike === null || row.strike === undefined ? '' : String(row.strike).trim();
@@ -7679,6 +7686,10 @@ function swingPacketHtml(data) {
   const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
   const paperRows = paper.rows || [];
   const chainRows = chain.rows || [];
+  const chainCards = chainRows.length
+    ? `<div class="setup-grid">${chainRows.slice(0, 6).map(optionContractCard).join('')}</div>
+       <div class="brief-list" style="margin-top:10px"><h4>Comparison table</h4>${table(chainRows.slice(0, 8), true)}</div>`
+    : '<div class="empty">No saved 3m+ chain shortlist yet. Use Write + 3m+ chain scan to build one.</div>';
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
     <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
@@ -7710,11 +7721,14 @@ function swingPacketHtml(data) {
         <a class="btn" href="/artifact/swing-packet-md" target="_blank">Open Markdown packet</a>
       </div>
     </div>
+    <div class="section" style="margin-top:12px">
+      <h3><span>Saved 3m+ chain contracts</span><span>${cell(chain.count || 0)} row(s)</span></h3>
+      <div style="padding:12px">${chainCards}</div>
+    </div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
       <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
       <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
-      <div class="brief-list"><h4>Saved chain shortlist</h4>${table(chainRows.slice(0, 6), true)}</div>
       ${notes}
     </div>
   </div>`;
@@ -8573,6 +8587,7 @@ async function loadSwingPacket(write=false, refreshChains=false) {
   $('swing-packet-status-text').textContent = `${labelText(data.status || 'review')} packet built.${chainNote}${fileNote}`;
   $('swing-packet-results').innerHTML = swingPacketHtml(data);
   wireClickableRows($('swing-packet-results'));
+  wireOptionChainActions($('swing-packet-results'));
   wireCommandCenter();
 }
 function jobClass(status) {
@@ -8986,7 +9001,7 @@ function optionContractContext(row) {
     chain_source: row.chain_source || row.batch_source || '',
     quote_quality: row.quote_quality || row.batch_quote_quality || '',
     data_delay: row.data_delay || row.batch_data_delay || '',
-    scan_symbol: row.symbol || '',
+    scan_symbol: row.symbol || row.ticker || row.ticker_or_symbol || '',
     scan_preset: $('chain-preset') ? $('chain-preset').value : '',
     contract_grade: row.contract_grade || '',
     review_lane: row.review_lane || '',
@@ -9006,7 +9021,7 @@ function optionContractContext(row) {
     ask: row.ask,
     mid: row.mid,
     spread_pct: row.spread_pct,
-    premium_dollars: row.premium_dollars,
+    premium_dollars: row.premium_dollars ?? row.actual_dollars,
     volume: row.volume,
     openInterest: row.openInterest,
     impliedVolatility: row.impliedVolatility,
@@ -9028,7 +9043,7 @@ function optionContractContext(row) {
   };
 }
 function optionContractSavePayload(row) {
-  const query = row.contract_query || optionContractQuery(row);
+  const query = row.contract_query || row.contract || optionContractQuery(row);
   return query ? { query, context: optionContractContext(row) } : null;
 }
 function bestChainBatchSaveRows(rows) {
@@ -9045,23 +9060,26 @@ function optionContractCard(row) {
   const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
   const swingReasons = Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.join(', ') : (row.swing_fit_reasons || '');
   const swingWarnings = Array.isArray(row.swing_fit_warnings) ? row.swing_fit_warnings.join(', ') : (row.swing_fit_warnings || '');
-  const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
-  const query = row.contract_query || optionContractQuery(row);
+  const title = `${row.symbol || row.ticker || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
+  const query = row.contract_query || row.contract || optionContractQuery(row);
   const context = optionContractContext(row);
+  const premium = row.premium_dollars ?? row.actual_dollars;
+  const stopRef = row.stop_price_reference ?? row.stop_price;
+  const targetRef = row.target_price_reference ?? row.target_price;
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
       <span class="pill ${escAttr(readiness)}">${cell(row.contract_grade || readiness)}</span>
     </header>
     <div class="row"><span>Grade / lane</span><b>${cell(row.contract_grade)} / ${cell(row.review_lane)}</b></div>
-    <div class="row"><span>Mid / premium</span><b>${cell(row.mid)} / ${moneyShort(row.premium_dollars)}</b></div>
+    <div class="row"><span>Mid / premium</span><b>${cell(row.mid)} / ${moneyShort(premium)}</b></div>
     <div class="row"><span>Break-even</span><b>${cell(row.breakeven_price)} (${cell(row.breakeven_direction)} ${pct(row.breakeven_move_pct)})</b></div>
     <div class="row"><span>Budget fit</span><b>${cell(labelText(row.budget_fit))} / ${pct(row.budget_usage_pct)}</b></div>
     <div class="row"><span>Spread</span><b>${pct(row.spread_pct)}</b></div>
     <div class="row"><span>Open interest</span><b>${cell(row.openInterest)}</b></div>
     <div class="row"><span>Volume</span><b>${cell(row.volume)}</b></div>
     <div class="row"><span>Delta</span><b>${cell(row.delta)}</b></div>
-    <div class="row"><span>Stop / target ref</span><b>${cell(row.stop_price_reference)} / ${cell(row.target_price_reference)}</b></div>
+    <div class="row"><span>Stop / target ref</span><b>${cell(stopRef)} / ${cell(targetRef)}</b></div>
     <div class="row"><span>Risk / reward ref</span><b>${moneyShort(row.risk_dollars_reference)} / ${moneyShort(row.reward_dollars_reference)} (${ratio(row.reward_risk_reference)})</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
     <div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>

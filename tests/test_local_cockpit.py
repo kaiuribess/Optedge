@@ -91,6 +91,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write packet files" in html
     assert "Write + 3m+ chain scan" in html
     assert "swing-packet-chain" in html
+    assert "Saved 3m+ chain contracts" in html
+    assert "wireOptionChainActions($('swing-packet-results'))" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
@@ -830,13 +832,28 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
                 "strike": 220,
                 "expiry": "2027-01-15",
                 "dte": 216,
+                "bid": 4.9,
+                "ask": 5.1,
                 "mid": 5.0,
                 "premium_dollars": 500,
                 "spread_pct": 0.04,
+                "openInterest": 1200,
+                "volume": 80,
+                "breakeven_price": 225.0,
+                "breakeven_move_pct": 0.125,
+                "budget_usage_pct": 1.0,
+                "contracts_for_budget": 1,
+                "risk_dollars_reference": 250.0,
+                "reward_dollars_reference": 500.0,
+                "reward_risk_reference": 2.0,
+                "budget_fit": "inside_budget",
+                "contract_grade": "A",
+                "review_lane": "primary_review",
                 "readiness_score": 92,
                 "contract_quality_score": 94,
                 "swing_fit_score": 96,
                 "swing_fit_label": "clean_swing",
+                "review_thesis": "A-grade test contract.",
                 "chain_source": "cboe",
                 "quote_quality": "free_or_delayed",
             }],
@@ -856,6 +873,9 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["paper_candidates"]["selected_count"] == 1
         assert packet["chain_shortlist"]["count"] == 1
         assert packet["chain_shortlist"]["rows"][0]["contract"] == "AAPL 2027-01-15 C 220"
+        assert packet["chain_shortlist"]["rows"][0]["openInterest"] == 1200
+        assert packet["chain_shortlist"]["rows"][0]["breakeven_move_pct"] == 0.125
+        assert packet["chain_shortlist"]["rows"][0]["contract_grade"] == "A"
         json_path = data_dir / "swing_packet.json"
         md_path = data_dir / "swing_packet.md"
         assert json_path.exists()
@@ -923,13 +943,28 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
                     "strike": 220,
                     "expiry": "2027-01-15",
                     "dte": 216,
+                    "bid": 4.9,
+                    "ask": 5.1,
                     "mid": 5.0,
                     "premium_dollars": 500,
                     "spread_pct": 0.04,
+                    "openInterest": 1200,
+                    "volume": 80,
+                    "breakeven_price": 225.0,
+                    "breakeven_move_pct": 0.125,
+                    "budget_usage_pct": 1.0,
+                    "contracts_for_budget": 1,
+                    "risk_dollars_reference": 250.0,
+                    "reward_dollars_reference": 500.0,
+                    "reward_risk_reference": 2.0,
+                    "budget_fit": "inside_budget",
+                    "contract_grade": "A",
+                    "review_lane": "primary_review",
                     "readiness_score": 92,
                     "contract_quality_score": 94,
                     "swing_fit_score": 96,
                     "swing_fit_label": "clean_swing",
+                    "review_thesis": "A-grade test contract.",
                     "chain_source": "cboe",
                     "quote_quality": "free_or_delayed",
                 }],
