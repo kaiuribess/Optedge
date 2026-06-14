@@ -2721,6 +2721,50 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
             add(resolution.get("symbol") or token, "typed shortlist", 1.0, token)
         return rows[:limit]
 
+    try:
+        gated = build_climate_gated_setups(data_dir, per_asset=6, limit=max(limit, 10), include_held=False)
+        for row in gated.get("rows", []):
+            asset = str(row.get("asset") or "")
+            if asset not in {"option", "share", "value"}:
+                continue
+            reasons = row.get("climate_gate_reasons") if isinstance(row.get("climate_gate_reasons"), list) else []
+            reason = "; ".join(str(item) for item in reasons[:3] if item) or row.get("setup") or ""
+            add(
+                row.get("ticker_or_symbol"),
+                f"climate-gated {asset} setup",
+                row.get("climate_gate_score") or row.get("score"),
+                reason,
+            )
+            if len(rows) >= limit:
+                return rows
+    except Exception:
+        pass
+
+    try:
+        scout = build_swing_scout(
+            data_dir,
+            limit=max(limit * 2, 12),
+            asset="all",
+            min_score=55,
+            include_wait=False,
+        )
+        for row in scout.get("rows", []):
+            asset = str(row.get("asset") or "")
+            if asset not in {"option", "share", "value"}:
+                continue
+            reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
+            reason = "; ".join(str(item) for item in reasons[:3] if item) or row.get("lane") or row.get("setup") or ""
+            add(
+                row.get("ticker_or_symbol"),
+                f"swing scout {asset}",
+                row.get("swing_scout_score"),
+                reason,
+            )
+            if len(rows) >= limit:
+                return rows
+    except Exception:
+        pass
+
     setups = build_best_setups(data_dir, per_asset=6, limit=24)
     for row in setups.get("rows", []):
         asset = str(row.get("asset") or "")
@@ -2862,7 +2906,7 @@ def build_option_chain_batch(
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
         "notes": [
             "Bulk chain scan ranks contracts across a small shortlist so free sources are not hammered.",
-            "Blank symbol input uses the latest Optedge option/share/value setups and the research watchlist.",
+            "Blank symbol input uses climate-gated setups, swing scout winners, latest best setups, and the research watchlist.",
             "Free/keyless chain quotes may be delayed or incomplete; verify before any manual paper entry.",
         ],
     }

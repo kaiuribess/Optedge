@@ -2724,6 +2724,104 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
     assert report["symbol_summaries"][0]["top_rejects"] == "spread above filter (4)"
 
 
+def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
+    old_scan = cockpit_module.build_option_chain_scan
+    old_gated = cockpit_module.build_climate_gated_setups
+    old_scout = cockpit_module.build_swing_scout
+    old_best = cockpit_module.build_best_setups
+
+    def fake_scan(query: str, *args, **kwargs):
+        symbol = str(query).upper()
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+            "total_contracts": 12,
+            "rejected_count": 0,
+            "top_rejection_reasons": [],
+            "filtered_count": 1,
+            "scan_summary": {
+                "grade_counts": {"B": 1},
+                "best_reviewable": f"{symbol} 2027-01-15 C 10",
+            },
+            "rows": [{
+                "symbol": symbol,
+                "side": "call",
+                "expiry": "2027-01-15",
+                "dte": 216,
+                "strike": 10.0,
+                "mid": 1.0,
+                "premium_dollars": 100.0,
+                "spread_pct": 0.08,
+                "openInterest": 200,
+                "volume": 25,
+                "contract_quality_score": 75.0,
+                "contract_grade": "B",
+                "review_lane": "secondary_review",
+                "review_thesis": "B-grade scout contract.",
+                "grade_reasons": ["3m+ swing"],
+                "contract_query": f"{symbol} 2027-01-15 C 10",
+            }],
+        }
+
+    def fake_scout(*args, **kwargs):
+        return {
+            "rows": [
+                {
+                    "asset": "share",
+                    "ticker_or_symbol": "SMOL",
+                    "swing_scout_score": 91,
+                    "lane": "small_cap_squeeze_watch",
+                    "reasons": ["small cap", "short/squeeze pressure"],
+                },
+                {
+                    "asset": "option",
+                    "ticker_or_symbol": "RGTI",
+                    "swing_scout_score": 86,
+                    "lane": "small_cap_options_momentum",
+                    "reasons": ["retail/attention lift"],
+                },
+                {
+                    "asset": "futures",
+                    "ticker_or_symbol": "CL=F",
+                    "swing_scout_score": 90,
+                    "lane": "futures_macro_swing",
+                    "reasons": ["futures/macro momentum"],
+                },
+            ],
+        }
+
+    cockpit_module.build_option_chain_scan = fake_scan
+    cockpit_module.build_climate_gated_setups = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = fake_scout
+    cockpit_module.build_best_setups = lambda *args, **kwargs: {"rows": []}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            report = build_option_chain_batch(
+                Path(td),
+                query="",
+                preset="swing",
+                symbols_limit=5,
+                contracts_per_symbol=1,
+            )
+    finally:
+        cockpit_module.build_option_chain_scan = old_scan
+        cockpit_module.build_climate_gated_setups = old_gated
+        cockpit_module.build_swing_scout = old_scout
+        cockpit_module.build_best_setups = old_best
+
+    assert report["candidate_count"] == 2
+    assert {row["symbol"] for row in report["candidates"]} == {"SMOL", "RGTI"}
+    assert all(row["symbol"] != "CL=F" for row in report["candidates"])
+    assert {row["candidate_source"] for row in report["rows"]} == {
+        "swing scout share",
+        "swing scout option",
+    }
+    assert "swing scout winners" in report["notes"][1]
+
+
 def test_option_chain_shortlist_writer_creates_portable_artifacts():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -3279,6 +3377,7 @@ if __name__ == "__main__":
     test_data_health_audits_latest_opportunity_duplicates()
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
+    test_action_queue_groups_stale_snapshots_into_refresh_action()
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
@@ -3307,6 +3406,7 @@ if __name__ == "__main__":
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
     test_option_chain_scan_fetches_and_filters_contracts()
     test_option_chain_batch_scans_shortlist_and_ranks_contracts()
+    test_option_chain_batch_uses_swing_scout_candidates_when_blank()
     test_option_chain_shortlist_writer_creates_portable_artifacts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
@@ -3316,4 +3416,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("45/45 local cockpit tests passed")
+    print("47/47 local cockpit tests passed")
