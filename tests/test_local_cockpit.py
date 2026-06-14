@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,7 @@ from scripts.local_cockpit import (
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
+    build_watchlist_sec_filings,
     build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache,
@@ -163,6 +165,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/watchlist-add" in html
     assert "/api/watchlist-add-many" in html
     assert "/api/watchlist-run" in html
+    assert "SEC filing monitor" in html
+    assert "/api/watchlist-sec-filings" in html
+    assert "secFilingsTable" in html
+    assert "loadWatchlistSecFilings" in html
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
@@ -1862,6 +1868,70 @@ def test_saved_option_contracts_extracts_watchlist_option_requests():
         assert contracts["swing_count"] == 1
 
 
+def test_watchlist_sec_filings_ranks_recent_official_filings():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        today = datetime.now(timezone.utc).date()
+        watchlist = [
+            {"id": "aapl", "symbol": "AAPL", "query": "Apple"},
+            {"id": "nvda", "symbol": "NVDA", "query": "Nvidia"},
+            {"id": "aapl_dupe", "symbol": "AAPL", "query": "Apple duplicate"},
+        ]
+        (data_dir / "cockpit_watchlist.json").write_text(
+            json.dumps(watchlist),
+            encoding="utf-8",
+        )
+        old_recent = cockpit_module.recent_filings_for_symbol
+
+        def fake_recent(symbol, limit=8):
+            if symbol == "AAPL":
+                return {
+                    "symbol": "AAPL",
+                    "company_name": "Apple Inc.",
+                    "rows": [
+                        {
+                            "ticker": "AAPL",
+                            "company_name": "Apple Inc.",
+                            "form": "S-3",
+                            "filing_date": today.isoformat(),
+                            "description": "Shelf registration statement",
+                            "filing_signal": "dilution_or_offering_watch",
+                            "url": "https://www.sec.gov/aapl",
+                        }
+                    ],
+                }
+            return {
+                "symbol": "NVDA",
+                "company_name": "NVIDIA Corp.",
+                "rows": [
+                    {
+                        "ticker": "NVDA",
+                        "company_name": "NVIDIA Corp.",
+                        "form": "8-K",
+                        "filing_date": (today - timedelta(days=4)).isoformat(),
+                        "description": "Material event",
+                        "filing_signal": "material_event_review",
+                        "url": "https://www.sec.gov/nvda",
+                    }
+                ],
+            }
+
+        cockpit_module.recent_filings_for_symbol = fake_recent
+        try:
+            report = build_watchlist_sec_filings(data_dir, limit=10)
+        finally:
+            cockpit_module.recent_filings_for_symbol = old_recent
+
+    assert report["symbols_checked"] == 2
+    assert report["filing_count"] == 2
+    assert report["fresh_count"] == 2
+    assert report["high_impact_count"] == 2
+    assert report["rows"][0]["ticker"] == "AAPL"
+    assert report["rows"][0]["form"] == "S-3"
+    assert report["form_counts"]["S-3"] == 1
+    assert report["signal_counts"]["material_event_review"] == 1
+
+
 def test_saved_option_contracts_preserve_chain_scan_context():
     context = {
         "chain_source": "cboe",
@@ -2096,7 +2166,8 @@ if __name__ == "__main__":
     test_provider_status_checks_free_sources_without_running_scan()
     test_free_data_sources_registry_lists_no_key_coverage()
     test_saved_option_contracts_extracts_watchlist_option_requests()
+    test_watchlist_sec_filings_ranks_recent_official_filings()
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("35/35 local cockpit tests passed")
+    print("36/36 local cockpit tests passed")

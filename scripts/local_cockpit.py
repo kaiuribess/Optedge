@@ -37,6 +37,7 @@ from scripts.export_robinhood_agentic_queue import (
 from scripts.research_jobs import (
     create_job, job_dashboard_path, job_lookup_path, list_jobs, read_job, read_job_log,
 )
+from scripts.sec_filings import recent_filings_for_symbol
 from scripts.symbol_resolver import (
     COMMON_ALIASES, load_sec_company_tickers, resolve_symbol,
     sec_company_cache_meta, sec_company_search,
@@ -745,6 +746,137 @@ def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str,
             "Watchlist entries are local research targets only.",
             "Enriched watchlists read the latest local scan snapshots and open positions.",
             "Run all launches focused scans for resolved symbols; no trades are placed.",
+        ],
+    }
+
+
+def _parse_date_yyyy_mm_dd(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
+def _sec_filing_priority(form: Any, signal: Any, days_old: int | None) -> tuple[int, str]:
+    clean_form = str(form or "").upper().strip()
+    clean_signal = str(signal or "").strip().lower()
+    base = {
+        "S-1": 96,
+        "S-3": 94,
+        "424B5": 94,
+        "424B2": 90,
+        "8-K": 86,
+        "SC 13D": 82,
+        "SC 13G": 76,
+        "10-Q": 72,
+        "10-K": 70,
+        "4": 66,
+    }.get(clean_form, 55)
+    if "dilution" in clean_signal or "offering" in clean_signal:
+        base = max(base, 94)
+    elif "material_event" in clean_signal:
+        base = max(base, 86)
+    elif "ownership_change" in clean_signal:
+        base = max(base, 78)
+    if days_old is None:
+        return max(40, base - 8), "date_unknown"
+    if days_old <= 3:
+        return min(100, base + 5), "fresh"
+    if days_old <= 14:
+        return base, "recent"
+    if days_old <= 45:
+        return max(35, int(base - days_old * 0.7)), "aging"
+    return max(20, int(base - days_old * 0.9)), "old"
+
+
+def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> dict[str, Any]:
+    """Build a no-key SEC recent-filing monitor for saved research targets."""
+    limit = max(1, min(int(limit or 40), 120))
+    watchlist = load_watchlist(data_dir, enrich=False)
+    symbols: list[str] = []
+    seen = set()
+    for row in watchlist.get("entries", []):
+        symbol = str(row.get("symbol") or "").upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+
+    rows: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    today = datetime.now(timezone.utc)
+    for symbol in symbols[:60]:
+        try:
+            report = recent_filings_for_symbol(symbol, limit=8)
+        except Exception as exc:
+            errors.append({"symbol": symbol, "error": str(exc)[:180]})
+            continue
+        filings = report.get("rows", []) if isinstance(report, dict) else []
+        for filing in filings:
+            if not isinstance(filing, dict):
+                continue
+            filing_date = _parse_date_yyyy_mm_dd(filing.get("filing_date"))
+            days_old = (today.date() - filing_date.date()).days if filing_date else None
+            priority, freshness = _sec_filing_priority(
+                filing.get("form"), filing.get("filing_signal"), days_old,
+            )
+            rows.append({
+                "priority": priority,
+                "ticker": symbol,
+                "company_name": filing.get("company_name") or report.get("company_name"),
+                "form": filing.get("form"),
+                "filing_date": filing.get("filing_date"),
+                "days_old": days_old,
+                "freshness": freshness,
+                "signal": filing.get("filing_signal"),
+                "description": filing.get("description"),
+                "url": filing.get("url"),
+            })
+
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _float_value(row.get("priority"), default=0.0),
+            str(row.get("filing_date") or ""),
+        ),
+        reverse=True,
+    )[:limit]
+    signal_counts: dict[str, int] = {}
+    form_counts: dict[str, int] = {}
+    for row in rows:
+        signal = str(row.get("signal") or "unknown")
+        form = str(row.get("form") or "unknown")
+        signal_counts[signal] = signal_counts.get(signal, 0) + 1
+        form_counts[form] = form_counts.get(form, 0) + 1
+
+    fresh_count = sum(_float_value(row.get("days_old"), default=9999.0) <= 14 for row in rows)
+    high_impact_count = sum(
+        str(row.get("signal") or "") in {
+            "dilution_or_offering_watch",
+            "material_event_review",
+            "ownership_change_review",
+            "fundamental_update_review",
+        }
+        for row in rows
+    )
+    return {
+        "generated_at": _now_iso(),
+        "symbols_checked": len(symbols),
+        "filing_count": len(rows),
+        "fresh_count": fresh_count,
+        "high_impact_count": high_impact_count,
+        "error_count": len(errors),
+        "form_counts": form_counts,
+        "signal_counts": signal_counts,
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "errors": errors,
+        "notes": [
+            "SEC Filing Monitor uses the official no-key SEC submissions API.",
+            "It watches saved research targets only, so it stays focused and polite to public sources.",
+            "Filings are review prompts, not automatic trade entries or exits.",
         ],
     }
 
@@ -5433,6 +5565,16 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="section" style="margin-top:12px"><div id="watchlist-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="research">
+    <h2 style="margin:0 0 8px;font-size:18px">SEC filing monitor</h2>
+    <div class="muted">Official no-key SEC recent filings for saved watchlist symbols. Use this as event-risk context before reviewing a setup.</div>
+    <div class="scan-controls">
+      <button class="btn" type="button" id="sec-filings-refresh">Refresh SEC filings</button>
+    </div>
+    <div class="status" id="sec-filings-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="sec-filings-summary"></div>
+    <div class="section" style="margin-top:12px"><div id="sec-filings-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Symbol lookup</h2>
     <div class="muted">Search the latest local scan snapshots and open positions. For a new symbol, run a focused scan first.</div>
     <div class="search">
@@ -6086,6 +6228,38 @@ function watchlistTable(rows) {
     <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Readiness</th><th>Score</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function secFilingsSummaryHtml(data) {
+  const fields = [
+    ['Symbols checked', data.symbols_checked || 0],
+    ['Filings', data.filing_count || 0],
+    ['Fresh <=14d', data.fresh_count || 0],
+    ['High impact', data.high_impact_count || 0],
+    ['Errors', data.error_count || 0],
+    ['Forms', countMapText(data.form_counts || {})]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function secFilingsTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No important recent SEC filings found for saved watchlist symbols.</div>';
+  const body = rows.map(r => {
+    const secLink = r.url ? `<a class="btn" href="${escAttr(r.url)}" target="_blank">SEC</a>` : '';
+    return `<tr>
+      <td>
+        <button class="btn sec-filing-lookup-btn" type="button" data-symbol="${escAttr(r.ticker || '')}">Lookup</button>
+        ${secLink}
+      </td>
+      <td><strong>${cell(r.priority)}</strong></td>
+      <td><strong>${cell(r.ticker)}</strong><br><small>${cell(r.company_name || '')}</small></td>
+      <td>${cell(r.form)}</td>
+      <td>${cell(r.filing_date)}</td>
+      <td>${cell(r.days_old)}</td>
+      <td>${cell(labelText(r.freshness))}</td>
+      <td>${cell(labelText(r.signal))}</td>
+      <td>${cell(r.description)}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Ticker</th><th>Form</th><th>Filed</th><th>Days</th><th>Freshness</th><th>Signal</th><th>Description</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
 function savedContractsSummary(data) {
   const status = data.status_counts || {};
   const quote = data.quote_status_counts || {};
@@ -6420,6 +6594,15 @@ function wireWatchlistRows() {
     });
   });
 }
+function wireSecFilingRows() {
+  document.querySelectorAll('.sec-filing-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      setView('research');
+      $('symbol').value = btn.dataset.symbol || '';
+      await lookup();
+    });
+  });
+}
 async function loadSummary() {
   const res = await fetch('/api/summary');
   const data = await res.json();
@@ -6611,6 +6794,16 @@ async function loadWatchlist() {
   $('watchlist-results').innerHTML = watchlistTable(data.entries || []);
   wireWatchlistRows();
 }
+async function loadWatchlistSecFilings() {
+  $('sec-filings-status-text').textContent = 'Checking SEC filings for saved watchlist symbols...';
+  const res = await fetch('/api/watchlist-sec-filings?limit=40');
+  const data = await res.json();
+  $('sec-filings-status-text').textContent = `${data.filing_count || 0} important filing(s) across ${data.symbols_checked || 0} saved symbol(s).`;
+  $('sec-filings-summary').innerHTML = secFilingsSummaryHtml(data);
+  $('sec-filings-results').innerHTML = secFilingsTable(data.rows || []);
+  $('sec-filings-results').dataset.loaded = '1';
+  wireSecFilingRows();
+}
 async function loadSavedContracts(refreshQuotes=false) {
   $('saved-contracts-status-text').textContent = refreshQuotes ? 'Refreshing saved contract quotes...' : 'Loading saved option contracts...';
   const params = new URLSearchParams({
@@ -6645,6 +6838,7 @@ async function addWatchlist() {
   $('watchlist-query').value = '';
   $('watchlist-status-text').textContent = `${data.entry.symbol} saved to watchlist.`;
   await loadWatchlist();
+  await loadWatchlistSecFilings();
   await loadSavedContracts();
 }
 async function removeWatchlist(id) {
@@ -6657,6 +6851,7 @@ async function removeWatchlist(id) {
   const data = await res.json();
   $('watchlist-status-text').textContent = data.removed ? 'Removed watchlist target.' : 'Target was not found.';
   await loadWatchlist();
+  await loadWatchlistSecFilings();
   await loadSavedContracts();
 }
 async function runWatchlist() {
@@ -7068,7 +7263,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -7104,10 +7299,17 @@ document.querySelectorAll('.view-tab').forEach(btn => {
         console.error(err);
       });
     }
+    if (view === 'research' && !$('sec-filings-results').dataset.loaded) {
+      loadWatchlistSecFilings().catch(err => {
+        $('sec-filings-status-text').textContent = 'SEC filings monitor failed';
+        console.error(err);
+      });
+    }
   });
 });
 $('watchlist-add').addEventListener('click', addWatchlist);
 $('watchlist-run').addEventListener('click', runWatchlist);
+$('sec-filings-refresh').addEventListener('click', loadWatchlistSecFilings);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
 $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchlist-query', 'watchlist-suggestions', false));
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
@@ -7385,6 +7587,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             enrich = _bool_param(params.get("enrich", ["false"])[0])
             self._send_json(load_watchlist(self.data_dir, enrich=enrich))
+            return
+        if parsed.path == "/api/watchlist-sec-filings":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["40"])[0], 40, 1, 120)
+            self._send_json(build_watchlist_sec_filings(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/saved-option-contracts":
             params = parse_qs(parsed.query)
