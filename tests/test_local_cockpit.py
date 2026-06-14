@@ -15,7 +15,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
-    build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
+    build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
@@ -148,6 +148,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Provider status" in html
     assert "/api/provider-status" in html
     assert "loadProviderStatus" in html
+    assert "Free source map" in html
+    assert "/api/free-data-sources" in html
+    assert "freeSourcesTable" in html
+    assert "loadFreeDataSources" in html
     assert "Research watchlist" in html
     assert "Readiness" in html
     assert "/api/watchlist" in html
@@ -1730,6 +1734,27 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
 
 
+def test_free_data_sources_registry_lists_no_key_coverage():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "sec_company_tickers.json").write_text(
+            json.dumps({"rows": [{"symbol": "AAPL", "name": "Apple Inc."}]}),
+            encoding="utf-8",
+        )
+        report = build_free_data_sources(data_dir)
+
+    names = {row["name"] for row in report["rows"]}
+    assert report["source_count"] >= 10
+    assert report["no_key_count"] == report["source_count"]
+    assert report["primary_count"] >= 5
+    assert "CBOE option chains" in names
+    assert "Yahoo chart" in names
+    assert "SEC EDGAR" in names
+    assert "options" in report["category_counts"]
+    assert report["sec_cache"]["row_count"] >= 1
+    assert report["ram_cache"]["ram_cache_enabled"] in {True, False}
+
+
 def test_saved_option_contracts_extracts_watchlist_option_requests():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1991,8 +2016,9 @@ if __name__ == "__main__":
     test_option_chain_batch_scans_shortlist_and_ranks_contracts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
+    test_free_data_sources_registry_lists_no_key_coverage()
     test_saved_option_contracts_extracts_watchlist_option_requests()
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("33/33 local cockpit tests passed")
+    print("34/34 local cockpit tests passed")

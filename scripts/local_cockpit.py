@@ -265,6 +265,149 @@ BREADTH_PULSE_PAIRS = [
     },
 ]
 
+FREE_DATA_SOURCE_REGISTRY = [
+    {
+        "name": "Yahoo chart",
+        "category": "prices",
+        "coverage": "US equities, ETFs, indexes, futures proxies",
+        "credential": "none",
+        "quality": "free_or_delayed",
+        "used_by": "history, technicals, futures, market pulse, repricing",
+        "primary": True,
+        "caveat": "Rate limits and symbol gaps can happen.",
+    },
+    {
+        "name": "yfinance",
+        "category": "prices/fundamentals/options",
+        "coverage": "history, fundamentals, earnings, fallback option chains",
+        "credential": "none",
+        "quality": "free_or_delayed",
+        "used_by": "fundamentals, earnings, whisper, option fallback",
+        "primary": False,
+        "caveat": "Unofficial and can throttle.",
+    },
+    {
+        "name": "CBOE option chains",
+        "category": "options",
+        "coverage": "US listed equity and ETF option chains",
+        "credential": "none",
+        "quality": "free_or_delayed",
+        "used_by": "mispricing, chain scan, chain sweep, saved contract quotes",
+        "primary": True,
+        "caveat": "Not an execution quote; availability can vary by ticker.",
+    },
+    {
+        "name": "Nasdaq option/historical",
+        "category": "prices/options",
+        "coverage": "US historical rows and option-chain fallback paths",
+        "credential": "none",
+        "quality": "free_or_delayed",
+        "used_by": "history fallback, option fallback",
+        "primary": False,
+        "caveat": "Public endpoint can be partial or blocked.",
+    },
+    {
+        "name": "Stooq CSV",
+        "category": "prices",
+        "coverage": "US daily history fallback",
+        "credential": "none",
+        "quality": "delayed",
+        "used_by": "last-resort history fallback",
+        "primary": False,
+        "caveat": "Daily data only and may not cover every symbol.",
+    },
+    {
+        "name": "SEC EDGAR",
+        "category": "filings",
+        "coverage": "company tickers, Forms 4/144, 8-K catalysts, 13F, filings",
+        "credential": "none",
+        "quality": "official_public",
+        "used_by": "insider, form 144, FDA catalyst fallback, 13F, symbol search",
+        "primary": True,
+        "caveat": "Filing timestamps and issuer mappings need normalization.",
+    },
+    {
+        "name": "House/Senate disclosures",
+        "category": "filings",
+        "coverage": "Congressional transaction disclosure PDFs",
+        "credential": "none",
+        "quality": "public_delayed",
+        "used_by": "congress engine",
+        "primary": True,
+        "caveat": "PDF parsing can be slow and disclosure lag is normal.",
+    },
+    {
+        "name": "Reddit JSON",
+        "category": "social",
+        "coverage": "WSB and r/options retail ticker mentions",
+        "credential": "none",
+        "quality": "public_web",
+        "used_by": "WSB trending, r/options, sentiment",
+        "primary": True,
+        "caveat": "Social data is noisy and rate-limited.",
+    },
+    {
+        "name": "ApeWisdom / StockTwits",
+        "category": "social",
+        "coverage": "retail attention and ticker chatter",
+        "credential": "none",
+        "quality": "public_web",
+        "used_by": "twitter/social retail attention",
+        "primary": True,
+        "caveat": "Public web layouts can change.",
+    },
+    {
+        "name": "Wikipedia pageviews",
+        "category": "attention",
+        "coverage": "search/attention fallback for ticker/company pages",
+        "credential": "none",
+        "quality": "public_delayed",
+        "used_by": "Google Trends fallback",
+        "primary": False,
+        "caveat": "Proxy for attention, not trading flow.",
+    },
+    {
+        "name": "CFTC Socrata CoT",
+        "category": "futures/macro",
+        "coverage": "commitment-of-traders positioning",
+        "credential": "none",
+        "quality": "official_public_delayed",
+        "used_by": "CoT engine and futures context",
+        "primary": True,
+        "caveat": "Weekly and delayed by design.",
+    },
+    {
+        "name": "EIA public energy data",
+        "category": "macro/commodities",
+        "coverage": "oil and natural gas inventory context",
+        "credential": "none",
+        "quality": "official_public",
+        "used_by": "EIA engine, energy/futures context",
+        "primary": True,
+        "caveat": "Release schedule matters; not tick-by-tick.",
+    },
+    {
+        "name": "FRED public CSV",
+        "category": "macro/rates",
+        "coverage": "rates, spreads, macro series",
+        "credential": "none",
+        "quality": "official_public",
+        "used_by": "yield curve, credit spread, macro context",
+        "primary": True,
+        "caveat": "Economic series update on official release cadence.",
+    },
+    {
+        "name": "Hyperliquid public API",
+        "category": "crypto",
+        "coverage": "crypto market context and futures proxies",
+        "credential": "none",
+        "quality": "public_near_realtime",
+        "used_by": "hyperliquid engine",
+        "primary": True,
+        "caveat": "Crypto context does not replace equity option quotes.",
+    },
+]
+
 WATCHLIST_FILENAME = "cockpit_watchlist.json"
 
 
@@ -3829,6 +3972,49 @@ def _fetch_option_chain_for_provider_status(symbol: str) -> dict[str, Any]:
         return _fetch_option_chain(symbol, cache_age=600)
 
 
+def build_free_data_sources(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Return the built-in free/no-key data source map used by the local cockpit."""
+    sec_meta = sec_company_cache_meta(Path(data_dir) / "sec_company_tickers.json")
+    cache = data_provider.cache_stats()
+    rows: list[dict[str, Any]] = []
+    categories: dict[str, int] = {}
+    quality_counts: dict[str, int] = {}
+    no_key_count = 0
+    for idx, raw in enumerate(FREE_DATA_SOURCE_REGISTRY, start=1):
+        row = dict(raw)
+        row["rank"] = idx
+        row["status_hint"] = "active"
+        if row.get("name") == "SEC EDGAR":
+            row["local_cache_status"] = sec_meta.get("status")
+            row["local_cache_rows"] = sec_meta.get("row_count")
+        else:
+            row["local_cache_status"] = None
+            row["local_cache_rows"] = None
+        if row.get("credential") == "none":
+            no_key_count += 1
+        category = str(row.get("category") or "unknown")
+        quality = str(row.get("quality") or "unknown")
+        categories[category] = categories.get(category, 0) + 1
+        quality_counts[quality] = quality_counts.get(quality, 0) + 1
+        rows.append({k: _clean_value(v) for k, v in row.items()})
+    return {
+        "generated_at": _now_iso(),
+        "source_count": len(rows),
+        "no_key_count": no_key_count,
+        "primary_count": sum(1 for row in rows if row.get("primary")),
+        "category_counts": categories,
+        "quality_counts": quality_counts,
+        "sec_cache": sec_meta,
+        "ram_cache": cache,
+        "rows": rows,
+        "notes": [
+            "This registry lists free/no-key sources currently wired into Optedge.",
+            "Use Provider Status for a live symbol-level probe; this map explains coverage and caveats.",
+            "Free sources are research-grade and may be delayed, rate-limited, partial, or unavailable.",
+        ],
+    }
+
+
 def build_provider_status(
     data_dir: Path = DATA_DIR,
     query: str = "AAPL",
@@ -5060,6 +5246,12 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="provider-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="provider-summary"></div>
     <div class="section" style="margin-top:12px"><div id="provider-results" class="table-wrap"></div></div>
+    <div class="section" style="margin-top:12px">
+      <h3><span>Free source map</span><span>No-key registry</span></h3>
+      <div class="status" id="free-sources-status-text"></div>
+      <div class="brief-grid" style="margin-top:12px" id="free-sources-summary"></div>
+      <div id="free-sources-results" class="table-wrap"></div>
+    </div>
   </section>
   <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Research watchlist</h2>
@@ -5597,6 +5789,32 @@ function providerSummaryHtml(data) {
     ['Warnings', (data.warnings || []).length]
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function freeSourcesSummaryHtml(data) {
+  const fields = [
+    ['Sources', data.source_count || 0],
+    ['No-key', data.no_key_count || 0],
+    ['Primary', data.primary_count || 0],
+    ['Categories', countMapText(data.category_counts || {})],
+    ['Quality', countMapText(data.quality_counts || {})],
+    ['SEC cache', `${(data.sec_cache && data.sec_cache.status) || '-'} / ${(data.sec_cache && data.sec_cache.row_count) || 0}`],
+    ['RAM cache', `${(data.ram_cache && data.ram_cache.ram_cache_items) || 0} item(s)`]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function freeSourcesTable(data) {
+  const rows = (data.rows || []).map(r => ({
+    source: r.name,
+    category: r.category,
+    coverage: r.coverage,
+    credential: r.credential,
+    quality: r.quality,
+    primary: r.primary ? 'yes' : 'fallback',
+    used_by: r.used_by,
+    caveat: r.caveat,
+    cache: r.local_cache_status ? `${r.local_cache_status} / ${r.local_cache_rows || 0}` : '-'
+  }));
+  return rows.length ? table(rows, true) : '<div class="empty">No source registry rows available.</div>';
 }
 function healthClass(level) {
   if (level === 'bad') return 'bad';
@@ -6151,6 +6369,14 @@ async function loadProviderStatus() {
   $('provider-results').innerHTML = table(data.rows || []);
   $('provider-results').dataset.loaded = '1';
 }
+async function loadFreeDataSources() {
+  $('free-sources-status-text').textContent = 'Loading free source map...';
+  const res = await fetch('/api/free-data-sources');
+  const data = await res.json();
+  $('free-sources-status-text').textContent = `${data.no_key_count || 0}/${data.source_count || 0} source(s) require no key.`;
+  $('free-sources-summary').innerHTML = freeSourcesSummaryHtml(data);
+  $('free-sources-results').innerHTML = freeSourcesTable(data);
+}
 async function loadWatchlist() {
   const res = await fetch('/api/watchlist?enrich=1');
   const data = await res.json();
@@ -6616,7 +6842,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
-$('refresh').addEventListener('click', () => { loadSummary(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadSavedContracts(); });
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -6671,6 +6897,7 @@ loadBreadthPulse().catch(err => { $('breadth-pulse-status-text').textContent = '
 loadSectorPulse().catch(err => { $('sector-pulse-status-text').textContent = 'Sector pulse failed'; console.error(err); });
 loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
 loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
+loadFreeDataSources().catch(err => { $('free-sources-status-text').textContent = 'Free source map failed'; console.error(err); });
 loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
 loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
 loadRobinhoodQueue(false).catch(err => { $('rh-status-text').textContent = 'Agentic queue preview failed'; console.error(err); });
@@ -6750,6 +6977,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/performance-summary":
             self._send_json(build_performance_summary(self.data_dir))
+            return
+        if parsed.path == "/api/free-data-sources":
+            self._send_json(build_free_data_sources(self.data_dir))
             return
         if parsed.path == "/api/provider-status":
             params = parse_qs(parsed.query)
