@@ -66,6 +66,8 @@ ARTIFACTS = {
     "external-paper-orders": ("external_paper_orders.csv", "text/csv; charset=utf-8"),
     "option-chain-shortlist": ("option_chain_shortlist.csv", "text/csv; charset=utf-8"),
     "option-chain-shortlist-json": ("option_chain_shortlist.json", "application/json; charset=utf-8"),
+    "swing-packet-json": ("swing_packet.json", "application/json; charset=utf-8"),
+    "swing-packet-md": ("swing_packet.md", "text/markdown; charset=utf-8"),
     "robinhood-agentic-queue": ("robinhood_agentic_queue.json", "application/json; charset=utf-8"),
     "robinhood-agentic-prompt": ("robinhood_agentic_prompt.md", "text/markdown; charset=utf-8"),
 }
@@ -6111,6 +6113,275 @@ def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
     return path if path.exists() and path.is_file() else None
 
 
+def _packet_call(
+    notes: list[str],
+    label: str,
+    default: Any,
+    func: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        result = func(*args, **kwargs)
+        return result if result is not None else default
+    except Exception as exc:
+        notes.append(f"{label} unavailable: {str(exc)[:160]}")
+        return default
+
+
+def _packet_rows(
+    rows: list[dict[str, Any]] | None,
+    fields: list[str],
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for raw in (rows or [])[: max(1, int(limit or 6))]:
+        if not isinstance(raw, dict):
+            continue
+        row = {field: _clean_value(raw.get(field)) for field in fields if field in raw}
+        if row:
+            out.append(row)
+    return out
+
+
+def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
+    df = _load_option_chain_shortlist(data_dir)
+    csv_path = artifact_path("option-chain-shortlist", data_dir)
+    json_path = artifact_path("option-chain-shortlist-json", data_dir)
+    if df is None or df.empty:
+        return {
+            "status": "missing",
+            "count": 0,
+            "csv_path": str(csv_path) if csv_path else None,
+            "json_path": str(json_path) if json_path else None,
+            "rows": [],
+            "notes": ["Run the shortlist chain sweep, then write shortlist files to feed this packet."],
+        }
+    top = df.copy()
+    sort_cols = [col for col in ("rank_score", "confidence", "dte") if col in top.columns]
+    if sort_cols:
+        top = top.sort_values(sort_cols, ascending=[False] * len(sort_cols))
+    quality_counts: dict[str, int] = {}
+    for col in ("quote_quality", "chain_source", "swing_fit_label"):
+        if col not in df.columns:
+            continue
+        counts = df[col].fillna("").astype(str).str.strip()
+        quality_counts[col] = int((counts != "").sum())
+    return {
+        "status": "ready",
+        "count": int(len(df)),
+        "csv_path": str(csv_path) if csv_path else None,
+        "json_path": str(json_path) if json_path else None,
+        "source_file": _clean_value(df["_source_file"].iloc[0]) if "_source_file" in df.columns else None,
+        "source_mtime": _clean_value(df["_source_mtime"].iloc[0]) if "_source_mtime" in df.columns else None,
+        "field_coverage": quality_counts,
+        "rows": _records_from_frame(top[[
+            col for col in [
+                "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "actual_dollars",
+                "confidence", "rank_score", "spread_pct", "swing_fit_label", "chain_source",
+                "quote_quality",
+            ]
+            if col in top.columns
+        ]], limit=8),
+        "notes": [
+            "Shortlist rows come from the saved 3m+ option-chain sweep.",
+            "Free chain quotes can be delayed or incomplete; refresh before manual paper entry.",
+        ],
+    }
+
+
+def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
+    action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
+    label = str(action.get("label") or "Review local research").strip()
+    climate = str(command.get("climate_label") or today.get("climate_label") or "unknown climate").strip()
+    status = str(command.get("status") or "review").strip().replace("_", " ")
+    return f"{label} under {climate} ({status})."
+
+
+def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
+    command = packet.get("command_center") if isinstance(packet.get("command_center"), dict) else {}
+    action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
+    climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
+    chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
+    lines = [
+        "# Optedge Swing Packet",
+        "",
+        f"Generated: {packet.get('generated_at') or '-'}",
+        "",
+        "Research and decision-support only. No broker execution is performed.",
+        "",
+        "## State",
+        f"- Headline: {packet.get('headline') or '-'}",
+        f"- Command status: {command.get('status') or '-'}",
+        f"- Data health: {command.get('data_health_status') or '-'}",
+        f"- Risk level: {command.get('risk_level') or '-'}",
+        f"- Open positions: {command.get('total_open') or 0}",
+        f"- Swing climate: {climate.get('climate_label') or command.get('climate_label') or '-'}",
+        f"- Climate score: {climate.get('climate_score') or command.get('climate_score') or '-'}",
+        "",
+        "## Next Review",
+        f"- Action: {action.get('label') or '-'}",
+        f"- Symbol/query: {action.get('query') or action.get('symbol') or '-'}",
+        f"- Why: {action.get('detail') or command.get('status_detail') or '-'}",
+        "",
+        "## Today Review",
+    ]
+    for row in packet.get("today_review", {}).get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('priority', '-')}: {row.get('label', '-')} "
+            f"({row.get('symbol') or row.get('query') or row.get('source') or '-'})"
+        )
+    lines.extend(["", "## Climate-Gated Setups"])
+    for row in packet.get("climate_gated_setups", {}).get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('ticker_or_symbol', '-')}: {row.get('setup') or row.get('asset') or '-'} "
+            f"[gate {row.get('climate_gate_score', '-')}]"
+        )
+    lines.extend(["", "## External Paper Candidates"])
+    for row in packet.get("paper_candidates", {}).get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('asset', '-')}: {row.get('ticker_or_symbol', '-')} "
+            f"{row.get('action', '')} qty {row.get('quantity', '-')}"
+        )
+    lines.extend([
+        "",
+        "## Chain Shortlist",
+        f"- Status: {chain.get('status') or '-'}",
+        f"- Rows: {chain.get('count') or 0}",
+    ])
+    for row in chain.get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('contract', '-')} mid {row.get('mid', '-')} "
+            f"DTE {row.get('dte', '-')} fit {row.get('swing_fit_label', '-')}"
+        )
+    lines.extend(["", "## Notes"])
+    for note in packet.get("notes", []):
+        lines.append(f"- {note}")
+    return "\n".join(lines).strip() + "\n"
+
+
+def write_swing_packet(packet: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, str]:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    json_path = data_dir / "swing_packet.json"
+    md_path = data_dir / "swing_packet.md"
+    payload = dict(packet)
+    payload["wrote_files"] = True
+    payload["paths"] = {"json": str(json_path), "markdown": str(md_path)}
+    json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    md_path.write_text(render_swing_packet_markdown(payload), encoding="utf-8")
+    return {"json": str(json_path), "markdown": str(md_path)}
+
+
+def build_swing_packet(data_dir: Path = DATA_DIR, write: bool = False) -> dict[str, Any]:
+    """Build a compact daily swing-review handoff from existing cockpit panels."""
+    notes = [
+        "This packet packages existing cockpit outputs; it does not create a new trading model.",
+        "It is local research only and does not place trades.",
+    ]
+    command = _packet_call(notes, "Command Center", {}, build_command_center, data_dir)
+    today = _packet_call(notes, "Today Review", {}, build_today_review, data_dir, limit=10)
+    climate = _packet_call(notes, "Swing Climate", {}, build_swing_climate, data_dir)
+    gated = _packet_call(
+        notes,
+        "Climate-gated setups",
+        {"rows": [], "held": []},
+        build_climate_gated_setups,
+        data_dir,
+        per_asset=4,
+        limit=12,
+        include_held=True,
+    )
+    paper = _packet_call(
+        notes,
+        "Paper candidates",
+        {"rows": [], "selected_count": 0, "excluded_count": 0},
+        build_paper_candidates,
+        data_dir,
+        max_new=5,
+        max_open=30,
+        include_watch=False,
+        allow_zero_size_placeholder=False,
+        asset="all",
+        dry_run=False,
+        write=False,
+    )
+    chain = _packet_call(notes, "Chain shortlist", {"status": "missing", "rows": []}, _build_chain_shortlist_summary, data_dir)
+    artifacts = {
+        "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
+        "validation_report": str(artifact_path("validation-report", data_dir)) if artifact_path("validation-report", data_dir) else None,
+        "chain_shortlist": str(artifact_path("option-chain-shortlist", data_dir)) if artifact_path("option-chain-shortlist", data_dir) else None,
+        "paper_orders": str(artifact_path("external-paper-orders", data_dir)) if artifact_path("external-paper-orders", data_dir) else None,
+    }
+    packet = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "does_not_place_orders": True,
+        "status": command.get("status") or "review",
+        "headline": _swing_packet_headline(command, today),
+        "command_center": {
+            "status": command.get("status"),
+            "status_detail": command.get("status_detail"),
+            "data_health_status": command.get("data_health_status"),
+            "risk_level": command.get("risk_level"),
+            "total_open": command.get("total_open"),
+            "source_count": command.get("source_count"),
+            "no_key_count": command.get("no_key_count"),
+            "climate_label": command.get("climate_label"),
+            "climate_score": command.get("climate_score"),
+            "next_action": command.get("next_action") or {},
+            "cards": command.get("cards") or [],
+        },
+        "today_review": {
+            "count": today.get("count", 0),
+            "review_now_count": today.get("review_now_count", 0),
+            "rows": _packet_rows(today.get("rows"), [
+                "priority", "category", "label", "detail", "action", "route", "symbol", "query", "source", "asset",
+            ], limit=10),
+        },
+        "swing_climate": {
+            "climate_label": climate.get("climate_label"),
+            "climate_score": climate.get("climate_score"),
+            "posture": climate.get("posture"),
+            "warnings": climate.get("warnings") or [],
+            "trade_gates": climate.get("trade_gates") or [],
+            "asset_bias": climate.get("asset_bias") or [],
+        },
+        "climate_gated_setups": {
+            "selected_count": gated.get("selected_count", len(gated.get("rows") or [])),
+            "held_count": gated.get("held_count", len(gated.get("held") or [])),
+            "rows": _packet_rows(gated.get("rows"), [
+                "asset", "ticker_or_symbol", "setup", "readiness_score", "climate_gate_score",
+                "climate_gate_status", "climate_gate_reasons", "trade_status", "confidence",
+                "rank_score", "dte", "spread_pct",
+            ], limit=10),
+            "held": _packet_rows(gated.get("held"), [
+                "asset", "ticker_or_symbol", "setup", "readiness_score", "climate_gate_score",
+                "climate_gate_reasons",
+            ], limit=5),
+        },
+        "paper_candidates": {
+            "selected_count": paper.get("selected_count", 0),
+            "excluded_count": paper.get("excluded_count", 0),
+            "top_rejection_reasons": paper.get("top_rejection_reasons") or [],
+            "rows": _packet_rows(paper.get("rows"), [
+                "asset", "ticker_or_symbol", "action", "direction", "quantity", "contract",
+                "option_side", "strike", "expiry", "entry_price", "stop_price", "target_price",
+                "confidence", "rank_score", "trade_status", "reason_selected",
+            ], limit=8),
+        },
+        "chain_shortlist": chain,
+        "artifacts": artifacts,
+        "notes": notes,
+        "wrote_files": False,
+        "paths": {},
+    }
+    packet = {k: _clean_value(v) for k, v in packet.items()}
+    if write:
+        paths = write_swing_packet(packet, data_dir)
+        packet["wrote_files"] = True
+        packet["paths"] = paths
+    return packet
+
+
 def _int_param(value: str | None, default: int, low: int, high: int) -> int:
     try:
         out = int(float(value or default))
@@ -6696,6 +6967,8 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/equity-curve" target="_blank">Equity curve</a>
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
     <a class="btn" href="/artifact/option-chain-shortlist" target="_blank">Chain shortlist</a>
+    <a class="btn" href="/artifact/swing-packet-json" target="_blank">Swing packet JSON</a>
+    <a class="btn" href="/artifact/swing-packet-md" target="_blank">Swing packet MD</a>
     <a class="btn" href="/artifact/robinhood-agentic-queue" target="_blank">Agentic queue</a>
     <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
@@ -6731,6 +7004,18 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="muted">Fast first read: market posture, data trust, open risk, free-source coverage, and the next review action.</div>
     <div class="status" id="command-center-status-text"></div>
     <div id="command-center-results"></div>
+  </section>
+  <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Swing packet</h2>
+    <div class="muted">A compact daily handoff built from command center, today review, climate gates, paper candidates, and saved chain shortlist.</div>
+    <div class="scan-controls">
+      <button class="btn" type="button" id="swing-packet-preview">Preview packet</button>
+      <button class="btn" type="button" id="swing-packet-write">Write packet files</button>
+      <a class="btn" href="/artifact/swing-packet-json" target="_blank">Open JSON</a>
+      <a class="btn" href="/artifact/swing-packet-md" target="_blank">Open Markdown</a>
+    </div>
+    <div class="status" id="swing-packet-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="swing-packet-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Today review</h2>
@@ -7316,6 +7601,56 @@ function commandCenterHtml(data) {
     </div>
     <div class="command-card-grid">${cards}</div>
     <div class="brief-cols">${queue}${notes}</div>
+  </div>`;
+}
+function swingPacketHtml(data) {
+  if (!data) return '<div class="empty">No swing packet built yet.</div>';
+  const command = data.command_center || {};
+  const action = command.next_action || {};
+  const climate = data.swing_climate || {};
+  const chain = data.chain_shortlist || {};
+  const paper = data.paper_candidates || {};
+  const todayRows = (data.today_review && data.today_review.rows) || [];
+  const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
+  const paperRows = paper.rows || [];
+  const chainRows = chain.rows || [];
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
+    <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
+    <div class="brief-tile"><span>Risk</span><strong>${cell(command.risk_level || '-')}</strong></div>
+    <div class="brief-tile"><span>Climate</span><strong>${cell(climate.climate_label || command.climate_label || '-')}</strong></div>
+    <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
+    <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Paper candidates</span><strong>${cell(paper.selected_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Files written</span><strong>${cell(data.wrote_files ? 'yes' : 'no')}</strong></div>
+  </div>`;
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  return `<div style="padding:12px">
+    ${tiles}
+    <div class="decision-strip" style="margin-top:12px">
+      <div class="decision-main">
+        <h3>${cell(data.headline || 'Review local research')}</h3>
+        <p>${cell(action.detail || command.status_detail || '')}</p>
+        <div class="review-meta">
+          <span class="pill">${cell(action.source || 'local')}</span>
+          <span>${cell(action.query || action.symbol || '-')}</span>
+          <span>${cell(data.does_not_place_orders ? 'no broker execution' : 'review')}</span>
+        </div>
+      </div>
+      <div class="decision-side">
+        <button class="btn command-center-action-btn" type="button" data-action="${escAttr(action.action || '')}" data-route="${escAttr(action.route || '')}" data-query="${escAttr(action.query || '')}" data-symbol="${escAttr(action.symbol || '')}">${escHtml(todayReviewActionLabel(action.action, action.route))}</button>
+        <a class="btn" href="/artifact/swing-packet-md" target="_blank">Open Markdown packet</a>
+      </div>
+    </div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
+      <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
+      <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
+      <div class="brief-list"><h4>Saved chain shortlist</h4>${table(chainRows.slice(0, 6), true)}</div>
+      ${notes}
+    </div>
   </div>`;
 }
 function todayReviewHtml(data) {
@@ -8151,6 +8486,22 @@ async function loadCommandCenter() {
   $('command-center-results').innerHTML = commandCenterHtml(data);
   wireCommandCenter();
 }
+async function loadSwingPacket(write=false) {
+  $('swing-packet-status-text').textContent = write ? 'Writing swing packet files...' : 'Building swing packet...';
+  const res = write
+    ? await fetch('/api/build-swing-packet', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' })
+    : await fetch('/api/swing-packet');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('swing-packet-status-text').textContent = 'Swing packet failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const fileNote = data.wrote_files ? ` Files written: ${data.paths.markdown || data.paths.json || ''}` : '';
+  $('swing-packet-status-text').textContent = `${labelText(data.status || 'review')} packet built. ${fileNote}`;
+  $('swing-packet-results').innerHTML = swingPacketHtml(data);
+  wireClickableRows($('swing-packet-results'));
+  wireCommandCenter();
+}
 function jobClass(status) {
   if (status === 'completed') return 'good';
   if (status === 'failed') return 'bad';
@@ -8947,7 +9298,9 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
+$('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -9055,6 +9408,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/command-center":
             self._send_json(build_command_center(self.data_dir))
+            return
+        if parsed.path == "/api/swing-packet":
+            self._send_json(build_swing_packet(self.data_dir, write=False))
             return
         if parsed.path == "/api/data-health":
             self._send_json(build_data_health(self.data_dir))
@@ -9352,7 +9708,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
-            "/api/export-chain-shortlist",
+            "/api/export-chain-shortlist", "/api/build-swing-packet",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache",
         }:
@@ -9422,6 +9778,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             report = body.get("report") if isinstance(body.get("report"), dict) else {}
             result = write_option_chain_shortlist(report, self.data_dir)
             self._send_json(result, status=200 if result.get("ok") else 400)
+            return
+        if parsed.path == "/api/build-swing-packet":
+            self._send_json(build_swing_packet(self.data_dir, write=True))
             return
         if parsed.path == "/api/build-robinhood-queue":
             report = build_robinhood_agentic_queue_report(

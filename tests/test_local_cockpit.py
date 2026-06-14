@@ -19,7 +19,7 @@ from scripts.local_cockpit import (
     build_macro_stress_pulse, build_options_sentiment,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
-    build_watchlist_sec_filings,
+    build_swing_packet, build_watchlist_sec_filings,
     build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     warm_sec_ticker_cache, write_option_chain_shortlist,
@@ -81,6 +81,14 @@ def test_cockpit_html_contains_lookup_controls():
     assert "commandCenterHtml" in html
     assert "loadCommandCenter" in html
     assert "command-center-action-btn" in html
+    assert "Swing packet" in html
+    assert "/api/swing-packet" in html
+    assert "/api/build-swing-packet" in html
+    assert "/artifact/swing-packet-json" in html
+    assert "/artifact/swing-packet-md" in html
+    assert "swingPacketHtml" in html
+    assert "loadSwingPacket" in html
+    assert "Write packet files" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
@@ -714,6 +722,147 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["next_action"]["route"] == "chains"
         assert center["no_key_count"] == 17
         assert len(center["cards"]) == 5
+
+
+def test_swing_packet_builds_and_writes_daily_decision_packet():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_command = cockpit_module.build_command_center
+        old_today = cockpit_module.build_today_review
+        old_climate = cockpit_module.build_swing_climate
+        old_gated = cockpit_module.build_climate_gated_setups
+        old_paper = cockpit_module.build_paper_candidates
+
+        cockpit_module.build_command_center = lambda *args, **kwargs: {
+            "status": "ready_to_review",
+            "status_detail": "Review the cleanest setup before opening anything new.",
+            "data_health_status": "ok",
+            "risk_level": "normal",
+            "total_open": 3,
+            "source_count": 18,
+            "no_key_count": 18,
+            "climate_label": "constructive_selective",
+            "climate_score": 68,
+            "next_action": {
+                "label": "Review climate-cleared setup",
+                "detail": "AAPL cleared the climate gate.",
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "symbol": "AAPL",
+                "query": "AAPL",
+                "source": "climate_gated_setups",
+            },
+            "cards": [],
+        }
+        cockpit_module.build_today_review = lambda *args, **kwargs: {
+            "count": 1,
+            "review_now_count": 1,
+            "rows": [{
+                "priority": 94,
+                "category": "setup",
+                "label": "Review climate-cleared setup",
+                "detail": "AAPL passed.",
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "symbol": "AAPL",
+                "query": "AAPL",
+                "source": "climate_gated_setups",
+                "asset": "option",
+            }],
+        }
+        cockpit_module.build_swing_climate = lambda *args, **kwargs: {
+            "climate_label": "constructive_selective",
+            "climate_score": 68,
+            "posture": "Selective risk-on.",
+            "warnings": [],
+            "trade_gates": [{"gate": "option DTE", "value": "90+"}],
+            "asset_bias": [{"asset": "options", "bias": "selective"}],
+        }
+        cockpit_module.build_climate_gated_setups = lambda *args, **kwargs: {
+            "selected_count": 1,
+            "held_count": 0,
+            "rows": [{
+                "asset": "option",
+                "ticker_or_symbol": "AAPL",
+                "setup": "AAPL swing call",
+                "readiness_score": 88,
+                "climate_gate_score": 86,
+                "climate_gate_status": "pass",
+                "climate_gate_reasons": ["DTE fits", "spread acceptable"],
+                "trade_status": "Trade",
+                "confidence": 72,
+                "rank_score": 2.1,
+                "dte": 210,
+                "spread_pct": 0.04,
+            }],
+            "held": [],
+        }
+        cockpit_module.build_paper_candidates = lambda *args, **kwargs: {
+            "selected_count": 1,
+            "excluded_count": 0,
+            "top_rejection_reasons": [],
+            "rows": [{
+                "asset": "option",
+                "ticker_or_symbol": "AAPL",
+                "action": "BUY_TO_OPEN",
+                "quantity": 1,
+                "contract": "AAPL 2027-01-15 C 220",
+                "option_side": "call",
+                "strike": 220,
+                "expiry": "2027-01-15",
+                "entry_price": 5.0,
+                "stop_price": 2.5,
+                "target_price": 10.0,
+                "confidence": 72,
+                "rank_score": 2.1,
+                "trade_status": "Trade",
+                "reason_selected": "passed filters",
+            }],
+        }
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": "2026-06-13T20:00:00+00:00",
+            "rows": [{
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "strike": 220,
+                "expiry": "2027-01-15",
+                "dte": 216,
+                "mid": 5.0,
+                "premium_dollars": 500,
+                "spread_pct": 0.04,
+                "readiness_score": 92,
+                "contract_quality_score": 94,
+                "swing_fit_score": 96,
+                "swing_fit_label": "clean_swing",
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+            }],
+        }), encoding="utf-8")
+        try:
+            packet = build_swing_packet(data_dir, write=True)
+        finally:
+            cockpit_module.build_command_center = old_command
+            cockpit_module.build_today_review = old_today
+            cockpit_module.build_swing_climate = old_climate
+            cockpit_module.build_climate_gated_setups = old_gated
+            cockpit_module.build_paper_candidates = old_paper
+
+        assert packet["does_not_place_orders"] is True
+        assert packet["wrote_files"] is True
+        assert packet["headline"].startswith("Review climate-cleared setup")
+        assert packet["paper_candidates"]["selected_count"] == 1
+        assert packet["chain_shortlist"]["count"] == 1
+        assert packet["chain_shortlist"]["rows"][0]["contract"] == "AAPL 2027-01-15 C 220"
+        json_path = data_dir / "swing_packet.json"
+        md_path = data_dir / "swing_packet.md"
+        assert json_path.exists()
+        assert md_path.exists()
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert payload["does_not_place_orders"] is True
+        md = md_path.read_text(encoding="utf-8")
+        assert "No broker execution is performed" in md
+        assert "AAPL 2027-01-15 C 220" in md
 
 
 def test_enriched_watchlist_sorts_ready_ideas_first():
@@ -2647,6 +2796,7 @@ if __name__ == "__main__":
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
+    test_swing_packet_builds_and_writes_daily_decision_packet()
     test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -2678,4 +2828,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("42/42 local cockpit tests passed")
+    print("43/43 local cockpit tests passed")
