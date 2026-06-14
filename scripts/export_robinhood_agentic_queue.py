@@ -102,7 +102,15 @@ def _candidate_score(row: dict[str, Any]) -> float:
     reward = _float(row.get("reward_dollars"), default=0.0)
     risk = _float(row.get("risk_dollars"), default=0.0)
     rr_bonus = min(reward / risk, 5.0) * 0.05 if risk > 0 else 0.0
-    return max(rank, fused) + 0.25 * confidence + rr_bonus
+    swing_score = _float(row.get("swing_fit_score"), default=0.0) / 100.0
+    swing_label = _text(row.get("swing_fit_label")).lower()
+    swing_bonus = {
+        "clean_swing": 0.85,
+        "reviewable_swing": 0.45,
+        "speculative_swing": -0.20,
+        "avoid": -1.25,
+    }.get(swing_label, 0.0)
+    return max(rank, fused) + 0.25 * confidence + rr_bonus + 0.50 * swing_score + swing_bonus
 
 
 def _rejection(
@@ -172,6 +180,12 @@ def _order_from_row(
         "confidence": row.get("confidence"),
         "rank_score": row.get("rank_score"),
         "fused_score": row.get("fused_score"),
+        "swing_fit_score": row.get("swing_fit_score"),
+        "swing_fit_label": row.get("swing_fit_label"),
+        "swing_fit_reasons": row.get("swing_fit_reasons"),
+        "swing_fit_warnings": row.get("swing_fit_warnings"),
+        "breakeven_move_label": row.get("breakeven_move_label"),
+        "liquidity_label": row.get("liquidity_label"),
         "risk_dollars_reference": row.get("risk_dollars"),
         "reward_dollars_reference": row.get("reward_dollars"),
         "trade_status": row.get("trade_status"),
@@ -417,6 +431,9 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
             f"- Estimated premium: ${order['estimated_premium_dollars']}",
             f"- Confidence: {order.get('confidence')}",
             f"- Rank score: {order.get('rank_score')}",
+            f"- Swing fit: {order.get('swing_fit_label') or '-'} / {order.get('swing_fit_score') or '-'}",
+            f"- Swing reasons: {order.get('swing_fit_reasons') or '-'}",
+            f"- Swing warnings: {order.get('swing_fit_warnings') or '-'}",
             f"- Stop reference: {order.get('stop_price_reference')}",
             f"- Target reference: {order.get('target_price_reference')}",
             "",

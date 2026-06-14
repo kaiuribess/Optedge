@@ -40,6 +40,12 @@ NORMALIZED_COLUMNS = [
     "reward_dollars",
     "suggested_dollars",
     "suggested_contracts",
+    "swing_fit_score",
+    "swing_fit_label",
+    "swing_fit_reasons",
+    "swing_fit_warnings",
+    "breakeven_move_label",
+    "liquidity_label",
     "reason_selected",
     "reason_excluded",
     "notes",
@@ -172,8 +178,12 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["target_price"] = target_ref.fillna(out["mid"] * 2.00).round(2)
     readiness = pd.to_numeric(_series_or_default(df, "readiness_score", 0), errors="coerce")
     quality = pd.to_numeric(_series_or_default(df, "contract_quality_score", 0), errors="coerce")
-    out["confidence"] = readiness.fillna(quality).fillna(0).clip(lower=0, upper=100)
-    out["rank_score"] = (quality.fillna(0) / 25.0).round(4)
+    swing_fit = pd.to_numeric(_series_or_default(df, "swing_fit_score", float("nan")), errors="coerce")
+    out["confidence"] = readiness.fillna(swing_fit).fillna(quality).fillna(0).clip(lower=0, upper=100)
+    out["rank_score"] = (
+        quality.fillna(0) / 25.0
+        + swing_fit.fillna(0) / 60.0
+    ).round(4)
     out["fused_score"] = out["rank_score"]
     grade = _series_or_default(df, "contract_grade").astype(str).str.upper()
     readiness_label = _series_or_default(df, "readiness_label").astype(str).str.lower()
@@ -183,6 +193,12 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     ]
     out["spread_pct"] = pd.to_numeric(_series_or_default(df, "spread_pct", 0.0), errors="coerce").fillna(0.0)
     out["dte"] = pd.to_numeric(_series_or_default(df, "dte", -1), errors="coerce").fillna(-1).astype(int)
+    out["swing_fit_score"] = swing_fit
+    out["swing_fit_label"] = _series_or_default(df, "swing_fit_label")
+    out["swing_fit_reasons"] = _series_or_default(df, "swing_fit_reasons")
+    out["swing_fit_warnings"] = _series_or_default(df, "swing_fit_warnings")
+    out["breakeven_move_label"] = _series_or_default(df, "breakeven_move_label")
+    out["liquidity_label"] = _series_or_default(df, "liquidity_label")
     out["chain_source"] = _series_or_default(df, "chain_source")
     out["quote_quality"] = _series_or_default(df, "quote_quality")
     out["top_headline"] = "3m+ option-chain shortlist candidate"
@@ -235,7 +251,15 @@ def _score_row(row: pd.Series) -> float:
         rank = abs(_safe_float(row.get("futures_score"), 0.0))
     conf = _safe_float(row.get("confidence"), 0.0) / 100.0
     ev = _safe_float(row.get("ev_pct"), 0.0)
-    return float(rank or 0.0) + 0.25 * conf + 0.10 * ev
+    swing_score = _safe_float(row.get("swing_fit_score"), 0.0) / 100.0
+    swing_label = _text(row.get("swing_fit_label")).lower()
+    swing_bonus = {
+        "clean_swing": 0.85,
+        "reviewable_swing": 0.45,
+        "speculative_swing": -0.20,
+        "avoid": -1.25,
+    }.get(swing_label, 0.0)
+    return float(rank or 0.0) + 0.25 * conf + 0.10 * ev + 0.50 * swing_score + swing_bonus
 
 
 def _compact_search_text(value: Any) -> str:
@@ -337,6 +361,23 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
     target = _safe_float(row.get("target_price"), 0.0)
     risk = max(entry - stop, 0.0) * max(contracts, 1) * 100 if stop else suggested_dollars
     reward = max(target - entry, 0.0) * max(contracts, 1) * 100 if target else ""
+    swing_label = _text(row.get("swing_fit_label"))
+    swing_reasons = _text(row.get("swing_fit_reasons"))
+    swing_warnings = _text(row.get("swing_fit_warnings"))
+    shortlist = bool(row.get("_chain_shortlist", False))
+    reason_selected = "passed external option filters"
+    notes = "manual paper-tracking candidate; no broker order placed"
+    if shortlist:
+        reason_selected = "passed external option filters from 3m+ chain shortlist"
+        if swing_label:
+            reason_selected += f" ({swing_label.replace('_', ' ')})"
+        notes = "3m+ chain-shortlist candidate; provisional stop/target references; no broker order placed"
+        if swing_label:
+            notes += f"; swing_fit={swing_label}"
+        if swing_reasons:
+            notes += f"; reasons={swing_reasons}"
+        if swing_warnings:
+            notes += f"; warnings={swing_warnings}"
     out.update({
         "_sector": _sector(row),
         "ticker_or_symbol": ticker,
@@ -358,16 +399,14 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
         "reward_dollars": round(reward, 2) if reward != "" else "",
         "suggested_dollars": round(suggested_dollars, 2),
         "suggested_contracts": contracts,
-        "reason_selected": (
-            "passed external option filters from 3m+ chain shortlist"
-            if bool(row.get("_chain_shortlist", False))
-            else "passed external option filters"
-        ),
-        "notes": (
-            "3m+ chain-shortlist candidate; provisional stop/target references; no broker order placed"
-            if bool(row.get("_chain_shortlist", False))
-            else "manual paper-tracking candidate; no broker order placed"
-        ),
+        "swing_fit_score": _safe_float(row.get("swing_fit_score"), ""),
+        "swing_fit_label": swing_label,
+        "swing_fit_reasons": swing_reasons,
+        "swing_fit_warnings": swing_warnings,
+        "breakeven_move_label": _text(row.get("breakeven_move_label")),
+        "liquidity_label": _text(row.get("liquidity_label")),
+        "reason_selected": reason_selected,
+        "notes": notes,
     })
     return out, ""
 
@@ -502,6 +541,8 @@ def _candidate_rows(
                 reasons.append("missing option DTE/expiry")
             elif dte < min_option_dte:
                 reasons.append(f"dte below {min_option_dte}")
+            if _text(row.get("swing_fit_label")).lower() == "avoid":
+                reasons.append("option swing fit is avoid")
 
         if asset == "option":
             normalized, reason = _normalize_option(row, generated_at, allow_zero_size_placeholder)
