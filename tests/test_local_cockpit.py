@@ -13,6 +13,7 @@ import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
     add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
+    build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
     build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
@@ -132,8 +133,12 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Liquid preset" in html
     assert "applyChainPreset" in html
     assert "/api/option-chain-scan" in html
+    assert "/api/option-chain-batch" in html
     assert "scanOptionChain" in html
+    assert "scanOptionChainBatch" in html
+    assert "Shortlist chain sweep" in html
     assert "optionChainResultsHtml" in html
+    assert "optionChainBatchResultsHtml" in html
     assert "Expiration quality" in html
     assert "Grade / lane" in html
     assert "Primary review" in html
@@ -1505,6 +1510,89 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["expiry_summary"][0]["reviewable_count"] == 1
 
 
+def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
+    original = cockpit_module.build_option_chain_scan
+
+    def fake_scan(query: str, *args, **kwargs):
+        symbol = str(query).upper()
+        if symbol == "MSFT":
+            rows = [{
+                "symbol": "MSFT",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "dte": 220,
+                "strike": 450.0,
+                "mid": 4.0,
+                "premium_dollars": 400.0,
+                "spread_pct": 0.03,
+                "openInterest": 1500,
+                "volume": 100,
+                "contract_quality_score": 94.0,
+                "contract_grade": "A",
+                "review_lane": "primary_review",
+                "review_thesis": "A-grade test contract.",
+                "grade_reasons": ["tight spread", "liquid"],
+                "contract_query": "MSFT 2027-01-15 C 450",
+            }]
+        else:
+            rows = [{
+                "symbol": "AAPL",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "dte": 220,
+                "strike": 220.0,
+                "mid": 5.0,
+                "premium_dollars": 500.0,
+                "spread_pct": 0.05,
+                "openInterest": 900,
+                "volume": 50,
+                "contract_quality_score": 80.0,
+                "contract_grade": "B",
+                "review_lane": "secondary_review",
+                "review_thesis": "B-grade test contract.",
+                "grade_reasons": ["acceptable spread"],
+                "contract_query": "AAPL 2027-01-15 C 220",
+            }]
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+            "total_contracts": 20,
+            "filtered_count": len(rows),
+            "scan_summary": {
+                "grade_counts": {rows[0]["contract_grade"]: len(rows)},
+                "best_reviewable": rows[0]["contract_query"],
+            },
+            "rows": rows,
+        }
+
+    try:
+        cockpit_module.build_option_chain_scan = fake_scan
+        with tempfile.TemporaryDirectory() as td:
+            report = build_option_chain_batch(
+                Path(td),
+                query="AAPL,MSFT",
+                preset="swing",
+                symbols_limit=5,
+                contracts_per_symbol=2,
+            )
+    finally:
+        cockpit_module.build_option_chain_scan = original
+
+    assert report["ok"] is True
+    assert report["candidate_count"] == 2
+    assert report["successful_scans"] == 2
+    assert report["row_count"] == 2
+    assert report["grade_counts"] == {"B": 1, "A": 1}
+    assert report["source_counts"] == {"cboe": 2}
+    assert report["rows"][0]["symbol"] == "MSFT"
+    assert report["rows"][0]["contract_grade"] == "A"
+    assert report["rows"][0]["candidate_source"] == "typed shortlist"
+    assert report["symbol_summaries"][0]["quote_quality"] == "free_or_delayed"
+
+
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
     original = cockpit_module._fetch_option_chain
 
@@ -1846,9 +1934,10 @@ if __name__ == "__main__":
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
     test_option_chain_scan_fetches_and_filters_contracts()
+    test_option_chain_batch_scans_shortlist_and_ranks_contracts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_saved_option_contracts_extracts_watchlist_option_requests()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("31/31 local cockpit tests passed")
+    print("32/32 local cockpit tests passed")

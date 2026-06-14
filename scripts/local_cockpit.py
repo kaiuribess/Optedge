@@ -11,6 +11,7 @@ import binascii
 import json
 import math
 import mimetypes
+import re
 import struct
 import sys
 import time
@@ -1625,6 +1626,176 @@ def build_option_chain_scan(
             "Option-chain scan uses Optedge's existing provider stack.",
             "Free/keyless sources may be delayed, incomplete, or blocked for some tickers.",
             "This view inspects contracts only; it does not place trades.",
+        ],
+    }
+
+
+def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 8) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit or 8), 20))
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(symbol: Any, source: str, score: Any = None, reason: str = "") -> None:
+        clean = str(symbol or "").strip().upper()
+        if not clean or clean in seen:
+            return
+        if clean.endswith("=F") or clean.startswith("^"):
+            return
+        seen.add(clean)
+        rows.append({
+            "symbol": clean,
+            "source": source,
+            "score": _clean_value(score),
+            "reason": reason or source,
+        })
+
+    raw_query = str(query or "").strip()
+    if raw_query:
+        for token in re.split(r"[,;\s]+", raw_query):
+            token = token.strip()
+            if not token:
+                continue
+            resolution = resolve_symbol(token)
+            add(resolution.get("symbol") or token, "typed shortlist", 1.0, token)
+        return rows[:limit]
+
+    setups = build_best_setups(data_dir, per_asset=6, limit=24)
+    for row in setups.get("rows", []):
+        asset = str(row.get("asset") or "")
+        if asset not in {"option", "share", "value"}:
+            continue
+        add(
+            row.get("ticker_or_symbol"),
+            f"best {asset} setup",
+            row.get("score"),
+            row.get("reason_selected") or row.get("setup") or "",
+        )
+        if len(rows) >= limit:
+            return rows
+
+    for item in load_watchlist(data_dir).get("entries", []):
+        add(item.get("symbol"), "research watchlist", 0.75, item.get("query") or "")
+        if len(rows) >= limit:
+            return rows
+
+    return rows[:limit]
+
+
+def _chain_grade_rank(row: dict[str, Any]) -> int:
+    return {"A": 4, "B": 3, "C": 2, "D": 1}.get(str(row.get("contract_grade") or "").upper(), 0)
+
+
+def build_option_chain_batch(
+    data_dir: Path = DATA_DIR,
+    query: str = "",
+    side: str = "all",
+    min_dte: int = MIN_SWING_OPTION_DTE,
+    max_dte: int = 900,
+    max_spread_pct: float = 0.25,
+    max_premium: float = 500.0,
+    min_open_interest: int = 0,
+    preset: str = "swing",
+    symbols_limit: int = 6,
+    contracts_per_symbol: int = 4,
+    limit: int = 18,
+) -> dict[str, Any]:
+    """Scan option chains for a compact shortlist of symbols using free/provider-stack data."""
+    symbols_limit = max(1, min(int(symbols_limit or 6), 20))
+    contracts_per_symbol = max(1, min(int(contracts_per_symbol or 4), 12))
+    limit = max(1, min(int(limit or 18), 80))
+    candidates = _bulk_chain_symbol_candidates(data_dir, query=query, limit=symbols_limit)
+
+    rows: list[dict[str, Any]] = []
+    symbol_summaries: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    grade_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+
+    for idx, candidate in enumerate(candidates, start=1):
+        symbol = str(candidate.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        report = build_option_chain_scan(
+            symbol,
+            data_dir,
+            side=side,
+            min_dte=min_dte,
+            max_dte=max_dte,
+            max_spread_pct=max_spread_pct,
+            max_premium=max_premium,
+            min_open_interest=min_open_interest,
+            limit=contracts_per_symbol,
+            preset=preset,
+        )
+        summary = {
+            "symbol": symbol,
+            "candidate_source": candidate.get("source"),
+            "candidate_score": candidate.get("score"),
+            "candidate_reason": candidate.get("reason"),
+            "ok": bool(report.get("ok")),
+            "source": _clean_value(report.get("source")),
+            "quote_quality": _clean_value(report.get("quote_quality")),
+            "data_delay": _clean_value(report.get("data_delay")),
+            "total_contracts": _clean_value(report.get("total_contracts")),
+            "filtered_count": _clean_value(report.get("filtered_count")),
+            "grades": _clean_value((report.get("scan_summary") or {}).get("grade_counts")),
+            "best_reviewable": _clean_value((report.get("scan_summary") or {}).get("best_reviewable")),
+        }
+        symbol_summaries.append(summary)
+        if not report.get("ok"):
+            errors.append({
+                "symbol": symbol,
+                "candidate_source": candidate.get("source"),
+                "error": report.get("error") or "chain scan failed",
+            })
+            continue
+        source = str(report.get("source") or "unknown")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        for rank, row in enumerate(report.get("rows", [])[:contracts_per_symbol], start=1):
+            item = dict(row)
+            item["candidate_rank"] = idx
+            item["candidate_source"] = candidate.get("source")
+            item["candidate_score"] = candidate.get("score")
+            item["candidate_reason"] = candidate.get("reason")
+            item["symbol_contract_rank"] = rank
+            item["batch_source"] = source
+            item["batch_quote_quality"] = _clean_value(report.get("quote_quality"))
+            item["batch_data_delay"] = _clean_value(report.get("data_delay"))
+            rows.append(item)
+            grade = str(item.get("contract_grade") or "ungraded")
+            grade_counts[grade] = grade_counts.get(grade, 0) + 1
+
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _chain_grade_rank(row),
+            str(row.get("review_lane") or "") == "primary_review",
+            _float_value(row.get("contract_quality_score"), default=0.0),
+            _float_value(row.get("openInterest"), default=0.0),
+            -_float_value(row.get("spread_pct"), default=9.0),
+        ),
+        reverse=True,
+    )[:limit]
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "query": str(query or "").strip(),
+        "preset": _chain_preset_config(preset)[0],
+        "candidate_count": len(candidates),
+        "symbols_scanned": len(symbol_summaries),
+        "successful_scans": sum(1 for row in symbol_summaries if row.get("ok")),
+        "error_count": len(errors),
+        "row_count": len(rows),
+        "grade_counts": grade_counts,
+        "source_counts": source_counts,
+        "candidates": candidates,
+        "symbol_summaries": symbol_summaries,
+        "errors": errors,
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "notes": [
+            "Bulk chain scan ranks contracts across a small shortlist so free sources are not hammered.",
+            "Blank symbol input uses the latest Optedge option/share/value setups and the research watchlist.",
+            "Free/keyless chain quotes may be delayed or incomplete; verify before any manual paper entry.",
         ],
     }
 
@@ -4713,6 +4884,19 @@ tr.clickable-row:hover { background:#111c31; }
     <div class="status" id="chain-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
     <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
+    <div class="section" style="margin-top:12px">
+      <h3><span>Shortlist chain sweep</span><span>Free/delayed</span></h3>
+      <div class="muted" style="padding:0 12px 10px">Scan a small ticker list, or leave blank to use the latest Optedge option/share/value setups. This keeps free chain sources lighter and cleaner.</div>
+      <div class="scan-controls" style="padding:0 12px 12px">
+        <input id="chain-bulk-symbols" placeholder="Optional tickers: AAPL, NVDA, SPY">
+        <input id="chain-bulk-symbol-limit" type="number" min="1" max="20" step="1" value="6" aria-label="Symbols to scan">
+        <input id="chain-bulk-contract-limit" type="number" min="1" max="12" step="1" value="4" aria-label="Contracts per symbol">
+        <button class="btn" type="button" id="chain-bulk-scan">Scan shortlist</button>
+      </div>
+      <div class="status" id="chain-bulk-status-text"></div>
+      <div class="brief-grid" style="margin-top:12px" id="chain-bulk-summary"></div>
+      <div id="chain-bulk-results" class="table-wrap"></div>
+    </div>
   </section>
   <section class="panel" data-view="chains">
     <h2 style="margin:0 0 8px;font-size:18px">Saved option contracts</h2>
@@ -6068,6 +6252,34 @@ function optionChainResultsHtml(data) {
     </div>
   </div>`;
 }
+function optionChainBatchSummary(data) {
+  const fields = [
+    ['Candidates', data.candidate_count || 0],
+    ['Scanned', data.symbols_scanned || 0],
+    ['Successful', data.successful_scans || 0],
+    ['Contracts shown', data.row_count || 0],
+    ['Grades', countMapText(data.grade_counts || {})],
+    ['Sources', countMapText(data.source_counts || {})],
+    ['Errors', data.error_count || 0],
+    ['Preset', data.preset || '-']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function optionChainBatchResultsHtml(data) {
+  const rows = data.rows || [];
+  if (!rows.length) {
+    const errors = (data.errors || []).length ? `<div class="brief-list"><h4>Errors</h4>${table(data.errors || [], true)}</div>` : '';
+    return `<div class="empty">No shortlist contracts matched these filters.</div>${errors}`;
+  }
+  const topCards = rows.slice(0, 8).map(optionContractCard).join('');
+  return `<div style="padding:12px">
+    <div class="setup-grid">${topCards}</div>
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Symbol coverage</h4>${table(data.symbol_summaries || [], true)}</div>
+      <div class="brief-list"><h4>Ranked contracts</h4>${table(rows, true)}</div>
+    </div>
+  </div>`;
+}
 async function scanOptionChain() {
   const query = $('chain-query').value.trim() || $('symbol').value.trim() || $('rh-query').value.trim();
   if (!query) {
@@ -6100,6 +6312,36 @@ async function scanOptionChain() {
   $('chain-results').innerHTML = optionChainResultsHtml(data);
   wireClickableRows($('chain-results'));
   wireOptionChainActions($('chain-results'));
+}
+async function scanOptionChainBatch() {
+  const query = $('chain-bulk-symbols').value.trim();
+  $('chain-bulk-status-text').textContent = query ? 'Scanning typed shortlist...' : 'Scanning latest Optedge shortlist...';
+  $('chain-bulk-summary').innerHTML = '';
+  $('chain-bulk-results').innerHTML = '';
+  const params = new URLSearchParams({
+    query,
+    preset: $('chain-preset').value || 'swing',
+    side: $('chain-side').value,
+    min_dte: $('chain-min-dte').value || 90,
+    max_dte: $('chain-max-dte').value || 900,
+    max_spread_pct: String((Number($('chain-max-spread').value || 0) / 100)),
+    max_premium: $('chain-max-premium').value || 500,
+    min_open_interest: $('chain-min-oi').value || 0,
+    symbols_limit: $('chain-bulk-symbol-limit').value || 6,
+    contracts_per_symbol: $('chain-bulk-contract-limit').value || 4,
+    limit: '32'
+  });
+  const res = await fetch('/api/option-chain-batch?' + params.toString());
+  const data = await res.json();
+  if (!res.ok || data.ok === false) {
+    $('chain-bulk-status-text').textContent = 'Shortlist chain scan failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('chain-bulk-status-text').textContent = `${data.row_count || 0} contract(s) from ${data.successful_scans || 0}/${data.symbols_scanned || 0} successful symbol scan(s).`;
+  $('chain-bulk-summary').innerHTML = optionChainBatchSummary(data);
+  $('chain-bulk-results').innerHTML = optionChainBatchResultsHtml(data);
+  wireClickableRows($('chain-bulk-results'));
+  wireOptionChainActions($('chain-bulk-results'));
 }
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';
@@ -6175,6 +6417,8 @@ document.querySelectorAll('.chain-preset').forEach(btn => {
 });
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
+$('chain-bulk-scan').addEventListener('click', scanOptionChainBatch);
+$('chain-bulk-symbols').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChainBatch(); });
 $('saved-contracts-refresh').addEventListener('click', () => loadSavedContracts(false));
 $('saved-contracts-quotes').addEventListener('click', () => loadSavedContracts(true));
 $('saved-contracts-run').addEventListener('click', runWatchlist);
@@ -6315,6 +6559,39 @@ class CockpitHandler(BaseHTTPRequestHandler):
             per_asset = _int_param(params.get("per_asset", ["3"])[0], 3, 1, 10)
             limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
             self._send_json(build_best_setups(self.data_dir, per_asset=per_asset, limit=limit))
+            return
+        if parsed.path == "/api/option-chain-batch":
+            params = parse_qs(parsed.query)
+            query = params.get("query", [""])[0]
+            preset = params.get("preset", ["swing"])[0]
+            side = params.get("side", ["all"])[0]
+            min_dte = _int_param(
+                params.get("min_dte", [str(MIN_SWING_OPTION_DTE)])[0],
+                MIN_SWING_OPTION_DTE,
+                0,
+                1200,
+            )
+            max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
+            max_spread = _float_param(params.get("max_spread_pct", ["0.25"])[0], 0.25, 0.0, 5.0)
+            max_premium = _float_param(params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0)
+            min_oi = _int_param(params.get("min_open_interest", ["0"])[0], 0, 0, 1_000_000)
+            symbols_limit = _int_param(params.get("symbols_limit", ["6"])[0], 6, 1, 20)
+            contracts_per_symbol = _int_param(params.get("contracts_per_symbol", ["4"])[0], 4, 1, 12)
+            limit = _int_param(params.get("limit", ["18"])[0], 18, 1, 80)
+            self._send_json(build_option_chain_batch(
+                self.data_dir,
+                query=query,
+                side=side,
+                min_dte=min_dte,
+                max_dte=max_dte,
+                max_spread_pct=max_spread,
+                max_premium=max_premium,
+                min_open_interest=min_oi,
+                preset=preset,
+                symbols_limit=symbols_limit,
+                contracts_per_symbol=contracts_per_symbol,
+                limit=limit,
+            ))
             return
         if parsed.path == "/api/climate-gated-setups":
             params = parse_qs(parsed.query)
