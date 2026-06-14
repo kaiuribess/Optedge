@@ -5334,6 +5334,147 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     }
 
 
+def _command_ribbon_tone(status: str) -> str:
+    text = str(status or "").lower()
+    if text in {"bad", "blocked", "weak", "missing", "critical", "high"}:
+        return "bad"
+    if text in {"warn", "warning", "review", "partial", "stale", "aging", "mixed", "medium"}:
+        return "warn"
+    if text in {"ok", "good", "ready", "clean", "fresh", "low"}:
+        return "good"
+    return ""
+
+
+def _find_health_check(checks: list[dict[str, Any]], label_fragment: str) -> dict[str, Any] | None:
+    needle = label_fragment.lower()
+    for row in checks:
+        label = str(row.get("label") or "").lower()
+        if needle in label:
+            return row
+    return None
+
+
+def _snapshot_freshness_rollup(snapshots: dict[str, Any]) -> dict[str, Any]:
+    counts = {"fresh": 0, "aging": 0, "stale": 0, "missing": 0}
+    oldest_asset = None
+    oldest_age = -1.0
+    for asset, meta in (snapshots or {}).items():
+        if not isinstance(meta, dict):
+            counts["missing"] += 1
+            continue
+        age = _float_value(meta.get("age_minutes"), default=math.nan)
+        if not math.isfinite(age):
+            counts["missing"] += 1
+        elif age <= FRESH_SNAPSHOT_MINUTES:
+            counts["fresh"] += 1
+        elif age <= STALE_SNAPSHOT_MINUTES:
+            counts["aging"] += 1
+        else:
+            counts["stale"] += 1
+        if math.isfinite(age) and age > oldest_age:
+            oldest_asset = asset
+            oldest_age = age
+    if counts["missing"] or counts["stale"]:
+        status = "stale"
+    elif counts["aging"]:
+        status = "aging"
+    elif counts["fresh"]:
+        status = "fresh"
+    else:
+        status = "missing"
+    detail_parts = [f"{counts['fresh']} fresh", f"{counts['aging']} aging", f"{counts['stale']} stale", f"{counts['missing']} missing"]
+    if oldest_asset is not None and oldest_age >= 0:
+        detail_parts.append(f"oldest {oldest_asset} {oldest_age:.0f}m")
+    return {"status": status, "counts": counts, "detail": " / ".join(detail_parts)}
+
+
+def _build_trust_ribbon(
+    health: dict[str, Any],
+    sources: dict[str, Any],
+    performance: dict[str, Any],
+    chain: dict[str, Any],
+) -> list[dict[str, Any]]:
+    checks = health.get("checks") if isinstance(health.get("checks"), list) else []
+    health_counts = {
+        "ok": sum(1 for row in checks if row.get("level") == "ok"),
+        "warn": sum(1 for row in checks if row.get("level") == "warn"),
+        "bad": sum(1 for row in checks if row.get("level") == "bad"),
+    }
+    validation_check = _find_health_check(checks, "Validation open count")
+    aging_check = _find_health_check(checks, "Position aging count")
+    snapshot_rollup = _snapshot_freshness_rollup(
+        health.get("snapshots") if isinstance(health.get("snapshots"), dict) else {}
+    )
+    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    chain_status = chain_quality.get("status") or chain.get("status") or "missing"
+    chain_score = _float_value(chain_quality.get("score"), default=0.0)
+    chain_detail = (
+        f"{int(_float_value(chain.get('count')))} saved, "
+        f"{int(_float_value(chain_quality.get('primary_review_count')))} primary, "
+        f"{int(_float_value(chain_quality.get('clean_swing_count')))} clean"
+        if chain.get("status") == "ready"
+        else "Run a 3m+ chain scan before choosing contracts."
+    )
+    validation_level = str((validation_check or {}).get("level") or "warn")
+    validation_detail = str((validation_check or {}).get("detail") or "Validation summary has not been refreshed yet.")
+    aging_level = str((aging_check or {}).get("level") or "warn")
+    aging_detail = str((aging_check or {}).get("detail") or "Position aging summary has not been refreshed yet.")
+    source_count = int(_float_value(sources.get("source_count")))
+    no_key_count = int(_float_value(sources.get("no_key_count")))
+    primary_count = int(_float_value(sources.get("primary_count")))
+    perf_warnings = len(performance.get("warnings") or [])
+    ram_cache = performance.get("ram_cache") if isinstance(performance.get("ram_cache"), dict) else {}
+    finbert = performance.get("finbert") if isinstance(performance.get("finbert"), dict) else {}
+    rows = [
+        {
+            "label": "Data integrity",
+            "value": health.get("status") or "unknown",
+            "detail": f"{health_counts['bad']} bad / {health_counts['warn']} warning / {health_counts['ok']} ok checks",
+            "tone": _command_ribbon_tone(str(health.get("status") or "")),
+        },
+        {
+            "label": "Snapshot freshness",
+            "value": snapshot_rollup["status"],
+            "detail": snapshot_rollup["detail"],
+            "tone": _command_ribbon_tone(snapshot_rollup["status"]),
+        },
+        {
+            "label": "Validation alignment",
+            "value": validation_level,
+            "detail": validation_detail,
+            "tone": _command_ribbon_tone(validation_level),
+        },
+        {
+            "label": "Position aging",
+            "value": aging_level,
+            "detail": aging_detail,
+            "tone": _command_ribbon_tone(aging_level),
+        },
+        {
+            "label": "Chain readiness",
+            "value": f"{chain_status} {int(chain_score)}/100" if chain_score else chain_status,
+            "detail": chain_detail,
+            "tone": _command_ribbon_tone(str(chain_status)),
+        },
+        {
+            "label": "Free sources",
+            "value": f"{no_key_count}/{source_count}",
+            "detail": f"{primary_count} primary no-key/public sources wired into Optedge.",
+            "tone": "good" if no_key_count else "warn",
+        },
+        {
+            "label": "Runtime",
+            "value": f"{performance.get('total_latest_engine_sec', 0)}s",
+            "detail": (
+                f"{perf_warnings} warning(s); RAM cache {'on' if ram_cache.get('ram_cache_enabled') else 'off'}; "
+                f"FinBERT {finbert.get('device') or finbert.get('status') or 'unknown'}."
+            ),
+            "tone": "warn" if perf_warnings else "good",
+        },
+    ]
+    return [{k: _clean_value(v) for k, v in row.items()} for row in rows]
+
+
 def _provider_probe(label: str, category: str, fn) -> dict[str, Any]:
     started = time.perf_counter()
     try:
@@ -6021,6 +6162,7 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     risk = build_risk_summary(data_dir)
     sources = build_free_data_sources(data_dir)
     performance = build_performance_summary(data_dir)
+    chain = _build_chain_shortlist_summary(data_dir)
 
     checks = health.get("checks") if isinstance(health.get("checks"), list) else []
     health_counts = {
@@ -6091,6 +6233,7 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "source_count": sources.get("source_count", 0),
         "no_key_count": sources.get("no_key_count", 0),
         "primary_source_count": sources.get("primary_count", 0),
+        "trust_ribbon": _build_trust_ribbon(health, sources, performance, chain),
         "next_action": {k: _clean_value(v) for k, v in next_action.items()},
         "cards": [{k: _clean_value(v) for k, v in row.items()} for row in cards],
         "top_queue": today.get("rows", [])[:4],
@@ -7696,6 +7839,14 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .command-card.good { border-color:rgba(16,185,129,.45); }
 .command-card.warn { border-color:rgba(245,158,11,.55); }
 .command-card.bad { border-color:rgba(239,68,68,.55); }
+.trust-ribbon { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; }
+.trust-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; min-height:94px; }
+.trust-card span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
+.trust-card strong { display:block; margin-top:5px; font-size:15px; }
+.trust-card p { margin:7px 0 0; color:var(--soft); font-size:11px; line-height:1.35; }
+.trust-card.good { border-color:rgba(16,185,129,.55); }
+.trust-card.warn { border-color:rgba(245,158,11,.65); }
+.trust-card.bad { border-color:rgba(239,68,68,.65); }
 .priority-badge { display:inline-flex; align-items:center; justify-content:center; min-width:34px; border:1px solid var(--border); border-radius:999px; padding:4px 8px; font-size:12px; font-weight:700; color:var(--text); background:var(--panel2); }
 .priority-badge.hot { border-color:rgba(239,68,68,.75); color:#fecaca; background:rgba(239,68,68,.12); }
 .priority-badge.warm { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.12); }
@@ -8353,9 +8504,18 @@ function climateGatedSetupsHtml(data) {
     ${notes}
   </div>`;
 }
+function trustRibbonHtml(rows) {
+  if (!rows || !rows.length) return '';
+  return `<div class="trust-ribbon" aria-label="Data trust ribbon">${rows.map(row => `<article class="trust-card ${escAttr(row.tone || '')}">
+    <span>${cell(row.label)}</span>
+    <strong>${cell(labelText(row.value || '-'))}</strong>
+    <p>${cell(row.detail || '')}</p>
+  </article>`).join('')}</div>`;
+}
 function commandCenterHtml(data) {
   if (!data) return '<div class="empty">No command-center data available.</div>';
   const action = data.next_action || {};
+  const trustRibbon = trustRibbonHtml(data.trust_ribbon || []);
   const cards = (data.cards || []).map(card => `<article class="command-card ${escAttr(card.tone || '')}">
     <span>${cell(card.label)}</span>
     <strong>${cell(labelText(card.value))}</strong>
@@ -8392,6 +8552,7 @@ function commandCenterHtml(data) {
         <button class="btn command-center-action-btn" type="button" data-action="${escAttr(action.action || '')}" data-route="${escAttr(action.route || '')}" data-query="${escAttr(action.query || '')}" data-symbol="${escAttr(action.symbol || '')}">${escHtml(todayReviewActionLabel(action.action, action.route))}</button>
       </aside>
     </div>
+    ${trustRibbon}
     <div class="command-card-grid">${cards}</div>
     <div class="brief-cols">${queue}${notes}</div>
   </div>`;

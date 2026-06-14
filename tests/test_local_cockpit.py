@@ -79,6 +79,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Command center" in html
     assert "/api/command-center" in html
     assert "commandCenterHtml" in html
+    assert "trustRibbonHtml" in html
+    assert "Data trust ribbon" in html
+    assert "trust-card" in html
     assert "loadCommandCenter" in html
     assert "command-center-action-btn" in html
     assert "Swing packet" in html
@@ -733,6 +736,12 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["next_action"]["route"] == "chains"
         assert center["no_key_count"] == 17
         assert len(center["cards"]) == 5
+        assert len(center["trust_ribbon"]) == 7
+        ribbon = {row["label"]: row for row in center["trust_ribbon"]}
+        assert ribbon["Data integrity"]["value"] == "warn"
+        assert ribbon["Validation alignment"]["value"] == "warn"
+        assert ribbon["Chain readiness"]["value"] == "missing"
+        assert ribbon["Free sources"]["value"] == "17/17"
 
 
 def test_swing_packet_builds_and_writes_daily_decision_packet():
