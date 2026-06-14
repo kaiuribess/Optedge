@@ -2192,6 +2192,24 @@ def _chain_contract_label(row: dict[str, Any] | None) -> str | None:
     return " ".join(part for part in (side, strike, expiry + premium_text) if part)
 
 
+def _option_grade_rank(value: Any) -> int:
+    return {"A": 4, "B": 3, "C": 2, "D": 1}.get(str(value or "").upper(), 0)
+
+
+def _option_contract_rank_tuple(row: dict[str, Any], budget: float) -> tuple[Any, ...]:
+    premium = _float_value(row.get("premium_dollars"), default=math.inf)
+    spread = _float_value(row.get("spread_pct"), default=9.0)
+    return (
+        premium <= budget,
+        _option_grade_rank(row.get("contract_grade")),
+        str(row.get("review_lane") or "") == "primary_review",
+        _float_value(row.get("swing_fit_score"), default=0.0),
+        _float_value(row.get("contract_quality_score"), default=0.0),
+        _float_value(row.get("openInterest"), default=0.0),
+        -spread,
+    )
+
+
 def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -> dict[str, Any]:
     if not rows:
         return {
@@ -2286,12 +2304,13 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
     }
 
 
-def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _option_chain_expiry_summary(rows: list[dict[str, Any]], max_premium: float = 0.0) -> list[dict[str, Any]]:
     by_expiry: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_expiry.setdefault(str(row.get("expiry") or ""), []).append(row)
 
     summaries: list[dict[str, Any]] = []
+    budget = max_premium if max_premium > 0 else 500.0
     for expiry, items in by_expiry.items():
         if not expiry:
             continue
@@ -2309,6 +2328,12 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, A
         dte = int(min(dte_values)) if dte_values else None
         best_call = next((row for row in items if str(row.get("side") or "") == "call"), None)
         best_put = next((row for row in items if str(row.get("side") or "") == "put"), None)
+        under_budget = [
+            row for row in items
+            if _float_value(row.get("premium_dollars"), default=math.inf) <= budget
+        ]
+        best_budget = max(under_budget or items, key=lambda row: _option_contract_rank_tuple(row, budget))
+        best_budget_premium = _float_value(best_budget.get("premium_dollars"), default=math.nan)
         summaries.append({
             "expiry": expiry,
             "dte": dte,
@@ -2317,7 +2342,10 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, A
             "calls": sum(str(row.get("side") or "") == "call" for row in items),
             "puts": sum(str(row.get("side") or "") == "put" for row in items),
             "median_spread_pct": _clean_value(median_spread),
+            "under_budget_count": len(under_budget),
             "reviewable_count": sum(str(row.get("readiness_label") or "") in {"ready", "review"} for row in items),
+            "primary_review_count": sum(str(row.get("review_lane") or "") == "primary_review" for row in items),
+            "clean_swing_count": sum(str(row.get("swing_fit_label") or "") == "clean_swing" for row in items),
             "liquid_count": sum(
                 _float_value(row.get("openInterest"), default=0.0) >= 100
                 and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
@@ -2325,8 +2353,25 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, A
             ),
             "best_call": _chain_contract_label(best_call),
             "best_put": _chain_contract_label(best_put),
+            "best_budget": _chain_contract_label(best_budget),
+            "best_budget_grade": _clean_value(best_budget.get("contract_grade")),
+            "best_budget_fit": _clean_value(best_budget.get("budget_fit")),
+            "best_budget_premium": _clean_value(round(best_budget_premium, 2) if math.isfinite(best_budget_premium) else None),
+            "best_budget_spread_pct": _clean_value(best_budget.get("spread_pct")),
+            "best_budget_score": _clean_value(best_budget.get("swing_fit_score") or best_budget.get("contract_quality_score")),
         })
-    return sorted(summaries, key=lambda row: _float_value(row.get("dte"), default=9999.0))[:12]
+    return sorted(
+        summaries,
+        key=lambda row: (
+            _float_value(row.get("under_budget_count"), default=0.0) > 0,
+            _float_value(row.get("primary_review_count"), default=0.0),
+            _float_value(row.get("clean_swing_count"), default=0.0),
+            _option_grade_rank(row.get("best_budget_grade")),
+            -_float_value(row.get("best_budget_spread_pct"), default=9.0),
+            -_float_value(row.get("dte"), default=9999.0),
+        ),
+        reverse=True,
+    )[:12]
 
 
 def _option_chain_trade_plan(
@@ -2644,7 +2689,7 @@ def build_option_chain_scan(
     )
     limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
     summary = _option_chain_scan_summary(rows, max_premium)
-    expiry_summary = _option_chain_expiry_summary(rows)
+    expiry_summary = _option_chain_expiry_summary(rows, max_premium)
     decision = _option_chain_decision_pack(rows, str(quote_quality), source)
     rejection_reason_counts = dict(
         sorted(rejection_reason_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -2788,7 +2833,7 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
 
 
 def _chain_grade_rank(row: dict[str, Any]) -> int:
-    return {"A": 4, "B": 3, "C": 2, "D": 1}.get(str(row.get("contract_grade") or "").upper(), 0)
+    return _option_grade_rank(row.get("contract_grade"))
 
 
 def build_option_chain_batch(
@@ -10673,7 +10718,7 @@ function optionChainResultsHtml(data) {
     ${decision}
     <div class="setup-grid">${topCards}</div>
     <div class="brief-cols">
-      <div class="brief-list"><h4>Expiration quality</h4>${table(expiryRows)}</div>
+      <div class="brief-list"><h4>Expiration quality / budget ladder</h4>${table(expiryRows)}</div>
       <div class="brief-list"><h4>Top contracts</h4>${table(rows, true)}</div>
     </div>
     ${rejectedPanel}

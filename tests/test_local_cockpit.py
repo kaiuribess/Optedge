@@ -213,6 +213,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "exportChainBatchShortlist" in html
     assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
+    assert "budget ladder" in html
     assert "Why contracts were filtered out" in html
     assert "Grade / lane" in html
     assert "Break-even" in html
@@ -2635,6 +2636,14 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert "Quote may be free/delayed" in " ".join(report["decision"]["risk_notes"])
     assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
     assert report["expiry_summary"][0]["reviewable_count"] == 1
+    assert report["expiry_summary"][0]["under_budget_count"] == 1
+    assert report["expiry_summary"][0]["primary_review_count"] == 1
+    assert report["expiry_summary"][0]["clean_swing_count"] == 1
+    assert report["expiry_summary"][0]["best_budget"].startswith("C 220")
+    assert report["expiry_summary"][0]["best_budget_grade"] == "A"
+    assert report["expiry_summary"][0]["best_budget_fit"] == "inside_budget"
+    assert report["expiry_summary"][0]["best_budget_premium"] == 500.0
+    assert report["expiry_summary"][0]["best_budget_spread_pct"] < 0.10
 
 
 def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
