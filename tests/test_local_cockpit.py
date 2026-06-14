@@ -101,6 +101,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "loadSwingClimate" in html
     assert "Trade gates" in html
     assert "Asset bias" in html
+    assert "P/C total/equity/index" in html
     assert "Climate-gated setups" in html
     assert "/api/climate-gated-setups" in html
     assert "climateGatedSetupsHtml" in html
@@ -1421,6 +1422,7 @@ def test_breadth_pulse_uses_free_etf_pair_confirmation():
 
 def test_swing_climate_combines_free_context_into_posture():
     old_history = cockpit_module.data_provider.get_history
+    old_options = cockpit_module.build_options_sentiment
 
     slopes = {
         "SPY": 1.0,
@@ -1450,23 +1452,48 @@ def test_swing_climate_combines_free_context_into_posture():
         close = [100 + i * slope for i in range(80)]
         return pd.DataFrame({"Close": close}, index=idx)
 
+    def fake_options_sentiment(data_dir=None):
+        del data_dir
+        return {
+            "status": "ok",
+            "regime": "call_demand_rising",
+            "coverage": "3/3",
+            "total_pc": 0.76,
+            "equity_pc": 0.54,
+            "index_pc": 1.06,
+            "rows": [],
+            "warnings": [],
+        }
+
     try:
         cockpit_module.data_provider.get_history = fake_history
+        cockpit_module.build_options_sentiment = fake_options_sentiment
         climate = build_swing_climate(period="6mo")
     finally:
         cockpit_module.data_provider.get_history = old_history
+        cockpit_module.build_options_sentiment = old_options
 
     assert climate["climate_score"] >= 60
     assert climate["climate_label"] in {"aggressive_swing", "constructive_selective"}
     assert climate["market_regime"] in {"risk_on", "constructive"}
     assert climate["breadth_regime"] in {"broad_risk_on", "selective_risk_on"}
-    assert climate["coverage"] == {"market": "9/9", "breadth": "7/7", "sector": "13/13"}
+    assert climate["options_sentiment_regime"] == "call_demand_rising"
+    assert climate["options_sentiment"]["total_pc"] == 0.76
+    assert climate["components"]["options_sentiment"] == 4.0
+    assert climate["coverage"] == {
+        "market": "9/9",
+        "breadth": "7/7",
+        "sector": "13/13",
+        "options_sentiment": "3/3",
+    }
     assert climate["top_sector_symbol"] in {"SMH", "XLK"}
     assert climate["focus"]
     assert climate["playbook"]["option_min_dte"] >= 90
     assert climate["playbook"]["max_new_candidates"] >= 3
     assert any(row["gate"] == "Options DTE floor" for row in climate["trade_gates"])
+    assert any(row["gate"] == "Options sentiment" for row in climate["trade_gates"])
     assert any(row["asset"] == "options" for row in climate["asset_bias"])
+    assert any("Cboe options sentiment" in item for item in climate["positives"])
     assert any("Breadth pulse" in item for item in climate["positives"])
 
 

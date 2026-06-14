@@ -4255,6 +4255,15 @@ def _swing_climate_from_pulses(
 ) -> dict[str, Any]:
     market_score = _float_value(market.get("risk_score"), default=0.0)
     breadth_score = _float_value(breadth.get("breadth_score"), default=0.0)
+    options_sentiment = market.get("options_sentiment") if isinstance(market.get("options_sentiment"), dict) else {}
+    options_regime = str(options_sentiment.get("regime") or "unknown")
+    options_component = {
+        "defensive_hedging": -8.0,
+        "hedging_rising": -4.0,
+        "call_demand_rising": 4.0,
+        "call_demand_high": 3.0,
+        "balanced": 0.0,
+    }.get(options_regime, 0.0)
     sector_leaders = sector.get("leaders") if isinstance(sector.get("leaders"), list) else []
     sector_laggards = sector.get("laggards") if isinstance(sector.get("laggards"), list) else []
     leader_scores = [
@@ -4268,8 +4277,15 @@ def _swing_climate_from_pulses(
         "market": round((_clamp(market_score, -0.60, 0.60) / 0.60) * 35.0, 2),
         "breadth": round((_clamp(breadth_score, -0.08, 0.08) / 0.08) * 30.0, 2),
         "sector": round((_clamp(top_sector_score, -0.12, 0.12) / 0.12) * 15.0, 2),
+        "options_sentiment": round(options_component, 2),
     }
-    raw_score = 50.0 + components["market"] + components["breadth"] + components["sector"]
+    raw_score = (
+        50.0
+        + components["market"]
+        + components["breadth"]
+        + components["sector"]
+        + components["options_sentiment"]
+    )
 
     market_regime = str(market.get("regime") or "unknown")
     breadth_regime = str(breadth.get("regime") or "unknown")
@@ -4298,6 +4314,12 @@ def _swing_climate_from_pulses(
         positives.append(f"{supportive_count} breadth pair(s) are supportive.")
     if warning_count:
         warnings_out.append(f"{warning_count} breadth pair(s) are warning.")
+    if options_regime in {"call_demand_high", "call_demand_rising"}:
+        positives.append(f"Cboe options sentiment is {options_regime}.")
+        if options_regime == "call_demand_high":
+            warnings_out.append("Call demand is hot; avoid chasing wide or illiquid option contracts.")
+    elif options_regime in {"defensive_hedging", "hedging_rising"}:
+        warnings_out.append(f"Cboe options sentiment is {options_regime}.")
 
     top_sector = sector_leaders[0] if sector_leaders and isinstance(sector_leaders[0], dict) else {}
     weak_sector = sector_laggards[0] if sector_laggards and isinstance(sector_laggards[0], dict) else {}
@@ -4340,6 +4362,21 @@ def _swing_climate_from_pulses(
         "posture": posture,
         "market_regime": market_regime,
         "breadth_regime": breadth_regime,
+        "options_sentiment_regime": options_regime,
+        "options_sentiment_coverage": _clean_value(options_sentiment.get("coverage")),
+        "options_put_call": {
+            "total": _clean_value(options_sentiment.get("total_pc")),
+            "equity": _clean_value(options_sentiment.get("equity_pc")),
+            "index": _clean_value(options_sentiment.get("index_pc")),
+        },
+        "options_sentiment": {
+            "status": _clean_value(options_sentiment.get("status")),
+            "regime": options_regime,
+            "coverage": _clean_value(options_sentiment.get("coverage")),
+            "total_pc": _clean_value(options_sentiment.get("total_pc")),
+            "equity_pc": _clean_value(options_sentiment.get("equity_pc")),
+            "index_pc": _clean_value(options_sentiment.get("index_pc")),
+        },
         "market_risk_score": _clean_value(market.get("risk_score")),
         "breadth_score": _clean_value(breadth.get("breadth_score")),
         "top_sector": _clean_value(top_sector.get("sector")),
@@ -4351,12 +4388,14 @@ def _swing_climate_from_pulses(
             "market": market.get("coverage"),
             "breadth": breadth.get("coverage"),
             "sector": sector.get("coverage"),
+            "options_sentiment": options_sentiment.get("coverage"),
         },
         "playbook": playbook,
         "trade_gates": [
             {"gate": "Minimum readiness", "value": f"{playbook['min_readiness_score']}/100"},
             {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
             {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
+            {"gate": "Options sentiment", "value": options_regime},
             {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
             {"gate": "Candidate status", "value": str(playbook["candidate_status"])},
             {"gate": "Sizing bias", "value": str(playbook["sizing_bias"])},
@@ -4366,7 +4405,7 @@ def _swing_climate_from_pulses(
         "warnings": warnings_out[:8],
         "focus": focus[:5],
         "notes": [
-            "Swing Climate combines the free Market, Breadth, and Sector Pulse context.",
+            "Swing Climate combines the free Market, Breadth, Sector, and Cboe options sentiment context.",
             "It is a review posture, not a trade signal or broker instruction.",
             "Use it to decide how strict to be with setup readiness, liquidity, and sizing.",
         ],
@@ -6867,15 +6906,18 @@ function swingClimateHtml(data) {
   const tradeGates = data.trade_gates || [];
   const assetBias = data.asset_bias || [];
   const components = data.components || {};
+  const optionsSentiment = data.options_sentiment || {};
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label)}</strong></div>
     <div class="brief-tile"><span>Score</span><strong>${cell(data.climate_score)}/100</strong></div>
     <div class="brief-tile"><span>Posture</span><strong>${cell(data.posture)}</strong></div>
     <div class="brief-tile"><span>Market / breadth</span><strong>${cell(data.market_regime)} / ${cell(data.breadth_regime)}</strong></div>
+    <div class="brief-tile"><span>Options sentiment</span><strong>${cell(data.options_sentiment_regime || optionsSentiment.regime || '-')}</strong></div>
+    <div class="brief-tile"><span>P/C total/equity/index</span><strong>${cell(optionsSentiment.total_pc || '-')} / ${cell(optionsSentiment.equity_pc || '-')} / ${cell(optionsSentiment.index_pc || '-')}</strong></div>
     <div class="brief-tile"><span>Top group</span><strong>${cell(data.top_sector_symbol)} ${cell(data.top_sector)}</strong></div>
     <div class="brief-tile"><span>Weak group</span><strong>${cell(data.weak_sector_symbol)} ${cell(data.weak_sector)}</strong></div>
-    <div class="brief-tile"><span>Coverage</span><strong>${cell(coverage.market)} | ${cell(coverage.breadth)} | ${cell(coverage.sector)}</strong></div>
-    <div class="brief-tile"><span>Components</span><strong>M ${cell(components.market)} / B ${cell(components.breadth)} / S ${cell(components.sector)}</strong></div>
+    <div class="brief-tile"><span>Coverage</span><strong>${cell(coverage.market)} | ${cell(coverage.breadth)} | ${cell(coverage.sector)} | ${cell(coverage.options_sentiment || '-')}</strong></div>
+    <div class="brief-tile"><span>Components</span><strong>M ${cell(components.market)} / B ${cell(components.breadth)} / S ${cell(components.sector)} / O ${cell(components.options_sentiment || 0)}</strong></div>
   </div>`;
   return `<div style="padding:12px">
     ${tiles}
