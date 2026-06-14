@@ -1900,6 +1900,12 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["contract_query"] == "AAPL 2027-01-15 C 220"
     assert row["spread_pct"] < 0.10
     assert row["dte_bucket"] in {"180-364d", "365d+"}
+    assert row["swing_fit_label"] == "clean_swing"
+    assert row["swing_fit_score"] >= 85
+    assert row["breakeven_move_label"] == "moderate"
+    assert row["liquidity_label"] == "deep"
+    assert "long swing runway" in row["swing_fit_reasons"]
+    assert "verify delayed quote" in row["swing_fit_warnings"]
     assert row["readiness_label"] in {"ready", "review"}
     assert row["readiness_score"] >= 65
     assert row["contract_grade"] == "A"
@@ -1915,6 +1921,9 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["scan_summary"]["best_budget"].startswith("C 220")
     assert report["scan_summary"]["best_liquid"].startswith("C 220")
     assert report["scan_summary"]["best_long_dated"].startswith("C 220")
+    assert report["scan_summary"]["best_swing_fit"].startswith("C 220")
+    assert report["scan_summary"]["swing_fit_counts"]["clean_swing"] == 1
+    assert report["scan_summary"]["clean_swing_count"] == 1
     assert report["scan_summary"]["grade_counts"]["A"] == 1
     assert report["scan_summary"]["primary_review_count"] == 1
     assert report["decision"]["status"] == "primary_review"

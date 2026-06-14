@@ -163,6 +163,12 @@ CHAIN_CONTEXT_FIELDS = {
     "readiness_score",
     "risk_flags",
     "contract_quality_score",
+    "swing_fit_score",
+    "swing_fit_label",
+    "swing_fit_reasons",
+    "swing_fit_warnings",
+    "breakeven_move_label",
+    "liquidity_label",
     "bid",
     "ask",
     "mid",
@@ -224,6 +230,12 @@ CHAIN_SHORTLIST_COLUMNS = [
     "readiness_label",
     "readiness_score",
     "contract_quality_score",
+    "swing_fit_score",
+    "swing_fit_label",
+    "swing_fit_reasons",
+    "swing_fit_warnings",
+    "breakeven_move_label",
+    "liquidity_label",
     "quote_quality",
     "chain_source",
     "data_delay",
@@ -1923,6 +1935,148 @@ def _option_contract_readiness(row: dict[str, Any], quote_quality: str) -> dict[
     return _readiness(score, flags)
 
 
+def _option_chain_swing_fit(row: dict[str, Any], max_premium: float) -> dict[str, Any]:
+    """Score whether a chain row is usable for 3m+ swing review."""
+    score = 100
+    reasons: list[str] = []
+    warnings: list[str] = []
+    dte = _float_value(row.get("dte"), default=math.nan)
+    spread = _float_value(row.get("spread_pct"), default=math.nan)
+    oi = _float_value(row.get("openInterest"), default=0.0)
+    volume = _float_value(row.get("volume"), default=0.0)
+    premium = _float_value(row.get("premium_dollars"), default=math.nan)
+    budget_usage = _float_value(row.get("budget_usage_pct"), default=math.nan)
+    breakeven_move = _float_value(row.get("breakeven_move_pct"), default=math.nan)
+    delta = abs(_float_value(row.get("delta"), default=math.nan))
+    quote_norm = str(row.get("quote_quality") or "").lower()
+    budget = max_premium if max_premium > 0 else 500.0
+
+    if not math.isfinite(dte):
+        score -= 24
+        warnings.append("unknown DTE")
+    elif dte < MIN_SWING_OPTION_DTE:
+        score -= 40
+        warnings.append("below 3m swing minimum")
+    elif dte < 180:
+        reasons.append("3m+ runway")
+    elif dte <= 540:
+        reasons.append("long swing runway")
+    elif dte <= 900:
+        score -= 4
+        reasons.append("LEAPS-style runway")
+    else:
+        score -= 12
+        warnings.append("very far-dated")
+
+    if math.isfinite(spread):
+        if spread <= 0.08:
+            reasons.append("tight spread")
+        elif spread <= 0.15:
+            reasons.append("acceptable spread")
+        elif spread <= 0.25:
+            score -= 14
+            warnings.append("spread needs live check")
+        else:
+            score -= 32
+            warnings.append("spread too wide")
+    else:
+        score -= 18
+        warnings.append("missing spread")
+
+    if oi >= 500:
+        reasons.append("deep open interest")
+        liquidity_label = "deep"
+    elif oi >= 100:
+        reasons.append("usable open interest")
+        liquidity_label = "usable"
+    elif oi >= 25:
+        score -= 8
+        warnings.append("light open interest")
+        liquidity_label = "light"
+    else:
+        score -= 24
+        warnings.append("thin open interest")
+        liquidity_label = "thin"
+    if volume > 0:
+        reasons.append("traded today")
+    else:
+        score -= 6
+        warnings.append("no same-day volume")
+
+    if not math.isfinite(premium) or premium <= 0:
+        score -= 35
+        warnings.append("invalid premium")
+    elif premium <= budget:
+        if math.isfinite(budget_usage) and budget_usage <= 0.50:
+            reasons.append("small budget usage")
+        else:
+            reasons.append("inside premium budget")
+    elif premium <= budget * 1.25:
+        score -= 12
+        warnings.append("premium near budget cap")
+    else:
+        score -= 28
+        warnings.append("premium above budget cap")
+
+    breakeven_label = "unknown"
+    if math.isfinite(breakeven_move):
+        move_abs = abs(breakeven_move)
+        if move_abs <= 0.08:
+            breakeven_label = "light"
+            reasons.append("light break-even move")
+        elif move_abs <= 0.15:
+            breakeven_label = "moderate"
+            score -= 5
+            reasons.append("moderate break-even move")
+        elif move_abs <= 0.25:
+            breakeven_label = "heavy"
+            score -= 14
+            warnings.append("heavy break-even move")
+        else:
+            breakeven_label = "speculative"
+            score -= 28
+            warnings.append("speculative break-even move")
+    else:
+        score -= 8
+        warnings.append("unknown break-even")
+
+    if math.isfinite(delta):
+        if 0.25 <= delta <= 0.65:
+            reasons.append("swing delta zone")
+        elif delta < 0.15:
+            score -= 10
+            warnings.append("low-delta lottery profile")
+        elif delta > 0.85:
+            score -= 4
+            warnings.append("stock-like high delta")
+
+    if quote_norm in {"", "unknown"}:
+        score -= 8
+        warnings.append("unknown quote source")
+    elif "free" in quote_norm or "delayed" in quote_norm:
+        score -= 4
+        warnings.append("verify delayed quote")
+
+    clean_score = max(0, min(100, int(round(score))))
+    if clean_score >= 85 and len(warnings) <= 1:
+        label = "clean_swing"
+    elif clean_score >= 70:
+        label = "reviewable_swing"
+    elif clean_score >= 55:
+        label = "speculative_swing"
+    else:
+        label = "avoid"
+
+    return {
+        "swing_fit_score": clean_score,
+        "swing_fit_label": label,
+        "swing_fit_reasons": reasons[:6],
+        "swing_fit_warnings": warnings[:6],
+        "breakeven_move_label": breakeven_label,
+        "liquidity_label": liquidity_label,
+    }
+
+
 def _option_contract_grade(row: dict[str, Any], max_premium: float) -> dict[str, Any]:
     readiness = _float_value(row.get("readiness_score"), default=0.0)
     spread = _float_value(row.get("spread_pct"), default=math.nan)
@@ -2042,6 +2196,10 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
             "ready_count": 0,
             "review_count": 0,
             "wait_count": 0,
+            "swing_fit_counts": {},
+            "clean_swing_count": 0,
+            "reviewable_swing_count": 0,
+            "best_swing_fit": None,
         }
     spreads = sorted(
         _float_value(row.get("spread_pct"), default=math.nan)
@@ -2074,9 +2232,12 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
     )
     best_long_dated = next((row for row in rows if _float_value(row.get("dte"), default=0.0) >= 180), None)
     grade_counts: dict[str, int] = {}
+    swing_fit_counts: dict[str, int] = {}
     for row in rows:
         grade = str(row.get("contract_grade") or "ungraded")
         grade_counts[grade] = grade_counts.get(grade, 0) + 1
+        fit = str(row.get("swing_fit_label") or "unscored")
+        swing_fit_counts[fit] = swing_fit_counts.get(fit, 0) + 1
     return {
         "best_call": _chain_contract_label(best_call),
         "best_put": _chain_contract_label(best_put),
@@ -2099,6 +2260,13 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         "ready_count": sum(str(row.get("readiness_label") or "") == "ready" for row in rows),
         "review_count": sum(str(row.get("readiness_label") or "") == "review" for row in rows),
         "wait_count": sum(str(row.get("readiness_label") or "") == "wait" for row in rows),
+        "swing_fit_counts": swing_fit_counts,
+        "clean_swing_count": swing_fit_counts.get("clean_swing", 0),
+        "reviewable_swing_count": swing_fit_counts.get("reviewable_swing", 0),
+        "best_swing_fit": _chain_contract_label(max(
+            rows,
+            key=lambda row: _float_value(row.get("swing_fit_score"), default=-1.0),
+        )),
     }
 
 
@@ -2259,6 +2427,12 @@ def _option_chain_decision_pack(
         risk_notes.append(f"DTE is below the {MIN_SWING_OPTION_DTE}d swing minimum.")
     if grade not in {"A", "B"}:
         risk_notes.append("No A/B contract passed the current filters.")
+    swing_label = str(primary.get("swing_fit_label") or "").lower()
+    if swing_label in {"speculative_swing", "avoid"}:
+        risk_notes.append(f"Swing fit is {swing_label.replace('_', ' ')}.")
+    swing_warnings = primary.get("swing_fit_warnings")
+    if isinstance(swing_warnings, list):
+        risk_notes.extend(str(flag) for flag in swing_warnings[:3] if flag)
     row_flags = primary.get("risk_flags")
     if isinstance(row_flags, list):
         risk_notes.extend(str(flag) for flag in row_flags[:3] if flag)
@@ -2436,6 +2610,7 @@ def build_option_chain_scan(
                 if math.isfinite(strike) else ""
             )
             row.update(_option_chain_trade_refs(row, spot, max_premium))
+            row.update(_option_chain_swing_fit(row, max_premium))
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
             row.update(_option_contract_readiness(row, str(quote_quality)))
             row.update(_option_contract_grade(row, max_premium))
@@ -2444,6 +2619,7 @@ def build_option_chain_scan(
     rows = sorted(
         rows,
         key=lambda r: (
+            _float_value(r.get("swing_fit_score"), default=-999.0),
             _float_value(r.get("contract_quality_score"), default=-999.0),
             -abs(_float_value(r.get("moneyness_pct"), default=99.0)),
             -_float_value(r.get("dte"), default=9999.0),
@@ -8302,6 +8478,10 @@ function optionChainSummary(data) {
     ['Ready', scan.ready_count || 0],
     ['Review', scan.review_count || 0],
     ['Wait', scan.wait_count || 0],
+    ['Swing fit', countMapText(scan.swing_fit_counts || {})],
+    ['Clean swings', scan.clean_swing_count || 0],
+    ['Reviewable swings', scan.reviewable_swing_count || 0],
+    ['Best swing fit', scan.best_swing_fit || '-'],
     ['Best call', scan.best_call || '-'],
     ['Best put', scan.best_put || '-'],
     ['Best reviewable', scan.best_reviewable || '-'],
@@ -8328,6 +8508,12 @@ function optionContractContext(row) {
     readiness_score: row.readiness_score,
     risk_flags: Array.isArray(row.risk_flags) ? row.risk_flags.slice(0, 8) : [],
     contract_quality_score: row.contract_quality_score,
+    swing_fit_score: row.swing_fit_score,
+    swing_fit_label: row.swing_fit_label,
+    swing_fit_reasons: Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.slice(0, 8) : [],
+    swing_fit_warnings: Array.isArray(row.swing_fit_warnings) ? row.swing_fit_warnings.slice(0, 8) : [],
+    breakeven_move_label: row.breakeven_move_label,
+    liquidity_label: row.liquidity_label,
     bid: row.bid,
     ask: row.ask,
     mid: row.mid,
@@ -8369,6 +8555,8 @@ function optionContractCard(row) {
   const readiness = row.readiness_label || 'review';
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
   const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
+  const swingReasons = Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.join(', ') : (row.swing_fit_reasons || '');
+  const swingWarnings = Array.isArray(row.swing_fit_warnings) ? row.swing_fit_warnings.join(', ') : (row.swing_fit_warnings || '');
   const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
   const query = row.contract_query || optionContractQuery(row);
   const context = optionContractContext(row);
@@ -8388,6 +8576,9 @@ function optionContractCard(row) {
     <div class="row"><span>Stop / target ref</span><b>${cell(row.stop_price_reference)} / ${cell(row.target_price_reference)}</b></div>
     <div class="row"><span>Risk / reward ref</span><b>${moneyShort(row.risk_dollars_reference)} / ${moneyShort(row.reward_dollars_reference)} (${ratio(row.reward_risk_reference)})</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
+    <div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
+    <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>
+    <div class="row"><span>Swing warnings</span><b>${cell(swingWarnings || 'clear')}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
     <div class="row"><span>Why</span><b>${cell(gradeReasons || row.review_thesis || '-')}</b></div>
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
@@ -8442,6 +8633,7 @@ function optionChainDecisionHtml(data) {
         <div class="decision-metric"><span>DTE</span><strong>${cell(primary.dte)}</strong></div>
         <div class="decision-metric"><span>Open interest</span><strong>${cell(primary.openInterest)}</strong></div>
         <div class="decision-metric"><span>Quality</span><strong>${cell(primary.contract_quality_score)}</strong></div>
+        <div class="decision-metric"><span>Swing fit</span><strong>${cell(labelText(primary.swing_fit_label))} / ${cell(primary.swing_fit_score)}</strong></div>
       </div>
       <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save primary contract</button>
     </div>
