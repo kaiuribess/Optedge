@@ -4492,6 +4492,31 @@ def build_provider_status(
         "note": "Official no-key symbol directory for broader ticker search and ETF flags.",
     })
 
+    history_rows = [row for row in rows if row.get("category") == "history"]
+    working_history = [row for row in history_rows if row.get("status") == "ok"]
+    chain_rows = [row for row in rows if row.get("category") == "options"]
+    chain_ok = (not include_chain) or any(row.get("status") == "ok" for row in chain_rows)
+    symbol_cache_ok = sum(1 for row in rows if row.get("category") == "symbol_search" and row.get("status") == "ok")
+    history_sources = [
+        str(row.get("history_source") or row.get("provider") or "").strip()
+        for row in working_history
+        if row.get("history_source") or row.get("provider")
+    ]
+    history_quality_counts: dict[str, int] = {}
+    for row in working_history:
+        quality = str(row.get("history_quality") or "unknown")
+        history_quality_counts[quality] = history_quality_counts.get(quality, 0) + 1
+    history_score = min(55, round((len(working_history) / max(1, len(history_rows))) * 55))
+    chain_score = 25 if chain_ok else 0
+    cache_score = round((min(symbol_cache_ok, 2) / 2) * 20)
+    trust_score = int(history_score + chain_score + cache_score)
+    if not working_history:
+        trust_label = "blocked"
+    elif chain_ok:
+        trust_label = "ready"
+    else:
+        trust_label = "partial"
+
     ok_count = sum(1 for row in rows if row.get("status") == "ok")
     warnings = [
         f"{row.get('provider')} did not return usable data."
@@ -4505,6 +4530,23 @@ def build_provider_status(
         "status": "ok" if ok_count >= 2 and not warnings else "warn",
         "ok_count": ok_count,
         "provider_count": len(rows),
+        "data_trust": {
+            "label": trust_label,
+            "score": trust_score,
+            "history_ok_count": len(working_history),
+            "history_provider_count": len(history_rows),
+            "history_sources": history_sources,
+            "history_source_summary": ", ".join(history_sources) if history_sources else "none",
+            "history_quality_counts": history_quality_counts,
+            "option_chain_status": (
+                "skipped" if not include_chain else "ok" if chain_ok else "warn"
+            ),
+            "symbol_cache_ok_count": symbol_cache_ok,
+            "notes": [
+                "Ready means at least one free history source worked and the option-chain check passed or was skipped.",
+                "This is source trust only; it is not a signal-quality or profitability score.",
+            ],
+        },
         "rows": rows,
         "warnings": warnings,
         "notes": [
@@ -6470,9 +6512,14 @@ function performanceSummaryHtml(perf) {
     </div>`;
 }
 function providerSummaryHtml(data) {
+  const trust = data.data_trust || {};
   const fields = [
     ['Status', data.status || '-'],
+    ['Data trust', trust.label || '-'],
+    ['Trust score', trust.score ?? '-'],
     ['Symbol', data.symbol || '-'],
+    ['History source', trust.history_source_summary || '-'],
+    ['Option chain', trust.option_chain_status || '-'],
     ['Working', `${data.ok_count || 0}/${data.provider_count || 0}`],
     ['Warnings', (data.warnings || []).length]
   ];

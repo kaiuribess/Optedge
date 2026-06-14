@@ -174,6 +174,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Provider status" in html
     assert "/api/provider-status" in html
     assert "loadProviderStatus" in html
+    assert "Data trust" in html
+    assert "History source" in html
+    assert "Option chain" in html
     assert "Free source map" in html
     assert "/api/free-data-sources" in html
     assert "freeSourcesTable" in html
@@ -1935,6 +1938,11 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert report["symbol"] == "AAPL"
     assert report["provider_count"] == 6
     assert report["ok_count"] == 5
+    assert report["data_trust"]["label"] == "ready"
+    assert report["data_trust"]["score"] >= 80
+    assert report["data_trust"]["history_ok_count"] == 2
+    assert report["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
+    assert report["data_trust"]["option_chain_status"] == "ok"
     providers = {row["provider"]: row for row in report["rows"]}
     assert providers["Yahoo chart"]["rows"] == 2
     assert providers["Yahoo chart"]["history_source"] == "yahoo_chart"
@@ -1945,6 +1953,7 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert providers["SEC company ticker cache"]["status"] == "ok"
     assert providers["Nasdaq symbol directory cache"]["status"] == "ok"
     assert no_chain["provider_count"] == 5
+    assert no_chain["data_trust"]["option_chain_status"] == "skipped"
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
 
 
