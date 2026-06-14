@@ -165,6 +165,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Chain shortlist" in html
     assert "/artifact/option-chain-shortlist" in html
     assert "Focus data trust" in html
+    assert "Event risk" in html
+    assert "Earnings / catalyst event risk" in html
     assert "SEC offering risk" in html
     assert "SEC dilution / offering risk" in html
     assert "Agentic options queue" in html
@@ -927,6 +929,19 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
                 "quote_quality": "free_or_delayed",
             }],
         }), encoding="utf-8")
+        earnings_date = (datetime.now(timezone.utc).date() + timedelta(days=3)).isoformat()
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "contract": "AAPL 2027-01-15 C 220",
+            "next_earnings_date": earnings_date,
+            "days_to_earnings": 3,
+            "earnings_score": -0.2,
+            "whisper_score": 0.4,
+            "whisper_gap_pct": 0.09,
+            "rank_score": 2.1,
+            "confidence": 72,
+            "dte": 216,
+        }]).to_parquet(data_dir / "top_options_20260613_200000.parquet")
         try:
             packet = build_swing_packet(data_dir, write=True)
         finally:
@@ -953,6 +968,10 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["data_trust_check"]["symbol"] == "AAPL"
         assert packet["data_trust_check"]["data_trust"]["label"] == "ready"
         assert packet["data_trust_check"]["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
+        assert packet["event_risk"]["status"] == "high_event_risk"
+        assert packet["event_risk"]["high_count"] == 1
+        assert packet["event_risk"]["rows"][0]["symbol"] == "AAPL"
+        assert packet["event_risk"]["rows"][0]["action"] == "avoid_new_option_entry_until_after_earnings_review"
         json_path = data_dir / "swing_packet.json"
         md_path = data_dir / "swing_packet.md"
         assert json_path.exists()
@@ -964,6 +983,8 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert "AAPL 2027-01-15 C 220" in md
         assert "Focus Data Trust" in md
         assert "yahoo_chart, nasdaq_historical" in md
+        assert "Earnings / Catalyst Event Risk" in md
+        assert "avoid_new_option_entry_until_after_earnings_review" in md
         assert "SEC Dilution / Offering Risk" in md
         assert "S-3" in md
 

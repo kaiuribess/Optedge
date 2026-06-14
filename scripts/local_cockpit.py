@@ -6358,6 +6358,195 @@ def _build_packet_data_trust_summary(data_dir: Path, query: str | None) -> dict[
     }
 
 
+def _symbol_from_packet_candidate(value: Any) -> str | None:
+    text = str(value or "").strip().upper()
+    if not text or text == "NAN":
+        return None
+    match = re.match(r"^\^?[A-Z][A-Z0-9.\-]{0,9}(?:=F)?", text)
+    if not match:
+        return None
+    symbol = match.group(0).strip()
+    return symbol if symbol else None
+
+
+def _packet_event_symbols(
+    focus_query: str | None,
+    command: dict[str, Any],
+    today: dict[str, Any],
+    gated: dict[str, Any],
+    paper: dict[str, Any],
+    chain: dict[str, Any],
+) -> list[str]:
+    action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
+    raw_values: list[Any] = [focus_query, action.get("symbol"), action.get("query")]
+    for block, fields in (
+        (paper.get("rows") if isinstance(paper, dict) else [], ["ticker_or_symbol", "contract"]),
+        (gated.get("rows") if isinstance(gated, dict) else [], ["ticker_or_symbol", "ticker", "symbol"]),
+        (today.get("rows") if isinstance(today, dict) else [], ["symbol", "query"]),
+        (chain.get("rows") if isinstance(chain, dict) else [], ["ticker", "symbol", "contract"]),
+    ):
+        for row in block or []:
+            if not isinstance(row, dict):
+                continue
+            raw_values.extend(row.get(field) for field in fields)
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in raw_values:
+        symbol = _symbol_from_packet_candidate(raw)
+        if not symbol or symbol in seen or symbol.endswith("=F"):
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out[:12]
+
+
+def _days_until_date(value: Any, fallback: Any = None) -> float:
+    parsed = pd.to_datetime(str(value or ""), errors="coerce", utc=True)
+    if not pd.isna(parsed):
+        return float((parsed.date() - datetime.now(timezone.utc).date()).days)
+    return _float_value(fallback, default=math.nan)
+
+
+def _event_risk_level(days_to_earnings: float, days_to_catalyst: float, whisper_gap: float) -> tuple[str, str]:
+    has_earnings = math.isfinite(days_to_earnings)
+    has_catalyst = math.isfinite(days_to_catalyst)
+    if has_earnings and 0 <= days_to_earnings <= 5:
+        return "high", "avoid_new_option_entry_until_after_earnings_review"
+    if has_catalyst and 0 <= days_to_catalyst <= 7:
+        return "high", "avoid_new_option_entry_until_catalyst_review"
+    if has_earnings and 6 <= days_to_earnings <= 14:
+        return "medium", "require_earnings_plan_before_entry"
+    if has_catalyst and 8 <= days_to_catalyst <= 21:
+        return "medium", "require_catalyst_plan_before_entry"
+    if has_earnings and -7 <= days_to_earnings < 0:
+        return "medium", "review_post_earnings_iv_reset"
+    if has_earnings and 15 <= days_to_earnings <= 30:
+        return "watch", "monitor_earnings_window"
+    if has_catalyst and 22 <= days_to_catalyst <= 45:
+        return "watch", "monitor_catalyst_window"
+    if math.isfinite(whisper_gap) and abs(whisper_gap) >= 0.08:
+        return "watch", "review_whisper_gap_context"
+    return "clear", "no_near_term_event_flag"
+
+
+def _event_sort_distance(row: pd.Series) -> float:
+    distances = [
+        abs(_days_until_date(row.get("next_earnings_date") or row.get("earnings_date"), row.get("days_to_earnings"))),
+        abs(_days_until_date(row.get("next_catalyst_date"), row.get("days_to_catalyst"))),
+    ]
+    clean = [value for value in distances if math.isfinite(value)]
+    return min(clean) if clean else 9999.0
+
+
+def _event_record(row: pd.Series, asset: str) -> dict[str, Any] | None:
+    symbol = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
+    if not symbol:
+        return None
+    earnings_date = row.get("next_earnings_date") or row.get("earnings_date")
+    days_to_earnings = _days_until_date(earnings_date, row.get("days_to_earnings"))
+    catalyst_date = row.get("next_catalyst_date")
+    days_to_catalyst = _days_until_date(catalyst_date, row.get("days_to_catalyst"))
+    whisper_gap = _float_value(row.get("whisper_gap_pct"), default=math.nan)
+    risk_level, action = _event_risk_level(days_to_earnings, days_to_catalyst, whisper_gap)
+    if risk_level == "clear" and not any(
+        math.isfinite(value) for value in (days_to_earnings, days_to_catalyst, whisper_gap)
+    ):
+        return None
+    return {
+        "symbol": symbol,
+        "asset": asset,
+        "event_risk": risk_level,
+        "action": action,
+        "next_earnings_date": _clean_value(earnings_date),
+        "days_to_earnings": _clean_value(days_to_earnings if math.isfinite(days_to_earnings) else None),
+        "earnings_score": _clean_value(row.get("earnings_score")),
+        "whisper_score": _clean_value(row.get("whisper_score")),
+        "whisper_gap_pct": _clean_value(whisper_gap if math.isfinite(whisper_gap) else None),
+        "next_catalyst_date": _clean_value(catalyst_date),
+        "days_to_catalyst": _clean_value(days_to_catalyst if math.isfinite(days_to_catalyst) else None),
+        "catalyst_type": _clean_value(row.get("catalyst_type")),
+        "contract": _clean_value(row.get("contract")),
+        "dte": _clean_value(row.get("dte")),
+        "confidence": _clean_value(row.get("confidence")),
+        "rank_score": _clean_value(row.get("rank_score")),
+        "source_file": _clean_value(row.get("_source_file")),
+        "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+        "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
+    }
+
+
+def _build_packet_event_risk_summary(data_dir: Path, symbols: list[str]) -> dict[str, Any]:
+    """Summarize earnings/catalyst timing for the current swing packet candidates."""
+    clean_symbols = [str(sym or "").upper().strip() for sym in symbols if str(sym or "").strip()]
+    clean_symbols = list(dict.fromkeys(clean_symbols))[:12]
+    if not clean_symbols:
+        return {
+            "status": "missing",
+            "symbols": [],
+            "count": 0,
+            "rows": [],
+            "warnings": ["No packet symbols were available for event-risk review."],
+            "notes": ["Event risk uses existing local scan snapshots; run a scan to populate earnings context."],
+        }
+    records: list[dict[str, Any]] = []
+    for asset, pattern in (("option", "top_options_*.parquet"), ("share", "top_shares_*.parquet")):
+        df = _read_parquet(_latest_file(data_dir, pattern))
+        if df.empty or "ticker" not in df.columns:
+            continue
+        out = df[df["ticker"].astype(str).str.upper().isin(clean_symbols)].copy()
+        if out.empty:
+            continue
+        out["_event_sort"] = out.apply(_event_sort_distance, axis=1)
+        out = out.sort_values(["ticker", "_event_sort"], kind="mergesort")
+        for _, row in out.groupby(out["ticker"].astype(str).str.upper(), sort=False).head(1).iterrows():
+            record = _event_record(row, asset)
+            if record:
+                records.append(record)
+    severity = {"high": 3, "medium": 2, "watch": 1, "clear": 0}
+    records = sorted(
+        records,
+        key=lambda row: (
+            severity.get(str(row.get("event_risk") or "clear"), 0),
+            -abs(_float_value(row.get("days_to_earnings"), default=9999.0)),
+            _float_value(row.get("rank_score")),
+        ),
+        reverse=True,
+    )
+    high_count = sum(1 for row in records if row.get("event_risk") == "high")
+    medium_count = sum(1 for row in records if row.get("event_risk") == "medium")
+    watch_count = sum(1 for row in records if row.get("event_risk") == "watch")
+    if high_count:
+        status = "high_event_risk"
+    elif medium_count:
+        status = "watch_event_risk"
+    elif watch_count:
+        status = "monitor"
+    elif records:
+        status = "clear"
+    else:
+        status = "missing"
+    warnings: list[str] = []
+    if high_count:
+        warnings.append(f"{high_count} packet symbol(s) have earnings/catalyst risk inside the high-risk window.")
+    if any(str(row.get("snapshot_freshness") or "") == "stale" for row in records):
+        warnings.append("Some event-risk rows came from stale scan snapshots; refresh before acting.")
+    return {
+        "generated_at": _now_iso(),
+        "status": status,
+        "symbols": clean_symbols,
+        "count": len(records),
+        "high_count": high_count,
+        "medium_count": medium_count,
+        "watch_count": watch_count,
+        "rows": records[:12],
+        "warnings": warnings,
+        "notes": [
+            "Event risk is built from existing local earnings, whisper, and catalyst fields.",
+            "Near earnings, prefer waiting for the report or using a smaller/manual-reviewed options plan.",
+        ],
+    }
+
+
 def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     label = str(action.get("label") or "Review local research").strip()
@@ -6372,6 +6561,7 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
     sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
+    event_risk = packet.get("event_risk") if isinstance(packet.get("event_risk"), dict) else {}
     data_trust = packet.get("data_trust_check") if isinstance(packet.get("data_trust_check"), dict) else {}
     trust = data_trust.get("data_trust") if isinstance(data_trust.get("data_trust"), dict) else {}
     lines = [
@@ -6426,6 +6616,20 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         lines.append(
             f"- {row.get('provider', '-')}: {row.get('status', '-')} "
             f"{row.get('history_source') or row.get('note') or ''}"
+        )
+    lines.extend([
+        "",
+        "## Earnings / Catalyst Event Risk",
+        f"- Status: {event_risk.get('status') or '-'}",
+        f"- Symbols reviewed: {', '.join(event_risk.get('symbols') or []) or '-'}",
+        f"- High / medium / watch: {event_risk.get('high_count') or 0} / "
+        f"{event_risk.get('medium_count') or 0} / {event_risk.get('watch_count') or 0}",
+    ])
+    for row in event_risk.get("rows", [])[:8]:
+        lines.append(
+            f"- {row.get('symbol', '-')}: {row.get('event_risk', '-')} "
+            f"earnings {row.get('next_earnings_date') or '-'} "
+            f"({row.get('days_to_earnings', '-')}d), action {row.get('action', '-')}"
         )
     lines.extend([
         "",
@@ -6586,6 +6790,16 @@ def build_swing_packet(
         data_dir,
         focus_query,
     )
+    event_risk = _packet_call(
+        notes,
+        "Event risk",
+        {"status": "unknown", "count": 0, "rows": [], "warnings": []},
+        _build_packet_event_risk_summary,
+        data_dir,
+        _packet_event_symbols(focus_query, command, today, gated, paper, chain),
+    )
+    for warning in (event_risk.get("warnings") or [])[:2]:
+        notes.append(f"Event risk: {warning}")
     artifacts = {
         "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
         "validation_report": str(artifact_path("validation-report", data_dir)) if artifact_path("validation-report", data_dir) else None,
@@ -6649,6 +6863,7 @@ def build_swing_packet(
             ], limit=8),
         },
         "data_trust_check": data_trust,
+        "event_risk": event_risk,
         "chain_refresh": chain_refresh,
         "chain_shortlist": chain,
         "sec_dilution_risk": sec_risk,
@@ -7898,11 +8113,22 @@ function swingPacketHtml(data) {
   const secRisk = data.sec_dilution_risk || {};
   const trustCheck = data.data_trust_check || {};
   const trust = trustCheck.data_trust || {};
+  const eventRisk = data.event_risk || {};
   const todayRows = (data.today_review && data.today_review.rows) || [];
   const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
   const paperRows = paper.rows || [];
   const chainRows = chain.rows || [];
   const secRows = secRisk.rows || [];
+  const eventRows = (eventRisk.rows || []).slice(0, 8).map(r => ({
+    symbol: r.symbol,
+    asset: r.asset,
+    risk: r.event_risk,
+    earnings: r.next_earnings_date || '-',
+    days: r.days_to_earnings,
+    catalyst: r.next_catalyst_date || '-',
+    action: r.action,
+    fresh: r.snapshot_freshness
+  }));
   const trustRows = (trustCheck.rows || []).slice(0, 6).map(r => ({
     provider: r.provider,
     status: r.status,
@@ -7939,6 +8165,17 @@ function swingPacketHtml(data) {
     </div>
     ${trustRows.length ? table(trustRows, true) : '<div class="empty">No focus data-trust probe available yet.</div>'}
   </div>`;
+  const eventBlock = `<div class="brief-list">
+    <h4>Earnings / catalyst event risk</h4>
+    <div class="review-meta">
+      <span class="pill">${cell(eventRisk.status || 'unknown')}</span>
+      <span>high ${cell(eventRisk.high_count || 0)}</span>
+      <span>medium ${cell(eventRisk.medium_count || 0)}</span>
+      <span>watch ${cell(eventRisk.watch_count || 0)}</span>
+    </div>
+    ${eventRows.length ? table(eventRows, true) : '<div class="empty">No near-term earnings, whisper, or catalyst risk found in local packet snapshots.</div>'}
+    ${(eventRisk.warnings || []).length ? `<ul>${eventRisk.warnings.slice(0, 3).map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>` : ''}
+  </div>`;
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
     <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
@@ -7946,6 +8183,7 @@ function swingPacketHtml(data) {
     <div class="brief-tile"><span>Climate</span><strong>${cell(climate.climate_label || command.climate_label || '-')}</strong></div>
     <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
     <div class="brief-tile"><span>Focus trust</span><strong>${cell(trust.label || 'unknown')} ${cell(trust.score || 0)}</strong></div>
+    <div class="brief-tile"><span>Event risk</span><strong>${cell(eventRisk.status || 'unknown')}</strong></div>
     <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain refreshed</span><strong>${cell(chainRefresh.attempted ? ((chainRefresh.row_count || 0) + ' rows') : 'no')}</strong></div>
     <div class="brief-tile"><span>SEC offering risk</span><strong>${cell(secRisk.status || 'unknown')}</strong></div>
@@ -7980,6 +8218,7 @@ function swingPacketHtml(data) {
       <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
       <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
       ${trustBlock}
+      ${eventBlock}
       ${secRiskBlock}
       <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
       ${notes}
