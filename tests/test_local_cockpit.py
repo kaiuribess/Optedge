@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
-    add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
+    add_watchlist_queries, add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_market_pulse,
@@ -139,6 +139,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Shortlist chain sweep" in html
     assert "optionChainResultsHtml" in html
     assert "optionChainBatchResultsHtml" in html
+    assert "Save best A/B contracts" in html
+    assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
     assert "Grade / lane" in html
     assert "Primary review" in html
@@ -150,6 +152,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Readiness" in html
     assert "/api/watchlist" in html
     assert "/api/watchlist-add" in html
+    assert "/api/watchlist-add-many" in html
     assert "/api/watchlist-run" in html
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
@@ -1790,6 +1793,44 @@ def test_saved_option_contracts_preserve_chain_scan_context():
     assert "saved grade A" in row["review_reasons"]
 
 
+def test_watchlist_bulk_add_preserves_each_chain_context():
+    items = [
+        {
+            "query": "AAPL 20991218 C 220",
+            "context": {
+                "contract_grade": "A",
+                "review_lane": "primary_review",
+                "review_thesis": "A-grade AAPL contract.",
+                "mid": 5.0,
+                "spread_pct": 0.04,
+            },
+        },
+        {
+            "query": "MSFT 20991218 C 450",
+            "context": {
+                "contract_grade": "B",
+                "review_lane": "secondary_review",
+                "review_thesis": "B-grade MSFT contract.",
+                "mid": 4.0,
+                "spread_pct": 0.05,
+            },
+        },
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        saved = add_watchlist_queries(items, data_dir)
+        contracts = build_saved_option_contracts(data_dir, enrich=False)
+
+    by_symbol = {row["symbol"]: row for row in contracts["rows"]}
+    assert saved["saved_count"] == 2
+    assert saved["error_count"] == 0
+    assert saved["count"] == 2
+    assert by_symbol["AAPL"]["saved_contract_grade"] == "A"
+    assert by_symbol["MSFT"]["saved_contract_grade"] == "B"
+    assert contracts["saved_grade_counts"]["A"] == 1
+    assert contracts["saved_grade_counts"]["B"] == 1
+
+
 def test_saved_option_contracts_can_refresh_exact_chain_quotes():
     original = cockpit_module._fetch_option_chain
 
@@ -1938,6 +1979,7 @@ if __name__ == "__main__":
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_saved_option_contracts_extracts_watchlist_option_requests()
+    test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("32/32 local cockpit tests passed")
+    print("33/33 local cockpit tests passed")

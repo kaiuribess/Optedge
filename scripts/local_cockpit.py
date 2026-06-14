@@ -953,6 +953,51 @@ def add_watchlist_query(query: str, data_dir: Path = DATA_DIR, context: dict[str
     return {"ok": True, "entry": entry, "updated_existing": replaced, **load_watchlist(data_dir)}
 
 
+def add_watchlist_queries(items: Any, data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, Any]:
+    if not isinstance(items, list):
+        return {"ok": False, "error": "items list is required"}
+    limit = max(1, min(int(limit or 12), 25))
+    saved: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    updated_existing = 0
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            query = str(item.get("query") or "").strip()
+            context = item.get("context") if isinstance(item.get("context"), dict) else None
+        else:
+            query = str(item or "").strip()
+            context = None
+        if not query:
+            errors.append({"query": query, "error": "query is required"})
+            continue
+        result = add_watchlist_query(query, data_dir, context=context)
+        if result.get("ok"):
+            entry = result.get("entry") or {}
+            if result.get("updated_existing"):
+                updated_existing += 1
+            saved.append({
+                "id": entry.get("id"),
+                "query": entry.get("query"),
+                "symbol": entry.get("symbol"),
+                "updated_existing": bool(result.get("updated_existing")),
+            })
+        else:
+            errors.append({
+                "query": query,
+                "error": result.get("error") or "could not save",
+            })
+    watchlist = load_watchlist(data_dir)
+    return {
+        "ok": bool(saved) and not errors,
+        "saved_count": len(saved),
+        "error_count": len(errors),
+        "updated_existing_count": updated_existing,
+        "saved": saved,
+        "errors": errors,
+        **watchlist,
+    }
+
+
 def remove_watchlist_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
     clean_id = str(entry_id or "").strip()
     current = load_watchlist(data_dir)["entries"]
@@ -6186,17 +6231,12 @@ function optionChainSummary(data) {
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
 }
-function optionContractCard(row) {
-  const readiness = row.readiness_label || 'review';
-  const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
-  const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
-  const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
-  const query = row.contract_query || optionContractQuery(row);
-  const context = {
+function optionContractContext(row) {
+  return {
     source: 'option_chain_scan',
-    chain_source: row.chain_source || '',
-    quote_quality: row.quote_quality || '',
-    data_delay: row.data_delay || '',
+    chain_source: row.chain_source || row.batch_source || '',
+    quote_quality: row.quote_quality || row.batch_quote_quality || '',
+    data_delay: row.data_delay || row.batch_data_delay || '',
     scan_symbol: row.symbol || '',
     scan_preset: $('chain-preset') ? $('chain-preset').value : '',
     contract_grade: row.contract_grade || '',
@@ -6220,6 +6260,26 @@ function optionContractCard(row) {
     dte: row.dte,
     dte_bucket: row.dte_bucket
   };
+}
+function optionContractSavePayload(row) {
+  const query = row.contract_query || optionContractQuery(row);
+  return query ? { query, context: optionContractContext(row) } : null;
+}
+function bestChainBatchSaveRows(rows) {
+  const good = (rows || []).filter(row => {
+    const grade = String(row.contract_grade || '').toUpperCase();
+    const lane = String(row.review_lane || '').toLowerCase();
+    return optionContractSavePayload(row) && ['A', 'B'].includes(grade) && lane !== 'wait';
+  });
+  return (good.length ? good : (rows || []).filter(row => optionContractSavePayload(row))).slice(0, 8);
+}
+function optionContractCard(row) {
+  const readiness = row.readiness_label || 'review';
+  const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
+  const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
+  const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
+  const query = row.contract_query || optionContractQuery(row);
+  const context = optionContractContext(row);
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
@@ -6272,13 +6332,49 @@ function optionChainBatchResultsHtml(data) {
     return `<div class="empty">No shortlist contracts matched these filters.</div>${errors}`;
   }
   const topCards = rows.slice(0, 8).map(optionContractCard).join('');
+  const saveCount = bestChainBatchSaveRows(rows).length;
   return `<div style="padding:12px">
+    <div class="scan-controls" style="padding:0 0 12px">
+      <button class="btn" type="button" id="chain-bulk-save-best">Save best A/B contracts</button>
+      <span class="muted">${saveCount} contract(s) eligible for one-click save</span>
+    </div>
     <div class="setup-grid">${topCards}</div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Symbol coverage</h4>${table(data.symbol_summaries || [], true)}</div>
       <div class="brief-list"><h4>Ranked contracts</h4>${table(rows, true)}</div>
     </div>
   </div>`;
+}
+async function saveChainPayloads(payloads, statusId) {
+  const clean = (payloads || []).filter(Boolean).slice(0, 12);
+  if (!clean.length) {
+    $(statusId).textContent = 'No saveable contracts found.';
+    return;
+  }
+  $(statusId).textContent = `Saving ${clean.length} contract(s) to research watchlist...`;
+  const res = await fetch('/api/watchlist-add-many', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ items: clean })
+  });
+  const data = await res.json();
+  if (!res.ok || data.saved_count === 0) {
+    $(statusId).textContent = 'Could not save contracts: ' + (data.error || (data.errors || []).map(e => e.error).join(', ') || 'unknown error');
+    return;
+  }
+  const err = data.error_count ? `, ${data.error_count} failed` : '';
+  $(statusId).textContent = `${data.saved_count || 0} contract(s) saved${err}.`;
+  await loadWatchlist();
+  await loadSavedContracts();
+}
+function wireChainBatchActions(root=document) {
+  const btn = root.querySelector('#chain-bulk-save-best');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const rows = window.latestChainBatchRows || [];
+    const payloads = bestChainBatchSaveRows(rows).map(optionContractSavePayload);
+    await saveChainPayloads(payloads, 'chain-bulk-status-text');
+  });
 }
 async function scanOptionChain() {
   const query = $('chain-query').value.trim() || $('symbol').value.trim() || $('rh-query').value.trim();
@@ -6338,10 +6434,12 @@ async function scanOptionChainBatch() {
     return;
   }
   $('chain-bulk-status-text').textContent = `${data.row_count || 0} contract(s) from ${data.successful_scans || 0}/${data.symbols_scanned || 0} successful symbol scan(s).`;
+  window.latestChainBatchRows = data.rows || [];
   $('chain-bulk-summary').innerHTML = optionChainBatchSummary(data);
   $('chain-bulk-results').innerHTML = optionChainBatchResultsHtml(data);
   wireClickableRows($('chain-bulk-results'));
   wireOptionChainActions($('chain-bulk-results'));
+  wireChainBatchActions($('chain-bulk-results'));
 }
 async function loadPositions() {
   $('positions-status-text').textContent = 'Loading open positions...';
@@ -6779,7 +6877,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
-            "/api/watchlist-add", "/api/watchlist-remove", "/api/watchlist-run",
+            "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
@@ -6788,7 +6886,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or 0)
         except Exception:
             length = 0
-        raw = self.rfile.read(min(length, 12000)) if length > 0 else b"{}"
+        raw = self.rfile.read(min(length, 60000)) if length > 0 else b"{}"
         try:
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
@@ -6801,6 +6899,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             context = body.get("context") if isinstance(body.get("context"), dict) else None
             result = add_watchlist_query(str(body.get("query") or ""), self.data_dir, context=context)
             self._send_json(result, status=200 if result.get("ok") else 400)
+            return
+        if parsed.path == "/api/watchlist-add-many":
+            result = add_watchlist_queries(
+                body.get("items"),
+                self.data_dir,
+                limit=_int_param(str(body.get("limit") or "12"), 12, 1, 25),
+            )
+            status = 200 if result.get("saved_count", 0) > 0 else 400
+            self._send_json(result, status=status)
             return
         if parsed.path == "/api/watchlist-remove":
             result = remove_watchlist_entry(str(body.get("id") or ""), self.data_dir)
