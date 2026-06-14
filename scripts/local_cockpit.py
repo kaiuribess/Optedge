@@ -3538,13 +3538,45 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
     }
 
 
-def build_swing_scout(data_dir: Path = DATA_DIR, limit: int = 18) -> dict[str, Any]:
+def _swing_scout_query_text(row: dict[str, Any]) -> str:
+    parts = [
+        row.get("asset"),
+        row.get("ticker_or_symbol"),
+        row.get("setup"),
+        row.get("lane"),
+        row.get("market_cap_bucket"),
+        row.get("trade_status"),
+        row.get("quality"),
+    ]
+    parts.extend(row.get("reasons") or [])
+    parts.extend(row.get("warnings") or [])
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def build_swing_scout(
+    data_dir: Path = DATA_DIR,
+    limit: int = 18,
+    asset: str = "all",
+    query: str = "",
+    lane: str = "all",
+    min_score: float = 45.0,
+    include_wait: bool = True,
+) -> dict[str, Any]:
     """Surface speculative small/mid-cap and futures swing candidates from local free-factor outputs."""
     limit = max(1, min(int(limit or 18), 60))
+    asset = str(asset or "all").strip().lower()
+    if asset not in {"all", "option", "share", "value", "futures"}:
+        asset = "all"
+    lane = str(lane or "all").strip().lower()
+    query_norm = str(query or "").strip().lower()
+    min_score = _clamp(_float_value(min_score, default=45.0), 0.0, 100.0)
     rows: list[dict[str, Any]] = []
     asset_counts: dict[str, int] = {}
     source_files: dict[str, str | None] = {}
+    reviewed_count = 0
     for asset_name in ("option", "share", "value", "futures"):
+        if asset != "all" and asset_name != asset:
+            continue
         spec = OPPORTUNITY_SPECS[asset_name]
         path = _latest_file(data_dir, spec["pattern"])
         source_file = path.name if path else None
@@ -3555,11 +3587,18 @@ def build_swing_scout(data_dir: Path = DATA_DIR, limit: int = 18) -> dict[str, A
         out = df.copy()
         out["asset"] = asset_name
         out["actionable"] = out.apply(_is_actionable, axis=1)
+        reviewed_count += int(len(out))
         if asset_name == "option" and "dte" in out.columns:
             out = out[pd.to_numeric(out["dte"], errors="coerce").fillna(0.0) >= MIN_SWING_OPTION_DTE]
         for _, row in out.iterrows():
             record = _swing_scout_record(row, asset_name, source_file)
-            if record["swing_scout_score"] < 45:
+            if record["swing_scout_score"] < min_score:
+                continue
+            if not include_wait and str(record.get("readiness_label") or "").lower() == "wait":
+                continue
+            if lane != "all" and str(record.get("lane") or "").lower() != lane:
+                continue
+            if query_norm and query_norm not in _swing_scout_query_text(record):
                 continue
             rows.append(record)
             asset_counts[asset_name] = asset_counts.get(asset_name, 0) + 1
@@ -3574,16 +3613,25 @@ def build_swing_scout(data_dir: Path = DATA_DIR, limit: int = 18) -> dict[str, A
     )[:limit]
     lane_counts: dict[str, int] = {}
     for row in rows:
-        lane = str(row.get("lane") or "unknown")
-        lane_counts[lane] = lane_counts.get(lane, 0) + 1
+        lane_name = str(row.get("lane") or "unknown")
+        lane_counts[lane_name] = lane_counts.get(lane_name, 0) + 1
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(rows),
+        "reviewed_count": reviewed_count,
         "rows": rows,
         "asset_counts": asset_counts,
         "lane_counts": lane_counts,
         "sources": source_files,
         "min_option_dte": MIN_SWING_OPTION_DTE,
+        "filters": {
+            "asset": asset,
+            "query": query,
+            "lane": lane,
+            "min_score": min_score,
+            "include_wait": bool(include_wait),
+            "limit": limit,
+        },
         "notes": [
             "Swing scout is a read-only ranking of high-upside review candidates from existing Optedge snapshots.",
             "Equity-linked rows emphasize small/mid-cap asymmetry, short pressure, retail attention, momentum, value, and execution quality.",
@@ -8250,6 +8298,29 @@ tr.clickable-row:hover { background:#18201d; }
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Small-cap + futures swing scout</h2>
     <div class="muted">High-upside review list from free local factors: small/mid-cap asymmetry, short pressure, retail attention, momentum, value, execution quality, and futures/macro swings.</div>
+    <div class="scan-controls">
+      <select id="swing-scout-asset" aria-label="Swing scout asset">
+        <option value="all">All assets</option>
+        <option value="option">Options</option>
+        <option value="share">Shares</option>
+        <option value="value">Value</option>
+        <option value="futures">Futures</option>
+      </select>
+      <select id="swing-scout-lane" aria-label="Swing scout lane">
+        <option value="all">All lanes</option>
+        <option value="small_cap_squeeze_watch">Small-cap squeeze</option>
+        <option value="retail_attention_swing">Retail attention</option>
+        <option value="small_cap_value_dislocation">Value dislocation</option>
+        <option value="small_cap_share_swing">Share swing</option>
+        <option value="small_cap_options_momentum">Options momentum</option>
+        <option value="long_dated_option_swing">Long-dated options</option>
+        <option value="futures_macro_swing">Futures macro</option>
+      </select>
+      <input id="swing-scout-query" placeholder="Filter ticker, lane, warning, or thesis">
+      <input id="swing-scout-min-score" type="number" min="0" max="100" step="1" value="45" aria-label="Minimum scout score">
+      <label class="check"><input id="swing-scout-hide-wait" type="checkbox"> hide wait rows</label>
+      <button class="btn" type="button" id="swing-scout-load">Apply filters</button>
+    </div>
     <div class="status" id="swing-scout-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="swing-scout-results"></div></div>
   </section>
@@ -8726,9 +8797,12 @@ function swingScoutCard(row) {
 function swingScoutHtml(data) {
   if (!data) return '<div class="empty">No swing scout data available.</div>';
   const rows = data.rows || [];
+  const filters = data.filters || {};
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Candidates</span><strong>${cell(data.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Reviewed</span><strong>${cell(data.reviewed_count || 0)}</strong></div>
     <div class="brief-tile"><span>Min option DTE</span><strong>${cell(data.min_option_dte || 90)}d</strong></div>
+    <div class="brief-tile"><span>Min scout score</span><strong>${cell(filters.min_score ?? 45)}</strong></div>
     <div class="brief-tile"><span>Assets</span><strong>${countMapText(data.asset_counts || {})}</strong></div>
     <div class="brief-tile"><span>Lanes</span><strong>${countMapText(data.lane_counts || {})}</strong></div>
   </div>`;
@@ -9810,7 +9884,7 @@ function wireSecFilingRows() {
 }
 function syncGlobalQueryTargets(query) {
   const q = String(query || '').trim();
-  ['symbol', 'watchlist-query', 'chain-query', 'explorer-query', 'paper-query', 'rh-query'].forEach(id => {
+  ['symbol', 'watchlist-query', 'chain-query', 'explorer-query', 'paper-query', 'rh-query', 'swing-scout-query'].forEach(id => {
     const el = $(id);
     if (el) el.value = q;
   });
@@ -9969,9 +10043,18 @@ async function loadBestSetups() {
 }
 async function loadSwingScout() {
   $('swing-scout-status-text').textContent = 'Scouting high-upside local swing candidates...';
-  const res = await fetch('/api/swing-scout?limit=18');
+  const params = new URLSearchParams({
+    limit: '18',
+    asset: $('swing-scout-asset').value,
+    lane: $('swing-scout-lane').value,
+    query: $('swing-scout-query').value.trim(),
+    min_score: $('swing-scout-min-score').value || '45',
+    include_wait: $('swing-scout-hide-wait').checked ? 'false' : 'true'
+  });
+  const res = await fetch('/api/swing-scout?' + params.toString());
   const data = await res.json();
-  $('swing-scout-status-text').textContent = `${data.count || 0} scout candidate(s); options require ${data.min_option_dte || 90}+ DTE.`;
+  const reviewed = data.reviewed_count === undefined ? '' : ` from ${data.reviewed_count} reviewed row(s)`;
+  $('swing-scout-status-text').textContent = `${data.count || 0} scout candidate(s)${reviewed}; options require ${data.min_option_dte || 90}+ DTE.`;
   $('swing-scout-results').innerHTML = swingScoutHtml(data);
   wireClickableRows($('swing-scout-results'));
   wireSetupCards($('swing-scout-results'));
@@ -10723,6 +10806,11 @@ $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
+$('swing-scout-load').addEventListener('click', loadSwingScout);
+$('swing-scout-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadSwingScout(); });
+['swing-scout-asset', 'swing-scout-lane', 'swing-scout-min-score', 'swing-scout-hide-wait'].forEach(id => {
+  $(id).addEventListener('change', loadSwingScout);
+});
 $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
@@ -10906,7 +10994,20 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/swing-scout":
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["18"])[0], 18, 1, 60)
-            self._send_json(build_swing_scout(self.data_dir, limit=limit))
+            asset = params.get("asset", ["all"])[0].strip().lower()
+            lane = params.get("lane", ["all"])[0].strip().lower()
+            query = params.get("query", [""])[0]
+            min_score = _float_param(params.get("min_score", ["45"])[0], 45.0, 0.0, 100.0)
+            include_wait = _bool_param(params.get("include_wait", ["true"])[0], True)
+            self._send_json(build_swing_scout(
+                self.data_dir,
+                limit=limit,
+                asset=asset,
+                query=query,
+                lane=lane,
+                min_score=min_score,
+                include_wait=include_wait,
+            ))
             return
         if parsed.path == "/api/option-chain-batch":
             params = parse_qs(parsed.query)

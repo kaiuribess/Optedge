@@ -161,6 +161,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/swing-scout" in html
     assert "swingScoutHtml" in html
     assert "loadSwingScout" in html
+    assert "swing-scout-asset" in html
+    assert "swing-scout-lane" in html
+    assert "swing-scout-min-score" in html
+    assert "swing-scout-hide-wait" in html
     assert "small/mid-cap asymmetry" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
@@ -1589,6 +1593,12 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
 
         report = build_swing_scout(data_dir, limit=10)
         symbols = {row["ticker_or_symbol"] for row in report["rows"]}
+        share_only = build_swing_scout(data_dir, limit=10, asset="share")
+        futures_only = build_swing_scout(data_dir, limit=10, asset="futures")
+        squeeze_only = build_swing_scout(data_dir, limit=10, lane="small_cap_squeeze_watch")
+        queried = build_swing_scout(data_dir, limit=10, query="smol")
+        hidden_wait = build_swing_scout(data_dir, limit=10, include_wait=False)
+        high_score = build_swing_scout(data_dir, limit=10, min_score=90)
 
     assert "RGTI" in symbols
     assert "SMOL" in symbols
@@ -1602,6 +1612,17 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
     assert "short/squeeze pressure" in option["reasons"]
     assert future["lane"] == "futures_macro_swing"
     assert report["min_option_dte"] == 90
+    assert report["reviewed_count"] == 4
+    assert report["filters"]["include_wait"] is True
+    assert report["filters"]["lane"] == "all"
+    assert futures_only["filters"]["asset"] == "futures"
+    assert squeeze_only["filters"]["lane"] == "small_cap_squeeze_watch"
+    assert {row["asset"] for row in share_only["rows"]} == {"share"}
+    assert {row["asset"] for row in futures_only["rows"]} == {"futures"}
+    assert {row["lane"] for row in squeeze_only["rows"]} == {"small_cap_squeeze_watch"}
+    assert [row["ticker_or_symbol"] for row in queried["rows"]] == ["SMOL"]
+    assert all(row["readiness_label"] != "wait" for row in hidden_wait["rows"])
+    assert all(row["swing_scout_score"] >= 90 for row in high_score["rows"])
 
 
 def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
