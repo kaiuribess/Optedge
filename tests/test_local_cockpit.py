@@ -127,6 +127,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "setup-chain-btn" in html
     assert "setup-scan-btn" in html
     assert "canScanOptionChainSymbol" in html
+    assert "Primary contract" in html
+    assert "Trade action" in html
     assert "Save contract" in html
     assert "contract-watchlist-btn" in html
     assert "optionContractQuery" in html
@@ -2736,6 +2738,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert "12.5% break-even move" in row["review_thesis"]
     assert report["preset"] == "custom"
     assert report["scan_summary"]["best_call"].startswith("C 220")
+    assert report["summary"] == report["scan_summary"]
     assert report["scan_summary"]["under_budget_count"] == 1
     assert report["scan_summary"]["review_count"] >= 1
     assert report["scan_summary"]["best_reviewable"].startswith("C 220")

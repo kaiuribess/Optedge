@@ -2729,6 +2729,7 @@ def build_option_chain_scan(
             "max_premium": max_premium,
             "min_open_interest": min_open_interest,
         },
+        "summary": summary,
         "rows": limited,
         "notes": [
             "Option-chain scan uses Optedge's existing provider stack.",
@@ -10909,6 +10910,9 @@ function applyChainPreset(preset) {
 function optionChainSummary(data) {
   const filters = data.filters || {};
   const scan = data.scan_summary || {};
+  const decision = data.decision || {};
+  const primary = decision.primary || {};
+  const tradePlan = decision.trade_plan || {};
   const fields = [
     ['Symbol', data.symbol || '-'],
     ['Preset', data.preset_label || data.preset || '-'],
@@ -10922,6 +10926,10 @@ function optionChainSummary(data) {
     ['Contracts', data.total_contracts || 0],
     ['Shown', data.filtered_count || 0],
     ['Rejected', data.rejected_count || 0],
+    ['Decision', `${decision.label || '-'} ${decision.status || ''}`.trim()],
+    ['Primary contract', primary.contract_query || '-'],
+    ['Trade action', labelText(tradePlan.action || 'watch_only')],
+    ['A/B saveable', decision.saveable_count || 0],
     ['Top rejects', countMapText(data.rejection_reason_counts || {})],
     ['Median spread', scan.median_spread_pct === null || scan.median_spread_pct === undefined ? '-' : ((Number(scan.median_spread_pct || 0) * 100).toFixed(1)) + '%'],
     ['Under budget', scan.under_budget_count || 0],
