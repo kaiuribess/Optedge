@@ -6547,6 +6547,135 @@ def _build_packet_event_risk_summary(data_dir: Path, symbols: list[str]) -> dict
     }
 
 
+def _build_packet_decision_gate(
+    command: dict[str, Any],
+    climate: dict[str, Any],
+    chain: dict[str, Any],
+    data_trust: dict[str, Any],
+    event_risk: dict[str, Any],
+    sec_risk: dict[str, Any],
+    paper: dict[str, Any],
+) -> dict[str, Any]:
+    """Collapse packet checks into one conservative review gate."""
+    blockers: list[str] = []
+    warnings: list[str] = []
+    confirmations: list[str] = []
+    next_steps: list[str] = []
+
+    command_status = str(command.get("status") or "").lower()
+    data_health = str(command.get("data_health_status") or "").lower()
+    risk_level = str(command.get("risk_level") or "").lower()
+    climate_score = _float_value(climate.get("climate_score") or command.get("climate_score"), default=50.0)
+    trust = data_trust.get("data_trust") if isinstance(data_trust.get("data_trust"), dict) else {}
+    trust_label = str(trust.get("label") or "unknown").lower()
+    event_status = str(event_risk.get("status") or "unknown").lower()
+    sec_status = str(sec_risk.get("status") or "unknown").lower()
+    chain_status = str(chain.get("status") or "missing").lower()
+    chain_count = int(_float_value(chain.get("count")))
+    paper_count = int(_float_value(paper.get("selected_count")))
+
+    if command_status == "fix_first":
+        blockers.append(str(command.get("status_detail") or "Command center says fix first before adding new ideas."))
+        next_steps.append("Resolve command-center fix-first item before considering a new entry.")
+    elif command_status:
+        confirmations.append(f"Command status is {command_status.replace('_', ' ')}.")
+
+    if data_health == "bad":
+        blockers.append("Data health is bad.")
+        next_steps.append("Open Data health and repair stale or mismatched artifacts.")
+    elif data_health == "warn":
+        warnings.append("Data health has warnings.")
+    elif data_health:
+        confirmations.append("Data health is ok.")
+
+    if risk_level == "high":
+        warnings.append("Open-position risk is high; review exits before adding risk.")
+        next_steps.append("Review open positions before adding a new swing idea.")
+    elif risk_level in {"low", "normal", "medium"}:
+        confirmations.append(f"Portfolio risk level is {risk_level}.")
+
+    if climate_score < 40:
+        blockers.append(f"Swing climate score is weak ({climate_score:g}).")
+        next_steps.append("Wait for a cleaner market climate or use a much stricter setup.")
+    elif climate_score < 55:
+        warnings.append(f"Swing climate is mixed ({climate_score:g}).")
+    else:
+        confirmations.append(f"Swing climate supports selective review ({climate_score:g}).")
+
+    if trust_label in {"blocked", "missing", "unknown"}:
+        blockers.append("Focus data trust is not ready.")
+        next_steps.append("Run Provider Status or refresh the focused scan before reviewing the setup.")
+    elif trust_label == "partial":
+        warnings.append("Focus data trust is partial.")
+    elif trust_label == "ready":
+        confirmations.append("Focus data trust is ready.")
+
+    if event_status == "high_event_risk":
+        blockers.append("High earnings or catalyst event risk is active.")
+        next_steps.append("Wait through the report/catalyst or build a separate event-risk plan.")
+    elif event_status in {"watch_event_risk", "monitor"}:
+        warnings.append("Earnings or catalyst event risk needs review.")
+    elif event_status == "clear":
+        confirmations.append("No near-term earnings/catalyst blocker surfaced.")
+
+    if sec_status == "block_new_bullish_options":
+        blockers.append("Recent SEC offering/dilution risk is active.")
+        next_steps.append("Review SEC filing risk before opening bullish calls.")
+    elif sec_status == "watch_offering_risk":
+        warnings.append("SEC offering/dilution risk should be reviewed.")
+    elif sec_status == "clear":
+        confirmations.append("No SEC offering/dilution blocker surfaced.")
+
+    if chain_status == "ready" and chain_count > 0:
+        confirmations.append(f"{chain_count} saved 3m+ chain candidate(s) are available.")
+    else:
+        warnings.append("No saved 3m+ chain shortlist is ready.")
+        next_steps.append("Run the 3m+ chain scan before picking an options contract.")
+
+    if paper_count > 0:
+        confirmations.append(f"{paper_count} external paper candidate(s) are available.")
+    else:
+        warnings.append("No filtered external paper candidate is currently selected.")
+
+    score = max(0, min(100, int(round(100 - len(blockers) * 22 - len(warnings) * 7))))
+    if blockers:
+        status = "wait"
+        label = "Wait"
+        primary_action = next_steps[0] if next_steps else "Clear blockers before reviewing a new entry."
+    elif score >= 85:
+        status = "ready_to_review"
+        label = "Ready to review"
+        primary_action = "Review the highest-quality contract manually; no orders are placed."
+    elif score >= 65:
+        status = "selective_review"
+        label = "Selective review"
+        primary_action = next_steps[0] if next_steps else "Review warnings before choosing a contract."
+    else:
+        status = "caution"
+        label = "Caution"
+        primary_action = next_steps[0] if next_steps else "Refresh data and reduce risk before reviewing."
+
+    return {
+        "status": status,
+        "label": label,
+        "score": score,
+        "primary_action": primary_action,
+        "blocker_count": len(blockers),
+        "warning_count": len(warnings),
+        "confirmation_count": len(confirmations),
+        "blockers": blockers[:8],
+        "warnings": warnings[:8],
+        "confirmations": confirmations[:8],
+        "next_steps": list(dict.fromkeys(next_steps))[:6],
+        "does_not_place_orders": True,
+        "gate_version": "swing_packet_gate_v1",
+        "notes": [
+            "The decision gate is conservative decision support only.",
+            "It combines packet readiness, not expected profitability.",
+        ],
+    }
+
+
 def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     label = str(action.get("label") or "Review local research").strip()
@@ -6558,6 +6687,7 @@ def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> st
 def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     command = packet.get("command_center") if isinstance(packet.get("command_center"), dict) else {}
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
+    decision_gate = packet.get("decision_gate") if isinstance(packet.get("decision_gate"), dict) else {}
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
     sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
@@ -6573,6 +6703,9 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         "",
         "## State",
         f"- Headline: {packet.get('headline') or '-'}",
+        f"- Decision gate: {decision_gate.get('label') or '-'} "
+        f"({decision_gate.get('score') or 0}/100)",
+        f"- Primary action: {decision_gate.get('primary_action') or '-'}",
         f"- Command status: {command.get('status') or '-'}",
         f"- Data health: {command.get('data_health_status') or '-'}",
         f"- Risk level: {command.get('risk_level') or '-'}",
@@ -6580,13 +6713,26 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         f"- Swing climate: {climate.get('climate_label') or command.get('climate_label') or '-'}",
         f"- Climate score: {climate.get('climate_score') or command.get('climate_score') or '-'}",
         "",
+        "## Decision Gate",
+        f"- Status: {decision_gate.get('status') or '-'}",
+        f"- Blockers: {decision_gate.get('blocker_count') or 0}",
+        f"- Warnings: {decision_gate.get('warning_count') or 0}",
+    ]
+    for row in decision_gate.get("blockers", [])[:6]:
+        lines.append(f"- Blocker: {row}")
+    for row in decision_gate.get("warnings", [])[:6]:
+        lines.append(f"- Warning: {row}")
+    for row in decision_gate.get("confirmations", [])[:6]:
+        lines.append(f"- Confirmed: {row}")
+    lines.extend([
+        "",
         "## Next Review",
         f"- Action: {action.get('label') or '-'}",
         f"- Symbol/query: {action.get('query') or action.get('symbol') or '-'}",
         f"- Why: {action.get('detail') or command.get('status_detail') or '-'}",
         "",
         "## Today Review",
-    ]
+    ])
     for row in packet.get("today_review", {}).get("rows", [])[:8]:
         lines.append(
             f"- {row.get('priority', '-')}: {row.get('label', '-')} "
@@ -6800,6 +6946,15 @@ def build_swing_packet(
     )
     for warning in (event_risk.get("warnings") or [])[:2]:
         notes.append(f"Event risk: {warning}")
+    decision_gate = _build_packet_decision_gate(
+        command,
+        climate,
+        chain,
+        data_trust,
+        event_risk,
+        sec_risk,
+        paper,
+    )
     artifacts = {
         "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
         "validation_report": str(artifact_path("validation-report", data_dir)) if artifact_path("validation-report", data_dir) else None,
@@ -6811,6 +6966,7 @@ def build_swing_packet(
         "does_not_place_orders": True,
         "status": command.get("status") or "review",
         "headline": _swing_packet_headline(command, today),
+        "decision_gate": decision_gate,
         "command_center": {
             "status": command.get("status"),
             "status_detail": command.get("status_detail"),
@@ -8106,6 +8262,7 @@ function swingPacketHtml(data) {
   if (!data) return '<div class="empty">No swing packet built yet.</div>';
   const command = data.command_center || {};
   const action = command.next_action || {};
+  const decisionGate = data.decision_gate || {};
   const climate = data.swing_climate || {};
   const chain = data.chain_shortlist || {};
   const chainRefresh = data.chain_refresh || {};
@@ -8176,7 +8333,30 @@ function swingPacketHtml(data) {
     ${eventRows.length ? table(eventRows, true) : '<div class="empty">No near-term earnings, whisper, or catalyst risk found in local packet snapshots.</div>'}
     ${(eventRisk.warnings || []).length ? `<ul>${eventRisk.warnings.slice(0, 3).map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>` : ''}
   </div>`;
+  const gateBlock = `<div class="decision-strip" style="margin-top:12px">
+    <div class="decision-main">
+      <div class="command-eyebrow">Decision gate</div>
+      <h3>${cell(decisionGate.label || 'Review')} ${cell(decisionGate.score || 0)}/100</h3>
+      <p>${cell(decisionGate.primary_action || 'Review packet checks before acting.')}</p>
+      <div class="review-meta">
+        <span class="pill ${escAttr(decisionGate.status || 'review')}">${cell(decisionGate.status || 'review')}</span>
+        <span>${cell(decisionGate.blocker_count || 0)} blocker(s)</span>
+        <span>${cell(decisionGate.warning_count || 0)} warning(s)</span>
+        <span>${cell(data.does_not_place_orders ? 'no broker execution' : 'review')}</span>
+      </div>
+    </div>
+    <div class="decision-side">
+      <a class="btn" href="/artifact/swing-packet-md" target="_blank">Open Markdown packet</a>
+      <button class="btn command-center-action-btn" type="button" data-action="${escAttr(action.action || '')}" data-route="${escAttr(action.route || '')}" data-query="${escAttr(action.query || '')}" data-symbol="${escAttr(action.symbol || '')}">${escHtml(todayReviewActionLabel(action.action, action.route))}</button>
+    </div>
+  </div>
+  <div class="brief-cols">
+    <div class="brief-list"><h4>Blockers</h4>${(decisionGate.blockers || []).length ? `<ul>${decisionGate.blockers.slice(0, 6).map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '<div class="empty">No hard packet blockers.</div>'}</div>
+    <div class="brief-list"><h4>Warnings</h4>${(decisionGate.warnings || []).length ? `<ul>${decisionGate.warnings.slice(0, 6).map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '<div class="empty">No packet warnings.</div>'}</div>
+    <div class="brief-list"><h4>Confirmed</h4>${(decisionGate.confirmations || []).length ? `<ul>${decisionGate.confirmations.slice(0, 6).map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : '<div class="empty">No confirmations yet.</div>'}</div>
+  </div>`;
   const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Decision gate</span><strong>${cell(decisionGate.label || 'review')} ${cell(decisionGate.score || 0)}</strong></div>
     <div class="brief-tile"><span>Status</span><strong>${cell(data.status || '-')}</strong></div>
     <div class="brief-tile"><span>Data health</span><strong>${cell(command.data_health_status || '-')}</strong></div>
     <div class="brief-tile"><span>Risk</span><strong>${cell(command.risk_level || '-')}</strong></div>
@@ -8195,6 +8375,7 @@ function swingPacketHtml(data) {
     : '';
   return `<div style="padding:12px">
     ${tiles}
+    ${gateBlock}
     <div class="decision-strip" style="margin-top:12px">
       <div class="decision-main">
         <h3>${cell(data.headline || 'Review local research')}</h3>
