@@ -9055,6 +9055,7 @@ tr.clickable-row:hover { background:#18201d; }
     </div>
     <div class="global-command-actions">
       <button class="btn" type="button" id="global-lookup">Lookup</button>
+      <button class="btn" type="button" id="global-workspace">Review workspace</button>
       <button class="btn" type="button" id="global-run">Run scan</button>
       <button class="btn" type="button" id="global-chain">3m+ chain</button>
       <button class="btn" type="button" id="global-save">Save</button>
@@ -10798,7 +10799,7 @@ function wireSecFilingRows() {
 }
 function syncGlobalQueryTargets(query) {
   const q = String(query || '').trim();
-  ['symbol', 'watchlist-query', 'chain-query', 'explorer-query', 'paper-query', 'rh-query', 'swing-scout-query'].forEach(id => {
+  ['symbol', 'watchlist-query', 'chain-query', 'explorer-query', 'paper-query', 'rh-query', 'swing-scout-query', 'provider-query'].forEach(id => {
     const el = $(id);
     if (el) el.value = q;
   });
@@ -10817,6 +10818,36 @@ async function globalLookup() {
   $('global-status').textContent = `Opening research for ${q}...`;
   setView('research');
   await lookup();
+}
+async function globalReviewWorkspace() {
+  const q = globalCommandQuery();
+  if (!q) {
+    $('global-status').textContent = 'Type a ticker, company, or option idea first.';
+    return;
+  }
+  $('global-status').textContent = `Building review workspace for ${q}...`;
+  setView('research');
+  applyChainPreset('swing');
+  if ($('provider-chain')) $('provider-chain').checked = canScanOptionChainSymbol(q);
+  if ($('chain-status-text')) {
+    $('chain-status-text').textContent = canScanOptionChainSymbol(q)
+      ? `Ready for a 3m+ option-chain scan on ${q}.`
+      : `${q} does not look like an equity/ETF option-chain symbol.`;
+  }
+  const tasks = [
+    ['research', lookup()],
+    ['provider trust', loadProviderStatus()],
+    ['paper preview', loadPaperCandidates(false)],
+    ['opportunity explorer', loadExplorer()],
+  ];
+  const results = await Promise.allSettled(tasks.map(([, task]) => task));
+  const failed = results
+    .map((result, idx) => result.status === 'rejected' ? tasks[idx][0] : '')
+    .filter(Boolean);
+  $('global-status').textContent = failed.length
+    ? `Review workspace loaded for ${q}; ${failed.join(', ')} needs a retry. Chain scan is staged, not auto-run.`
+    : `Review workspace loaded for ${q}. Research, provider trust, paper preview, and explorer are ready; chain scan is staged.`;
+  scrollToId('lookup-results');
 }
 async function globalRunScan() {
   const q = globalCommandQuery();
@@ -11752,6 +11783,7 @@ $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
 $('global-lookup').addEventListener('click', globalLookup);
+$('global-workspace').addEventListener('click', globalReviewWorkspace);
 $('global-run').addEventListener('click', globalRunScan);
 $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);

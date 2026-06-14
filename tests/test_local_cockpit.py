@@ -62,9 +62,14 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Quick research command" in html
     assert "global-query" in html
     assert "globalLookup" in html
+    assert "Review workspace" in html
+    assert "global-workspace" in html
+    assert "globalReviewWorkspace" in html
     assert "globalRunScan" in html
     assert "globalScanChain" in html
     assert "globalSaveWatchlist" in html
+    assert "provider-query" in html
+    assert "chain scan is staged" in html
     assert "global-suggestions" in html
     assert "Cockpit sections" in html
     assert 'data-view="overview"' in html
