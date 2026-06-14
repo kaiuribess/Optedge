@@ -33,7 +33,11 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
 import data_provider
 from engines.fred_public import fred_csv_history
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
-from scripts.export_external_paper_track import build_external_orders, write_outputs as write_paper_outputs
+from scripts.export_external_paper_track import (
+    _load_option_chain_shortlist,
+    build_external_orders,
+    write_outputs as write_paper_outputs,
+)
 from scripts.export_robinhood_agentic_queue import (
     build_robinhood_queue, write_outputs as write_robinhood_queue_outputs,
 )
@@ -2941,6 +2945,8 @@ def _is_actionable(row: pd.Series) -> bool:
         return False
     asset = str(row.get("asset") or "").lower()
     if asset == "option":
+        if str(row.get("swing_fit_label") or "").strip().lower() == "avoid":
+            return False
         return _float_value(row.get("suggested_contracts")) > 0
     if asset == "futures":
         return _float_value(row.get("suggested_contracts")) > 0
@@ -3122,6 +3128,8 @@ def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
         spread = _float_value(row.get("spread_pct"), default=math.nan)
         contracts = _float_value(row.get("suggested_contracts"), default=0.0)
         quote_quality = str(row.get("quote_quality") or row.get("chain_source") or "").lower()
+        swing_label = str(row.get("swing_fit_label") or "").strip().lower()
+        swing_score = _float_value(row.get("swing_fit_score"), default=math.nan)
         if not math.isfinite(dte) or dte < MIN_SWING_OPTION_DTE:
             score -= 45
             flags.append("below 90 DTE")
@@ -3138,6 +3146,16 @@ def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
         if contracts <= 0:
             score -= 40
             flags.append("no contract size")
+        if swing_label == "avoid":
+            score -= 45
+            flags.append("avoid swing fit")
+        elif swing_label == "speculative_swing":
+            score -= 14
+            flags.append("speculative swing fit")
+        elif swing_label == "clean_swing" and math.isfinite(swing_score) and swing_score >= 85:
+            score += 6
+        elif swing_label == "reviewable_swing":
+            score += 2
         if quote_quality in {"", "unknown"}:
             score -= 8
             flags.append("unknown quote source")
@@ -3172,6 +3190,7 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
     symbol = _setup_symbol(row, asset, spec)
     score = _opportunity_score(row)
     readiness = _setup_readiness(row, asset)
+    row_source = str(row.get("_source_file") or source_file or "").strip() or None
     record = {
         "asset": asset,
         "ticker_or_symbol": symbol,
@@ -3192,12 +3211,24 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "dte": _clean_value(row.get("dte")),
         "expiry": _clean_value(row.get("expiry")),
         "quality": _setup_quality(row, asset),
-        "source_file": source_file,
+        "source_file": row_source,
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
         "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
         "reason_selected": _setup_reason(row, asset),
         "_sort_score": score,
     }
+    if asset == "option":
+        for key in (
+            "contract",
+            "swing_fit_score",
+            "swing_fit_label",
+            "swing_fit_reasons",
+            "swing_fit_warnings",
+            "breakeven_move_label",
+            "liquidity_label",
+        ):
+            if key in row:
+                record[key] = _clean_value(row.get(key))
     record.update(readiness)
     return record
 
@@ -3220,6 +3251,13 @@ def build_best_setups(
         source_file = path.name if path else None
         sources[asset_name] = source_file
         df = _read_parquet(path)
+        chain_shortlist_rows = 0
+        if asset_name == "option":
+            chain_df = _load_option_chain_shortlist(data_dir)
+            if not chain_df.empty:
+                chain_shortlist_rows = int(len(chain_df))
+                sources["option_chain_shortlist"] = str(chain_df["_source_file"].iloc[0]) if "_source_file" in chain_df.columns else "option_chain_shortlist"
+                df = pd.concat([df, chain_df], ignore_index=True, sort=False) if not df.empty else chain_df
         if df.empty:
             by_asset[asset_name] = []
             summaries.append({
@@ -3228,6 +3266,7 @@ def build_best_setups(
                 "rows": 0,
                 "actionable_rows": 0,
                 "selected": 0,
+                "chain_shortlist_rows": chain_shortlist_rows,
                 "status": "missing",
             })
             continue
@@ -3260,6 +3299,7 @@ def build_best_setups(
             "rows": int(len(out)),
             "actionable_rows": int(len(actionable)),
             "selected": int(len(asset_records)),
+            "chain_shortlist_rows": chain_shortlist_rows,
             "status": "actionable" if len(actionable) else "review_only",
             "snapshot_freshness": _clean_value(out["snapshot_freshness"].iloc[0]) if "snapshot_freshness" in out.columns else None,
             "snapshot_age_min": _clean_value(out["snapshot_age_min"].iloc[0]) if "snapshot_age_min" in out.columns else None,
@@ -3277,6 +3317,7 @@ def build_best_setups(
         "notes": [
             "Best setups read the latest local top_* snapshots and apply Optedge sizing/status filters.",
             "Options include chain-source and spread quality when available.",
+            "Saved 3m+ chain shortlist rows are included as option review candidates when present.",
             "This is a research shortlist only; no orders are placed.",
         ],
     }
@@ -4882,6 +4923,7 @@ def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_
         spread = _float_value(row.get("spread_pct"), default=math.nan)
         max_spread = _float_value(playbook.get("option_max_spread_pct"), default=0.20)
         contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        swing_label = str(row.get("swing_fit_label") or "").strip().lower()
         if not math.isfinite(dte) or dte < min_dte:
             blockers.append(f"DTE below climate floor {min_dte:g}")
         else:
@@ -4895,6 +4937,12 @@ def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_
             blockers.append("missing option spread")
         if contracts <= 0:
             blockers.append("no sized option contracts")
+        if swing_label == "avoid":
+            blockers.append("swing fit is avoid")
+        elif swing_label == "speculative_swing":
+            blockers.append("swing fit is speculative")
+        elif swing_label in {"clean_swing", "reviewable_swing"}:
+            confirmations.append(f"swing fit is {swing_label.replace('_', ' ')}")
     elif asset == "share":
         dollars = _float_value(row.get("suggested_dollars"), default=0.0)
         if dollars <= 0:
@@ -7093,8 +7141,15 @@ function bestSetupCard(row) {
   const status = row.trade_status || 'Review';
   const readiness = row.readiness_label || 'review';
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
+  const swingReasons = Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.join(', ') : (row.swing_fit_reasons || '');
+  const swingWarnings = Array.isArray(row.swing_fit_warnings) ? row.swing_fit_warnings.join(', ') : (row.swing_fit_warnings || '');
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
+  const swingRows = row.asset === 'option' && (row.swing_fit_label || row.swing_fit_score)
+    ? `<div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
+       <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>
+       <div class="row"><span>Swing warnings</span><b>${cell(swingWarnings || 'clear')}</b></div>`
     : '';
   return `<article class="setup-card">
     <header>
@@ -7110,6 +7165,7 @@ function bestSetupCard(row) {
     <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
     <div class="row"><span>Quality</span><b>${cell(row.quality)}</b></div>
+    ${swingRows}
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Status</span><b>${cell(status)}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
@@ -7121,7 +7177,7 @@ function bestSetupsHtml(data) {
   const summaryTiles = summaries.map(row => `<div class="brief-tile">
     <span>${cell(row.asset)}</span>
     <strong>${cell(row.actionable_rows || 0)} / ${cell(row.rows || 0)}</strong>
-    <small class="muted">${cell(row.status || '-')} ${row.snapshot_freshness ? ' | ' + cell(row.snapshot_freshness) : ''}</small>
+    <small class="muted">${cell(row.status || '-')} ${row.chain_shortlist_rows ? ' | chain ' + cell(row.chain_shortlist_rows) : ''} ${row.snapshot_freshness ? ' | ' + cell(row.snapshot_freshness) : ''}</small>
   </div>`).join('');
   const rows = data.rows || [];
   const cards = rows.length
@@ -7141,8 +7197,13 @@ function climateGatedCard(row) {
   const symbol = row.ticker_or_symbol || '';
   const gate = row.climate_gate_status || 'hold';
   const reasons = Array.isArray(row.climate_gate_reasons) ? row.climate_gate_reasons.join(', ') : (row.climate_gate_reasons || '');
+  const swingReasons = Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.join(', ') : (row.swing_fit_reasons || '');
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
+  const swingRows = row.asset === 'option' && (row.swing_fit_label || row.swing_fit_score)
+    ? `<div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
+       <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>`
     : '';
   return `<article class="setup-card">
     <header>
@@ -7157,6 +7218,7 @@ function climateGatedCard(row) {
     <div class="row"><span>Entry</span><b>${cell(row.entry_price)}</b></div>
     <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
+    ${swingRows}
     <div class="row"><span>Gate reason</span><b>${cell(reasons || 'passes climate gates')}</b></div>
     <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
     ${chainBtn}
@@ -7193,6 +7255,8 @@ function climateGatedSetupsHtml(data) {
         gate_score: row.climate_gate_score,
         readiness: row.readiness_score,
         reasons: Array.isArray(row.climate_gate_reasons) ? row.climate_gate_reasons.join(', ') : row.climate_gate_reasons,
+        swing_fit: row.swing_fit_label,
+        swing_score: row.swing_fit_score,
         status: row.trade_status,
         source_file: row.source_file
       })), true)

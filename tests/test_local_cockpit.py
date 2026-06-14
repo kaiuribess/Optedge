@@ -1003,6 +1003,57 @@ def test_best_setups_marks_clean_long_dated_option_ready():
         assert row["risk_flags"] == []
 
 
+def test_best_setups_include_saved_chain_shortlist_contracts():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "strike": 220.0,
+                "dte": 216,
+                "mid": 1.20,
+                "premium_dollars": 120.0,
+                "stop_price_reference": 0.70,
+                "target_price_reference": 2.30,
+                "spread_pct": 0.04,
+                "openInterest": 1200,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "readiness_score": 91,
+                "contract_quality_score": 94,
+                "swing_fit_score": 93,
+                "swing_fit_label": "clean_swing",
+                "swing_fit_reasons": ["long swing runway", "tight spread"],
+                "swing_fit_warnings": ["verify delayed quote"],
+                "breakeven_move_label": "moderate",
+                "liquidity_label": "deep",
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+            }],
+        }), encoding="utf-8")
+
+        report = build_best_setups(data_dir, per_asset=2, limit=2)
+
+    assert report["count"] == 1
+    row = report["rows"][0]
+    assert row["ticker_or_symbol"] == "AAPL"
+    assert row["source_file"] == "option_chain_shortlist.json"
+    assert row["swing_fit_label"] == "clean_swing"
+    assert row["swing_fit_score"] == 93
+    assert "long swing runway" in row["swing_fit_reasons"]
+    assert row["liquidity_label"] == "deep"
+    assert row["quality"] == "spread 4.0% | cboe"
+    assert report["asset_summaries"][0]["chain_shortlist_rows"] == 1
+    assert "option_chain_shortlist" in report["sources"]
+    assert any("Saved 3m+ chain shortlist" in note for note in report["notes"])
+
+
 def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
     old_history = cockpit_module.data_provider.get_history
 
@@ -2601,6 +2652,7 @@ if __name__ == "__main__":
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
     test_best_setups_builds_decision_shortlist_from_latest_snapshots()
     test_best_setups_marks_clean_long_dated_option_ready()
+    test_best_setups_include_saved_chain_shortlist_contracts()
     test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
@@ -2626,4 +2678,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("41/41 local cockpit tests passed")
+    print("42/42 local cockpit tests passed")
