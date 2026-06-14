@@ -4202,6 +4202,151 @@ def build_positions(
     }
 
 
+def _exit_review_symbol(row: dict[str, Any]) -> str:
+    return str(row.get("ticker") or row.get("symbol") or row.get("ticker_or_symbol") or "-").upper()
+
+
+def _read_exit_review_rows(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
+    path = Path(data_dir) / "exit_reviews.jsonl"
+    if not path.exists() or not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except Exception:
+        return []
+    for line in lines:
+        clean = line.strip()
+        if not clean:
+            continue
+        try:
+            row = json.loads(clean)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def build_exit_review_summary(
+    data_dir: Path = DATA_DIR,
+    asset: str = "all",
+    query: str = "",
+    limit: int = 80,
+) -> dict[str, Any]:
+    """Summarize dynamic exit-review decisions logged by the lifecycle trackers."""
+    asset_norm = str(asset or "all").strip().lower()
+    if asset_norm not in {"all", "option", "share", "futures"}:
+        asset_norm = "all"
+    query_norm = str(query or "").strip().upper()
+    limit = max(1, min(int(limit or 80), 500))
+    raw_rows = _read_exit_review_rows(data_dir)
+    rows: list[dict[str, Any]] = []
+
+    for raw in raw_rows:
+        row_asset = str(raw.get("asset") or "unknown").strip().lower()
+        symbol = _exit_review_symbol(raw)
+        if asset_norm != "all" and row_asset != asset_norm:
+            continue
+        position_id = str(raw.get("position_id") or "")
+        if query_norm and query_norm not in symbol and query_norm not in position_id.upper():
+            continue
+        reasons = raw.get("reasons") if isinstance(raw.get("reasons"), list) else []
+        row = {
+            "timestamp": _clean_value(raw.get("timestamp")),
+            "asset": row_asset,
+            "ticker_or_symbol": symbol,
+            "position_id": _clean_value(raw.get("position_id")),
+            "action": _clean_value(raw.get("action") or "unknown"),
+            "exit_pressure": _clean_value(raw.get("exit_pressure")),
+            "current_pnl_pct": _clean_value(raw.get("current_pnl_pct")),
+            "current_pnl_dollars": _clean_value(raw.get("current_pnl_dollars")),
+            "current_price": _clean_value(raw.get("current_price")),
+            "old_stop": _clean_value(raw.get("old_stop")),
+            "new_stop": _clean_value(raw.get("new_stop")),
+            "old_target": _clean_value(raw.get("old_target")),
+            "new_target": _clean_value(raw.get("new_target")),
+            "entry_confidence": _clean_value(raw.get("entry_confidence")),
+            "current_confidence": _clean_value(raw.get("current_confidence")),
+            "used_learned_policy": bool(raw.get("used_learned_policy", False)),
+            "policy_version": _clean_value(raw.get("policy_version")),
+            "reasons": [_clean_value(reason) for reason in reasons[:6]],
+            "reasons_text": "; ".join(str(reason) for reason in reasons[:4] if reason) or "-",
+        }
+        rows.append(row)
+
+    rows = sorted(rows, key=lambda row: str(row.get("timestamp") or ""), reverse=True)
+    action_counts: dict[str, int] = {}
+    asset_counts: dict[str, int] = {}
+    symbol_rollup: dict[str, dict[str, Any]] = {}
+    pressures: list[float] = []
+    learned_count = 0
+    high_pressure_count = 0
+    for row in rows:
+        action = str(row.get("action") or "unknown")
+        row_asset = str(row.get("asset") or "unknown")
+        symbol = str(row.get("ticker_or_symbol") or "-").upper()
+        pressure = _float_value(row.get("exit_pressure"), default=math.nan)
+        action_counts[action] = action_counts.get(action, 0) + 1
+        asset_counts[row_asset] = asset_counts.get(row_asset, 0) + 1
+        if row.get("used_learned_policy"):
+            learned_count += 1
+        if math.isfinite(pressure):
+            pressures.append(pressure)
+            if pressure >= 80:
+                high_pressure_count += 1
+        sym = symbol_rollup.setdefault(symbol, {
+            "ticker_or_symbol": symbol,
+            "asset": row_asset,
+            "review_count": 0,
+            "latest_action": action,
+            "latest_timestamp": row.get("timestamp"),
+            "max_exit_pressure": None,
+            "latest_reasons": row.get("reasons_text"),
+        })
+        sym["review_count"] += 1
+        current_max = _float_value(sym.get("max_exit_pressure"), default=math.nan)
+        if math.isfinite(pressure) and (not math.isfinite(current_max) or pressure > current_max):
+            sym["max_exit_pressure"] = pressure
+        if str(row.get("timestamp") or "") >= str(sym.get("latest_timestamp") or ""):
+            sym["latest_action"] = action
+            sym["latest_timestamp"] = row.get("timestamp")
+            sym["latest_reasons"] = row.get("reasons_text")
+            sym["asset"] = row_asset
+
+    by_symbol = sorted(
+        symbol_rollup.values(),
+        key=lambda row: (
+            _float_value(row.get("max_exit_pressure"), default=0.0),
+            int(row.get("review_count") or 0),
+            str(row.get("latest_timestamp") or ""),
+        ),
+        reverse=True,
+    )[:15]
+    avg_pressure = (sum(pressures) / len(pressures)) if pressures else None
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "asset": asset_norm,
+        "query": query,
+        "source": "exit_reviews.jsonl" if (Path(data_dir) / "exit_reviews.jsonl").exists() else None,
+        "count": len(rows[:limit]),
+        "total_before_limit": len(rows),
+        "action_counts": action_counts,
+        "asset_counts": asset_counts,
+        "high_pressure_count": high_pressure_count,
+        "learned_policy_count": learned_count,
+        "avg_exit_pressure": _clean_value(round(avg_pressure, 2) if avg_pressure is not None else None),
+        "latest_timestamp": rows[0].get("timestamp") if rows else None,
+        "by_symbol": [{k: _clean_value(v) for k, v in row.items()} for row in by_symbol],
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]],
+        "notes": [
+            "Exit reviews are local lifecycle decisions logged after every scan.",
+            "Hard stops, targets, and expirations still take priority over dynamic review actions.",
+            "This panel is decision support only and does not place trades.",
+        ],
+    }
+
+
 def _history_close_series(df: pd.DataFrame) -> pd.Series:
     if df is None or df.empty or "Close" not in df.columns:
         return pd.Series(dtype="float64")
@@ -8496,6 +8641,12 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="section" style="margin-top:12px"><div id="health-results"></div></div>
   </section>
   <section class="panel" data-view="positions">
+    <h2 style="margin:0 0 8px;font-size:18px">Exit review cockpit</h2>
+    <div class="muted">Recent hold, watch, tighten, close, stop, target, and expiry decisions from every scan.</div>
+    <div class="status" id="exit-review-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="exit-review-results"></div></div>
+  </section>
+  <section class="panel" data-view="positions">
     <h2 style="margin:0 0 8px;font-size:18px">Open position monitor</h2>
     <div class="muted">Review current lifecycle positions across options, shares, and futures. Click a row to look it up.</div>
     <div class="scan-controls">
@@ -9494,6 +9645,26 @@ function riskSummaryHtml(risk) {
       <div class="brief-list"><h4>Highest exit pressure</h4>${table(risk.highest_exit_pressure || [], true)}</div>
     </div>`;
 }
+function exitReviewSummaryHtml(data) {
+  if (!data) return '<div class="empty">No exit review summary available.</div>';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Reviews</span><strong>${cell(data.total_before_limit || data.count || 0)}</strong></div>
+    <div class="brief-tile"><span>High pressure</span><strong>${cell(data.high_pressure_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Avg pressure</span><strong>${cell(data.avg_exit_pressure ?? '-')}</strong></div>
+    <div class="brief-tile"><span>Learned policy</span><strong>${cell(data.learned_policy_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Actions</span><strong>${cell(countMapText(data.action_counts || {}))}</strong></div>
+    <div class="brief-tile"><span>Assets</span><strong>${cell(countMapText(data.asset_counts || {}))}</strong></div>
+  </div>`;
+  const empty = !data.rows || data.rows.length === 0;
+  if (empty) {
+    return `${tiles}<div class="empty">No exit-review rows matched this filter yet. Run a scan after lifecycle tracking opens positions.</div>`;
+  }
+  return `${tiles}
+    <div class="brief-cols">
+      <div class="brief-list"><h4>Highest pressure by symbol</h4>${table(data.by_symbol || [], true)}</div>
+      <div class="brief-list"><h4>Latest exit reviews</h4>${table(data.rows || [], true)}</div>
+    </div>`;
+}
 function performanceSummaryHtml(perf) {
   if (!perf) return '<div class="empty">No performance summary available.</div>';
   const ram = perf.ram_cache || {};
@@ -10274,6 +10445,19 @@ async function loadRiskSummary() {
   $('risk-results').innerHTML = riskSummaryHtml(data);
   wireClickableRows($('risk-results'));
 }
+async function loadExitReviews() {
+  $('exit-review-status-text').textContent = 'Loading exit reviews...';
+  const params = new URLSearchParams({
+    asset: $('positions-asset') ? $('positions-asset').value : 'all',
+    query: $('positions-query') ? $('positions-query').value.trim() : '',
+    limit: '80'
+  });
+  const res = await fetch('/api/exit-reviews?' + params.toString());
+  const data = await res.json();
+  $('exit-review-status-text').textContent = `${data.total_before_limit || 0} exit review row(s); latest ${data.latest_timestamp || 'none'}.`;
+  $('exit-review-results').innerHTML = exitReviewSummaryHtml(data);
+  wireClickableRows($('exit-review-results'));
+}
 async function loadPerformanceSummary() {
   $('performance-status-text').textContent = 'Loading performance telemetry...';
   const res = await fetch('/api/performance-summary');
@@ -10891,6 +11075,9 @@ async function loadPositions() {
   $('positions-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('positions-results'));
 }
+async function reloadPositionWorkspace() {
+  await Promise.all([loadExitReviews(), loadPositions()]);
+}
 async function lookup() {
   const symbol = $('symbol').value.trim();
   if (!symbol) return;
@@ -10938,12 +11125,12 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
-$('positions-load').addEventListener('click', loadPositions);
-$('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
+$('positions-load').addEventListener('click', reloadPositionWorkspace);
+$('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') reloadPositionWorkspace(); });
 $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 $('swing-scout-load').addEventListener('click', loadSwingScout);
@@ -10999,6 +11186,7 @@ loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.er
 loadCommandCenter().catch(err => { $('command-center-status-text').textContent = 'Command center failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
+loadExitReviews().catch(err => { $('exit-review-status-text').textContent = 'Exit review cockpit failed'; console.error(err); });
 loadTodayReview().catch(err => { $('today-review-status-text').textContent = 'Today review failed'; console.error(err); });
 loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
@@ -11217,6 +11405,18 @@ class CockpitHandler(BaseHTTPRequestHandler):
             limit = _int_param(params.get("limit", ["250"])[0], 250, 1, 500)
             self._send_json(build_positions(
                 self.data_dir, asset=asset, query=query, status=status, limit=limit,
+            ))
+            return
+        if parsed.path == "/api/exit-reviews":
+            params = parse_qs(parsed.query)
+            asset = params.get("asset", ["all"])[0].strip().lower()
+            if asset not in {"all", "option", "share", "futures"}:
+                self._send_json({"error": "invalid asset"}, status=400)
+                return
+            query = params.get("query", [""])[0]
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 500)
+            self._send_json(build_exit_review_summary(
+                self.data_dir, asset=asset, query=query, limit=limit,
             ))
             return
         if parsed.path == "/api/paper-candidates":

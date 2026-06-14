@@ -18,7 +18,8 @@ from scripts.local_cockpit import (
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_macro_stress_pulse, build_options_sentiment,
-    build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
+    build_exit_review_summary, build_free_data_sources, build_positions, build_provider_status, build_risk_summary,
+    build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_swing_scout, build_symbol_suggestions,
     build_swing_packet, build_watchlist_sec_filings,
     build_today_review,
@@ -251,6 +252,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Review now" in html
     assert "Review score" in html
     assert "Open position monitor" in html
+    assert "Exit review cockpit" in html
+    assert "/api/exit-reviews" in html
+    assert "exitReviewSummaryHtml" in html
     assert "/api/positions" in html
     assert "briefHtml" in html
     assert "Research brief" in html
@@ -1873,6 +1877,71 @@ def test_position_monitor_reads_dedupes_and_filters_open_state():
         assert attention["rows"][0]["attention"] is True
 
 
+def test_exit_review_summary_reads_jsonl_and_filters_actions():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        rows = [
+            {
+                "timestamp": "2026-06-10T15:00:00+00:00",
+                "asset": "option",
+                "position_id": "opt-aapl",
+                "ticker": "AAPL",
+                "action": "tighten_stop",
+                "exit_pressure": 72,
+                "old_stop": 1.0,
+                "new_stop": 1.4,
+                "current_price": 2.1,
+                "current_pnl_pct": 0.12,
+                "reasons": ["confidence drop", "spread widening"],
+                "used_learned_policy": False,
+            },
+            {
+                "timestamp": "2026-06-10T15:02:00+00:00",
+                "asset": "share",
+                "position_id": "shr-nvda",
+                "ticker": "NVDA",
+                "action": "close_early",
+                "exit_pressure": 86,
+                "current_price": 118.0,
+                "current_pnl_pct": -0.08,
+                "reasons": ["negative news flip"],
+                "used_learned_policy": True,
+                "policy_version": "exit_policy_2",
+            },
+            {
+                "timestamp": "2026-06-10T15:03:00+00:00",
+                "asset": "futures",
+                "position_id": "fut-cl",
+                "symbol": "CL=F",
+                "action": "hold",
+                "exit_pressure": 25,
+                "current_pnl_dollars": 75.0,
+                "reasons": ["macro still supportive"],
+            },
+        ]
+        text = "\n".join(json.dumps(row) for row in rows) + "\nnot-json\n"
+        (data_dir / "exit_reviews.jsonl").write_text(text, encoding="utf-8")
+
+        report = build_exit_review_summary(data_dir)
+        assert report["total_before_limit"] == 3
+        assert report["count"] == 3
+        assert report["action_counts"] == {"hold": 1, "close_early": 1, "tighten_stop": 1}
+        assert report["asset_counts"] == {"futures": 1, "share": 1, "option": 1}
+        assert report["high_pressure_count"] == 1
+        assert report["learned_policy_count"] == 1
+        assert report["avg_exit_pressure"] == 61.0
+        assert report["rows"][0]["ticker_or_symbol"] == "CL=F"
+        assert report["rows"][1]["ticker_or_symbol"] == "NVDA"
+        assert report["rows"][1]["policy_version"] == "exit_policy_2"
+        assert report["rows"][1]["reasons_text"] == "negative news flip"
+        assert report["by_symbol"][0]["ticker_or_symbol"] == "NVDA"
+        assert report["by_symbol"][0]["max_exit_pressure"] == 86
+
+        option_only = build_exit_review_summary(data_dir, asset="option", query="AAPL")
+        assert option_only["count"] == 1
+        assert option_only["rows"][0]["action"] == "tighten_stop"
+
+
 def test_risk_summary_surfaces_concentration_and_exit_pressure():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -3401,6 +3470,7 @@ if __name__ == "__main__":
     test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options()
     test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
+    test_exit_review_summary_reads_jsonl_and_filters_actions()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
     test_options_sentiment_uses_cboe_put_call_snapshots()
@@ -3425,4 +3495,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("47/47 local cockpit tests passed")
+    print("48/48 local cockpit tests passed")
