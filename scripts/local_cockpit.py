@@ -3325,6 +3325,274 @@ def build_best_setups(
     }
 
 
+def _market_cap_profile(row: pd.Series) -> dict[str, Any]:
+    cap = _float_value(row.get("market_cap") or row.get("market_cap_f"), default=math.nan)
+    if not math.isfinite(cap) or cap <= 0:
+        return {"market_cap": None, "bucket": "unknown", "bonus": 0.0, "warning": "missing market cap"}
+    if cap < 300_000_000:
+        return {"market_cap": cap, "bucket": "micro", "bonus": 14.0, "warning": "micro-cap execution risk"}
+    if cap < 2_000_000_000:
+        return {"market_cap": cap, "bucket": "small", "bonus": 18.0, "warning": None}
+    if cap < 10_000_000_000:
+        return {"market_cap": cap, "bucket": "small-mid", "bonus": 14.0, "warning": None}
+    if cap < 25_000_000_000:
+        return {"market_cap": cap, "bucket": "mid", "bonus": 7.0, "warning": None}
+    return {"market_cap": cap, "bucket": "large", "bonus": -10.0, "warning": "large-cap; less small-cap asymmetry"}
+
+
+def _positive_component(value: Any, scale: float, cap: float) -> float:
+    val = _float_value(value, default=0.0)
+    return _clamp(val * scale, 0.0, cap)
+
+
+def _swing_scout_components(row: pd.Series, asset: str) -> dict[str, Any]:
+    cap_profile = _market_cap_profile(row)
+    confidence = _float_value(row.get("confidence"), default=math.nan)
+    readiness = _setup_readiness(row, asset)
+    readiness_score = _float_value(readiness.get("readiness_score"), default=0.0)
+    squeeze = (
+        _positive_component(row.get("short_int_score"), 6.0, 12.0)
+        + _positive_component(row.get("short_pct_of_float"), 55.0, 12.0)
+        + _positive_component(_float_value(row.get("short_vol_ratio"), default=0.0) - 0.45, 18.0, 7.0)
+        + _positive_component(row.get("dark_pool_score"), 5.0, 7.0)
+        + _positive_component(row.get("uoa_score"), 5.0, 8.0)
+    )
+    attention = (
+        _positive_component(row.get("social_score"), 8.0, 8.0)
+        + _positive_component(row.get("gtrends_score"), 7.0, 8.0)
+        + _positive_component(row.get("twitter_score"), 7.0, 8.0)
+        + _positive_component(row.get("r_options_score"), 8.0, 8.0)
+        + _positive_component(row.get("sentiment_delta"), 8.0, 6.0)
+        + _positive_component(row.get("mentions"), 0.08, 5.0)
+    )
+    momentum = (
+        _positive_component(row.get("tech_score"), 8.0, 8.0)
+        + _positive_component(row.get("sector_rs_score"), 45.0, 9.0)
+        + _positive_component(row.get("sector_flow_score"), 10.0, 6.0)
+        + _positive_component(row.get("ticker_ret_20d") or row.get("ret_20d"), 45.0, 11.0)
+        + _positive_component(row.get("rank_score"), 3.0, 10.0)
+        + _positive_component(row.get("futures_score"), 18.0, 18.0)
+    )
+    value = (
+        _positive_component(row.get("value_score"), 5.0, 12.0)
+        + _positive_component(row.get("fcf_yield"), 40.0, 6.0)
+        + _positive_component(row.get("rev_growth"), 18.0, 6.0)
+        + _positive_component(row.get("fund_score"), 3.0, 6.0)
+    )
+    execution = 0.0
+    if asset == "option":
+        dte = _float_value(row.get("dte"), default=math.nan)
+        spread = _float_value(row.get("spread_pct"), default=math.nan)
+        contracts = _float_value(row.get("suggested_contracts"), default=0.0)
+        if math.isfinite(dte) and dte >= MIN_SWING_OPTION_DTE:
+            execution += 8.0
+        if math.isfinite(spread):
+            if spread <= 0.12:
+                execution += 8.0
+            elif spread <= 0.20:
+                execution += 4.0
+            elif spread > 0.30:
+                execution -= 10.0
+        if contracts > 0:
+            execution += 7.0
+    elif asset == "share":
+        if _float_value(row.get("suggested_dollars"), default=0.0) > 0:
+            execution += 7.0
+    elif asset == "futures":
+        if _float_value(row.get("suggested_contracts"), default=0.0) > 0:
+            execution += 8.0
+        if bool(row.get("using_micro")):
+            execution += 4.0
+        risk = _float_value(row.get("risk_dollars"), default=math.nan)
+        reward = _float_value(row.get("reward_dollars"), default=math.nan)
+        if math.isfinite(risk) and math.isfinite(reward) and risk > 0:
+            execution += _clamp((reward / risk - 1.0) * 5.0, 0.0, 8.0)
+    elif asset == "value":
+        if str(row.get("value_bucket") or "").lower() in {"deep value", "value"}:
+            execution += 5.0
+
+    quality = _clamp((readiness_score - 55.0) * 0.35, 0.0, 16.0)
+    confidence_component = _clamp((confidence - 50.0) * 0.30, 0.0, 15.0) if math.isfinite(confidence) else 0.0
+    return {
+        "market_cap_profile": cap_profile,
+        "squeeze": round(squeeze, 2),
+        "attention": round(attention, 2),
+        "momentum": round(momentum, 2),
+        "value": round(value, 2),
+        "execution": round(execution, 2),
+        "quality": round(quality, 2),
+        "confidence": round(confidence_component, 2),
+        "readiness": readiness,
+    }
+
+
+def _swing_scout_lane(row: pd.Series, asset: str, components: dict[str, Any]) -> str:
+    if asset == "futures":
+        return "futures_macro_swing"
+    squeeze = _float_value(components.get("squeeze"))
+    attention = _float_value(components.get("attention"))
+    value = _float_value(components.get("value"))
+    if asset == "option":
+        if squeeze >= 14 or attention >= 12:
+            return "small_cap_options_momentum"
+        return "long_dated_option_swing"
+    if asset == "value" or value >= 10:
+        return "small_cap_value_dislocation"
+    if squeeze >= 14:
+        return "small_cap_squeeze_watch"
+    if attention >= 12:
+        return "retail_attention_swing"
+    return "small_cap_share_swing"
+
+
+def _swing_scout_reasons(row: pd.Series, asset: str, components: dict[str, Any]) -> tuple[list[str], list[str]]:
+    reasons: list[str] = []
+    warnings: list[str] = []
+    cap = components["market_cap_profile"]
+    if asset != "futures":
+        reasons.append(f"{cap['bucket']} cap" if cap.get("bucket") != "unknown" else "market cap unknown")
+        if cap.get("warning"):
+            warnings.append(str(cap["warning"]))
+    if _float_value(components.get("squeeze")) >= 12:
+        reasons.append("short/squeeze pressure")
+    if _float_value(components.get("attention")) >= 10:
+        reasons.append("retail/attention lift")
+    if _float_value(components.get("momentum")) >= 12:
+        reasons.append("momentum confirmation")
+    if _float_value(components.get("value")) >= 10:
+        reasons.append("value/fundamental dislocation")
+    if asset == "futures":
+        reasons.append("futures/macro momentum")
+    readiness = components.get("readiness") if isinstance(components.get("readiness"), dict) else {}
+    warnings.extend(str(flag) for flag in (readiness.get("risk_flags") or [])[:4])
+    if str(row.get("snapshot_freshness") or "").lower() == "stale":
+        warnings.append("stale snapshot")
+    if asset == "option":
+        dte = _float_value(row.get("dte"), default=math.nan)
+        if math.isfinite(dte) and dte < MIN_SWING_OPTION_DTE:
+            warnings.append("below 90 DTE")
+        spread = _float_value(row.get("spread_pct"), default=math.nan)
+        if math.isfinite(spread) and spread > 0.20:
+            warnings.append("wide option spread")
+    return list(dict.fromkeys(reasons))[:6], list(dict.fromkeys(warnings))[:6]
+
+
+def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
+    components = _swing_scout_components(row, asset)
+    cap_profile = components["market_cap_profile"]
+    base = 34.0 if asset != "futures" else 42.0
+    if asset != "futures":
+        base += _float_value(cap_profile.get("bonus"))
+    raw_score = (
+        base
+        + _float_value(components.get("squeeze"))
+        + _float_value(components.get("attention"))
+        + _float_value(components.get("momentum"))
+        + _float_value(components.get("value"))
+        + _float_value(components.get("execution"))
+        + _float_value(components.get("quality"))
+        + _float_value(components.get("confidence"))
+    )
+    reasons, warnings = _swing_scout_reasons(row, asset, components)
+    readiness = components.get("readiness") if isinstance(components.get("readiness"), dict) else {}
+    symbol = _setup_symbol(row, asset, OPPORTUNITY_SPECS[asset])
+    setup = _setup_label(row, asset, symbol)
+    return {
+        "asset": asset,
+        "ticker_or_symbol": symbol,
+        "setup": setup,
+        "lane": _swing_scout_lane(row, asset, components),
+        "swing_scout_score": int(round(_clamp(raw_score, 0.0, 100.0))),
+        "market_cap_bucket": cap_profile.get("bucket"),
+        "market_cap": _clean_value(cap_profile.get("market_cap")),
+        "squeeze_score": components.get("squeeze"),
+        "attention_score": components.get("attention"),
+        "momentum_score": components.get("momentum"),
+        "value_score_component": components.get("value"),
+        "execution_score": components.get("execution"),
+        "readiness_score": readiness.get("readiness_score"),
+        "readiness_label": readiness.get("readiness_label"),
+        "confidence": _clean_value(row.get("confidence")),
+        "rank_score": _clean_value(row.get("rank_score")),
+        "trade_status": _clean_value(row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")),
+        "entry_price": _setup_entry_price(row, asset),
+        "stop_price": _clean_value(row.get("stop_price")),
+        "target_price": _clean_value(row.get("target_price")),
+        "size": _setup_size(row, asset),
+        "dte": _clean_value(row.get("dte")),
+        "expiry": _clean_value(row.get("expiry")),
+        "spread_pct": _clean_value(row.get("spread_pct")),
+        "short_pct_of_float": _clean_value(row.get("short_pct_of_float")),
+        "short_vol_ratio": _clean_value(row.get("short_vol_ratio")),
+        "social_score": _clean_value(row.get("social_score")),
+        "gtrends_score": _clean_value(row.get("gtrends_score")),
+        "tech_score": _clean_value(row.get("tech_score")),
+        "futures_score": _clean_value(row.get("futures_score")),
+        "ret_20d": _clean_value(row.get("ret_20d") or row.get("ticker_ret_20d")),
+        "quality": _setup_quality(row, asset),
+        "reasons": reasons,
+        "warnings": warnings,
+        "source_file": _clean_value(row.get("_source_file") or source_file),
+        "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+        "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
+    }
+
+
+def build_swing_scout(data_dir: Path = DATA_DIR, limit: int = 18) -> dict[str, Any]:
+    """Surface speculative small/mid-cap and futures swing candidates from local free-factor outputs."""
+    limit = max(1, min(int(limit or 18), 60))
+    rows: list[dict[str, Any]] = []
+    asset_counts: dict[str, int] = {}
+    source_files: dict[str, str | None] = {}
+    for asset_name in ("option", "share", "value", "futures"):
+        spec = OPPORTUNITY_SPECS[asset_name]
+        path = _latest_file(data_dir, spec["pattern"])
+        source_file = path.name if path else None
+        source_files[asset_name] = source_file
+        df = _read_parquet(path)
+        if df.empty:
+            continue
+        out = df.copy()
+        out["asset"] = asset_name
+        out["actionable"] = out.apply(_is_actionable, axis=1)
+        if asset_name == "option" and "dte" in out.columns:
+            out = out[pd.to_numeric(out["dte"], errors="coerce").fillna(0.0) >= MIN_SWING_OPTION_DTE]
+        for _, row in out.iterrows():
+            record = _swing_scout_record(row, asset_name, source_file)
+            if record["swing_scout_score"] < 45:
+                continue
+            rows.append(record)
+            asset_counts[asset_name] = asset_counts.get(asset_name, 0) + 1
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _float_value(row.get("swing_scout_score")),
+            _float_value(row.get("readiness_score")),
+            _float_value(row.get("confidence")),
+        ),
+        reverse=True,
+    )[:limit]
+    lane_counts: dict[str, int] = {}
+    for row in rows:
+        lane = str(row.get("lane") or "unknown")
+        lane_counts[lane] = lane_counts.get(lane, 0) + 1
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(rows),
+        "rows": rows,
+        "asset_counts": asset_counts,
+        "lane_counts": lane_counts,
+        "sources": source_files,
+        "min_option_dte": MIN_SWING_OPTION_DTE,
+        "notes": [
+            "Swing scout is a read-only ranking of high-upside review candidates from existing Optedge snapshots.",
+            "Equity-linked rows emphasize small/mid-cap asymmetry, short pressure, retail attention, momentum, value, and execution quality.",
+            "Futures rows use the futures/macro momentum lane because market-cap logic does not apply to futures contracts.",
+            "Options under 90 DTE are excluded from this scout; use the option-chain panel for exact contract review.",
+        ],
+    }
+
+
 def _suggestion_text(row: dict[str, Any]) -> str:
     return " ".join(str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")).lower()
 
@@ -7980,6 +8248,12 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="section" style="margin-top:12px"><div id="best-setups-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
+    <h2 style="margin:0 0 8px;font-size:18px">Small-cap + futures swing scout</h2>
+    <div class="muted">High-upside review list from free local factors: small/mid-cap asymmetry, short pressure, retail attention, momentum, value, execution quality, and futures/macro swings.</div>
+    <div class="status" id="swing-scout-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="swing-scout-results"></div></div>
+  </section>
+  <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Climate-gated setups</h2>
     <div class="muted">Best setups filtered through the current swing climate gates, including DTE, spread, readiness, sizing, and candidate-count limits.</div>
     <div class="status" id="climate-gated-status-text"></div>
@@ -8417,6 +8691,55 @@ function bestSetupsHtml(data) {
     : '';
   return `<div style="padding:12px">
     <div class="brief-grid">${summaryTiles}</div>
+    ${cards}
+    ${notes}
+    <div class="brief-list" style="margin-top:10px"><h4>Detail</h4>${table(rows, true)}</div>
+  </div>`;
+}
+function swingScoutCard(row) {
+  const symbol = row.ticker_or_symbol || '';
+  const reasons = Array.isArray(row.reasons) ? row.reasons.join(', ') : (row.reasons || '');
+  const warnings = Array.isArray(row.warnings) ? row.warnings.join(', ') : (row.warnings || '');
+  const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
+    ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
+  return `<article class="setup-card">
+    <header>
+      <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(labelText(row.lane || 'swing scout'))}</small></div>
+      <span class="pill ${escAttr(row.readiness_label || 'review')}">${cell(row.swing_scout_score)}/100</span>
+    </header>
+    <div class="row"><span>Asset</span><b>${cell(row.asset)}</b></div>
+    <div class="row"><span>Cap bucket</span><b>${cell(row.market_cap_bucket)}</b></div>
+    <div class="row"><span>Squeeze / attention</span><b>${cell(row.squeeze_score)} / ${cell(row.attention_score)}</b></div>
+    <div class="row"><span>Momentum / value</span><b>${cell(row.momentum_score)} / ${cell(row.value_score_component)}</b></div>
+    <div class="row"><span>Execution</span><b>${cell(row.execution_score)}</b></div>
+    <div class="row"><span>Readiness</span><b>${cell(row.readiness_label)} ${cell(row.readiness_score)}</b></div>
+    <div class="row"><span>Entry</span><b>${cell(row.entry_price)}</b></div>
+    <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
+    <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
+    <div class="row"><span>Why</span><b>${cell(reasons || '-')}</b></div>
+    <div class="row"><span>Warnings</span><b>${cell(warnings || 'clear')}</b></div>
+    <button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>
+    ${chainBtn}
+  </article>`;
+}
+function swingScoutHtml(data) {
+  if (!data) return '<div class="empty">No swing scout data available.</div>';
+  const rows = data.rows || [];
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Candidates</span><strong>${cell(data.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Min option DTE</span><strong>${cell(data.min_option_dte || 90)}d</strong></div>
+    <div class="brief-tile"><span>Assets</span><strong>${countMapText(data.asset_counts || {})}</strong></div>
+    <div class="brief-tile"><span>Lanes</span><strong>${countMapText(data.lane_counts || {})}</strong></div>
+  </div>`;
+  const cards = rows.length
+    ? `<div class="setup-grid">${rows.map(swingScoutCard).join('')}</div>`
+    : '<div class="empty">No high-upside scout rows cleared the local score floor. Refresh scans or loosen filters in the explorer.</div>';
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
+    : '';
+  return `<div style="padding:12px">
+    ${tiles}
     ${cards}
     ${notes}
     <div class="brief-list" style="margin-top:10px"><h4>Detail</h4>${table(rows, true)}</div>
@@ -9644,6 +9967,15 @@ async function loadBestSetups() {
   wireClickableRows($('best-setups-results'));
   wireSetupCards($('best-setups-results'));
 }
+async function loadSwingScout() {
+  $('swing-scout-status-text').textContent = 'Scouting high-upside local swing candidates...';
+  const res = await fetch('/api/swing-scout?limit=18');
+  const data = await res.json();
+  $('swing-scout-status-text').textContent = `${data.count || 0} scout candidate(s); options require ${data.min_option_dte || 90}+ DTE.`;
+  $('swing-scout-results').innerHTML = swingScoutHtml(data);
+  wireClickableRows($('swing-scout-results'));
+  wireSetupCards($('swing-scout-results'));
+}
 async function loadClimateGatedSetups() {
   $('climate-gated-status-text').textContent = 'Checking setups against swing climate gates...';
   const res = await fetch('/api/climate-gated-setups?per_asset=4&limit=12&include_held=true');
@@ -10383,7 +10715,7 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
@@ -10442,6 +10774,7 @@ loadPositions().catch(err => { $('positions-status-text').textContent = 'Positio
 loadTodayReview().catch(err => { $('today-review-status-text').textContent = 'Today review failed'; console.error(err); });
 loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
 loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
+loadSwingScout().catch(err => { $('swing-scout-status-text').textContent = 'Swing scout failed'; console.error(err); });
 loadClimateGatedSetups().catch(err => { $('climate-gated-status-text').textContent = 'Climate-gated setups failed'; console.error(err); });
 loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
 loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
@@ -10569,6 +10902,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
             per_asset = _int_param(params.get("per_asset", ["3"])[0], 3, 1, 10)
             limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
             self._send_json(build_best_setups(self.data_dir, per_asset=per_asset, limit=limit))
+            return
+        if parsed.path == "/api/swing-scout":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["18"])[0], 18, 1, 60)
+            self._send_json(build_swing_scout(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/option-chain-batch":
             params = parse_qs(parsed.query)

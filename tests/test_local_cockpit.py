@@ -18,7 +18,7 @@ from scripts.local_cockpit import (
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_macro_stress_pulse, build_options_sentiment,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
-    build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
+    build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_swing_scout, build_symbol_suggestions,
     build_swing_packet, build_watchlist_sec_filings,
     build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
@@ -157,6 +157,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert "loadBestSetups" in html
     assert "readiness_label" in html
     assert "risk_flags" in html
+    assert "Small-cap + futures swing scout" in html
+    assert "/api/swing-scout" in html
+    assert "swingScoutHtml" in html
+    assert "loadSwingScout" in html
+    assert "small/mid-cap asymmetry" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
     assert "External paper candidates" in html
@@ -1494,6 +1499,109 @@ def test_best_setups_include_saved_chain_shortlist_contracts():
     assert report["asset_summaries"][0]["chain_shortlist_rows"] == 1
     assert "option_chain_shortlist" in report["sources"]
     assert any("Saved 3m+ chain shortlist" in note for note in report["notes"])
+
+
+def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "RGTI",
+                "side": "call",
+                "strike": 25,
+                "expiry": "2026-12-18",
+                "dte": 188,
+                "mid": 2.2,
+                "confidence": 84,
+                "rank_score": 2.2,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "spread_pct": 0.08,
+                "stop_price": 1.2,
+                "target_price": 4.8,
+                "market_cap": 1_200_000_000,
+                "short_int_score": 2.1,
+                "short_pct_of_float": 0.22,
+                "short_vol_ratio": 0.63,
+                "social_score": 0.7,
+                "gtrends_score": 0.6,
+                "twitter_score": 0.5,
+                "tech_score": 0.8,
+                "sector_rs_score": 0.09,
+                "ticker_ret_20d": 0.18,
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+            },
+            {
+                "ticker": "WEEKLY",
+                "side": "call",
+                "strike": 10,
+                "expiry": "2026-07-01",
+                "dte": 14,
+                "mid": 1.0,
+                "confidence": 99,
+                "rank_score": 9.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "market_cap": 500_000_000,
+                "short_int_score": 5.0,
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame([{
+            "ticker": "SMOL",
+            "spot": 8.5,
+            "confidence": 79,
+            "rank_score": 1.6,
+            "trade_status": "Trade",
+            "suggested_dollars": 500,
+            "stop_price": 7.2,
+            "target_price": 12.0,
+            "market_cap": 850_000_000,
+            "short_int_score": 1.8,
+            "short_pct_of_float": 0.18,
+            "short_vol_ratio": 0.58,
+            "social_score": 0.5,
+            "gtrends_score": 0.4,
+            "tech_score": 0.7,
+            "sector_rs_score": 0.05,
+            "ticker_ret_20d": 0.12,
+            "ev_pct": 0.08,
+        }]).to_parquet(data_dir / "top_shares_20260603_120000.parquet")
+        pd.DataFrame([{
+            "symbol": "CL=F",
+            "name": "Crude Oil WTI",
+            "direction": "LONG",
+            "contract": "/MCL",
+            "using_micro": True,
+            "futures_score": 1.4,
+            "rank_score": 1.4,
+            "confidence": 72,
+            "trade_status": "Trade",
+            "suggested_contracts": 2,
+            "entry_price": 74.5,
+            "stop_price": 72.0,
+            "target_price": 80.0,
+            "risk_dollars": 500,
+            "reward_dollars": 1100,
+            "ret_20d": 0.16,
+            "hv20": 0.25,
+        }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+
+        report = build_swing_scout(data_dir, limit=10)
+        symbols = {row["ticker_or_symbol"] for row in report["rows"]}
+
+    assert "RGTI" in symbols
+    assert "SMOL" in symbols
+    assert "CL=F" in symbols
+    assert "WEEKLY" not in symbols
+    option = next(row for row in report["rows"] if row["ticker_or_symbol"] == "RGTI")
+    future = next(row for row in report["rows"] if row["ticker_or_symbol"] == "CL=F")
+    assert option["market_cap_bucket"] == "small"
+    assert option["swing_scout_score"] >= 80
+    assert option["dte"] >= 90
+    assert "short/squeeze pressure" in option["reasons"]
+    assert future["lane"] == "futures_macro_swing"
+    assert report["min_option_dte"] == 90
 
 
 def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
@@ -3097,6 +3205,7 @@ if __name__ == "__main__":
     test_best_setups_builds_decision_shortlist_from_latest_snapshots()
     test_best_setups_marks_clean_long_dated_option_ready()
     test_best_setups_include_saved_chain_shortlist_contracts()
+    test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options()
     test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
@@ -3122,4 +3231,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("44/44 local cockpit tests passed")
+    print("45/45 local cockpit tests passed")
