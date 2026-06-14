@@ -12,6 +12,8 @@ data/*.html
 data/*.txt
 data/*.jsonl
 data/*.png
+data/*.csv
+data/*.md
 logs/*.parquet
 telemetry/*.parquet
 archive/

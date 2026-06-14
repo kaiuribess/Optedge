@@ -89,6 +89,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "swingPacketHtml" in html
     assert "loadSwingPacket" in html
     assert "Write packet files" in html
+    assert "Write + 3m+ chain scan" in html
+    assert "swing-packet-chain" in html
     assert "Action queue" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
@@ -863,6 +865,112 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         md = md_path.read_text(encoding="utf-8")
         assert "No broker execution is performed" in md
         assert "AAPL 2027-01-15 C 220" in md
+
+
+def test_swing_packet_can_refresh_chain_shortlist_on_demand():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_command = cockpit_module.build_command_center
+        old_today = cockpit_module.build_today_review
+        old_climate = cockpit_module.build_swing_climate
+        old_gated = cockpit_module.build_climate_gated_setups
+        old_paper = cockpit_module.build_paper_candidates
+        old_batch = cockpit_module.build_option_chain_batch
+        old_writer = cockpit_module.write_option_chain_shortlist
+        calls = {"batch": 0, "writer": 0}
+
+        cockpit_module.build_command_center = lambda *args, **kwargs: {
+            "status": "ready_to_review",
+            "status_detail": "Review the chain-refreshed packet.",
+            "data_health_status": "ok",
+            "risk_level": "normal",
+            "total_open": 0,
+            "source_count": 18,
+            "no_key_count": 18,
+            "climate_label": "constructive_selective",
+            "climate_score": 65,
+            "next_action": {"label": "Review local research", "route": "chains", "query": "AAPL"},
+            "cards": [],
+        }
+        cockpit_module.build_today_review = lambda *args, **kwargs: {"count": 0, "rows": []}
+        cockpit_module.build_swing_climate = lambda *args, **kwargs: {
+            "climate_label": "constructive_selective",
+            "climate_score": 65,
+            "posture": "Selective.",
+        }
+        cockpit_module.build_climate_gated_setups = lambda *args, **kwargs: {"rows": [], "held": []}
+        cockpit_module.build_paper_candidates = lambda *args, **kwargs: {
+            "selected_count": 0,
+            "excluded_count": 0,
+            "rows": [],
+        }
+
+        def fake_batch(*args, **kwargs):
+            calls["batch"] += 1
+            assert kwargs["preset"] == "swing"
+            assert kwargs["min_dte"] == 90
+            assert kwargs["max_dte"] == 180
+            assert kwargs["max_spread_pct"] == 0.20
+            return {
+                "ok": True,
+                "symbols_scanned": 1,
+                "successful_scans": 1,
+                "row_count": 1,
+                "rows": [{
+                    "symbol": "AAPL",
+                    "contract_query": "AAPL 2027-01-15 C 220",
+                    "side": "call",
+                    "strike": 220,
+                    "expiry": "2027-01-15",
+                    "dte": 216,
+                    "mid": 5.0,
+                    "premium_dollars": 500,
+                    "spread_pct": 0.04,
+                    "readiness_score": 92,
+                    "contract_quality_score": 94,
+                    "swing_fit_score": 96,
+                    "swing_fit_label": "clean_swing",
+                    "chain_source": "cboe",
+                    "quote_quality": "free_or_delayed",
+                }],
+            }
+
+        def fake_writer(report, write_dir):
+            calls["writer"] += 1
+            (write_dir / "option_chain_shortlist.json").write_text(json.dumps({
+                "generated_at": "2026-06-13T20:00:00+00:00",
+                "rows": report["rows"],
+            }), encoding="utf-8")
+            return {"ok": True, "count": len(report["rows"])}
+
+        cockpit_module.build_option_chain_batch = fake_batch
+        cockpit_module.write_option_chain_shortlist = fake_writer
+        try:
+            packet = build_swing_packet(
+                data_dir,
+                write=True,
+                refresh_chains=True,
+                chain_symbols_limit=3,
+                chain_contracts_per_symbol=2,
+            )
+        finally:
+            cockpit_module.build_command_center = old_command
+            cockpit_module.build_today_review = old_today
+            cockpit_module.build_swing_climate = old_climate
+            cockpit_module.build_climate_gated_setups = old_gated
+            cockpit_module.build_paper_candidates = old_paper
+            cockpit_module.build_option_chain_batch = old_batch
+            cockpit_module.write_option_chain_shortlist = old_writer
+
+        assert calls == {"batch": 1, "writer": 1}
+        assert packet["chain_refresh"]["attempted"] is True
+        assert packet["chain_refresh"]["row_count"] == 1
+        assert packet["chain_refresh"]["exported"] is True
+        assert packet["chain_shortlist"]["status"] == "ready"
+        assert packet["chain_shortlist"]["count"] == 1
+        assert packet["chain_shortlist"]["rows"][0]["contract"] == "AAPL 2027-01-15 C 220"
+        assert (data_dir / "swing_packet.json").exists()
+        assert (data_dir / "swing_packet.md").exists()
 
 
 def test_enriched_watchlist_sorts_ready_ideas_first():
@@ -2797,6 +2905,7 @@ if __name__ == "__main__":
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
     test_swing_packet_builds_and_writes_daily_decision_packet()
+    test_swing_packet_can_refresh_chain_shortlist_on_demand()
     test_enriched_watchlist_sorts_ready_ideas_first()
     test_symbol_suggestions_include_local_contracts_positions_and_aliases()
     test_opportunity_explorer_reads_and_filters_latest_snapshots()
@@ -2828,4 +2937,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("43/43 local cockpit tests passed")
+    print("44/44 local cockpit tests passed")

@@ -6272,7 +6272,56 @@ def write_swing_packet(packet: dict[str, Any], data_dir: Path = DATA_DIR) -> dic
     return {"json": str(json_path), "markdown": str(md_path)}
 
 
-def build_swing_packet(data_dir: Path = DATA_DIR, write: bool = False) -> dict[str, Any]:
+def _refresh_swing_packet_chain_shortlist(
+    data_dir: Path,
+    symbols_limit: int = 6,
+    contracts_per_symbol: int = 4,
+) -> dict[str, Any]:
+    symbols_limit = max(1, min(int(symbols_limit or 6), 12))
+    contracts_per_symbol = max(1, min(int(contracts_per_symbol or 4), 8))
+    report = build_option_chain_batch(
+        data_dir,
+        query="",
+        side="all",
+        min_dte=MIN_SWING_OPTION_DTE,
+        max_dte=180,
+        max_spread_pct=0.20,
+        max_premium=500.0,
+        min_open_interest=25,
+        preset="swing",
+        symbols_limit=symbols_limit,
+        contracts_per_symbol=contracts_per_symbol,
+        limit=max(12, symbols_limit * contracts_per_symbol),
+    )
+    export = {"ok": False, "count": 0}
+    if report.get("ok") and report.get("rows"):
+        export = write_option_chain_shortlist(report, data_dir)
+    error = report.get("error") or export.get("error")
+    return {
+        "attempted": True,
+        "ok": bool(report.get("ok")) and (bool(export.get("ok")) or not report.get("rows")),
+        "symbols_limit": symbols_limit,
+        "contracts_per_symbol": contracts_per_symbol,
+        "symbols_scanned": report.get("symbols_scanned", 0),
+        "successful_scans": report.get("successful_scans", 0),
+        "row_count": report.get("row_count", len(report.get("rows") or [])),
+        "exported": bool(export.get("ok")),
+        "export_count": export.get("count", 0),
+        "error": _clean_value(error),
+        "notes": [
+            "Chain refresh uses the same free/provider-stack 3m+ swing preset.",
+            "Quotes may be delayed or incomplete; refresh before manual paper entry.",
+        ],
+    }
+
+
+def build_swing_packet(
+    data_dir: Path = DATA_DIR,
+    write: bool = False,
+    refresh_chains: bool = False,
+    chain_symbols_limit: int = 6,
+    chain_contracts_per_symbol: int = 4,
+) -> dict[str, Any]:
     """Build a compact daily swing-review handoff from existing cockpit panels."""
     notes = [
         "This packet packages existing cockpit outputs; it does not create a new trading model.",
@@ -6305,6 +6354,19 @@ def build_swing_packet(data_dir: Path = DATA_DIR, write: bool = False) -> dict[s
         dry_run=False,
         write=False,
     )
+    chain_refresh = {"attempted": False}
+    if refresh_chains:
+        chain_refresh = _packet_call(
+            notes,
+            "3m+ chain refresh",
+            {"attempted": True, "ok": False, "error": "chain refresh failed"},
+            _refresh_swing_packet_chain_shortlist,
+            data_dir,
+            symbols_limit=chain_symbols_limit,
+            contracts_per_symbol=chain_contracts_per_symbol,
+        )
+        if chain_refresh.get("attempted") and not chain_refresh.get("ok") and chain_refresh.get("error"):
+            notes.append(f"3m+ chain refresh warning: {chain_refresh.get('error')}")
     chain = _packet_call(notes, "Chain shortlist", {"status": "missing", "rows": []}, _build_chain_shortlist_summary, data_dir)
     artifacts = {
         "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
@@ -6368,6 +6430,7 @@ def build_swing_packet(data_dir: Path = DATA_DIR, write: bool = False) -> dict[s
                 "confidence", "rank_score", "trade_status", "reason_selected",
             ], limit=8),
         },
+        "chain_refresh": chain_refresh,
         "chain_shortlist": chain,
         "artifacts": artifacts,
         "notes": notes,
@@ -7011,6 +7074,7 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="scan-controls">
       <button class="btn" type="button" id="swing-packet-preview">Preview packet</button>
       <button class="btn" type="button" id="swing-packet-write">Write packet files</button>
+      <button class="btn" type="button" id="swing-packet-chain">Write + 3m+ chain scan</button>
       <a class="btn" href="/artifact/swing-packet-json" target="_blank">Open JSON</a>
       <a class="btn" href="/artifact/swing-packet-md" target="_blank">Open Markdown</a>
     </div>
@@ -7609,6 +7673,7 @@ function swingPacketHtml(data) {
   const action = command.next_action || {};
   const climate = data.swing_climate || {};
   const chain = data.chain_shortlist || {};
+  const chainRefresh = data.chain_refresh || {};
   const paper = data.paper_candidates || {};
   const todayRows = (data.today_review && data.today_review.rows) || [];
   const setupRows = (data.climate_gated_setups && data.climate_gated_setups.rows) || [];
@@ -7621,6 +7686,7 @@ function swingPacketHtml(data) {
     <div class="brief-tile"><span>Climate</span><strong>${cell(climate.climate_label || command.climate_label || '-')}</strong></div>
     <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Chain refreshed</span><strong>${cell(chainRefresh.attempted ? ((chainRefresh.row_count || 0) + ' rows') : 'no')}</strong></div>
     <div class="brief-tile"><span>Paper candidates</span><strong>${cell(paper.selected_count || 0)}</strong></div>
     <div class="brief-tile"><span>Files written</span><strong>${cell(data.wrote_files ? 'yes' : 'no')}</strong></div>
   </div>`;
@@ -8486,10 +8552,14 @@ async function loadCommandCenter() {
   $('command-center-results').innerHTML = commandCenterHtml(data);
   wireCommandCenter();
 }
-async function loadSwingPacket(write=false) {
-  $('swing-packet-status-text').textContent = write ? 'Writing swing packet files...' : 'Building swing packet...';
-  const res = write
-    ? await fetch('/api/build-swing-packet', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' })
+async function loadSwingPacket(write=false, refreshChains=false) {
+  $('swing-packet-status-text').textContent = refreshChains ? 'Scanning 3m+ option chains and writing packet...' : write ? 'Writing swing packet files...' : 'Building swing packet...';
+  const res = (write || refreshChains)
+    ? await fetch('/api/build-swing-packet', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ refresh_chains: refreshChains, chain_symbols_limit: 6, chain_contracts_per_symbol: 4 })
+      })
     : await fetch('/api/swing-packet');
   const data = await res.json();
   if (!res.ok || data.error) {
@@ -8497,7 +8567,10 @@ async function loadSwingPacket(write=false) {
     return;
   }
   const fileNote = data.wrote_files ? ` Files written: ${data.paths.markdown || data.paths.json || ''}` : '';
-  $('swing-packet-status-text').textContent = `${labelText(data.status || 'review')} packet built. ${fileNote}`;
+  const chainNote = data.chain_refresh && data.chain_refresh.attempted
+    ? ` Chain scan: ${data.chain_refresh.row_count || 0} contract(s), ${data.chain_refresh.export_count || 0} exported.`
+    : '';
+  $('swing-packet-status-text').textContent = `${labelText(data.status || 'review')} packet built.${chainNote}${fileNote}`;
   $('swing-packet-results').innerHTML = swingPacketHtml(data);
   wireClickableRows($('swing-packet-results'));
   wireCommandCenter();
@@ -9301,6 +9374,7 @@ $('global-query').addEventListener('input', () => scheduleSuggestions('global-qu
 $('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
+$('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
 $('positions-load').addEventListener('click', loadPositions);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadPositions(); });
 $('explorer-load').addEventListener('click', loadExplorer);
@@ -9780,7 +9854,13 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/build-swing-packet":
-            self._send_json(build_swing_packet(self.data_dir, write=True))
+            self._send_json(build_swing_packet(
+                self.data_dir,
+                write=True,
+                refresh_chains=_bool_param(body.get("refresh_chains"), False),
+                chain_symbols_limit=_int_param(str(body.get("chain_symbols_limit") or "6"), 6, 1, 12),
+                chain_contracts_per_symbol=_int_param(str(body.get("chain_contracts_per_symbol") or "4"), 4, 1, 8),
+            ))
             return
         if parsed.path == "/api/build-robinhood-queue":
             report = build_robinhood_agentic_queue_report(
