@@ -1146,6 +1146,78 @@ def _option_contract_readiness(row: dict[str, Any], quote_quality: str) -> dict[
     return _readiness(score, flags)
 
 
+def _option_contract_grade(row: dict[str, Any], max_premium: float) -> dict[str, Any]:
+    readiness = _float_value(row.get("readiness_score"), default=0.0)
+    spread = _float_value(row.get("spread_pct"), default=math.nan)
+    oi = _float_value(row.get("openInterest"), default=0.0)
+    volume = _float_value(row.get("volume"), default=0.0)
+    premium = _float_value(row.get("premium_dollars"), default=math.nan)
+    dte = _float_value(row.get("dte"), default=math.nan)
+    side = str(row.get("side") or "").lower()
+    budget = max_premium if max_premium > 0 else 500.0
+    reasons: list[str] = []
+
+    tight_spread = math.isfinite(spread) and spread <= 0.12
+    acceptable_spread = math.isfinite(spread) and spread <= 0.20
+    liquid = oi >= 100
+    tradable_oi = oi >= 25
+    under_budget = math.isfinite(premium) and premium <= budget
+    swing_dte = math.isfinite(dte) and dte >= MIN_SWING_OPTION_DTE
+    long_dated = math.isfinite(dte) and dte >= 180
+
+    if tight_spread:
+        reasons.append("tight spread")
+    elif acceptable_spread:
+        reasons.append("acceptable spread")
+    elif math.isfinite(spread):
+        reasons.append("spread needs work")
+    if liquid:
+        reasons.append("100+ OI")
+    elif tradable_oi:
+        reasons.append("25+ OI")
+    else:
+        reasons.append("thin OI")
+    if volume > 0:
+        reasons.append("traded today")
+    if under_budget:
+        reasons.append("inside premium budget")
+    elif math.isfinite(premium):
+        reasons.append("above premium budget")
+    if long_dated:
+        reasons.append("long-dated swing")
+    elif swing_dte:
+        reasons.append("3m+ swing")
+
+    if readiness >= 80 and tight_spread and liquid and under_budget and swing_dte:
+        grade = "A"
+        lane = "primary_review"
+    elif readiness >= 70 and acceptable_spread and tradable_oi and under_budget and swing_dte:
+        grade = "B"
+        lane = "secondary_review"
+    elif readiness >= 65 and swing_dte:
+        grade = "C"
+        lane = "long_dated_review" if long_dated else "secondary_review"
+    else:
+        grade = "D"
+        lane = "wait"
+
+    side_text = "call" if side.startswith("call") else "put" if side.startswith("put") else "contract"
+    dte_text = f"{int(dte)} DTE" if math.isfinite(dte) else "unknown DTE"
+    premium_text = f"${premium:.0f} premium" if math.isfinite(premium) else "unknown premium"
+    spread_text = f"{spread * 100:.1f}% spread" if math.isfinite(spread) else "unknown spread"
+    thesis = (
+        f"{grade}-grade {dte_text} {side_text}: {premium_text}, "
+        f"{spread_text}, OI {int(oi)}. "
+        f"{'; '.join(reasons[:4]) if reasons else 'Review exact quote before acting.'}"
+    )
+    return {
+        "contract_grade": grade,
+        "review_lane": lane,
+        "review_thesis": thesis,
+        "grade_reasons": reasons[:6],
+    }
+
+
 def _chain_preset_config(preset: str) -> tuple[str, dict[str, Any]]:
     preset_norm = str(preset or "custom").strip().lower().replace("-", "_")
     if preset_norm in {"long", "long_dated", "leap"}:
@@ -1172,6 +1244,12 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
             "best_call": None,
             "best_put": None,
             "best_reviewable": None,
+            "best_ready": None,
+            "best_budget": None,
+            "best_liquid": None,
+            "best_long_dated": None,
+            "grade_counts": {},
+            "primary_review_count": 0,
             "median_spread_pct": None,
             "under_budget_count": 0,
             "liquid_count": 0,
@@ -1197,10 +1275,34 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         None,
     )
     budget = max_premium if max_premium > 0 else 500.0
+    best_ready = next((row for row in rows if str(row.get("readiness_label") or "") == "ready"), None)
+    best_budget = next(
+        (row for row in rows if _float_value(row.get("premium_dollars"), default=math.inf) <= budget),
+        None,
+    )
+    best_liquid = next(
+        (
+            row for row in rows
+            if _float_value(row.get("openInterest"), default=0.0) >= 100
+            and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
+        ),
+        None,
+    )
+    best_long_dated = next((row for row in rows if _float_value(row.get("dte"), default=0.0) >= 180), None)
+    grade_counts: dict[str, int] = {}
+    for row in rows:
+        grade = str(row.get("contract_grade") or "ungraded")
+        grade_counts[grade] = grade_counts.get(grade, 0) + 1
     return {
         "best_call": _chain_contract_label(best_call),
         "best_put": _chain_contract_label(best_put),
         "best_reviewable": _chain_contract_label(best_reviewable),
+        "best_ready": _chain_contract_label(best_ready),
+        "best_budget": _chain_contract_label(best_budget),
+        "best_liquid": _chain_contract_label(best_liquid),
+        "best_long_dated": _chain_contract_label(best_long_dated),
+        "grade_counts": grade_counts,
+        "primary_review_count": sum(str(row.get("review_lane") or "") == "primary_review" for row in rows),
         "median_spread_pct": _clean_value(median_spread),
         "under_budget_count": sum(_float_value(row.get("premium_dollars"), default=math.inf) <= budget for row in rows),
         "liquid_count": sum(
@@ -1378,6 +1480,7 @@ def build_option_chain_scan(
             )
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
             row.update(_option_contract_readiness(row, str(quote_quality)))
+            row.update(_option_contract_grade(row, max_premium))
             rows.append(row)
 
     rows = sorted(
@@ -5775,6 +5878,8 @@ function optionChainSummary(data) {
     ['Median spread', scan.median_spread_pct === null || scan.median_spread_pct === undefined ? '-' : ((Number(scan.median_spread_pct || 0) * 100).toFixed(1)) + '%'],
     ['Under budget', scan.under_budget_count || 0],
     ['Liquid', scan.liquid_count || 0],
+    ['Grades', countMapText(scan.grade_counts)],
+    ['Primary review', scan.primary_review_count || 0],
     ['3m+ swing', scan.swing_count || 0],
     ['Long dated', scan.long_dated_count || 0],
     ['Ready', scan.ready_count || 0],
@@ -5783,6 +5888,9 @@ function optionChainSummary(data) {
     ['Best call', scan.best_call || '-'],
     ['Best put', scan.best_put || '-'],
     ['Best reviewable', scan.best_reviewable || '-'],
+    ['Best budget', scan.best_budget || '-'],
+    ['Best liquid', scan.best_liquid || '-'],
+    ['Best long-dated', scan.best_long_dated || '-'],
     ['Max spread', ((Number(filters.max_spread_pct || 0) * 100).toFixed(0)) + '%']
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
@@ -5790,13 +5898,15 @@ function optionChainSummary(data) {
 function optionContractCard(row) {
   const readiness = row.readiness_label || 'review';
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
+  const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
   const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
   const query = row.contract_query || optionContractQuery(row);
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
-      <span class="pill ${escAttr(readiness)}">${cell(readiness)}</span>
+      <span class="pill ${escAttr(readiness)}">${cell(row.contract_grade || readiness)}</span>
     </header>
+    <div class="row"><span>Grade / lane</span><b>${cell(row.contract_grade)} / ${cell(row.review_lane)}</b></div>
     <div class="row"><span>Mid / premium</span><b>${cell(row.mid)} / ${moneyShort(row.premium_dollars)}</b></div>
     <div class="row"><span>Spread</span><b>${pct(row.spread_pct)}</b></div>
     <div class="row"><span>Open interest</span><b>${cell(row.openInterest)}</b></div>
@@ -5804,6 +5914,7 @@ function optionContractCard(row) {
     <div class="row"><span>Delta</span><b>${cell(row.delta)}</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
+    <div class="row"><span>Why</span><b>${cell(gradeReasons || row.review_thesis || '-')}</b></div>
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Request</span><b>${cell(query)}</b></div>
     <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}">Save contract</button>

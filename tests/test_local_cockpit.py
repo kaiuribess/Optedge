@@ -135,6 +135,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "scanOptionChain" in html
     assert "optionChainResultsHtml" in html
     assert "Expiration quality" in html
+    assert "Grade / lane" in html
+    assert "Primary review" in html
+    assert "Best budget" in html
     assert "Provider status" in html
     assert "/api/provider-status" in html
     assert "loadProviderStatus" in html
@@ -1481,11 +1484,20 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["dte_bucket"] in {"180-364d", "365d+"}
     assert row["readiness_label"] in {"ready", "review"}
     assert row["readiness_score"] >= 65
+    assert row["contract_grade"] == "A"
+    assert row["review_lane"] == "primary_review"
+    assert "inside premium budget" in row["grade_reasons"]
+    assert "A-grade" in row["review_thesis"]
     assert report["preset"] == "custom"
     assert report["scan_summary"]["best_call"].startswith("C 220")
     assert report["scan_summary"]["under_budget_count"] == 1
     assert report["scan_summary"]["review_count"] >= 1
     assert report["scan_summary"]["best_reviewable"].startswith("C 220")
+    assert report["scan_summary"]["best_budget"].startswith("C 220")
+    assert report["scan_summary"]["best_liquid"].startswith("C 220")
+    assert report["scan_summary"]["best_long_dated"].startswith("C 220")
+    assert report["scan_summary"]["grade_counts"]["A"] == 1
+    assert report["scan_summary"]["primary_review_count"] == 1
     assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
     assert report["expiry_summary"][0]["reviewable_count"] == 1
 
