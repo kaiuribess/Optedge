@@ -6974,6 +6974,41 @@ def _command_center_status(health_status: str, risk_level: str, review_count: in
     return "quiet", "No urgent queue items surfaced; wait or run a fresh scan."
 
 
+def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
+    symbol = row.get("ticker_or_symbol")
+    asset = row.get("asset")
+    action = (
+        "scan_swing_chain"
+        if str(asset or "").lower() == "option" and _can_scan_option_chain_symbol(symbol, asset)
+        else "run_focused_scan"
+    )
+    route = "chains" if action == "scan_swing_chain" else "research"
+    reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
+    warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+    reason_text = ", ".join(str(item) for item in reasons[:3]) or str(row.get("lane") or "swing radar")
+    warning_text = f" Warnings: {', '.join(str(item) for item in warnings[:2])}." if warnings else ""
+    score = _float_value(row.get("swing_scout_score"), default=0.0)
+    detail = (
+        f"{row.get('setup') or symbol} scored {score:.0f}/100 in {str(row.get('lane') or 'swing radar').replace('_', ' ')}. "
+        f"{reason_text}.{warning_text}"
+    )
+    return {
+        "priority": int(round(_clamp(score, 0.0, 100.0))),
+        "asset": _clean_value(asset),
+        "label": _clean_value(row.get("setup") or symbol or "Swing radar item"),
+        "detail": detail,
+        "action": action,
+        "route": route,
+        "symbol": _clean_value(symbol),
+        "query": _clean_value(symbol),
+        "source": "swing_scout",
+        "lane": _clean_value(row.get("lane")),
+        "score": _clean_value(row.get("swing_scout_score")),
+        "readiness": _clean_value(row.get("readiness_label")),
+        "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+    }
+
+
 def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Build a first-screen decision summary from local cockpit artifacts."""
     health = build_data_health(data_dir)
@@ -6982,6 +7017,17 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     sources = build_free_data_sources(data_dir)
     performance = build_performance_summary(data_dir)
     chain = _build_chain_shortlist_summary(data_dir)
+    notes = [
+        "Command Center is a first-pass review surface built from local Optedge artifacts.",
+        "It does not place trades and does not replace the detailed panels below.",
+        "If data trust is warn/bad, refresh or inspect artifacts before acting on any setup.",
+    ]
+    try:
+        swing = build_swing_scout(data_dir, limit=5, include_wait=False, include_nasdaq_movers=False)
+    except Exception as exc:
+        swing = {"rows": [], "count": 0}
+        notes.append(f"Swing radar unavailable: {str(exc)[:160]}")
+    swing_actions = [_command_swing_action(row) for row in (swing.get("rows") or [])[:5]]
 
     checks = health.get("checks") if isinstance(health.get("checks"), list) else []
     health_counts = {
@@ -7026,6 +7072,15 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "detail": f"{len(performance.get('warnings') or [])} speed/data warning(s).",
             "tone": "warn" if performance.get("warnings") else "good",
         },
+        {
+            "label": "Swing radar",
+            "value": len(swing_actions),
+            "detail": (
+                f"Top local candidate: {swing_actions[0].get('label')}"
+                if swing_actions else "No local swing-radar candidates cleared the current filters."
+            ),
+            "tone": "good" if swing_actions else "warn",
+        },
     ]
     next_action = {
         "priority": first_action.get("priority"),
@@ -7056,11 +7111,9 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "next_action": {k: _clean_value(v) for k, v in next_action.items()},
         "cards": [{k: _clean_value(v) for k, v in row.items()} for row in cards],
         "top_queue": today.get("rows", [])[:4],
-        "notes": [
-            "Command Center is a first-pass review surface built from local Optedge artifacts.",
-            "It does not place trades and does not replace the detailed panels below.",
-            "If data trust is warn/bad, refresh or inspect artifacts before acting on any setup.",
-        ],
+        "swing_radar_count": len(swing_actions),
+        "swing_actions": [{k: _clean_value(v) for k, v in row.items()} for row in swing_actions],
+        "notes": notes,
     }
 
 
@@ -9444,6 +9497,21 @@ function commandCenterHtml(data) {
   const queue = (data.top_queue || []).length
     ? `<div class="brief-list"><h4>Top queue</h4>${todayReviewTable(data.top_queue || [])}</div>`
     : '<div class="empty">No top queue items surfaced.</div>';
+  const swingActions = data.swing_actions || [];
+  const swingRadar = swingActions.length
+    ? `<div class="brief-list"><h4>Best swing radar</h4>
+        <div class="review-grid">${swingActions.slice(0, 4).map(r => `<article class="review-card">
+          <header><span class="priority-badge ${escAttr(reviewPriorityClass(r.priority))}">${cell(r.score || r.priority)}</span><b>${cell(r.label)}</b></header>
+          <p>${cell(r.detail)}</p>
+          <div class="review-meta">
+            <span class="pill">${cell(r.asset || '-')}</span>
+            <span>${cell(labelText(r.lane || '-'))}</span>
+            <span>${cell(r.snapshot_freshness || '-')}</span>
+          </div>
+          <button class="btn command-center-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-route="${escAttr(r.route || '')}" data-query="${escAttr(r.query || '')}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(todayReviewActionLabel(r.action, r.route))}</button>
+        </article>`).join('')}</div>
+      </div>`
+    : '<div class="brief-list"><h4>Best swing radar</h4><div class="empty">No local swing-radar candidates cleared the current filters.</div></div>';
   const notes = (data.notes || []).length
     ? `<div class="brief-list"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
     : '';
@@ -9474,7 +9542,7 @@ function commandCenterHtml(data) {
     </div>
     ${trustRibbon}
     <div class="command-card-grid">${cards}</div>
-    <div class="brief-cols">${queue}${notes}</div>
+    <div class="brief-cols">${queue}${swingRadar}${notes}</div>
   </div>`;
 }
 function swingPacketHtml(data) {

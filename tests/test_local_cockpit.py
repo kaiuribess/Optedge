@@ -86,6 +86,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "trust-card" in html
     assert "loadCommandCenter" in html
     assert "command-center-action-btn" in html
+    assert "Best swing radar" in html
     assert "Swing packet" in html
     assert "/api/swing-packet" in html
     assert "/api/build-swing-packet" in html
@@ -761,6 +762,7 @@ def test_command_center_summarizes_next_action_and_data_trust():
         old_risk = cockpit_module.build_risk_summary
         old_sources = cockpit_module.build_free_data_sources
         old_perf = cockpit_module.build_performance_summary
+        old_swing = cockpit_module.build_swing_scout
 
         cockpit_module.build_data_health = lambda *args, **kwargs: {
             "status": "warn",
@@ -802,6 +804,20 @@ def test_command_center_summarizes_next_action_and_data_trust():
             "total_latest_engine_sec": 92.4,
             "warnings": [],
         }
+        cockpit_module.build_swing_scout = lambda *args, **kwargs: {
+            "count": 1,
+            "rows": [{
+                "asset": "option",
+                "ticker_or_symbol": "AAPL",
+                "setup": "AAPL 180d call swing",
+                "lane": "long_dated_option_swing",
+                "swing_scout_score": 88,
+                "readiness_label": "review",
+                "snapshot_freshness": "fresh",
+                "reasons": ["3m+ runway", "momentum confirmation"],
+                "warnings": ["verify delayed quote"],
+            }],
+        }
         try:
             center = build_command_center(data_dir)
         finally:
@@ -810,6 +826,7 @@ def test_command_center_summarizes_next_action_and_data_trust():
             cockpit_module.build_risk_summary = old_risk
             cockpit_module.build_free_data_sources = old_sources
             cockpit_module.build_performance_summary = old_perf
+            cockpit_module.build_swing_scout = old_swing
 
         assert center["status"] == "review_first"
         assert center["climate_label"] == "constructive_selective"
@@ -818,7 +835,12 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["next_action"]["action"] == "scan_swing_chain"
         assert center["next_action"]["route"] == "chains"
         assert center["no_key_count"] == 17
-        assert len(center["cards"]) == 5
+        assert len(center["cards"]) == 6
+        assert center["swing_radar_count"] == 1
+        assert center["swing_actions"][0]["action"] == "scan_swing_chain"
+        assert center["swing_actions"][0]["route"] == "chains"
+        assert center["swing_actions"][0]["score"] == 88
+        assert "3m+ runway" in center["swing_actions"][0]["detail"]
         assert len(center["trust_ribbon"]) == 7
         ribbon = {row["label"]: row for row in center["trust_ribbon"]}
         assert ribbon["Data integrity"]["value"] == "warn"
