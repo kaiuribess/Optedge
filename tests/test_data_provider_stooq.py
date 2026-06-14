@@ -55,6 +55,8 @@ def test_stooq_history_parses_public_csv_without_network(monkeypatch=None):
     assert not hist.empty
     assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert float(hist["Close"].iloc[-1]) == 12.5
+    assert hist.attrs["history_source"] == "stooq_csv"
+    assert hist.attrs["history_quality"] == "delayed"
     assert "s=aapl.us" in seen_urls[0]
     assert "i=d" in seen_urls[0]
 
@@ -83,6 +85,8 @@ def test_nasdaq_history_parses_public_json_without_network():
     assert not hist.empty
     assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert float(hist["Close"].iloc[-1]) == 12.5
+    assert hist.attrs["history_source"] == "nasdaq_historical"
+    assert hist.attrs["history_quality"] == "free_or_delayed"
     assert "assetclass=stocks" in seen_urls[0]
     assert "/quote/AAPL/historical" in seen_urls[0]
 
@@ -130,7 +134,57 @@ def test_get_history_uses_nasdaq_after_yahoo_failures():
 
     assert not hist.empty
     assert float(hist["Close"].iloc[-1]) == 12.5
+    assert hist.attrs["history_source"] == "nasdaq_historical"
     assert "history:AAPL:1mo:1d" in stored
+    assert stored["history:AAPL:1mo:1d"][0]["_history_source"] == "nasdaq_historical"
+
+
+def test_get_history_uses_stooq_after_other_free_sources_fail():
+    old_cache_get = data_provider.cache_get
+    old_cache_put = data_provider.cache_put
+    old_yahoo = data_provider._yahoo_v8_history
+    old_yf_ticker = data_provider.yf_ticker
+    old_nasdaq = data_provider._nasdaq_history
+    old_stooq = data_provider._stooq_history
+    stored = {}
+
+    idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
+    stooq_df = pd.DataFrame({
+        "Open": [10.0, 11.0],
+        "High": [11.0, 13.0],
+        "Low": [9.0, 10.0],
+        "Close": [10.5, 12.5],
+        "Volume": [1000, 1500],
+    }, index=idx)
+
+    class EmptyTicker:
+        def history(self, period="1y", interval="1d"):
+            return pd.DataFrame()
+
+    try:
+        data_provider.cache_get = lambda *args, **kwargs: None
+        data_provider.cache_put = lambda key, value: stored.update({key: value})
+        data_provider._yahoo_v8_history = lambda *args, **kwargs: pd.DataFrame()
+        data_provider.yf_ticker = lambda ticker: EmptyTicker()
+        data_provider._nasdaq_history = lambda *args, **kwargs: pd.DataFrame()
+        data_provider._stooq_history = lambda ticker, period, interval: stooq_df
+
+        hist = data_provider.get_history("AAPL", period="1mo", interval="1d")
+    finally:
+        data_provider.cache_get = old_cache_get
+        data_provider.cache_put = old_cache_put
+        data_provider._yahoo_v8_history = old_yahoo
+        data_provider.yf_ticker = old_yf_ticker
+        data_provider._nasdaq_history = old_nasdaq
+        data_provider._stooq_history = old_stooq
+
+    assert not hist.empty
+    assert float(hist["Close"].iloc[-1]) == 12.5
+    assert hist.attrs["history_source"] == "stooq_csv"
+    assert hist.attrs["history_quality"] == "delayed"
+    assert stored["history:AAPL:1mo:1d"][0]["_history_source"] == "stooq_csv"
+    cached = data_provider._history_from_cache(stored["history:AAPL:1mo:1d"])
+    assert cached.attrs["history_source"] == "stooq_csv"
 
 
 if __name__ == "__main__":
@@ -138,4 +192,5 @@ if __name__ == "__main__":
     test_stooq_history_parses_public_csv_without_network()
     test_nasdaq_history_parses_public_json_without_network()
     test_get_history_uses_nasdaq_after_yahoo_failures()
-    print("4/4 public data provider tests passed")
+    test_get_history_uses_stooq_after_other_free_sources_fail()
+    print("5/5 public data provider tests passed")

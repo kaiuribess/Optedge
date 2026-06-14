@@ -1897,8 +1897,12 @@ def test_provider_status_checks_free_sources_without_running_scan():
     }, index=idx)
 
     try:
-        cockpit_module.data_provider._yahoo_v8_history = lambda *args, **kwargs: hist
-        cockpit_module.data_provider._nasdaq_history = lambda *args, **kwargs: hist
+        cockpit_module.data_provider._yahoo_v8_history = lambda *args, **kwargs: cockpit_module.data_provider._tag_history(
+            hist.copy(), "yahoo_chart", "free_or_delayed",
+        )
+        cockpit_module.data_provider._nasdaq_history = lambda *args, **kwargs: cockpit_module.data_provider._tag_history(
+            hist.copy(), "nasdaq_historical", "free_or_delayed",
+        )
         cockpit_module.data_provider._stooq_history = lambda *args, **kwargs: pd.DataFrame()
         cockpit_module._fetch_option_chain = lambda *args, **kwargs: {
             "spot": 200.0,
@@ -1933,7 +1937,9 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert report["ok_count"] == 5
     providers = {row["provider"]: row for row in report["rows"]}
     assert providers["Yahoo chart"]["rows"] == 2
+    assert providers["Yahoo chart"]["history_source"] == "yahoo_chart"
     assert providers["Nasdaq historical"]["last_close"] == 12.5
+    assert providers["Nasdaq historical"]["history_source"] == "nasdaq_historical"
     assert providers["Stooq CSV"]["status"] == "warn"
     assert providers["Option chain stack"]["rows"] == 2
     assert providers["SEC company ticker cache"]["status"] == "ok"

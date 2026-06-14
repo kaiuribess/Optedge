@@ -107,6 +107,43 @@ def configure_ram_cache(enabled: bool | None = None, max_items: int | None = Non
     return cache_stats()
 
 
+def _tag_history(df: pd.DataFrame, source: str, quality: str = "free_or_delayed") -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    df.attrs["history_source"] = source
+    df.attrs["history_quality"] = quality
+    return df
+
+
+def _history_cache_records(df: pd.DataFrame, source: str, quality: str = "free_or_delayed") -> list[dict[str, Any]]:
+    out = df.reset_index()
+    if "Date" in out.columns:
+        out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+    records = out.to_dict("records")
+    for row in records:
+        row["_history_source"] = source
+        row["_history_quality"] = quality
+    return records
+
+
+def _history_from_cache(records: Any) -> pd.DataFrame:
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    source = None
+    quality = None
+    if "_history_source" in df.columns:
+        source = str(df["_history_source"].dropna().iloc[0]) if not df["_history_source"].dropna().empty else None
+        df = df.drop(columns=["_history_source"])
+    if "_history_quality" in df.columns:
+        quality = str(df["_history_quality"].dropna().iloc[0]) if not df["_history_quality"].dropna().empty else None
+        df = df.drop(columns=["_history_quality"])
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
+        df = df.dropna(subset=["Date"]).set_index("Date")
+    return _tag_history(df, source or "cache", quality or "cached")
+
+
 # -------- Session factory ---------------------------------------------
 _SESSION = None
 
@@ -156,15 +193,13 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
     key = f"history:{ticker}:{period}:{interval}"
     cached = cache_get(key, cache_age)
     if cached is not None:
-        return pd.DataFrame(cached)
+        return _history_from_cache(cached)
 
     # --- Primary: Yahoo v8 chart endpoint (direct, no library overhead) ---
     h = _yahoo_v8_history(ticker, period, interval)
     if not h.empty:
-        out = h.reset_index()
-        if "Date" in out.columns:
-            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
-        cache_put(key, out.to_dict("records"))
+        h = _tag_history(h, "yahoo_chart", "free_or_delayed")
+        cache_put(key, _history_cache_records(h, "yahoo_chart", "free_or_delayed"))
         return h
 
     # --- Fallback: yfinance library (existing path) ---
@@ -172,9 +207,8 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
         tk = yf_ticker(ticker)
         h = tk.history(period=period, interval=interval)
         if not h.empty:
-            out = h.reset_index()
-            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
-            cache_put(key, out.to_dict("records"))
+            h = _tag_history(h, "yfinance", "free_or_delayed")
+            cache_put(key, _history_cache_records(h, "yfinance", "free_or_delayed"))
             return h
     except Exception as e:
         log.debug("yfinance history fail %s: %s", ticker, e)
@@ -182,19 +216,15 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
     # --- Public Nasdaq historical endpoint. No key, not a live quote. ---
     h = _nasdaq_history(ticker, period, interval)
     if not h.empty:
-        out = h.reset_index()
-        if "Date" in out.columns:
-            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
-        cache_put(key, out.to_dict("records"))
+        h = _tag_history(h, "nasdaq_historical", "free_or_delayed")
+        cache_put(key, _history_cache_records(h, "nasdaq_historical", "free_or_delayed"))
         return h
 
     # --- Final no-key fallback: Stooq public CSV. Not live quotes. ---
     h = _stooq_history(ticker, period, interval)
     if not h.empty:
-        out = h.reset_index()
-        if "Date" in out.columns:
-            out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
-        cache_put(key, out.to_dict("records"))
+        h = _tag_history(h, "stooq_csv", "delayed")
+        cache_put(key, _history_cache_records(h, "stooq_csv", "delayed"))
         return h
 
     return pd.DataFrame()
@@ -241,7 +271,7 @@ def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
         })
         df = df.set_index("Date")
         df = df.dropna(subset=["Close"])
-        return df
+        return _tag_history(df, "yahoo_chart", "free_or_delayed")
     except Exception as e:
         log.debug("yahoo v8 parse %s: %s", ticker, e)
         return pd.DataFrame()
@@ -359,7 +389,7 @@ def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
             continue
         df = df.dropna(subset=["Close"]).set_index("Date").sort_index()
         if not df.empty:
-            return df[["Open", "High", "Low", "Close", "Volume"]]
+            return _tag_history(df[["Open", "High", "Low", "Close", "Volume"]], "nasdaq_historical", "free_or_delayed")
     return pd.DataFrame()
 
 
@@ -490,7 +520,7 @@ def _stooq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     if start is not None:
         df = df[df.index >= start]
     cols = [col for col in ("Open", "High", "Low", "Close", "Volume") if col in df.columns]
-    return df[cols]
+    return _tag_history(df[cols], "stooq_csv", "delayed")
 
 
 def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:

@@ -4329,6 +4329,8 @@ def _history_probe_result(df: pd.DataFrame, note: str = "") -> dict[str, Any]:
         "ok": True,
         "rows": int(len(df)),
         "last_close": _clean_value(round(close, 4) if close is not None else None),
+        "history_source": _clean_value(getattr(df, "attrs", {}).get("history_source")),
+        "history_quality": _clean_value(getattr(df, "attrs", {}).get("history_quality")),
         "note": note or "Returned OHLCV rows.",
     }
 
