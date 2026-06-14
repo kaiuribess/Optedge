@@ -47,7 +47,7 @@ from scripts.research_jobs import (
     create_job, create_refresh_job, job_dashboard_path, job_lookup_path, list_jobs,
     read_job, read_job_log,
 )
-from scripts.sec_filings import recent_filings_for_symbol
+from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import (
     COMMON_ALIASES, load_nasdaq_symbol_directory, load_sec_company_tickers,
     nasdaq_symbol_cache_meta, nasdaq_symbol_search, resolve_symbol,
@@ -524,11 +524,11 @@ FREE_DATA_SOURCE_REGISTRY = [
     },
     {
         "name": "SEC EDGAR",
-        "category": "filings",
-        "coverage": "company tickers, Forms 4/144, 8-K catalysts, 13F, filings",
+        "category": "filings/fundamentals",
+        "coverage": "company tickers, company facts, Forms 4/144, 8-K catalysts, 13F, filings",
         "credential": "none",
         "quality": "official_public",
-        "used_by": "insider, form 144, FDA catalyst fallback, 13F, symbol search",
+        "used_by": "insider, form 144, FDA catalyst fallback, 13F, symbol search, ticker lookup fundamentals",
         "primary": True,
         "caveat": "Filing timestamps and issuer mappings need normalization.",
     },
@@ -6596,6 +6596,30 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _companyfacts_probe_result(report: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {"ok": False, "rows": 0, "note": "No SEC companyfacts report returned."}
+    rows = report.get("rows") if isinstance(report.get("rows"), list) else []
+    metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
+    watch = report.get("watch_signals") if isinstance(report.get("watch_signals"), list) else []
+    metric_count = sum(1 for value in metrics.values() if value is not None)
+    row_count = int(_float_value(report.get("count"), default=float(len(rows))))
+    ok = row_count > 0 or metric_count > 0
+    note = "Official SEC company facts returned."
+    if not ok:
+        note = str(report.get("error") or "No usable company facts returned for this symbol.")
+    return {
+        "ok": ok,
+        "rows": row_count,
+        "metric_count": metric_count,
+        "source": report.get("source") or "sec_companyfacts",
+        "company_name": report.get("company_name"),
+        "cik": report.get("cik"),
+        "watch_signals": "; ".join(str(item) for item in watch[:3]) if watch else None,
+        "note": note,
+    }
+
+
 def _fetch_option_chain_for_provider_status(symbol: str) -> dict[str, Any]:
     try:
         return _fetch_option_chain(symbol, cache_age=600, include_diagnostics=True)
@@ -6696,6 +6720,22 @@ def build_provider_status(
             "note": "Skipped because this symbol is not an equity/ETF option-chain request.",
         })
 
+    if not symbol.endswith("=F") and not symbol.startswith("^"):
+        rows.append(_provider_probe(
+            "SEC company facts",
+            "fundamentals",
+            lambda: _companyfacts_probe_result(companyfacts_for_symbol(symbol, limit=8)),
+        ))
+    else:
+        rows.append({
+            "provider": "SEC company facts",
+            "category": "fundamentals",
+            "status": "warn",
+            "latency_ms": 0,
+            "rows": 0,
+            "note": "Skipped because this symbol is not a company equity fundamentals request.",
+        })
+
     sec_meta = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
     rows.append({
         "provider": "SEC company ticker cache",
@@ -6721,6 +6761,8 @@ def build_provider_status(
     working_history = [row for row in history_rows if row.get("status") == "ok"]
     chain_rows = [row for row in rows if row.get("category") == "options"]
     chain_ok = (not include_chain) or any(row.get("status") == "ok" for row in chain_rows)
+    facts_rows = [row for row in rows if row.get("category") == "fundamentals"]
+    facts_ok = any(row.get("status") == "ok" for row in facts_rows)
     symbol_cache_ok = sum(1 for row in rows if row.get("category") == "symbol_search" and row.get("status") == "ok")
     history_sources = [
         str(row.get("history_source") or row.get("provider") or "").strip()
@@ -6766,6 +6808,8 @@ def build_provider_status(
             "option_chain_status": (
                 "skipped" if not include_chain else "ok" if chain_ok else "warn"
             ),
+            "sec_companyfacts_status": "ok" if facts_ok else "warn",
+            "sec_companyfacts_rows": sum(int(_float_value(row.get("rows"), default=0.0)) for row in facts_rows),
             "symbol_cache_ok_count": symbol_cache_ok,
             "notes": [
                 "Ready means at least one free history source worked and the option-chain check passed or was skipped.",
@@ -10294,6 +10338,7 @@ function providerSummaryHtml(data) {
     ['Symbol', data.symbol || '-'],
     ['History source', trust.history_source_summary || '-'],
     ['Option chain', trust.option_chain_status || '-'],
+    ['SEC facts', `${trust.sec_companyfacts_status || '-'} / ${trust.sec_companyfacts_rows || 0}`],
     ['Working', `${data.ok_count || 0}/${data.provider_count || 0}`],
     ['Warnings', (data.warnings || []).length]
   ];

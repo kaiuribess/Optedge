@@ -239,6 +239,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data trust" in html
     assert "History source" in html
     assert "Option chain" in html
+    assert "SEC facts" in html
     assert "Free source map" in html
     assert "/api/free-data-sources" in html
     assert "freeSourcesTable" in html
@@ -3179,6 +3180,7 @@ def test_provider_status_checks_free_sources_without_running_scan():
     old_nasdaq = cockpit_module.data_provider._nasdaq_history
     old_stooq = cockpit_module.data_provider._stooq_history
     old_chain = cockpit_module._fetch_option_chain
+    old_companyfacts = cockpit_module.companyfacts_for_symbol
     idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
     hist = pd.DataFrame({
         "Open": [10.0, 11.0],
@@ -3206,6 +3208,16 @@ def test_provider_status_checks_free_sources_without_running_scan():
                 ])
             },
         }
+        cockpit_module.companyfacts_for_symbol = lambda *args, **kwargs: {
+            "symbol": "AAPL",
+            "cik": "320193",
+            "company_name": "Apple Inc.",
+            "source": "sec_companyfacts",
+            "count": 2,
+            "rows": [{"metric": "revenue"}, {"metric": "net_income"}],
+            "metrics": {"revenue": 100.0, "net_income": 20.0},
+            "watch_signals": ["net margin positive"],
+        }
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
             (data_dir / "sec_company_tickers.json").write_text(
@@ -3223,15 +3235,18 @@ def test_provider_status_checks_free_sources_without_running_scan():
         cockpit_module.data_provider._nasdaq_history = old_nasdaq
         cockpit_module.data_provider._stooq_history = old_stooq
         cockpit_module._fetch_option_chain = old_chain
+        cockpit_module.companyfacts_for_symbol = old_companyfacts
 
     assert report["symbol"] == "AAPL"
-    assert report["provider_count"] == 6
-    assert report["ok_count"] == 5
+    assert report["provider_count"] == 7
+    assert report["ok_count"] == 6
     assert report["data_trust"]["label"] == "ready"
     assert report["data_trust"]["score"] >= 80
     assert report["data_trust"]["history_ok_count"] == 2
     assert report["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
     assert report["data_trust"]["option_chain_status"] == "ok"
+    assert report["data_trust"]["sec_companyfacts_status"] == "ok"
+    assert report["data_trust"]["sec_companyfacts_rows"] == 2
     providers = {row["provider"]: row for row in report["rows"]}
     assert providers["Yahoo chart"]["rows"] == 2
     assert providers["Yahoo chart"]["history_source"] == "yahoo_chart"
@@ -3239,9 +3254,12 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert providers["Nasdaq historical"]["history_source"] == "nasdaq_historical"
     assert providers["Stooq CSV"]["status"] == "warn"
     assert providers["Option chain stack"]["rows"] == 2
+    assert providers["SEC company facts"]["status"] == "ok"
+    assert providers["SEC company facts"]["metric_count"] == 2
+    assert providers["SEC company facts"]["watch_signals"] == "net margin positive"
     assert providers["SEC company ticker cache"]["status"] == "ok"
     assert providers["Nasdaq symbol directory cache"]["status"] == "ok"
-    assert no_chain["provider_count"] == 5
+    assert no_chain["provider_count"] == 6
     assert no_chain["data_trust"]["option_chain_status"] == "skipped"
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
 
