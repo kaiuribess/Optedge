@@ -2288,6 +2288,7 @@ def build_option_chain_scan(
     source_attempts = blob.get("source_attempts") if isinstance(blob.get("source_attempts"), list) else []
     today = datetime.now(timezone.utc).date()
     rows: list[dict[str, Any]] = []
+    rejection_examples: list[dict[str, Any]] = []
     rejected = 0
     rejection_reason_counts: dict[str, int] = {}
     total_contracts = 0
@@ -2330,8 +2331,23 @@ def build_option_chain_scan(
                 reasons.append("open interest below filter")
             if reasons:
                 rejected += 1
-                for reason in dict.fromkeys(reasons):
+                unique_reasons = list(dict.fromkeys(reasons))
+                for reason in unique_reasons:
                     rejection_reason_counts[reason] = rejection_reason_counts.get(reason, 0) + 1
+                if len(rejection_examples) < 25:
+                    rejection_examples.append({
+                        "side": contract_side or "-",
+                        "expiry": str(expiry),
+                        "dte": dte,
+                        "strike": _clean_value(strike),
+                        "mid": _clean_value(round(mid, 4) if math.isfinite(mid) else None),
+                        "premium_dollars": _clean_value(round(premium, 2) if math.isfinite(premium) else None),
+                        "spread_pct": _clean_value(spread_pct),
+                        "openInterest": oi,
+                        "volume": volume,
+                        "reason": "; ".join(unique_reasons),
+                        "reasons": unique_reasons,
+                    })
                 continue
 
             row = {
@@ -2400,6 +2416,7 @@ def build_option_chain_scan(
         "rejected_count": rejected,
         "rejection_reason_counts": rejection_reason_counts,
         "top_rejection_reasons": top_rejection_reasons,
+        "rejection_examples": rejection_examples,
         "preset": preset_norm,
         "preset_label": preset_cfg.get("label"),
         "preset_description": preset_cfg.get("description"),
@@ -2531,6 +2548,12 @@ def build_option_chain_batch(
             "data_delay": _clean_value(report.get("data_delay")),
             "total_contracts": _clean_value(report.get("total_contracts")),
             "filtered_count": _clean_value(report.get("filtered_count")),
+            "rejected_count": _clean_value(report.get("rejected_count")),
+            "top_rejects": "; ".join(
+                f"{row.get('reason')} ({row.get('count')})"
+                for row in (report.get("top_rejection_reasons") or [])[:3]
+                if row.get("reason")
+            ),
             "grades": _clean_value((report.get("scan_summary") or {}).get("grade_counts")),
             "best_reviewable": _clean_value((report.get("scan_summary") or {}).get("best_reviewable")),
         }
@@ -8096,7 +8119,15 @@ function optionChainDecisionHtml(data) {
 }
 function optionChainResultsHtml(data) {
   const rows = data.rows || [];
-  if (!rows.length) return '<div class="empty">No contracts matched these filters.</div>';
+  const rejected = data.rejection_examples || [];
+  const rejectedPanel = rejected.length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Why contracts were filtered out</h4>${table(rejected.slice(0, 12), true)}</div>`
+    : '';
+  if (!rows.length) {
+    const topRejects = countMapText(data.rejection_reason_counts || {});
+    const reasonText = topRejects ? ` Top filters: ${escHtml(topRejects)}.` : '';
+    return `<div class="empty">No contracts matched these filters.${reasonText}</div>${rejectedPanel}`;
+  }
   const decision = optionChainDecisionHtml(data);
   const topCards = rows.slice(0, 6).map(optionContractCard).join('');
   const expiryRows = data.expiry_summary || [];
@@ -8107,6 +8138,7 @@ function optionChainResultsHtml(data) {
       <div class="brief-list"><h4>Expiration quality</h4>${table(expiryRows)}</div>
       <div class="brief-list"><h4>Top contracts</h4>${table(rows, true)}</div>
     </div>
+    ${rejectedPanel}
   </div>`;
 }
 function optionChainBatchSummary(data) {

@@ -177,6 +177,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "exportChainBatchShortlist" in html
     assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
+    assert "Why contracts were filtered out" in html
     assert "Grade / lane" in html
     assert "Break-even" in html
     assert "Budget fit" in html
@@ -1762,6 +1763,14 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["rejection_reason_counts"]["spread above filter"] == 1
     assert report["rejection_reason_counts"]["side is not call"] == 1
     assert report["top_rejection_reasons"][0]["count"] == 1
+    assert len(report["rejection_examples"]) == 2
+    reject_reasons = [reason for row in report["rejection_examples"] for reason in row["reasons"]]
+    assert "spread above filter" in reject_reasons
+    assert "side is not call" in reject_reasons
+    wide_reject = [row for row in report["rejection_examples"] if row["reason"] == "spread above filter"][0]
+    assert wide_reject["strike"] == 300.0
+    assert wide_reject["side"] == "call"
+    assert wide_reject["premium_dollars"] == 150.0
     row = report["rows"][0]
     assert row["side"] == "call"
     assert row["strike"] == 220.0
@@ -1875,6 +1884,8 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
             "quote_quality": "free_or_delayed",
             "data_delay": "delayed",
             "total_contracts": 20,
+            "rejected_count": 4,
+            "top_rejection_reasons": [{"reason": "spread above filter", "count": 4}],
             "filtered_count": len(rows),
             "scan_summary": {
                 "grade_counts": {rows[0]["contract_grade"]: len(rows)},
@@ -1906,6 +1917,8 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
     assert report["rows"][0]["contract_grade"] == "A"
     assert report["rows"][0]["candidate_source"] == "typed shortlist"
     assert report["symbol_summaries"][0]["quote_quality"] == "free_or_delayed"
+    assert report["symbol_summaries"][0]["rejected_count"] == 4
+    assert report["symbol_summaries"][0]["top_rejects"] == "spread above filter (4)"
 
 
 def test_option_chain_shortlist_writer_creates_portable_artifacts():
