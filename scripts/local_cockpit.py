@@ -142,6 +142,35 @@ CHAIN_PRESETS = {
     },
 }
 
+CHAIN_CONTEXT_FIELDS = {
+    "source",
+    "chain_source",
+    "quote_quality",
+    "data_delay",
+    "contract_grade",
+    "review_lane",
+    "review_thesis",
+    "grade_reasons",
+    "readiness_label",
+    "readiness_score",
+    "risk_flags",
+    "contract_quality_score",
+    "bid",
+    "ask",
+    "mid",
+    "spread_pct",
+    "premium_dollars",
+    "volume",
+    "openInterest",
+    "impliedVolatility",
+    "delta",
+    "moneyness_pct",
+    "dte",
+    "dte_bucket",
+    "scan_preset",
+    "scan_symbol",
+}
+
 POSITION_FILES = {
     "option": "open_positions.json",
     "share": "open_share_positions.json",
@@ -364,6 +393,36 @@ def _clean_value(value: Any) -> Any:
         except Exception:
             pass
     return value
+
+
+def _clean_watchlist_context(context: Any) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key in CHAIN_CONTEXT_FIELDS:
+        if key not in context:
+            continue
+        value = context.get(key)
+        if isinstance(value, list):
+            items = []
+            for item in value[:8]:
+                clean = _clean_value(item)
+                if isinstance(clean, str):
+                    clean = clean[:220]
+                if clean is None or isinstance(clean, (str, int, float, bool)):
+                    items.append(clean)
+            if items:
+                cleaned[key] = items
+            continue
+        clean_value = _clean_value(value)
+        if isinstance(clean_value, str):
+            clean_value = clean_value[:700]
+        if clean_value is None or isinstance(clean_value, (str, int, float, bool)):
+            cleaned[key] = clean_value
+    if cleaned:
+        cleaned["saved_from"] = "option_chain_scan"
+        cleaned["saved_context_at"] = _now_iso()
+    return cleaned
 
 
 def _float_value(value: Any, default: float = 0.0) -> float:
@@ -653,6 +712,7 @@ def _saved_contract_review(row: dict[str, Any]) -> dict[str, Any]:
     quote_label = str(row.get("quote_readiness_label") or "").lower()
     paper_status = str(row.get("paper_readiness") or row.get("status") or "").lower()
     warnings = _float_value(row.get("warning_count"), default=0.0)
+    saved_grade = str(row.get("saved_contract_grade") or "").upper()
 
     if not math.isfinite(dte):
         score -= 25
@@ -697,6 +757,11 @@ def _saved_contract_review(row: dict[str, Any]) -> dict[str, Any]:
             reasons.append(f"quote score {quote_score:g}")
         elif quote_score >= 80:
             reasons.append(f"quote score {quote_score:g}")
+    if saved_grade in {"A", "B"}:
+        reasons.append(f"saved grade {saved_grade}")
+    elif saved_grade == "D":
+        score -= 8
+        reasons.append("saved grade D")
     if quote_label == "wait":
         score -= 20
         reasons.append("quote readiness wait")
@@ -740,6 +805,7 @@ def build_saved_option_contracts(
         request = entry.get("request") if isinstance(entry, dict) else None
         if not isinstance(request, dict) or request.get("asset") != "option":
             continue
+        chain_context = entry.get("chain_context") if isinstance(entry.get("chain_context"), dict) else {}
         dte = _request_dte(request.get("expiry"))
         side = str(request.get("side") or "").strip().lower()
         row = {
@@ -763,6 +829,24 @@ def build_saved_option_contracts(
             "warning_count": _clean_value(entry.get("warning_count")),
             "added_at": entry.get("added_at"),
             "updated_at": entry.get("updated_at"),
+            "saved_context_at": _clean_value(chain_context.get("saved_context_at")),
+            "saved_contract_grade": _clean_value(chain_context.get("contract_grade")),
+            "saved_review_lane": _clean_value(chain_context.get("review_lane")),
+            "saved_review_thesis": _clean_value(chain_context.get("review_thesis")),
+            "saved_grade_reasons": _clean_value(chain_context.get("grade_reasons")),
+            "saved_readiness_label": _clean_value(chain_context.get("readiness_label")),
+            "saved_readiness_score": _clean_value(chain_context.get("readiness_score")),
+            "saved_contract_quality_score": _clean_value(chain_context.get("contract_quality_score")),
+            "saved_chain_source": _clean_value(chain_context.get("chain_source") or chain_context.get("source")),
+            "saved_quote_quality": _clean_value(chain_context.get("quote_quality")),
+            "saved_data_delay": _clean_value(chain_context.get("data_delay")),
+            "saved_mid": _clean_value(chain_context.get("mid")),
+            "saved_bid": _clean_value(chain_context.get("bid")),
+            "saved_ask": _clean_value(chain_context.get("ask")),
+            "saved_spread_pct": _clean_value(chain_context.get("spread_pct")),
+            "saved_premium_dollars": _clean_value(chain_context.get("premium_dollars")),
+            "saved_volume": _clean_value(chain_context.get("volume")),
+            "saved_open_interest": _clean_value(chain_context.get("openInterest")),
         }
         if refresh_quotes and quote_checked_count < quote_limit:
             row.update(_saved_contract_quote_snapshot(str(row.get("symbol") or ""), request, dte))
@@ -785,6 +869,7 @@ def build_saved_option_contracts(
     status_counts: dict[str, int] = {}
     quote_status_counts: dict[str, int] = {}
     review_action_counts: dict[str, int] = {}
+    saved_grade_counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -792,6 +877,8 @@ def build_saved_option_contracts(
         quote_status_counts[quote_status] = quote_status_counts.get(quote_status, 0) + 1
         review_action = str(row.get("review_action") or "unknown")
         review_action_counts[review_action] = review_action_counts.get(review_action, 0) + 1
+        saved_grade = str(row.get("saved_contract_grade") or "ungraded")
+        saved_grade_counts[saved_grade] = saved_grade_counts.get(saved_grade, 0) + 1
     return {
         "generated_at": _now_iso(),
         "count": len(rows),
@@ -802,6 +889,7 @@ def build_saved_option_contracts(
         "status_counts": status_counts,
         "quote_status_counts": quote_status_counts,
         "review_action_counts": review_action_counts,
+        "saved_grade_counts": saved_grade_counts,
         "call_count": sum(row.get("side") == "call" for row in rows),
         "put_count": sum(row.get("side") == "put" for row in rows),
         "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
@@ -821,7 +909,7 @@ def _save_watchlist(entries: list[dict[str, Any]], data_dir: Path = DATA_DIR) ->
     path.write_text(json.dumps(entries, indent=2, default=str), encoding="utf-8")
 
 
-def add_watchlist_query(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]:
+def add_watchlist_query(query: str, data_dir: Path = DATA_DIR, context: dict[str, Any] | None = None) -> dict[str, Any]:
     clean = str(query or "").strip()
     if not clean:
         return {"ok": False, "error": "query is required"}
@@ -835,6 +923,7 @@ def add_watchlist_query(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]
     current = load_watchlist(data_dir)["entries"]
     item_id = _watchlist_entry_id(resolution, clean)
     now = _now_iso()
+    chain_context = _clean_watchlist_context(context)
     entry = {
         "id": item_id,
         "query": clean,
@@ -846,10 +935,14 @@ def add_watchlist_query(query: str, data_dir: Path = DATA_DIR) -> dict[str, Any]
         "added_at": now,
         "updated_at": now,
     }
+    if chain_context:
+        entry["chain_context"] = chain_context
     replaced = False
     for idx, row in enumerate(current):
         if row.get("id") == item_id:
             entry["added_at"] = row.get("added_at") or now
+            if not chain_context and isinstance(row.get("chain_context"), dict):
+                entry["chain_context"] = row.get("chain_context")
             current[idx] = entry
             replaced = True
             break
@@ -1460,6 +1553,9 @@ def build_option_chain_scan(
                 "symbol": ticker,
                 "side": contract_side,
                 "expiry": str(expiry),
+                "chain_source": source,
+                "quote_quality": quote_quality,
+                "data_delay": _clean_value(blob.get("data_delay")),
                 "dte": dte,
                 "dte_bucket": _option_dte_bucket(float(dte)),
                 "strike": strike,
@@ -5249,10 +5345,12 @@ function savedContractsSummary(data) {
   const status = data.status_counts || {};
   const quote = data.quote_status_counts || {};
   const review = data.review_action_counts || {};
+  const grades = data.saved_grade_counts || {};
   const fields = [
     ['Saved contracts', data.count || 0],
     ['3m+ swing', data.swing_count || 0],
     ['Calls / puts', `${data.call_count || 0} / ${data.put_count || 0}`],
+    ['Saved A / B', `${grades.A || 0} / ${grades.B || 0}`],
     ['Review now', review.review_now || 0],
     ['Quotes checked', data.quote_checked_count || 0],
     ['Quote matched', quote.matched || 0],
@@ -5273,11 +5371,14 @@ function savedContractsTable(rows) {
     <td>${cell(r.side_code)} ${cell(r.strike)}</td>
     <td>${cell(r.expiry)}</td>
     <td>${cell(r.dte)}</td>
+    <td><strong>${cell(r.saved_contract_grade || '-')}</strong><br><small>${cell(r.saved_review_lane || '')}</small></td>
+    <td>${cell(r.saved_review_thesis || '-')}</td>
     <td>${cell(r.review_action)}</td>
     <td>${cell(r.review_score)}</td>
     <td>${cell(Array.isArray(r.review_reasons) ? r.review_reasons.join(', ') : r.review_reasons)}</td>
     <td>${cell(r.status)}</td>
     <td>${cell(r.quote_status || 'not_checked')}</td>
+    <td>${cell(r.saved_mid)} / ${pct(r.saved_spread_pct)}</td>
     <td>${cell(r.current_mid)}</td>
     <td>${pct(r.current_spread_pct)}</td>
     <td>${moneyShort(r.current_premium_dollars)}</td>
@@ -5291,7 +5392,7 @@ function savedContractsTable(rows) {
     <td>${cell(r.query)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Action</th><th>Review score</th><th>Reasons</th><th>Status</th><th>Quote</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
+    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Saved grade</th><th>Saved thesis</th><th>Action</th><th>Review score</th><th>Reasons</th><th>Status</th><th>Quote</th><th>Saved mid/spread</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {
@@ -5339,12 +5440,18 @@ function wireOptionChainActions(root=document) {
     btn.addEventListener('click', async () => {
       const query = btn.dataset.query || '';
       if (!query) return;
+      let context = {};
+      try {
+        context = JSON.parse(btn.dataset.context || '{}');
+      } catch (err) {
+        context = {};
+      }
       btn.disabled = true;
       $('chain-status-text').textContent = `Saving ${query} to research watchlist...`;
       const res = await fetch('/api/watchlist-add', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ query })
+        body: JSON.stringify({ query, context })
       });
       const data = await res.json();
       btn.disabled = false;
@@ -5901,6 +6008,34 @@ function optionContractCard(row) {
   const gradeReasons = Array.isArray(row.grade_reasons) ? row.grade_reasons.join(', ') : (row.grade_reasons || '');
   const title = `${row.symbol || ''} ${(row.side || '').toUpperCase()} ${row.strike || ''}`;
   const query = row.contract_query || optionContractQuery(row);
+  const context = {
+    source: 'option_chain_scan',
+    chain_source: row.chain_source || '',
+    quote_quality: row.quote_quality || '',
+    data_delay: row.data_delay || '',
+    scan_symbol: row.symbol || '',
+    scan_preset: $('chain-preset') ? $('chain-preset').value : '',
+    contract_grade: row.contract_grade || '',
+    review_lane: row.review_lane || '',
+    review_thesis: row.review_thesis || '',
+    grade_reasons: Array.isArray(row.grade_reasons) ? row.grade_reasons.slice(0, 8) : [],
+    readiness_label: row.readiness_label || '',
+    readiness_score: row.readiness_score,
+    risk_flags: Array.isArray(row.risk_flags) ? row.risk_flags.slice(0, 8) : [],
+    contract_quality_score: row.contract_quality_score,
+    bid: row.bid,
+    ask: row.ask,
+    mid: row.mid,
+    spread_pct: row.spread_pct,
+    premium_dollars: row.premium_dollars,
+    volume: row.volume,
+    openInterest: row.openInterest,
+    impliedVolatility: row.impliedVolatility,
+    delta: row.delta,
+    moneyness_pct: row.moneyness_pct,
+    dte: row.dte,
+    dte_bucket: row.dte_bucket
+  };
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
@@ -5917,7 +6052,7 @@ function optionContractCard(row) {
     <div class="row"><span>Why</span><b>${cell(gradeReasons || row.review_thesis || '-')}</b></div>
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Request</span><b>${cell(query)}</b></div>
-    <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}">Save contract</button>
+    <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save contract</button>
   </article>`;
 }
 function optionChainResultsHtml(data) {
@@ -6376,7 +6511,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0") or 0)
         except Exception:
             length = 0
-        raw = self.rfile.read(min(length, 2000)) if length > 0 else b"{}"
+        raw = self.rfile.read(min(length, 12000)) if length > 0 else b"{}"
         try:
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
@@ -6386,7 +6521,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(result, status=200 if result.get("ok") else 502)
             return
         if parsed.path == "/api/watchlist-add":
-            result = add_watchlist_query(str(body.get("query") or ""), self.data_dir)
+            context = body.get("context") if isinstance(body.get("context"), dict) else None
+            result = add_watchlist_query(str(body.get("query") or ""), self.data_dir, context=context)
             self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/watchlist-remove":

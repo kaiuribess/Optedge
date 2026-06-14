@@ -1478,6 +1478,9 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     row = report["rows"][0]
     assert row["side"] == "call"
     assert row["strike"] == 220.0
+    assert row["chain_source"] == "cboe"
+    assert row["quote_quality"] == "free_or_delayed"
+    assert row["data_delay"] == "delayed"
     assert row["premium_dollars"] == 500.0
     assert row["contract_query"] == "AAPL 2027-01-15 C 220"
     assert row["spread_pct"] < 0.10
@@ -1657,6 +1660,46 @@ def test_saved_option_contracts_extracts_watchlist_option_requests():
         assert contracts["status_counts"]["expired"] == 1
         assert contracts["review_action_counts"]["refresh_quote"] == 2
         assert contracts["swing_count"] == 1
+
+
+def test_saved_option_contracts_preserve_chain_scan_context():
+    context = {
+        "chain_source": "cboe",
+        "quote_quality": "free_or_delayed",
+        "data_delay": "delayed",
+        "contract_grade": "A",
+        "review_lane": "primary_review",
+        "review_thesis": "A-grade 300 DTE call with tight spread.",
+        "grade_reasons": ["tight spread", "liquid", "inside premium budget"],
+        "readiness_label": "ready",
+        "readiness_score": 92,
+        "contract_quality_score": 88.5,
+        "mid": 5.0,
+        "bid": 4.9,
+        "ask": 5.1,
+        "spread_pct": 0.04,
+        "premium_dollars": 500.0,
+        "volume": 50,
+        "openInterest": 1000,
+    }
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        added = add_watchlist_query("AAPL 20991218 C 220", data_dir, context=context)
+        assert added["ok"] is True
+        loaded = load_watchlist(data_dir)["entries"][0]
+        contracts = build_saved_option_contracts(data_dir, enrich=False)
+
+    row = contracts["rows"][0]
+    assert loaded["chain_context"]["contract_grade"] == "A"
+    assert loaded["chain_context"]["saved_from"] == "option_chain_scan"
+    assert row["saved_contract_grade"] == "A"
+    assert row["saved_review_lane"] == "primary_review"
+    assert row["saved_review_thesis"].startswith("A-grade")
+    assert row["saved_mid"] == 5.0
+    assert row["saved_spread_pct"] == 0.04
+    assert row["saved_quote_quality"] == "free_or_delayed"
+    assert contracts["saved_grade_counts"]["A"] == 1
+    assert "saved grade A" in row["review_reasons"]
 
 
 def test_saved_option_contracts_can_refresh_exact_chain_quotes():
