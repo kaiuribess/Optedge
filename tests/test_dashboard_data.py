@@ -73,14 +73,20 @@ def test_dashboard_helpers_dedupe_and_label_positions():
 def test_option_card_and_table_show_quote_quality():
     live_row = _sample_option_row(chain_source="tradier", quote_quality="live_or_broker")
     fallback_row = _sample_option_row(ticker="MSFT", chain_source="yfinance", quote_quality="free_or_delayed")
+    yahoo_row = _sample_option_row(ticker="NVDA", chain_source="yahoo_options", quote_quality="free_or_delayed")
 
     card_html = dashboard_build._option_card(live_row)
-    table_html = dashboard_build._options_table(dashboard_build.pd.DataFrame([live_row, fallback_row]))
+    table_html = dashboard_build._options_table(dashboard_build.pd.DataFrame([
+        live_row,
+        fallback_row,
+        yahoo_row,
+    ]))
 
     assert "Live Tradier" in card_html
     assert "Source" in table_html
     assert "Live Tradier" in table_html
     assert "Yahoo fallback" in table_html
+    assert "Yahoo options" in table_html
 
 
 def test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels():

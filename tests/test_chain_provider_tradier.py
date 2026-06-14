@@ -64,6 +64,88 @@ class _Session:
         raise AssertionError(f"unexpected url {url}")
 
 
+class _YahooSession:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        self.calls.append((url, params, headers, timeout))
+        exp = 1781740800 if not params else int(params["date"])
+        return _Resp({
+            "optionChain": {
+                "result": [{
+                    "quote": {
+                        "regularMarketPrice": 300.0,
+                        "trailingAnnualDividendYield": 0.005,
+                    },
+                    "expirationDates": [1781740800, 1784332800],
+                    "options": [{
+                        "expirationDate": exp,
+                        "calls": [{
+                            "contractSymbol": "AAPL260618C00280000",
+                            "strike": 280,
+                            "bid": 1.1,
+                            "ask": 1.3,
+                            "lastPrice": None,
+                            "volume": 10,
+                            "openInterest": 200,
+                            "impliedVolatility": 0.35,
+                            "inTheMoney": True,
+                            "lastTradeDate": 1779210000,
+                        }],
+                        "puts": [{
+                            "contractSymbol": "AAPL260618P00280000",
+                            "strike": 280,
+                            "bid": 0.9,
+                            "ask": 1.0,
+                            "lastPrice": 0.95,
+                            "volume": 8,
+                            "openInterest": 150,
+                            "impliedVolatility": 0.33,
+                            "inTheMoney": False,
+                        }],
+                    }],
+                }],
+                "error": None,
+            }
+        })
+
+
+class _FailingYahooSession:
+    def get(self, url, params=None, headers=None, timeout=None):
+        return _Resp({}, status_code=401)
+
+
+class _FakeYfTicker:
+    def __init__(self):
+        self._expirations = {
+            "2026-06-18": 1781740800,
+            "2026-07-18": 1784332800,
+        }
+
+    def _download_options(self, date=None):
+        exp = 1781740800 if date is None else int(date)
+        strike = 280 if exp == 1781740800 else 290
+        return {
+            "underlying": {
+                "regularMarketPrice": 300.0,
+                "trailingAnnualDividendYield": 0.005,
+            },
+            "expirationDate": exp,
+            "calls": [{
+                "contractSymbol": f"AAPL260618C00{strike}000",
+                "strike": strike,
+                "bid": 1.1,
+                "ask": 1.3,
+                "lastPrice": None,
+                "volume": 10,
+                "openInterest": 200,
+                "impliedVolatility": 0.35,
+            }],
+            "puts": [],
+        }
+
+
 def test_tradier_disabled_without_token():
     old = os.environ.pop("OPTEDGE_TRADIER_TOKEN", None)
     try:
@@ -98,6 +180,39 @@ def test_tradier_fetch_normalizes_chain():
     assert call["delta"] == 0.42
 
 
+def test_yahoo_options_fetch_normalizes_direct_chain():
+    session = _YahooSession()
+    blob = chain_provider._fetch_yahoo_options("AAPL", session)
+
+    assert blob["source"] == "yahoo_options"
+    assert blob["spot"] == 300.0
+    assert blob["div_yield"] == 0.005
+    assert blob["quote_quality"] == "free_or_delayed"
+    assert blob["expirations"] == ["2026-06-18", "2026-07-18"]
+    assert len(session.calls) == 2
+    first = blob["chains"]["2026-06-18"]
+    assert set(first["side"]) == {"call", "put"}
+    call = first[first["side"] == "call"].iloc[0]
+    assert round(call["lastPrice"], 2) == 1.2
+    assert call["openInterest"] == 200
+    assert call["impliedVolatility"] == 0.35
+    assert call["contractSymbol"] == "AAPL260618C00280000"
+
+
+def test_yahoo_options_falls_back_to_bounded_yfinance_downloader():
+    old_yf_ticker = data_provider.yf_ticker
+    data_provider.yf_ticker = lambda ticker: _FakeYfTicker()
+    try:
+        blob = chain_provider._fetch_yahoo_options("AAPL", _FailingYahooSession())
+    finally:
+        data_provider.yf_ticker = old_yf_ticker
+
+    assert blob["source"] == "yahoo_options"
+    assert blob["expirations"] == ["2026-06-18", "2026-07-18"]
+    assert len(blob["chains"]["2026-06-18"]) == 1
+    assert len(blob["chains"]["2026-07-18"]) == 1
+
+
 def test_fetch_chain_records_free_provider_diagnostics():
     old_env = {
         key: os.environ.get(key)
@@ -110,6 +225,7 @@ def test_fetch_chain_records_free_provider_diagnostics():
     old_get_session = data_provider.get_session
     old_cboe = chain_provider._fetch_cboe
     old_nasdaq = chain_provider._fetch_nasdaq
+    old_yahoo = chain_provider._fetch_yahoo_options
     old_yfinance = chain_provider._fetch_yfinance
     cached = {}
 
@@ -139,6 +255,7 @@ def test_fetch_chain_records_free_provider_diagnostics():
     data_provider.get_session = lambda: object()
     chain_provider._fetch_cboe = lambda *args, **kwargs: None
     chain_provider._fetch_nasdaq = fake_nasdaq
+    chain_provider._fetch_yahoo_options = lambda *args, **kwargs: None
     chain_provider._fetch_yfinance = lambda *args, **kwargs: None
     try:
         blob = chain_provider.fetch_chain("SPY", cache_age=0, include_diagnostics=True)
@@ -148,6 +265,7 @@ def test_fetch_chain_records_free_provider_diagnostics():
         data_provider.get_session = old_get_session
         chain_provider._fetch_cboe = old_cboe
         chain_provider._fetch_nasdaq = old_nasdaq
+        chain_provider._fetch_yahoo_options = old_yahoo
         chain_provider._fetch_yfinance = old_yfinance
         for key, value in old_env.items():
             if value is None:
@@ -169,8 +287,83 @@ def test_fetch_chain_records_free_provider_diagnostics():
     assert cached["chain:SPY"]["source_attempts"][-1]["provider"] == "nasdaq_etf"
 
 
+def test_fetch_chain_uses_yahoo_options_before_yfinance():
+    old_env = {
+        key: os.environ.get(key)
+        for key in ("OPTEDGE_TRADIER_TOKEN", "TRADIER_TOKEN", "TRADIER_ACCESS_TOKEN")
+    }
+    for key in old_env:
+        os.environ.pop(key, None)
+    old_cache_get = data_provider.cache_get
+    old_cache_put = data_provider.cache_put
+    old_get_session = data_provider.get_session
+    old_cboe = chain_provider._fetch_cboe
+    old_nasdaq = chain_provider._fetch_nasdaq
+    old_yahoo = chain_provider._fetch_yahoo_options
+    old_yfinance = chain_provider._fetch_yfinance
+    yfinance_called = {"value": False}
+
+    yahoo_blob = {
+        "spot": 300.0,
+        "div_yield": 0.0,
+        "expirations": ["2026-06-18"],
+        "chains": {"2026-06-18": pd.DataFrame([{
+            "strike": 280,
+            "side": "call",
+            "bid": 1.0,
+            "ask": 1.2,
+            "lastPrice": 1.1,
+            "volume": 5,
+            "openInterest": 100,
+        }])},
+        "source": "yahoo_options",
+        "quote_quality": "free_or_delayed",
+        "data_delay": "delayed_or_research",
+    }
+
+    def fake_yfinance(*args, **kwargs):
+        yfinance_called["value"] = True
+        return None
+
+    data_provider.cache_get = lambda *args, **kwargs: None
+    data_provider.cache_put = lambda *args, **kwargs: None
+    data_provider.get_session = lambda: object()
+    chain_provider._fetch_cboe = lambda *args, **kwargs: None
+    chain_provider._fetch_nasdaq = lambda *args, **kwargs: None
+    chain_provider._fetch_yahoo_options = lambda *args, **kwargs: yahoo_blob
+    chain_provider._fetch_yfinance = fake_yfinance
+    try:
+        blob = chain_provider.fetch_chain("AAPL", cache_age=0, include_diagnostics=True)
+    finally:
+        data_provider.cache_get = old_cache_get
+        data_provider.cache_put = old_cache_put
+        data_provider.get_session = old_get_session
+        chain_provider._fetch_cboe = old_cboe
+        chain_provider._fetch_nasdaq = old_nasdaq
+        chain_provider._fetch_yahoo_options = old_yahoo
+        chain_provider._fetch_yfinance = old_yfinance
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert blob["source"] == "yahoo_options"
+    assert yfinance_called["value"] is False
+    assert [row["provider"] for row in blob["source_attempts"]] == [
+        "cboe",
+        "nasdaq_stocks",
+        "nasdaq_etf",
+        "nasdaq_index",
+        "yahoo_options",
+    ]
+
+
 if __name__ == "__main__":
     test_tradier_disabled_without_token()
     test_tradier_fetch_normalizes_chain()
+    test_yahoo_options_fetch_normalizes_direct_chain()
+    test_yahoo_options_falls_back_to_bounded_yfinance_downloader()
     test_fetch_chain_records_free_provider_diagnostics()
-    print("3/3 Tradier chain provider tests passed")
+    test_fetch_chain_uses_yahoo_options_before_yfinance()
+    print("6/6 Tradier chain provider tests passed")

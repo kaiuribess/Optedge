@@ -150,7 +150,7 @@ Optional live/broker option-chain source:
 $env:OPTEDGE_TRADIER_TOKEN="your-production-tradier-token"
 ```
 
-If no Tradier token is set, Optedge stays on the free chain stack: CBOE delayed quotes, NASDAQ chains, then yfinance fallback.
+If no Tradier token is set, Optedge stays on the free chain stack: CBOE delayed quotes, NASDAQ chains, bounded Yahoo options JSON, then yfinance fallback.
 
 ## Run
 

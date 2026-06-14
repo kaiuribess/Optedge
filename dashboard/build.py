@@ -125,6 +125,10 @@ def _quote_quality_chip(row: pd.Series) -> str:
         color = "#f59e0b"
         label = "NASDAQ free"
         title = "Free NASDAQ option chain source; treat as non-live unless verified."
+    elif source.lower().startswith("yahoo_options"):
+        color = "#94a3b8"
+        label = "Yahoo options"
+        title = "Bounded Yahoo options fallback; free/delayed research data."
     elif source.lower().startswith("yfinance"):
         color = "#94a3b8"
         label = "Yahoo fallback"

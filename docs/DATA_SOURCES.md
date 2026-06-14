@@ -4,7 +4,7 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 
 ## Core Sources
 
-- Options chains through the layered chain provider: optional broker/live sources first, then free CBOE/Nasdaq/yfinance fallbacks.
+- Options chains through the layered chain provider: optional broker/live sources first, then free CBOE/Nasdaq, bounded Yahoo options JSON, and yfinance fallbacks.
 - Market history through Yahoo chart data and `yfinance`, then public no-key Nasdaq historical JSON, then Stooq CSV as a final best-effort fallback.
 - Symbol search/universe hygiene through the official no-key Nasdaq Trader symbol directory plus SEC company tickers.
 - Reddit and retail-attention signals from WSB, r/options, and related public endpoints.

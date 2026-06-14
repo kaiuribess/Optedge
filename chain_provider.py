@@ -3,7 +3,8 @@
 Layered, keyless sources (no signup required):
   PRIMARY   : CBOE delayed quotes JSON     (cdn.cboe.com/api/global/delayed_quotes)
   FALLBACK 1: NASDAQ option-chain JSON     (api.nasdaq.com/api/quote/{T}/option-chain)
-  FALLBACK 2: yfinance (existing path)
+  FALLBACK 2: Yahoo options JSON           (query1.finance.yahoo.com/v7/finance/options)
+  FALLBACK 3: yfinance (existing path)
 
 Why this order:
   - CBOE returns the entire chain (all expirations, all strikes, both sides,
@@ -11,16 +12,18 @@ Why this order:
     response: ~0.2s. 410 tickers via 8 parallel workers ≈ 10s total.
   - NASDAQ returns the same per-strike data (no Greeks) in one call. Used
     when CBOE returns no contracts (rare — small caps, recent IPOs).
+  - Yahoo options JSON is keyless and lighter than the yfinance library path.
+    It is unofficial/research-grade, so it stays behind CBOE/NASDAQ.
   - yfinance is the legacy path. Slow (3+ HTTP calls per ticker) and
     rate-limited, but stays as a final fallback so behavior degrades
-    gracefully if CBOE/NASDAQ are both blocked.
+    gracefully if CBOE/NASDAQ/Yahoo direct are blocked.
 
 All sources normalize to the same return shape:
   {"spot": float,
    "div_yield": float,
    "expirations": List[str],            # "YYYY-MM-DD"
    "chains": Dict[str, pd.DataFrame],   # per-expiration DataFrames
-   "source": str}                       # "cboe" / "nasdaq" / "yfinance"
+   "source": str}                       # "cboe" / "nasdaq" / "yahoo_options" / "yfinance"
 
 Each DataFrame's required columns:
   strike, side ("call"/"put"), bid, ask, lastPrice, volume, openInterest,
@@ -48,14 +51,21 @@ log = logging.getLogger("optedge.chain")
 
 CBOE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{tk}.json"
 NASDAQ_URL = "https://api.nasdaq.com/api/quote/{tk}/option-chain"
+YAHOO_OPTIONS_URL = "https://query1.finance.yahoo.com/v7/finance/options/{tk}"
 TRADIER_BASE_URL = os.environ.get("OPTEDGE_TRADIER_BASE_URL", "https://api.tradier.com/v1").rstrip("/")
 TRADIER_CHAIN_URL = f"{TRADIER_BASE_URL}/markets/options/chains"
 TRADIER_EXPIRATIONS_URL = f"{TRADIER_BASE_URL}/markets/options/expirations"
 TRADIER_MAX_EXPIRATIONS = max(1, int(os.environ.get("OPTEDGE_TRADIER_MAX_EXPIRATIONS", "12")))
+YAHOO_OPTIONS_MAX_EXPIRATIONS = max(1, int(os.environ.get("OPTEDGE_YAHOO_OPTIONS_MAX_EXPIRATIONS", "18")))
 NASDAQ_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 "
                   "(KHTML, like Gecko) Version/16.6 Safari/605.1.15",
     "Accept": "application/json, text/javascript, */*; q=0.01",
+}
+YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Referer": "https://finance.yahoo.com/",
 }
 
 
@@ -446,7 +456,206 @@ def _fetch_nasdaq(ticker: str, session, asset_class: str = "stocks") -> Optional
 
 
 # ---------------------------------------------------------------------------
-# Source 3: yfinance (existing path)
+# Source 3: Yahoo options JSON
+# ---------------------------------------------------------------------------
+def _yahoo_expiry_from_timestamp(value: Any) -> Optional[str]:
+    try:
+        ts = int(float(value))
+        if ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _yahoo_option_record(row: Dict[str, Any], side: str, expiry: str) -> Optional[Dict[str, Any]]:
+    strike = _safe_float(row.get("strike"))
+    if pd.isna(strike) or strike <= 0:
+        return None
+    side_norm = "call" if side == "calls" else "put"
+    bid = _safe_float(row.get("bid"))
+    ask = _safe_float(row.get("ask"))
+    last = _safe_float(row.get("lastPrice"))
+    if pd.isna(last) and not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask >= bid:
+        last = (bid + ask) / 2.0
+    return {
+        "strike": strike,
+        "side": side_norm,
+        "bid": bid,
+        "ask": ask,
+        "lastPrice": last,
+        "volume": _safe_int(row.get("volume")),
+        "openInterest": _safe_int(row.get("openInterest")),
+        "impliedVolatility": _safe_float(row.get("impliedVolatility")),
+        "contractSymbol": row.get("contractSymbol"),
+        "lastTradeDate": _yahoo_expiry_from_timestamp(row.get("lastTradeDate")),
+        "inTheMoney": bool(row.get("inTheMoney", False)),
+        "_expiry": expiry,
+    }
+
+
+def _yahoo_options_result(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    result = (((payload or {}).get("optionChain") or {}).get("result") or [])
+    if not result or not isinstance(result[0], dict):
+        return None
+    return result[0]
+
+
+def _yahoo_chain_from_results(
+    quote: Dict[str, Any],
+    option_groups: List[Dict[str, Any]],
+    source_note: str = "yahoo_options",
+) -> Optional[Dict[str, Any]]:
+    spot = _safe_float(
+        quote.get("regularMarketPrice")
+        or quote.get("postMarketPrice")
+        or quote.get("preMarketPrice")
+        or quote.get("bid")
+        or quote.get("ask")
+    )
+    if pd.isna(spot) or spot <= 0:
+        return None
+    dy = _safe_float(quote.get("trailingAnnualDividendYield") or quote.get("dividendYield"))
+    div_yield = 0.0 if pd.isna(dy) else (float(dy) / 100.0 if dy > 1 else float(dy))
+
+    by_exp: Dict[str, List[Dict[str, Any]]] = {}
+    for opt_group in option_groups:
+        if not isinstance(opt_group, dict):
+            continue
+        expiry = _yahoo_expiry_from_timestamp(opt_group.get("expirationDate"))
+        if not expiry:
+            continue
+        for side in ("calls", "puts"):
+            raw_rows = opt_group.get(side) or []
+            if not isinstance(raw_rows, list):
+                continue
+            for raw in raw_rows:
+                if not isinstance(raw, dict):
+                    continue
+                rec = _yahoo_option_record(raw, side, expiry)
+                if not rec:
+                    continue
+                row_exp = rec.pop("_expiry")
+                by_exp.setdefault(row_exp, []).append(rec)
+
+    if not by_exp:
+        return None
+    return {
+        "spot": float(spot),
+        "div_yield": div_yield,
+        "expirations": sorted(by_exp.keys()),
+        "chains": {exp: pd.DataFrame(rows) for exp, rows in by_exp.items()},
+        "source": source_note,
+        "quote_quality": "free_or_delayed",
+        "data_delay": "delayed_or_research",
+    }
+
+
+def _fetch_yahoo_options_via_yfinance(ticker: str) -> Optional[Dict[str, Any]]:
+    """Reuse yfinance's Yahoo crumb/cookie handling, but only fetch a bounded
+    number of expirations before the full legacy yfinance fallback runs."""
+    try:
+        import data_provider as _dp
+    except Exception:
+        return None
+    try:
+        tk = _dp.yf_ticker(ticker)
+        first = tk._download_options()  # noqa: SLF001 - yfinance's public method fetches one expiry at a time.
+    except Exception as e:
+        log.debug("yahoo options yfinance-lite %s fetch: %s", ticker, e)
+        return None
+    if not isinstance(first, dict) or not first:
+        return None
+    quote = first.get("underlying") if isinstance(first.get("underlying"), dict) else {}
+    option_groups: List[Dict[str, Any]] = [first]
+    seen_expirations = {
+        _yahoo_expiry_from_timestamp(first.get("expirationDate")),
+    }
+    expiration_map = getattr(tk, "_expirations", {}) or {}
+    for _, exp_ts in list(expiration_map.items())[:YAHOO_OPTIONS_MAX_EXPIRATIONS]:
+        expiry = _yahoo_expiry_from_timestamp(exp_ts)
+        if not expiry or expiry in seen_expirations:
+            continue
+        try:
+            group = tk._download_options(exp_ts)  # noqa: SLF001
+        except Exception as e:
+            log.debug("yahoo options yfinance-lite %s %s fetch: %s", ticker, exp_ts, e)
+            continue
+        if isinstance(group, dict) and group:
+            option_groups.append(group)
+            seen_expirations.add(expiry)
+        time.sleep(0.05)
+    return _yahoo_chain_from_results(quote, option_groups, source_note="yahoo_options")
+
+
+def _fetch_yahoo_options(ticker: str, session) -> Optional[Dict[str, Any]]:
+    """Fetch Yahoo's direct options JSON endpoint as a no-key fallback.
+
+    This is intentionally behind CBOE/NASDAQ because it is an unofficial
+    research-grade endpoint. It is still lighter than the yfinance wrapper and
+    gives Optedge another free coverage path for swing-chain discovery.
+    """
+    url = YAHOO_OPTIONS_URL.format(tk=ticker.upper())
+    first_result = None
+    try:
+        first = session.get(url, headers=YAHOO_HEADERS, timeout=12)
+        if first.status_code != 200:
+            return _fetch_yahoo_options_via_yfinance(ticker)
+        first_result = _yahoo_options_result(first.json())
+    except Exception as e:
+        log.debug("yahoo options %s fetch: %s", ticker, e)
+        return _fetch_yahoo_options_via_yfinance(ticker)
+    if not first_result:
+        return _fetch_yahoo_options_via_yfinance(ticker)
+
+    quote = first_result.get("quote") if isinstance(first_result.get("quote"), dict) else {}
+    expiration_dates = first_result.get("expirationDates") or []
+    dates: List[int] = []
+    for value in expiration_dates[:YAHOO_OPTIONS_MAX_EXPIRATIONS]:
+        try:
+            ts = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if ts > 0 and ts not in dates:
+            dates.append(ts)
+
+    results: List[Dict[str, Any]] = [first_result]
+    first_exp = _yahoo_expiry_from_timestamp(
+        ((first_result.get("options") or [{}])[0] or {}).get("expirationDate")
+    )
+    fetched_first_ts = None
+    if first_exp:
+        try:
+            fetched_first_ts = int(datetime.fromisoformat(first_exp).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            fetched_first_ts = None
+
+    for exp_ts in dates:
+        if fetched_first_ts is not None and exp_ts == fetched_first_ts:
+            continue
+        try:
+            resp = session.get(url, params={"date": exp_ts}, headers=YAHOO_HEADERS, timeout=12)
+            if resp.status_code != 200:
+                continue
+            result = _yahoo_options_result(resp.json())
+            if result:
+                results.append(result)
+        except Exception as e:
+            log.debug("yahoo options %s %s fetch: %s", ticker, exp_ts, e)
+            continue
+        time.sleep(0.05)
+
+    option_groups: List[Dict[str, Any]] = []
+    for result in results:
+        for opt_group in result.get("options") or []:
+            if not isinstance(opt_group, dict):
+                continue
+            option_groups.append(opt_group)
+    return _yahoo_chain_from_results(quote, option_groups, source_note="yahoo_options")
+
+
+# ---------------------------------------------------------------------------
+# Source 4: yfinance (existing path)
 # ---------------------------------------------------------------------------
 def _fetch_yfinance(ticker: str) -> Optional[Dict[str, Any]]:
     """Use the existing data_provider.get_options_chain helper. Lazy-imported
@@ -605,6 +814,10 @@ def fetch_chain(ticker: str, cache_age: int = 600, include_diagnostics: bool = F
             attempts.append(attempt)
             if blob:
                 break
+    # Direct Yahoo options JSON fallback before the heavier yfinance wrapper.
+    if not blob:
+        blob, attempt = _timed_attempt("yahoo_options", lambda: _fetch_yahoo_options(ticker, sess))
+        attempts.append(attempt)
     # yfinance fallback
     if not blob:
         blob, attempt = _timed_attempt("yfinance", lambda: _fetch_yfinance(ticker))
