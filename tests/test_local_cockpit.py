@@ -21,7 +21,7 @@ from scripts.local_cockpit import (
     build_watchlist_sec_filings,
     build_today_review,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
-    warm_sec_ticker_cache,
+    warm_sec_ticker_cache, write_option_chain_shortlist,
 )
 
 
@@ -141,6 +141,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/paper-candidates" in html
     assert "/api/export-paper" in html
     assert "Write export files" in html
+    assert "Chain shortlist" in html
+    assert "/artifact/option-chain-shortlist" in html
     assert "Agentic options queue" in html
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
@@ -161,6 +163,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Save primary contract" in html
     assert "decision-strip" in html
     assert "Save best A/B contracts" in html
+    assert "Write shortlist files" in html
+    assert "/api/export-chain-shortlist" in html
+    assert "exportChainBatchShortlist" in html
     assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
     assert "Grade / lane" in html
@@ -1743,6 +1748,63 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
     assert report["symbol_summaries"][0]["quote_quality"] == "free_or_delayed"
 
 
+def test_option_chain_shortlist_writer_creates_portable_artifacts():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        report = {
+            "generated_at": "2026-06-13T20:00:00+00:00",
+            "preset": "swing",
+            "query": "AAPL,MSFT",
+            "candidate_count": 2,
+            "symbols_scanned": 2,
+            "successful_scans": 2,
+            "grade_counts": {"A": 1},
+            "source_counts": {"cboe": 1},
+            "rows": [{
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "strike": 220.0,
+                "dte": 216,
+                "mid": 5.0,
+                "premium_dollars": 500.0,
+                "bid": 4.9,
+                "ask": 5.1,
+                "spread_pct": 0.04,
+                "openInterest": 1200,
+                "volume": 80,
+                "contract_grade": "A",
+                "review_lane": "primary_review",
+                "readiness_label": "ready",
+                "readiness_score": 91,
+                "contract_quality_score": 94,
+                "batch_quote_quality": "free_or_delayed",
+                "batch_source": "cboe",
+                "batch_data_delay": "delayed",
+                "candidate_source": "typed shortlist",
+                "candidate_reason": "AAPL",
+                "risk_flags": ["free/delayed"],
+                "grade_reasons": ["tight spread", "3m+ swing"],
+                "review_thesis": "A-grade test contract.",
+            }],
+        }
+
+        result = write_option_chain_shortlist(report, data_dir)
+        assert result["ok"] is True
+        assert result["count"] == 1
+        assert artifact_path("option-chain-shortlist", data_dir) == data_dir / "option_chain_shortlist.csv"
+        assert artifact_path("option-chain-shortlist-json", data_dir) == data_dir / "option_chain_shortlist.json"
+
+        csv_text = (data_dir / "option_chain_shortlist.csv").read_text()
+        payload = json.loads((data_dir / "option_chain_shortlist.json").read_text())
+        assert "AAPL 2027-01-15 C 220" in csv_text
+        assert "tight spread; 3m+ swing" in csv_text
+        assert payload["count"] == 1
+        assert payload["rows"][0]["quote_quality"] == "free_or_delayed"
+        assert payload["rows"][0]["chain_source"] == "cboe"
+
+
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
     original = cockpit_module._fetch_option_chain
 
@@ -2235,6 +2297,7 @@ if __name__ == "__main__":
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
     test_option_chain_scan_fetches_and_filters_contracts()
     test_option_chain_batch_scans_shortlist_and_ranks_contracts()
+    test_option_chain_shortlist_writer_creates_portable_artifacts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
     test_provider_status_checks_free_sources_without_running_scan()
     test_free_data_sources_registry_lists_no_key_coverage()
@@ -2243,4 +2306,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("36/36 local cockpit tests passed")
+    print("37/37 local cockpit tests passed")

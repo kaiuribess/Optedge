@@ -57,6 +57,8 @@ ARTIFACTS = {
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
     "external-paper-orders": ("external_paper_orders.csv", "text/csv; charset=utf-8"),
+    "option-chain-shortlist": ("option_chain_shortlist.csv", "text/csv; charset=utf-8"),
+    "option-chain-shortlist-json": ("option_chain_shortlist.json", "application/json; charset=utf-8"),
     "robinhood-agentic-queue": ("robinhood_agentic_queue.json", "application/json; charset=utf-8"),
     "robinhood-agentic-prompt": ("robinhood_agentic_prompt.md", "text/markdown; charset=utf-8"),
 }
@@ -173,6 +175,39 @@ CHAIN_CONTEXT_FIELDS = {
     "scan_preset",
     "scan_symbol",
 }
+
+CHAIN_SHORTLIST_COLUMNS = [
+    "generated_at",
+    "symbol",
+    "contract_query",
+    "side",
+    "expiry",
+    "strike",
+    "dte",
+    "mid",
+    "premium_dollars",
+    "bid",
+    "ask",
+    "spread_pct",
+    "openInterest",
+    "volume",
+    "impliedVolatility",
+    "delta",
+    "moneyness_pct",
+    "contract_grade",
+    "review_lane",
+    "readiness_label",
+    "readiness_score",
+    "contract_quality_score",
+    "quote_quality",
+    "chain_source",
+    "data_delay",
+    "candidate_source",
+    "candidate_reason",
+    "risk_flags",
+    "grade_reasons",
+    "review_thesis",
+]
 
 POSITION_FILES = {
     "option": "open_positions.json",
@@ -2356,6 +2391,89 @@ def build_option_chain_batch(
             "Blank symbol input uses the latest Optedge option/share/value setups and the research watchlist.",
             "Free/keyless chain quotes may be delayed or incomplete; verify before any manual paper entry.",
         ],
+    }
+
+
+def _shortlist_cell(value: Any) -> Any:
+    value = _clean_value(value)
+    if isinstance(value, list):
+        cleaned = []
+        for item in value:
+            clean_item = _clean_value(item)
+            if clean_item is None or clean_item == "":
+                continue
+            if isinstance(clean_item, (dict, list)):
+                cleaned.append(json.dumps(clean_item, sort_keys=True))
+            else:
+                cleaned.append(str(clean_item))
+        return "; ".join(cleaned)
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    return value
+
+
+def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Write the latest 3m+ option-chain shortlist as portable review artifacts."""
+    if not isinstance(report, dict):
+        return {"ok": False, "error": "chain shortlist report is required"}
+    rows = report.get("rows")
+    if not isinstance(rows, list) or not rows:
+        return {"ok": False, "error": "no chain shortlist rows to export"}
+
+    generated_at = datetime.now(timezone.utc).isoformat()
+    source_generated_at = str(report.get("generated_at") or "")
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = {col: _shortlist_cell(row.get(col)) for col in CHAIN_SHORTLIST_COLUMNS}
+        item["generated_at"] = generated_at
+        if not item.get("quote_quality"):
+            item["quote_quality"] = _shortlist_cell(row.get("batch_quote_quality"))
+        if not item.get("data_delay"):
+            item["data_delay"] = _shortlist_cell(row.get("batch_data_delay"))
+        if not item.get("chain_source"):
+            item["chain_source"] = _shortlist_cell(row.get("batch_source"))
+        normalized.append(item)
+
+    if not normalized:
+        return {"ok": False, "error": "no valid chain shortlist rows to export"}
+
+    data_dir = Path(data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = data_dir / "option_chain_shortlist.csv"
+    json_path = data_dir / "option_chain_shortlist.json"
+    pd.DataFrame(normalized, columns=CHAIN_SHORTLIST_COLUMNS).to_csv(csv_path, index=False)
+    payload = {
+        "ok": True,
+        "generated_at": generated_at,
+        "source_generated_at": source_generated_at,
+        "count": len(normalized),
+        "preset": report.get("preset"),
+        "query": report.get("query"),
+        "candidate_count": report.get("candidate_count"),
+        "symbols_scanned": report.get("symbols_scanned"),
+        "successful_scans": report.get("successful_scans"),
+        "grade_counts": report.get("grade_counts") or {},
+        "source_counts": report.get("source_counts") or {},
+        "notes": [
+            "External review shortlist only; no trades are placed.",
+            "Rows come from Optedge's free/provider option-chain batch scan.",
+            "Free/keyless option-chain quotes may be delayed or incomplete.",
+        ],
+        "rows": normalized,
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "ok": True,
+        "count": len(normalized),
+        "csv_path": str(csv_path),
+        "json_path": str(json_path),
+        "artifacts": {
+            "csv": "/artifact/option-chain-shortlist",
+            "json": "/artifact/option-chain-shortlist-json",
+        },
+        "notes": payload["notes"],
     }
 
 
@@ -5498,6 +5616,7 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/validation-summary" target="_blank">Validation JSON</a>
     <a class="btn" href="/artifact/equity-curve" target="_blank">Equity curve</a>
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
+    <a class="btn" href="/artifact/option-chain-shortlist" target="_blank">Chain shortlist</a>
     <a class="btn" href="/artifact/robinhood-agentic-queue" target="_blank">Agentic queue</a>
     <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
@@ -7418,6 +7537,7 @@ function optionChainBatchResultsHtml(data) {
   return `<div style="padding:12px">
     <div class="scan-controls" style="padding:0 0 12px">
       <button class="btn" type="button" id="chain-bulk-save-best">Save best A/B contracts</button>
+      <button class="btn" type="button" id="chain-bulk-export">Write shortlist files</button>
       <span class="muted">${saveCount} contract(s) eligible for one-click save</span>
     </div>
     <div class="setup-grid">${topCards}</div>
@@ -7450,13 +7570,33 @@ async function saveChainPayloads(payloads, statusId) {
   await loadSavedContracts();
 }
 function wireChainBatchActions(root=document) {
-  const btn = root.querySelector('#chain-bulk-save-best');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
+  const saveBtn = root.querySelector('#chain-bulk-save-best');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
     const rows = window.latestChainBatchRows || [];
     const payloads = bestChainBatchSaveRows(rows).map(optionContractSavePayload);
     await saveChainPayloads(payloads, 'chain-bulk-status-text');
   });
+  const exportBtn = root.querySelector('#chain-bulk-export');
+  if (exportBtn) exportBtn.addEventListener('click', exportChainBatchShortlist);
+}
+async function exportChainBatchShortlist() {
+  const report = window.latestChainBatchReport || null;
+  if (!report || !(report.rows || []).length) {
+    $('chain-bulk-status-text').textContent = 'Run a shortlist scan first.';
+    return;
+  }
+  $('chain-bulk-status-text').textContent = 'Writing chain shortlist files...';
+  const res = await fetch('/api/export-chain-shortlist', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ report })
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false) {
+    $('chain-bulk-status-text').textContent = 'Could not write shortlist: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('chain-bulk-status-text').innerHTML = `${data.count || 0} contract(s) written to <a href="/artifact/option-chain-shortlist" target="_blank">CSV</a> and <a href="/artifact/option-chain-shortlist-json" target="_blank">JSON</a>.`;
 }
 async function scanOptionChain() {
   const query = $('chain-query').value.trim() || $('symbol').value.trim() || $('rh-query').value.trim();
@@ -7496,6 +7636,8 @@ async function scanOptionChainBatch() {
   $('chain-bulk-status-text').textContent = query ? 'Scanning typed shortlist...' : 'Scanning latest Optedge shortlist...';
   $('chain-bulk-summary').innerHTML = '';
   $('chain-bulk-results').innerHTML = '';
+  window.latestChainBatchReport = null;
+  window.latestChainBatchRows = [];
   const params = new URLSearchParams({
     query,
     preset: $('chain-preset').value || 'swing',
@@ -7516,6 +7658,7 @@ async function scanOptionChainBatch() {
     return;
   }
   $('chain-bulk-status-text').textContent = `${data.row_count || 0} contract(s) from ${data.successful_scans || 0}/${data.symbols_scanned || 0} successful symbol scan(s).`;
+  window.latestChainBatchReport = data;
   window.latestChainBatchRows = data.rows || [];
   $('chain-bulk-summary').innerHTML = optionChainBatchSummary(data);
   $('chain-bulk-results').innerHTML = optionChainBatchResultsHtml(data);
@@ -7985,6 +8128,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
+            "/api/export-chain-shortlist",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache",
         }:
@@ -8049,6 +8193,11 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 query=str(body.get("query") or ""),
             )
             self._send_json(report)
+            return
+        if parsed.path == "/api/export-chain-shortlist":
+            report = body.get("report") if isinstance(body.get("report"), dict) else {}
+            result = write_option_chain_shortlist(report, self.data_dir)
+            self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/build-robinhood-queue":
             report = build_robinhood_agentic_queue_report(
