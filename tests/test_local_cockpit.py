@@ -157,6 +157,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
+    assert "savedContractTriageCards" in html
+    assert "Saved contract triage" in html
     assert "loadSavedContracts" in html
     assert "Refresh quotes" in html
     assert "Review now" in html
@@ -1744,12 +1746,17 @@ def test_saved_option_contracts_extracts_watchlist_option_requests():
         assert by_symbol["AAPL"]["dte"] >= 90
         assert by_symbol["AAPL"]["status"] == "saved_review"
         assert by_symbol["AAPL"]["review_action"] == "refresh_quote"
+        assert by_symbol["AAPL"]["triage_bucket"] == "refresh_quote"
+        assert by_symbol["AAPL"]["triage_label"] == "Refresh Quote"
+        assert by_symbol["AAPL"]["triage_score"] > 0
         assert by_symbol["AAPL"]["review_score"] < 100
         assert "refresh quote first" in by_symbol["AAPL"]["review_reasons"]
         assert by_symbol["MSFT"]["status"] == "expired"
         assert by_symbol["MSFT"]["review_action"] == "refresh_quote"
         assert contracts["status_counts"]["expired"] == 1
         assert contracts["review_action_counts"]["refresh_quote"] == 2
+        assert contracts["triage_counts"]["refresh_quote"] == 1
+        assert contracts["triage_counts"]["expired"] == 1
         assert contracts["swing_count"] == 1
 
 
@@ -1791,6 +1798,8 @@ def test_saved_option_contracts_preserve_chain_scan_context():
     assert row["saved_quote_quality"] == "free_or_delayed"
     assert contracts["saved_grade_counts"]["A"] == 1
     assert "saved grade A" in row["review_reasons"]
+    assert row["triage_bucket"] == "refresh_quote"
+    assert "A-grade chain save" in row["triage_reasons"]
 
 
 def test_watchlist_bulk_add_preserves_each_chain_context():
@@ -1829,6 +1838,7 @@ def test_watchlist_bulk_add_preserves_each_chain_context():
     assert by_symbol["MSFT"]["saved_contract_grade"] == "B"
     assert contracts["saved_grade_counts"]["A"] == 1
     assert contracts["saved_grade_counts"]["B"] == 1
+    assert contracts["triage_counts"]["refresh_quote"] == 2
 
 
 def test_saved_option_contracts_can_refresh_exact_chain_quotes():
@@ -1877,6 +1887,9 @@ def test_saved_option_contracts_can_refresh_exact_chain_quotes():
     assert contracts["quote_status_counts"]["matched"] == 1
     assert row["quote_status"] == "matched"
     assert row["review_action"] == "review_now"
+    assert row["triage_bucket"] == "ready_now"
+    assert row["triage_label"] == "Ready Review"
+    assert row["triage_score"] >= row["review_score"]
     assert row["review_score"] >= 80
     assert "quote matched" in row["review_reasons"]
     assert row["current_mid"] == 5.0

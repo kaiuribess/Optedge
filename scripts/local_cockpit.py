@@ -789,6 +789,92 @@ def _saved_contract_review(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _saved_grade_rank(value: Any) -> int:
+    return {"A": 4, "B": 3, "C": 2, "D": 1}.get(str(value or "").upper(), 0)
+
+
+def _saved_contract_triage(row: dict[str, Any]) -> dict[str, Any]:
+    score = _float_value(row.get("review_score"), default=50.0)
+    reasons: list[str] = []
+    grade = str(row.get("saved_contract_grade") or "").upper()
+    quote_status = str(row.get("quote_status") or "not_checked")
+    review_action = str(row.get("review_action") or "")
+    dte = _float_value(row.get("dte"), default=math.nan)
+    spread = _float_value(row.get("current_spread_pct"), default=math.nan)
+    if not math.isfinite(spread):
+        spread = _float_value(row.get("saved_spread_pct"), default=math.nan)
+    saved_quality = _float_value(row.get("saved_contract_quality_score"), default=math.nan)
+
+    if grade == "A":
+        score += 8
+        reasons.append("A-grade chain save")
+    elif grade == "B":
+        score += 4
+        reasons.append("B-grade chain save")
+    elif grade == "D":
+        score -= 10
+        reasons.append("D-grade save")
+
+    if quote_status == "matched":
+        score += 6
+        reasons.append("quote refreshed")
+    else:
+        reasons.append("needs quote refresh")
+
+    if math.isfinite(dte):
+        if dte < 0:
+            score = 0
+            reasons.append("expired")
+        elif dte < MIN_SWING_OPTION_DTE:
+            score -= 25
+            reasons.append("below 90 DTE")
+        elif dte >= 180:
+            score += 3
+            reasons.append("long-dated")
+        else:
+            reasons.append("3m+ swing")
+
+    if math.isfinite(spread):
+        if spread <= 0.10:
+            score += 5
+            reasons.append("tight spread")
+        elif spread <= 0.20:
+            reasons.append("acceptable spread")
+        else:
+            score -= 12
+            reasons.append("wide spread")
+
+    if math.isfinite(saved_quality) and saved_quality >= 80:
+        score += 3
+        reasons.append("strong saved quality")
+
+    clean_score = max(0, min(100, int(round(score))))
+    if math.isfinite(dte) and dte < 0:
+        bucket = "expired"
+        label = "Expired"
+    elif quote_status != "matched":
+        bucket = "refresh_quote"
+        label = "Refresh Quote"
+    elif review_action == "review_now" or clean_score >= 85:
+        bucket = "ready_now"
+        label = "Ready Review"
+    elif clean_score >= 70:
+        bucket = "shortlist"
+        label = "Shortlist"
+    elif clean_score >= 55:
+        bucket = "watch"
+        label = "Watch"
+    else:
+        bucket = "wait"
+        label = "Wait"
+    return {
+        "triage_score": clean_score,
+        "triage_bucket": bucket,
+        "triage_label": label,
+        "triage_reasons": reasons[:6],
+    }
+
+
 def build_saved_option_contracts(
     data_dir: Path = DATA_DIR,
     enrich: bool = True,
@@ -855,11 +941,14 @@ def build_saved_option_contracts(
         else:
             row["quote_status"] = "not_checked" if not refresh_quotes else "not_checked_limit"
         row.update(_saved_contract_review(row))
+        row.update(_saved_contract_triage(row))
         rows.append({k: _clean_value(v) for k, v in row.items()})
 
     rows = sorted(
         rows,
         key=lambda row: (
+            _float_value(row.get("triage_score"), default=0.0),
+            _saved_grade_rank(row.get("saved_contract_grade")),
             _float_value(row.get("dte"), default=-9999.0) >= MIN_SWING_OPTION_DTE,
             _float_value(row.get("paper_readiness_score"), default=0.0),
             _float_value(row.get("dte"), default=-9999.0),
@@ -871,6 +960,7 @@ def build_saved_option_contracts(
     quote_status_counts: dict[str, int] = {}
     review_action_counts: dict[str, int] = {}
     saved_grade_counts: dict[str, int] = {}
+    triage_counts: dict[str, int] = {}
     for row in rows:
         status = str(row.get("status") or "unknown")
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -880,6 +970,8 @@ def build_saved_option_contracts(
         review_action_counts[review_action] = review_action_counts.get(review_action, 0) + 1
         saved_grade = str(row.get("saved_contract_grade") or "ungraded")
         saved_grade_counts[saved_grade] = saved_grade_counts.get(saved_grade, 0) + 1
+        triage_bucket = str(row.get("triage_bucket") or "unknown")
+        triage_counts[triage_bucket] = triage_counts.get(triage_bucket, 0) + 1
     return {
         "generated_at": _now_iso(),
         "count": len(rows),
@@ -891,6 +983,7 @@ def build_saved_option_contracts(
         "quote_status_counts": quote_status_counts,
         "review_action_counts": review_action_counts,
         "saved_grade_counts": saved_grade_counts,
+        "triage_counts": triage_counts,
         "call_count": sum(row.get("side") == "call" for row in rows),
         "put_count": sum(row.get("side") == "put" for row in rows),
         "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
@@ -4953,6 +5046,7 @@ tr.clickable-row:hover { background:#111c31; }
     </div>
     <div class="status" id="saved-contracts-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="saved-contracts-summary"></div>
+    <div class="section" style="margin-top:12px"><h3><span>Saved contract triage</span><span>Review queue</span></h3><div id="saved-contracts-triage"></div></div>
     <div class="section" style="margin-top:12px"><div id="saved-contracts-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="providers">
@@ -5575,11 +5669,14 @@ function savedContractsSummary(data) {
   const quote = data.quote_status_counts || {};
   const review = data.review_action_counts || {};
   const grades = data.saved_grade_counts || {};
+  const triage = data.triage_counts || {};
   const fields = [
     ['Saved contracts', data.count || 0],
     ['3m+ swing', data.swing_count || 0],
     ['Calls / puts', `${data.call_count || 0} / ${data.put_count || 0}`],
     ['Saved A / B', `${grades.A || 0} / ${grades.B || 0}`],
+    ['Ready / shortlist', `${triage.ready_now || 0} / ${triage.shortlist || 0}`],
+    ['Refresh quotes', triage.refresh_quote || 0],
     ['Review now', review.review_now || 0],
     ['Quotes checked', data.quote_checked_count || 0],
     ['Quote matched', quote.matched || 0],
@@ -5588,6 +5685,28 @@ function savedContractsSummary(data) {
     ['Expired', status.expired || 0]
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function savedContractTriageCards(rows) {
+  const top = (rows || []).filter(r => !['expired', 'wait'].includes(String(r.triage_bucket || ''))).slice(0, 8);
+  if (!top.length) return '<div class="empty">No saved contracts are ready for triage yet. Refresh quotes after saving A/B contracts from the chain sweep.</div>';
+  return `<div class="setup-grid">${top.map(r => {
+    const reasons = Array.isArray(r.triage_reasons) ? r.triage_reasons.join(', ') : (r.triage_reasons || '');
+    return `<article class="setup-card">
+      <header>
+        <div><h3>${cell(r.symbol)} ${cell(r.side_code)} ${cell(r.strike)}</h3><small>${cell(r.expiry)} | ${cell(r.dte)} DTE</small></div>
+        <span class="pill ${escAttr(r.triage_bucket || '')}">${cell(r.triage_label || r.triage_bucket)}</span>
+      </header>
+      <div class="row"><span>Triage score</span><b>${cell(r.triage_score)}</b></div>
+      <div class="row"><span>Saved grade</span><b>${cell(r.saved_contract_grade || '-')} / ${cell(r.saved_review_lane || '-')}</b></div>
+      <div class="row"><span>Quote</span><b>${cell(r.quote_status || 'not_checked')}</b></div>
+      <div class="row"><span>Saved mid/spread</span><b>${cell(r.saved_mid)} / ${pct(r.saved_spread_pct)}</b></div>
+      <div class="row"><span>Current mid/spread</span><b>${cell(r.current_mid)} / ${pct(r.current_spread_pct)}</b></div>
+      <div class="row"><span>Why</span><b>${cell(reasons || r.saved_review_thesis || '-')}</b></div>
+      <div class="row"><span>Request</span><b>${cell(r.query)}</b></div>
+      <button class="btn saved-contract-lookup-btn" type="button" data-query="${escAttr(r.query || '')}">Lookup</button>
+      <button class="btn saved-contract-chain-btn" type="button" data-symbol="${escAttr(r.symbol || '')}">Chain</button>
+    </article>`;
+  }).join('')}</div>`;
 }
 function savedContractsTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved option contracts yet. Save one from an option-chain card.</div>';
@@ -6053,6 +6172,7 @@ async function loadSavedContracts(refreshQuotes=false) {
   const quoteText = refreshQuotes ? ` ${data.quote_checked_count || 0} quote(s) checked.` : '';
   $('saved-contracts-status-text').textContent = `${data.count || 0} saved option contract(s), ${data.swing_count || 0} at 3m+ DTE.${quoteText}`;
   $('saved-contracts-summary').innerHTML = savedContractsSummary(data);
+  $('saved-contracts-triage').innerHTML = savedContractTriageCards(data.rows || []);
   $('saved-contracts-results').innerHTML = savedContractsTable(data.rows || []);
   wireSavedContractRows();
 }
