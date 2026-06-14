@@ -16,6 +16,7 @@ from scripts.local_cockpit import (
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
+    build_options_sentiment,
     build_free_data_sources, build_positions, build_provider_status, build_risk_summary, build_robinhood_agentic_queue_report,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_symbol_suggestions,
     build_watchlist_sec_filings,
@@ -114,6 +115,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Market pulse" in html
     assert "/api/market-pulse" in html
     assert "marketPulseHtml" in html
+    assert "Options sentiment" in html
+    assert "Cboe options sentiment" in html
     assert "loadMarketPulse" in html
     assert "Breadth pulse" in html
     assert "/api/breadth-pulse" in html
@@ -1239,6 +1242,7 @@ def test_risk_summary_surfaces_concentration_and_exit_pressure():
 
 def test_market_pulse_uses_free_history_context_and_regime_labels():
     old_history = cockpit_module.data_provider.get_history
+    old_options = cockpit_module.build_options_sentiment
 
     def fake_history(ticker: str, period: str = "6mo", interval: str = "1d", cache_age: int = 1800):
         del period, interval, cache_age
@@ -1253,19 +1257,126 @@ def test_market_pulse_uses_free_history_context_and_regime_labels():
             close = [50 + i * 0.05 for i in range(80)]
         return pd.DataFrame({"Close": close}, index=idx)
 
+    def fake_options_sentiment(data_dir=None):
+        del data_dir
+        return {
+            "status": "ok",
+            "regime": "balanced",
+            "coverage": "3/3",
+            "total_pc": 0.86,
+            "equity_pc": 0.57,
+            "index_pc": 1.05,
+            "rows": [{"key": "total", "status": "ok", "pc_ratio": 0.86, "signal": "balanced"}],
+            "warnings": [],
+        }
+
     try:
         cockpit_module.data_provider.get_history = fake_history
+        cockpit_module.build_options_sentiment = fake_options_sentiment
         pulse = build_market_pulse(period="6mo")
     finally:
         cockpit_module.data_provider.get_history = old_history
+        cockpit_module.build_options_sentiment = old_options
 
     assert pulse["coverage"] == "9/9"
     assert pulse["regime"] in {"risk_on", "constructive"}
+    assert pulse["options_sentiment"]["regime"] == "balanced"
+    assert pulse["options_sentiment"]["total_pc"] == 0.86
     assert pulse["risk_score"] > 0
     rows = {row["symbol"]: row for row in pulse["rows"]}
     assert rows["SPY"]["trend"] == "uptrend"
     assert rows["^VIX"]["trend"] in {"downtrend", "weak"}
     assert pulse["leaders"][0]["symbol"] in {"SPY", "QQQ", "IWM", "DIA"}
+
+
+def test_options_sentiment_uses_cboe_put_call_snapshots():
+    old_fetch = cockpit_module._fetch_cboe_put_call_snapshot
+    old_daily = cockpit_module._fetch_cboe_daily_put_call_ratios
+    snapshots = {
+        "total": {
+            "key": "total", "label": "Total options", "status": "ok",
+            "signal": "balanced", "pc_ratio": 0.86, "latest_date": "2026-06-10",
+        },
+        "equity": {
+            "key": "equity", "label": "Equity options", "status": "ok",
+            "signal": "call_demand_high", "pc_ratio": 0.52, "latest_date": "2026-06-10",
+        },
+        "index": {
+            "key": "index", "label": "Index options", "status": "ok",
+            "signal": "defensive_hedging", "pc_ratio": 1.18, "latest_date": "2019-10-04",
+        },
+    }
+
+    def fake_fetch(source, cache_age=21600):
+        del cache_age
+        return dict(snapshots[source["key"]])
+
+    def fake_daily(cache_age=1800):
+        del cache_age
+        return {"index": 1.18}
+
+    try:
+        cockpit_module._fetch_cboe_put_call_snapshot = fake_fetch
+        cockpit_module._fetch_cboe_daily_put_call_ratios = fake_daily
+        sentiment = build_options_sentiment()
+    finally:
+        cockpit_module._fetch_cboe_put_call_snapshot = old_fetch
+        cockpit_module._fetch_cboe_daily_put_call_ratios = old_daily
+
+    assert sentiment["status"] == "ok"
+    assert sentiment["coverage"] == "3/3"
+    assert sentiment["total_pc"] == 0.86
+    assert sentiment["equity_pc"] == 0.52
+    assert sentiment["index_pc"] == 1.18
+    assert sentiment["regime"] == "balanced"
+    assert {row["key"] for row in sentiment["rows"]} == {"total", "equity", "index"}
+    index_row = [row for row in sentiment["rows"] if row["key"] == "index"][0]
+    assert index_row["source"] == "cboe_daily_market_statistics"
+
+
+def test_cboe_daily_put_call_parser_handles_escaped_nextjs_payload():
+    text = (
+        r'self.__next_f.push([1,"{\"data\":{\"optionsData\":{\"ratios\":['
+        r'{\"name\":\"TOTAL PUT/CALL RATIO\",\"value\":\"0.76\"},'
+        r'{\"name\":\"INDEX PUT/CALL RATIO\",\"value\":\"1.06\"},'
+        r'{\"name\":\"EQUITY PUT/CALL RATIO\",\"value\":\"0.54\"}'
+        r']}}}"])'
+    )
+    parsed = cockpit_module._parse_cboe_daily_put_call_ratios(text)
+    assert parsed == {"total": 0.76, "index": 1.06, "equity": 0.54}
+
+
+def test_options_sentiment_marks_stale_when_daily_fallback_missing():
+    old_fetch = cockpit_module._fetch_cboe_put_call_snapshot
+    old_daily = cockpit_module._fetch_cboe_daily_put_call_ratios
+
+    def fake_fetch(source, cache_age=21600):
+        del cache_age
+        return {
+            "key": source["key"],
+            "label": source["label"],
+            "status": "ok",
+            "signal": "balanced",
+            "pc_ratio": 1.0,
+            "latest_date": "2019-10-04",
+        }
+
+    def fake_daily(cache_age=1800):
+        del cache_age
+        return {}
+
+    try:
+        cockpit_module._fetch_cboe_put_call_snapshot = fake_fetch
+        cockpit_module._fetch_cboe_daily_put_call_ratios = fake_daily
+        sentiment = build_options_sentiment()
+    finally:
+        cockpit_module._fetch_cboe_put_call_snapshot = old_fetch
+        cockpit_module._fetch_cboe_daily_put_call_ratios = old_daily
+
+    assert sentiment["status"] == "missing"
+    assert sentiment["coverage"] == "0/3"
+    assert len(sentiment["warnings"]) == 3
+    assert {row["status"] for row in sentiment["rows"]} == {"stale"}
 
 
 def test_breadth_pulse_uses_free_etf_pair_confirmation():
@@ -2033,6 +2144,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert report["no_key_count"] == report["source_count"]
     assert report["primary_count"] >= 5
     assert "CBOE option chains" in names
+    assert "CBOE put/call market statistics" in names
     assert "Yahoo chart" in names
     assert "Google News RSS" in names
     assert "Yahoo Finance RSS" in names
@@ -2041,6 +2153,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Treasury yield XML" in names
     assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
+    assert "options_sentiment" in report["category_counts"]
     assert report["sec_cache"]["row_count"] >= 1
     assert report["nasdaq_symbol_cache"]["row_count"] >= 1
     assert report["ram_cache"]["ram_cache_enabled"] in {True, False}
@@ -2362,6 +2475,9 @@ if __name__ == "__main__":
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_risk_summary_surfaces_concentration_and_exit_pressure()
     test_market_pulse_uses_free_history_context_and_regime_labels()
+    test_options_sentiment_uses_cboe_put_call_snapshots()
+    test_cboe_daily_put_call_parser_handles_escaped_nextjs_payload()
+    test_options_sentiment_marks_stale_when_daily_fallback_missing()
     test_breadth_pulse_uses_free_etf_pair_confirmation()
     test_swing_climate_combines_free_context_into_posture()
     test_sector_pulse_ranks_free_sector_etf_context()
@@ -2379,4 +2495,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("37/37 local cockpit tests passed")
+    print("40/40 local cockpit tests passed")

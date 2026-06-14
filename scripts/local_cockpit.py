@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import io
 import json
 import math
 import mimetypes
@@ -21,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 import pandas as pd
 
@@ -249,6 +251,26 @@ MARKET_PULSE_SYMBOLS = [
     {"symbol": "^VIX", "label": "VIX", "kind": "volatility", "risk_weight": -1.0},
 ]
 
+CBOE_PUT_CALL_SOURCES = [
+    {
+        "key": "total",
+        "label": "Total options",
+        "url": "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/totalpc.csv",
+    },
+    {
+        "key": "equity",
+        "label": "Equity options",
+        "url": "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv",
+    },
+    {
+        "key": "index",
+        "label": "Index options",
+        "url": "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv",
+    },
+]
+CBOE_DAILY_STATS_URL = "https://www.cboe.com/markets/us/options/market-statistics/daily/"
+
+
 SECTOR_PULSE_SYMBOLS = [
     {"symbol": "XLK", "sector": "Technology", "group": "sector"},
     {"symbol": "XLF", "sector": "Financials", "group": "sector"},
@@ -374,6 +396,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "mispricing, chain scan, chain sweep, saved contract quotes",
         "primary": True,
         "caveat": "Not an execution quote; availability can vary by ticker.",
+    },
+    {
+        "name": "CBOE put/call market statistics",
+        "category": "options_sentiment",
+        "coverage": "market-wide total, equity, and index option put/call ratios",
+        "credential": "none",
+        "quality": "informational_delayed",
+        "used_by": "market pulse and options sentiment context",
+        "primary": True,
+        "caveat": "Informational market statistics, not a live options quote feed.",
     },
     {
         "name": "Nasdaq option/historical",
@@ -3671,6 +3703,255 @@ def _breadth_regime_label(score: float, rows: list[dict[str, Any]]) -> str:
     return "mixed"
 
 
+def _parse_cboe_put_call_csv(text: str, source: dict[str, Any]) -> dict[str, Any]:
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    header_idx = next((idx for idx, line in enumerate(lines) if line.upper().startswith("DATE,")), None)
+    if header_idx is None:
+        return {
+            "key": source.get("key"),
+            "label": source.get("label"),
+            "status": "missing",
+            "signal": "unknown",
+            "note": "Cboe CSV header not found.",
+        }
+    try:
+        df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
+    except Exception as exc:
+        return {
+            "key": source.get("key"),
+            "label": source.get("label"),
+            "status": "error",
+            "signal": "unknown",
+            "note": f"Cboe CSV parse failed: {exc}",
+        }
+    if df.empty or "P/C Ratio" not in df.columns:
+        return {
+            "key": source.get("key"),
+            "label": source.get("label"),
+            "status": "missing",
+            "signal": "unknown",
+            "note": "Cboe CSV contained no put/call rows.",
+        }
+    call_col = "CALLS" if "CALLS" in df.columns else "CALL" if "CALL" in df.columns else ""
+    put_col = "PUTS" if "PUTS" in df.columns else "PUT" if "PUT" in df.columns else ""
+    date = pd.to_datetime(df["DATE"], errors="coerce")
+    ratio = pd.to_numeric(df["P/C Ratio"], errors="coerce")
+    calls = pd.to_numeric(df[call_col], errors="coerce") if call_col else pd.Series(index=df.index, dtype="float64")
+    puts = pd.to_numeric(df[put_col], errors="coerce") if put_col else pd.Series(index=df.index, dtype="float64")
+    clean = pd.DataFrame({"date": date, "pc_ratio": ratio, "calls": calls, "puts": puts}).dropna(subset=["date", "pc_ratio"])
+    clean = clean[clean["pc_ratio"] > 0].sort_values("date")
+    if clean.empty:
+        return {
+            "key": source.get("key"),
+            "label": source.get("label"),
+            "status": "missing",
+            "signal": "unknown",
+            "note": "No valid Cboe put/call observations.",
+        }
+    latest = clean.iloc[-1]
+    recent = clean.tail(20)
+    ratio_latest = _float_value(latest["pc_ratio"], default=math.nan)
+    avg_5d = float(clean["pc_ratio"].tail(5).mean()) if len(clean) >= 5 else None
+    avg_20d = float(recent["pc_ratio"].mean()) if len(recent) else None
+    pct_vs_20d = ((ratio_latest / avg_20d) - 1.0) if avg_20d and avg_20d > 0 else None
+    signal = _cboe_put_call_signal(str(source.get("key") or ""), ratio_latest, avg_20d)
+    return {
+        "key": source.get("key"),
+        "label": source.get("label"),
+        "status": "ok",
+        "signal": signal,
+        "latest_date": str(pd.Timestamp(latest["date"]).date()),
+        "pc_ratio": _clean_value(round(ratio_latest, 4)),
+        "avg_5d": _clean_value(round(avg_5d, 4) if avg_5d is not None else None),
+        "avg_20d": _clean_value(round(avg_20d, 4) if avg_20d is not None else None),
+        "pct_vs_20d": _clean_value(round(pct_vs_20d, 4) if pct_vs_20d is not None else None),
+        "calls": _clean_value(int(latest["calls"]) if math.isfinite(_float_value(latest["calls"], default=math.nan)) else None),
+        "puts": _clean_value(int(latest["puts"]) if math.isfinite(_float_value(latest["puts"], default=math.nan)) else None),
+        "rows": int(len(clean)),
+        "source": "cboe_put_call_ratio_csv",
+        "quality": "informational_delayed",
+    }
+
+
+def _cboe_put_call_signal(key: str, ratio: float, avg_20d: float | None) -> str:
+    if not math.isfinite(ratio):
+        return "unknown"
+    high = 1.10 if key != "equity" else 0.85
+    low = 0.70 if key != "equity" else 0.55
+    if ratio >= high:
+        return "defensive_hedging"
+    if ratio <= low:
+        return "call_demand_high"
+    if avg_20d and avg_20d > 0:
+        if ratio >= avg_20d * 1.15:
+            return "hedging_rising"
+        if ratio <= avg_20d * 0.85:
+            return "call_demand_rising"
+    return "balanced"
+
+
+def _fetch_cboe_put_call_snapshot(source: dict[str, Any], cache_age: int = 6 * 3600) -> dict[str, Any]:
+    key = f"cboe_put_call_ratio:{source.get('key')}"
+    cached = data_provider.cache_get(key, cache_age)
+    if isinstance(cached, dict) and cached:
+        return cached
+    request = Request(
+        str(source.get("url")),
+        headers={
+            "User-Agent": "Mozilla/5.0 Optedge research cockpit",
+            "Accept": "text/csv,*/*",
+        },
+    )
+    with urlopen(request, timeout=12) as response:
+        text = response.read().decode("utf-8", "replace")
+    parsed = _parse_cboe_put_call_csv(text, source)
+    data_provider.cache_put(key, parsed)
+    return parsed
+
+
+def _cboe_put_call_stale(row: dict[str, Any], max_age_days: int = 10) -> bool:
+    if row.get("status") != "ok":
+        return True
+    date_text = str(row.get("latest_date") or "")
+    try:
+        latest = pd.to_datetime(date_text, utc=True).date()
+    except Exception:
+        return True
+    age_days = (datetime.now(timezone.utc).date() - latest).days
+    return age_days > max_age_days
+
+
+def _parse_cboe_daily_put_call_ratios(text: str) -> dict[str, float]:
+    search_text = str(text or "").replace('\\"', '"')
+    patterns = {
+        "total": r'"name"\s*:\s*"TOTAL PUT/CALL RATIO"\s*,\s*"value"\s*:\s*"([0-9.]+)"',
+        "index": r'"name"\s*:\s*"INDEX PUT/CALL RATIO"\s*,\s*"value"\s*:\s*"([0-9.]+)"',
+        "equity": r'"name"\s*:\s*"EQUITY PUT/CALL RATIO"\s*,\s*"value"\s*:\s*"([0-9.]+)"',
+    }
+    out: dict[str, float] = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, search_text)
+        if not match:
+            continue
+        value = _float_value(match.group(1), default=math.nan)
+        if math.isfinite(value) and value > 0:
+            out[key] = value
+    return out
+
+
+def _fetch_cboe_daily_put_call_ratios(cache_age: int = 30 * 60) -> dict[str, float]:
+    cached = data_provider.cache_get("cboe_daily_put_call_ratios", cache_age)
+    if isinstance(cached, dict) and cached:
+        return {str(k): float(v) for k, v in cached.items()}
+    request = Request(
+        CBOE_DAILY_STATS_URL,
+        headers={
+            "User-Agent": "Mozilla/5.0 Optedge research cockpit",
+            "Accept": "text/html,*/*",
+        },
+    )
+    with urlopen(request, timeout=12) as response:
+        text = response.read().decode("utf-8", "replace")
+    out = _parse_cboe_daily_put_call_ratios(text)
+    if out:
+        data_provider.cache_put("cboe_daily_put_call_ratios", out)
+    return out
+
+
+def _daily_put_call_row(source: dict[str, Any], ratio: float, note: str) -> dict[str, Any]:
+    return {
+        "key": source.get("key"),
+        "label": source.get("label"),
+        "status": "ok",
+        "signal": _cboe_put_call_signal(str(source.get("key") or ""), ratio, None),
+        "latest_date": str(datetime.now(timezone.utc).date()),
+        "pc_ratio": _clean_value(round(ratio, 4)),
+        "avg_5d": None,
+        "avg_20d": None,
+        "pct_vs_20d": None,
+        "calls": None,
+        "puts": None,
+        "rows": None,
+        "source": "cboe_daily_market_statistics",
+        "quality": "informational_delayed",
+        "note": note,
+    }
+
+
+def _options_sentiment_regime(rows: list[dict[str, Any]]) -> str:
+    ok_rows = [row for row in rows if row.get("status") == "ok"]
+    if not ok_rows:
+        return "unknown"
+    defensive = sum(str(row.get("signal")) in {"defensive_hedging", "hedging_rising"} for row in ok_rows)
+    call_demand = sum(str(row.get("signal")) in {"call_demand_high", "call_demand_rising"} for row in ok_rows)
+    if defensive >= 2:
+        return "defensive_hedging"
+    if call_demand >= 2:
+        return "call_demand_high"
+    if defensive > call_demand:
+        return "hedging_rising"
+    if call_demand > defensive:
+        return "call_demand_rising"
+    return "balanced"
+
+
+def build_options_sentiment(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Build Cboe market-wide options sentiment from no-key statistics."""
+    del data_dir
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    daily_ratios: dict[str, float] = {}
+    for source in CBOE_PUT_CALL_SOURCES:
+        try:
+            row = _fetch_cboe_put_call_snapshot(source)
+        except Exception as exc:
+            row = {
+                "key": source.get("key"),
+                "label": source.get("label"),
+                "status": "error",
+                "signal": "unknown",
+                "note": str(exc)[:180],
+            }
+        if _cboe_put_call_stale(row):
+            try:
+                if not daily_ratios:
+                    daily_ratios = _fetch_cboe_daily_put_call_ratios()
+                ratio = daily_ratios.get(str(source.get("key")))
+                if ratio is not None:
+                    row = _daily_put_call_row(
+                        source,
+                        ratio,
+                        "Archive CSV was stale or unavailable; using Cboe daily market statistics.",
+                    )
+                else:
+                    row["status"] = "stale" if row.get("status") == "ok" else row.get("status")
+                    row["note"] = f"{row.get('note') or 'Archive snapshot stale'}; daily fallback unavailable."[:220]
+            except Exception as exc:
+                row["status"] = "stale" if row.get("status") == "ok" else row.get("status")
+                row["note"] = f"{row.get('note') or 'Archive snapshot stale'}; daily fallback failed: {exc}"[:220]
+        rows.append({k: _clean_value(v) for k, v in row.items()})
+        if row.get("status") != "ok":
+            warnings.append(f"{source.get('label')} put/call unavailable.")
+    ok_count = sum(1 for row in rows if row.get("status") == "ok")
+    by_key = {str(row.get("key")): row for row in rows}
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": "Cboe market statistics and put/call ratio CSV",
+        "status": "ok" if ok_count else "missing",
+        "regime": _options_sentiment_regime(rows),
+        "coverage": f"{ok_count}/{len(CBOE_PUT_CALL_SOURCES)}",
+        "total_pc": by_key.get("total", {}).get("pc_ratio"),
+        "equity_pc": by_key.get("equity", {}).get("pc_ratio"),
+        "index_pc": by_key.get("index", {}).get("pc_ratio"),
+        "rows": rows,
+        "warnings": warnings,
+        "notes": [
+            "Cboe put/call ratios are market-wide options sentiment context.",
+            "Data is informational/delayed and should not be treated as an execution quote.",
+        ],
+    }
+
+
 def _risk_score_from_market_rows(rows: list[dict[str, Any]]) -> float:
     total_weight = 0.0
     score = 0.0
@@ -3705,7 +3986,6 @@ def _market_regime_label(score: float, rows: list[dict[str, Any]]) -> str:
 
 def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
     """Build a free no-key market regime snapshot for swing-trade context."""
-    del data_dir  # reserved for future persisted pulse snapshots
     rows: list[dict[str, Any]] = []
     warnings: list[str] = []
     for spec in MARKET_PULSE_SYMBOLS:
@@ -3736,12 +4016,15 @@ def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
         [row for row in rows if row.get("status") == "ok"],
         key=lambda row: _float_value(row.get("ret_20d"), default=999.0),
     )[:3]
+    options_sentiment = build_options_sentiment(data_dir)
+    warnings.extend(options_sentiment.get("warnings") or [])
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period": period,
         "regime": regime,
         "risk_score": _clean_value(round(risk_score, 4)),
         "coverage": f"{sum(1 for row in rows if row.get('status') == 'ok')}/{len(rows)}",
+        "options_sentiment": options_sentiment,
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
         "leaders": [{k: _clean_value(v) for k, v in row.items()} for row in leaders],
         "laggards": [{k: _clean_value(v) for k, v in row.items()} for row in laggards],
@@ -6586,17 +6869,21 @@ function swingClimateHtml(data) {
 }
 function marketPulseHtml(data) {
   if (!data) return '<div class="empty">No market pulse available.</div>';
+  const optionsSentiment = data.options_sentiment || {};
   const warnings = (data.warnings && data.warnings.length)
     ? `<div class="brief-list" style="margin-top:10px"><h4>Provider warnings</h4><ul>${data.warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
     : '';
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Regime</span><strong>${cell(data.regime)}</strong></div>
     <div class="brief-tile"><span>Risk score</span><strong>${cell(data.risk_score)}</strong></div>
+    <div class="brief-tile"><span>Options sentiment</span><strong>${cell(optionsSentiment.regime || '-')}</strong></div>
+    <div class="brief-tile"><span>Total P/C</span><strong>${cell(optionsSentiment.total_pc || '-')}</strong></div>
     <div class="brief-tile"><span>Coverage</span><strong>${cell(data.coverage)}</strong></div>
     <div class="brief-tile"><span>Period</span><strong>${cell(data.period)}</strong></div>
   </div>`;
   return `<div style="padding:12px">
     ${tiles}${warnings}
+    <div class="brief-list" style="margin-top:10px"><h4>Cboe options sentiment</h4>${table(optionsSentiment.rows || [])}</div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Leaders 20d</h4>${table(data.leaders || [])}</div>
       <div class="brief-list"><h4>Laggards 20d</h4>${table(data.laggards || [])}</div>

@@ -336,6 +336,7 @@ Research Guard is supposed to be conservative. A warning is not cosmetic; it mea
 Optedge uses free or locally configured sources where possible, including:
 
 - Options chains and price history.
+- Cboe daily market statistics and total/equity/index put-call ratio CSVs for delayed options sentiment context.
 - Nasdaq Trader symbol directory for broader official ticker/ETF search and universe hygiene.
 - Reddit and retail-attention feeds.
 - SEC EDGAR filings.

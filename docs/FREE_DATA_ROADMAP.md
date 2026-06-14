@@ -48,11 +48,27 @@ Notes:
 - SEC filings do not replace a fresh Optedge scan; if SEC filings are the only hit, lookup still recommends a focused scan.
 - SEC companyfacts are standardized XBRL facts, so some metrics can be missing or use company-specific reporting choices.
 
+### Cboe put/call market statistics
+
+Status: implemented in `scripts/local_cockpit.py` and surfaced in Market Pulse as options sentiment context.
+
+Source:
+- https://www.cboe.com/markets/us/options/market-statistics/daily/
+- https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/totalpc.csv
+- https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv
+- https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpcarchive.csv
+
+Why it helps:
+- Adds market-wide total, equity, and index put/call context without an API key.
+- Helps identify defensive hedging, call-demand/complacency, and balanced options sentiment.
+- Uses Cboe market statistics as delayed/informational context, not as an execution quote.
+
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
 - Keyless FRED CSV macro/rates/credit series.
 - Official Treasury XML yield-curve feed.
+- Cboe market-wide put/call market statistics.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.
