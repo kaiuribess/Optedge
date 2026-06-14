@@ -173,6 +173,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "wireChainBatchActions" in html
     assert "Expiration quality" in html
     assert "Grade / lane" in html
+    assert "Break-even" in html
+    assert "Budget fit" in html
+    assert "Risk / reward ref" in html
     assert "Primary review" in html
     assert "Best budget" in html
     assert "Provider status" in html
@@ -1653,6 +1656,17 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["quote_quality"] == "free_or_delayed"
     assert row["data_delay"] == "delayed"
     assert row["premium_dollars"] == 500.0
+    assert row["breakeven_price"] == 225.0
+    assert row["breakeven_direction"] == "up"
+    assert row["breakeven_move_pct"] == 0.125
+    assert row["budget_usage_pct"] == 0.8333
+    assert row["contracts_for_budget"] == 1
+    assert row["budget_fit"] == "inside_budget"
+    assert row["stop_price_reference"] == 2.5
+    assert row["target_price_reference"] == 10.0
+    assert row["risk_dollars_reference"] == 250.0
+    assert row["reward_dollars_reference"] == 500.0
+    assert row["reward_risk_reference"] == 2.0
     assert row["contract_query"] == "AAPL 2027-01-15 C 220"
     assert row["spread_pct"] < 0.10
     assert row["dte_bucket"] in {"180-364d", "365d+"}
@@ -1662,6 +1676,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["review_lane"] == "primary_review"
     assert "inside premium budget" in row["grade_reasons"]
     assert "A-grade" in row["review_thesis"]
+    assert "12.5% break-even move" in row["review_thesis"]
     assert report["preset"] == "custom"
     assert report["scan_summary"]["best_call"].startswith("C 220")
     assert report["scan_summary"]["under_budget_count"] == 1
@@ -1790,6 +1805,15 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
                 "spread_pct": 0.04,
                 "openInterest": 1200,
                 "volume": 80,
+                "breakeven_price": 225.0,
+                "breakeven_move_pct": 0.125,
+                "budget_usage_pct": 1.0,
+                "stop_price_reference": 2.5,
+                "target_price_reference": 10.0,
+                "risk_dollars_reference": 250.0,
+                "reward_dollars_reference": 500.0,
+                "reward_risk_reference": 2.0,
+                "budget_fit": "inside_budget",
                 "contract_grade": "A",
                 "review_lane": "primary_review",
                 "readiness_label": "ready",
@@ -1819,6 +1843,9 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert payload["count"] == 1
         assert payload["rows"][0]["quote_quality"] == "free_or_delayed"
         assert payload["rows"][0]["chain_source"] == "cboe"
+        assert payload["rows"][0]["breakeven_price"] == 225.0
+        assert payload["rows"][0]["budget_fit"] == "inside_budget"
+        assert payload["rows"][0]["reward_risk_reference"] == 2.0
 
 
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():

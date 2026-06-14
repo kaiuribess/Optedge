@@ -170,6 +170,17 @@ CHAIN_CONTEXT_FIELDS = {
     "impliedVolatility",
     "delta",
     "moneyness_pct",
+    "breakeven_price",
+    "breakeven_move_pct",
+    "breakeven_direction",
+    "budget_usage_pct",
+    "contracts_for_budget",
+    "stop_price_reference",
+    "target_price_reference",
+    "risk_dollars_reference",
+    "reward_dollars_reference",
+    "reward_risk_reference",
+    "budget_fit",
     "dte",
     "dte_bucket",
     "scan_preset",
@@ -194,6 +205,17 @@ CHAIN_SHORTLIST_COLUMNS = [
     "impliedVolatility",
     "delta",
     "moneyness_pct",
+    "breakeven_price",
+    "breakeven_move_pct",
+    "breakeven_direction",
+    "budget_usage_pct",
+    "contracts_for_budget",
+    "stop_price_reference",
+    "target_price_reference",
+    "risk_dollars_reference",
+    "reward_dollars_reference",
+    "reward_risk_reference",
+    "budget_fit",
     "contract_grade",
     "review_lane",
     "readiness_label",
@@ -1660,6 +1682,70 @@ def _option_spread_pct(row: pd.Series, mid: float) -> float | None:
     return (ask - bid) / mid
 
 
+def _option_chain_trade_refs(row: dict[str, Any], spot: float, max_premium: float) -> dict[str, Any]:
+    """Build conservative one-contract review references for chain candidates."""
+    side = str(row.get("side") or "").strip().lower()
+    strike = _float_value(row.get("strike"), default=math.nan)
+    mid = _float_value(row.get("mid"), default=math.nan)
+    premium = _float_value(row.get("premium_dollars"), default=math.nan)
+    if not math.isfinite(premium) and math.isfinite(mid):
+        premium = mid * 100.0
+    budget = max_premium if max_premium > 0 else 500.0
+
+    out: dict[str, Any] = {
+        "breakeven_price": None,
+        "breakeven_move_pct": None,
+        "breakeven_direction": "",
+        "budget_usage_pct": None,
+        "contracts_for_budget": 0,
+        "stop_price_reference": None,
+        "target_price_reference": None,
+        "risk_dollars_reference": None,
+        "reward_dollars_reference": None,
+        "reward_risk_reference": None,
+        "budget_fit": "unknown",
+    }
+    if math.isfinite(premium) and premium > 0 and budget > 0:
+        usage = premium / budget
+        out["budget_usage_pct"] = round(usage, 4)
+        out["contracts_for_budget"] = int(max(0, math.floor(budget / premium)))
+        if usage <= 1.0:
+            out["budget_fit"] = "inside_budget"
+        elif usage <= 1.25:
+            out["budget_fit"] = "stretch"
+        else:
+            out["budget_fit"] = "over_budget"
+
+    if math.isfinite(mid) and mid > 0:
+        stop = max(0.01, mid * 0.50)
+        target = mid * 2.00
+        risk = max(0.0, (mid - stop) * 100.0)
+        reward = max(0.0, (target - mid) * 100.0)
+        out["stop_price_reference"] = round(stop, 2)
+        out["target_price_reference"] = round(target, 2)
+        out["risk_dollars_reference"] = round(risk, 2)
+        out["reward_dollars_reference"] = round(reward, 2)
+        out["reward_risk_reference"] = round(reward / risk, 2) if risk > 0 else None
+
+    if math.isfinite(strike) and math.isfinite(mid) and mid > 0:
+        if side.startswith("call"):
+            breakeven = strike + mid
+            out["breakeven_direction"] = "up"
+            if math.isfinite(spot) and spot > 0:
+                out["breakeven_move_pct"] = round((breakeven - spot) / spot, 4)
+        elif side.startswith("put"):
+            breakeven = max(0.0, strike - mid)
+            out["breakeven_direction"] = "down"
+            if math.isfinite(spot) and spot > 0:
+                out["breakeven_move_pct"] = round((spot - breakeven) / spot, 4)
+        else:
+            breakeven = float("nan")
+        if math.isfinite(breakeven):
+            out["breakeven_price"] = round(breakeven, 4)
+
+    return out
+
+
 def _option_chain_score(row: dict[str, Any]) -> float:
     oi = _float_value(row.get("openInterest"), default=0.0)
     volume = _float_value(row.get("volume"), default=0.0)
@@ -1804,9 +1890,16 @@ def _option_contract_grade(row: dict[str, Any], max_premium: float) -> dict[str,
     dte_text = f"{int(dte)} DTE" if math.isfinite(dte) else "unknown DTE"
     premium_text = f"${premium:.0f} premium" if math.isfinite(premium) else "unknown premium"
     spread_text = f"{spread * 100:.1f}% spread" if math.isfinite(spread) else "unknown spread"
+    break_even_move = _float_value(row.get("breakeven_move_pct"), default=math.nan)
+    break_even_text = (
+        f"{break_even_move * 100:.1f}% break-even move"
+        if math.isfinite(break_even_move) else "unknown break-even"
+    )
+    budget_fit = str(row.get("budget_fit") or "").replace("_", " ")
     thesis = (
         f"{grade}-grade {dte_text} {side_text}: {premium_text}, "
-        f"{spread_text}, OI {int(oi)}. "
+        f"{spread_text}, {break_even_text}, OI {int(oi)}. "
+        f"{budget_fit or 'budget fit unknown'}. "
         f"{'; '.join(reasons[:4]) if reasons else 'Review exact quote before acting.'}"
     )
     return {
@@ -2008,6 +2101,14 @@ def _option_chain_decision_pack(
     oi = _float_value(primary.get("openInterest"), default=0.0)
     if oi < 100:
         risk_notes.append("Open interest is light.")
+    budget_fit = str(primary.get("budget_fit") or "").lower()
+    budget_usage = _float_value(primary.get("budget_usage_pct"), default=math.nan)
+    if budget_fit == "over_budget":
+        risk_notes.append("One contract is above the selected premium budget.")
+    elif budget_fit == "stretch":
+        risk_notes.append("One contract is near the selected premium budget.")
+    elif math.isfinite(budget_usage) and budget_usage > 0.75:
+        risk_notes.append(f"One contract uses {budget_usage * 100:.0f}% of the selected premium budget.")
     dte = _float_value(primary.get("dte"), default=0.0)
     if dte < MIN_SWING_OPTION_DTE:
         risk_notes.append(f"DTE is below the {MIN_SWING_OPTION_DTE}d swing minimum.")
@@ -2171,6 +2272,7 @@ def build_option_chain_scan(
                 f"{ticker} {expiry} {'C' if contract_side == 'call' else 'P'} {strike:g}"
                 if math.isfinite(strike) else ""
             )
+            row.update(_option_chain_trade_refs(row, spot, max_premium))
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
             row.update(_option_contract_readiness(row, str(quote_quality)))
             row.update(_option_contract_grade(row, max_premium))
@@ -6051,6 +6153,7 @@ function escAttr(v) { return escHtml(v); }
 function rowSymbol(r) { return r.ticker || r.symbol || ''; }
 function rowLookupSymbol(r) { return r.ticker || r.symbol || r.ticker_or_symbol || ''; }
 function pct(v) {
+  if (v === null || v === undefined || v === '') return '-';
   const n = Number(v);
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '-';
 }
@@ -7534,6 +7637,17 @@ function optionContractContext(row) {
     impliedVolatility: row.impliedVolatility,
     delta: row.delta,
     moneyness_pct: row.moneyness_pct,
+    breakeven_price: row.breakeven_price,
+    breakeven_move_pct: row.breakeven_move_pct,
+    breakeven_direction: row.breakeven_direction,
+    budget_usage_pct: row.budget_usage_pct,
+    contracts_for_budget: row.contracts_for_budget,
+    stop_price_reference: row.stop_price_reference,
+    target_price_reference: row.target_price_reference,
+    risk_dollars_reference: row.risk_dollars_reference,
+    reward_dollars_reference: row.reward_dollars_reference,
+    reward_risk_reference: row.reward_risk_reference,
+    budget_fit: row.budget_fit,
     dte: row.dte,
     dte_bucket: row.dte_bucket
   };
@@ -7564,10 +7678,14 @@ function optionContractCard(row) {
     </header>
     <div class="row"><span>Grade / lane</span><b>${cell(row.contract_grade)} / ${cell(row.review_lane)}</b></div>
     <div class="row"><span>Mid / premium</span><b>${cell(row.mid)} / ${moneyShort(row.premium_dollars)}</b></div>
+    <div class="row"><span>Break-even</span><b>${cell(row.breakeven_price)} (${cell(row.breakeven_direction)} ${pct(row.breakeven_move_pct)})</b></div>
+    <div class="row"><span>Budget fit</span><b>${cell(labelText(row.budget_fit))} / ${pct(row.budget_usage_pct)}</b></div>
     <div class="row"><span>Spread</span><b>${pct(row.spread_pct)}</b></div>
     <div class="row"><span>Open interest</span><b>${cell(row.openInterest)}</b></div>
     <div class="row"><span>Volume</span><b>${cell(row.volume)}</b></div>
     <div class="row"><span>Delta</span><b>${cell(row.delta)}</b></div>
+    <div class="row"><span>Stop / target ref</span><b>${cell(row.stop_price_reference)} / ${cell(row.target_price_reference)}</b></div>
+    <div class="row"><span>Risk / reward ref</span><b>${moneyShort(row.risk_dollars_reference)} / ${moneyShort(row.reward_dollars_reference)} (${ratio(row.reward_risk_reference)})</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
     <div class="row"><span>Why</span><b>${cell(gradeReasons || row.review_thesis || '-')}</b></div>
@@ -7601,7 +7719,10 @@ function optionChainDecisionHtml(data) {
       <div class="decision-metrics">
         <div class="decision-metric"><span>Grade</span><strong>${cell(primary.contract_grade || '-')} / ${cell(primary.review_lane || '-')}</strong></div>
         <div class="decision-metric"><span>Premium</span><strong>${moneyShort(primary.premium_dollars)}</strong></div>
+        <div class="decision-metric"><span>Break-even</span><strong>${cell(primary.breakeven_price)} / ${pct(primary.breakeven_move_pct)}</strong></div>
+        <div class="decision-metric"><span>Budget</span><strong>${cell(labelText(primary.budget_fit))} / ${pct(primary.budget_usage_pct)}</strong></div>
         <div class="decision-metric"><span>Spread</span><strong>${pct(primary.spread_pct)}</strong></div>
+        <div class="decision-metric"><span>Risk ref</span><strong>${moneyShort(primary.risk_dollars_reference)} / ${ratio(primary.reward_risk_reference)}</strong></div>
         <div class="decision-metric"><span>DTE</span><strong>${cell(primary.dte)}</strong></div>
         <div class="decision-metric"><span>Open interest</span><strong>${cell(primary.openInterest)}</strong></div>
         <div class="decision-metric"><span>Quality</span><strong>${cell(primary.contract_quality_score)}</strong></div>

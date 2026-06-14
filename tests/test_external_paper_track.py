@@ -183,6 +183,8 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
                 "dte": 216,
                 "mid": 1.20,
                 "premium_dollars": 120.0,
+                "stop_price_reference": 0.70,
+                "target_price_reference": 2.30,
                 "spread_pct": 0.04,
                 "openInterest": 1200,
                 "contract_grade": "A",
@@ -202,8 +204,8 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
     assert row["contract"] == "AAPL 2027-01-15 C 220"
     assert row["quantity"] == 1
     assert row["entry_price"] == 1.2
-    assert row["stop_price"] == 0.6
-    assert row["target_price"] == 2.4
+    assert row["stop_price"] == 0.7
+    assert row["target_price"] == 2.3
     assert "chain shortlist" in row["reason_selected"]
     assert "chain-shortlist" in row["notes"]
 
