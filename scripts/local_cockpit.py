@@ -4206,6 +4206,28 @@ def _exit_review_symbol(row: dict[str, Any]) -> str:
     return str(row.get("ticker") or row.get("symbol") or row.get("ticker_or_symbol") or "-").upper()
 
 
+def _exit_review_position_key(row: dict[str, Any]) -> str:
+    position_id = str(row.get("position_id") or "").strip()
+    if position_id:
+        return position_id
+    return f"{row.get('asset') or 'unknown'}:{row.get('ticker_or_symbol') or '-'}"
+
+
+def _exit_action_priority(action: Any) -> int:
+    clean = str(action or "").strip().lower()
+    if clean in {"hard_stop", "expired"}:
+        return 100
+    if clean in {"hard_target", "close_early"}:
+        return 90
+    if clean == "tighten_stop":
+        return 75
+    if clean == "watch":
+        return 55
+    if clean == "hold":
+        return 20
+    return 30
+
+
 def _read_exit_review_rows(data_dir: Path = DATA_DIR) -> list[dict[str, Any]]:
     path = Path(data_dir) / "exit_reviews.jsonl"
     if not path.exists() or not path.is_file():
@@ -4279,6 +4301,7 @@ def build_exit_review_summary(
     action_counts: dict[str, int] = {}
     asset_counts: dict[str, int] = {}
     symbol_rollup: dict[str, dict[str, Any]] = {}
+    latest_by_position: dict[str, dict[str, Any]] = {}
     pressures: list[float] = []
     learned_count = 0
     high_pressure_count = 0
@@ -4313,6 +4336,10 @@ def build_exit_review_summary(
             sym["latest_timestamp"] = row.get("timestamp")
             sym["latest_reasons"] = row.get("reasons_text")
             sym["asset"] = row_asset
+        position_key = _exit_review_position_key(row)
+        current = latest_by_position.get(position_key)
+        if current is None or str(row.get("timestamp") or "") >= str(current.get("timestamp") or ""):
+            latest_by_position[position_key] = dict(row, decision_key=position_key)
 
     by_symbol = sorted(
         symbol_rollup.values(),
@@ -4323,6 +4350,41 @@ def build_exit_review_summary(
         ),
         reverse=True,
     )[:15]
+    current_decisions = []
+    for row in latest_by_position.values():
+        action = str(row.get("action") or "unknown")
+        decision = {
+            "decision_key": _clean_value(row.get("decision_key")),
+            "timestamp": _clean_value(row.get("timestamp")),
+            "asset": _clean_value(row.get("asset")),
+            "ticker_or_symbol": _clean_value(row.get("ticker_or_symbol")),
+            "position_id": _clean_value(row.get("position_id")),
+            "latest_action": _clean_value(action),
+            "exit_pressure": _clean_value(row.get("exit_pressure")),
+            "current_pnl_pct": _clean_value(row.get("current_pnl_pct")),
+            "current_pnl_dollars": _clean_value(row.get("current_pnl_dollars")),
+            "current_price": _clean_value(row.get("current_price")),
+            "old_stop": _clean_value(row.get("old_stop")),
+            "new_stop": _clean_value(row.get("new_stop")),
+            "used_learned_policy": bool(row.get("used_learned_policy", False)),
+            "policy_version": _clean_value(row.get("policy_version")),
+            "reasons_text": _clean_value(row.get("reasons_text")),
+            "decision_priority": _exit_action_priority(action),
+        }
+        current_decisions.append(decision)
+    current_decisions = sorted(
+        current_decisions,
+        key=lambda row: (
+            _exit_action_priority(row.get("latest_action")),
+            _float_value(row.get("exit_pressure"), default=0.0),
+            str(row.get("timestamp") or ""),
+        ),
+        reverse=True,
+    )
+    current_action_counts: dict[str, int] = {}
+    for row in current_decisions:
+        action = str(row.get("latest_action") or "unknown")
+        current_action_counts[action] = current_action_counts.get(action, 0) + 1
     avg_pressure = (sum(pressures) / len(pressures)) if pressures else None
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -4335,9 +4397,15 @@ def build_exit_review_summary(
         "asset_counts": asset_counts,
         "high_pressure_count": high_pressure_count,
         "learned_policy_count": learned_count,
+        "current_decision_count": len(current_decisions),
+        "current_high_pressure_count": sum(
+            _float_value(row.get("exit_pressure"), default=0.0) >= 80 for row in current_decisions
+        ),
+        "current_action_counts": current_action_counts,
         "avg_exit_pressure": _clean_value(round(avg_pressure, 2) if avg_pressure is not None else None),
         "latest_timestamp": rows[0].get("timestamp") if rows else None,
         "by_symbol": [{k: _clean_value(v) for k, v in row.items()} for row in by_symbol],
+        "current_decisions": [{k: _clean_value(v) for k, v in row.items()} for row in current_decisions[:25]],
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]],
         "notes": [
             "Exit reviews are local lifecycle decisions logged after every scan.",
@@ -9649,9 +9717,12 @@ function exitReviewSummaryHtml(data) {
   if (!data) return '<div class="empty">No exit review summary available.</div>';
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Reviews</span><strong>${cell(data.total_before_limit || data.count || 0)}</strong></div>
+    <div class="brief-tile"><span>Current decisions</span><strong>${cell(data.current_decision_count || 0)}</strong></div>
     <div class="brief-tile"><span>High pressure</span><strong>${cell(data.high_pressure_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Current high pressure</span><strong>${cell(data.current_high_pressure_count || 0)}</strong></div>
     <div class="brief-tile"><span>Avg pressure</span><strong>${cell(data.avg_exit_pressure ?? '-')}</strong></div>
     <div class="brief-tile"><span>Learned policy</span><strong>${cell(data.learned_policy_count || 0)}</strong></div>
+    <div class="brief-tile"><span>Current actions</span><strong>${cell(countMapText(data.current_action_counts || {}))}</strong></div>
     <div class="brief-tile"><span>Actions</span><strong>${cell(countMapText(data.action_counts || {}))}</strong></div>
     <div class="brief-tile"><span>Assets</span><strong>${cell(countMapText(data.asset_counts || {}))}</strong></div>
   </div>`;
@@ -9660,6 +9731,7 @@ function exitReviewSummaryHtml(data) {
     return `${tiles}<div class="empty">No exit-review rows matched this filter yet. Run a scan after lifecycle tracking opens positions.</div>`;
   }
   return `${tiles}
+    <div class="brief-list" style="margin-top:10px"><h4>Current exit decisions</h4>${table(data.current_decisions || [], true)}</div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Highest pressure by symbol</h4>${table(data.by_symbol || [], true)}</div>
       <div class="brief-list"><h4>Latest exit reviews</h4>${table(data.rows || [], true)}</div>

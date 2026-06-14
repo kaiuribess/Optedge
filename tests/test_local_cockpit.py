@@ -1918,28 +1918,52 @@ def test_exit_review_summary_reads_jsonl_and_filters_actions():
                 "current_pnl_dollars": 75.0,
                 "reasons": ["macro still supportive"],
             },
+            {
+                "timestamp": "2026-06-10T15:04:00+00:00",
+                "asset": "option",
+                "position_id": "opt-aapl",
+                "ticker": "AAPL",
+                "action": "watch",
+                "exit_pressure": 45,
+                "old_stop": 1.4,
+                "new_stop": 1.4,
+                "current_price": 2.3,
+                "current_pnl_pct": 0.15,
+                "reasons": ["latest review stabilized"],
+            },
         ]
         text = "\n".join(json.dumps(row) for row in rows) + "\nnot-json\n"
         (data_dir / "exit_reviews.jsonl").write_text(text, encoding="utf-8")
 
         report = build_exit_review_summary(data_dir)
-        assert report["total_before_limit"] == 3
-        assert report["count"] == 3
-        assert report["action_counts"] == {"hold": 1, "close_early": 1, "tighten_stop": 1}
-        assert report["asset_counts"] == {"futures": 1, "share": 1, "option": 1}
+        assert report["total_before_limit"] == 4
+        assert report["count"] == 4
+        assert report["action_counts"] == {"watch": 1, "hold": 1, "close_early": 1, "tighten_stop": 1}
+        assert report["asset_counts"] == {"option": 2, "futures": 1, "share": 1}
         assert report["high_pressure_count"] == 1
         assert report["learned_policy_count"] == 1
-        assert report["avg_exit_pressure"] == 61.0
-        assert report["rows"][0]["ticker_or_symbol"] == "CL=F"
-        assert report["rows"][1]["ticker_or_symbol"] == "NVDA"
-        assert report["rows"][1]["policy_version"] == "exit_policy_2"
-        assert report["rows"][1]["reasons_text"] == "negative news flip"
+        assert report["current_decision_count"] == 3
+        assert report["current_high_pressure_count"] == 1
+        assert report["current_action_counts"] == {"watch": 1, "hold": 1, "close_early": 1}
+        assert report["avg_exit_pressure"] == 57.0
+        assert report["rows"][0]["ticker_or_symbol"] == "AAPL"
+        assert report["rows"][0]["action"] == "watch"
+        assert report["rows"][1]["ticker_or_symbol"] == "CL=F"
+        assert report["rows"][2]["ticker_or_symbol"] == "NVDA"
+        assert report["rows"][2]["policy_version"] == "exit_policy_2"
+        assert report["rows"][2]["reasons_text"] == "negative news flip"
+        assert report["current_decisions"][0]["ticker_or_symbol"] == "NVDA"
+        assert report["current_decisions"][0]["latest_action"] == "close_early"
+        assert report["current_decisions"][1]["ticker_or_symbol"] == "AAPL"
+        assert report["current_decisions"][1]["latest_action"] == "watch"
+        assert report["current_decisions"][1]["exit_pressure"] == 45
         assert report["by_symbol"][0]["ticker_or_symbol"] == "NVDA"
         assert report["by_symbol"][0]["max_exit_pressure"] == 86
 
         option_only = build_exit_review_summary(data_dir, asset="option", query="AAPL")
-        assert option_only["count"] == 1
-        assert option_only["rows"][0]["action"] == "tighten_stop"
+        assert option_only["count"] == 2
+        assert option_only["current_decision_count"] == 1
+        assert option_only["current_decisions"][0]["latest_action"] == "watch"
 
 
 def test_risk_summary_surfaces_concentration_and_exit_pressure():
