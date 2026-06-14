@@ -168,6 +168,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Focus data trust" in html
     assert "Event risk" in html
     assert "Earnings / catalyst event risk" in html
+    assert "Chain quality" in html
     assert "SEC offering risk" in html
     assert "SEC dilution / offering risk" in html
     assert "Agentic options queue" in html
@@ -963,6 +964,10 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["chain_shortlist"]["rows"][0]["openInterest"] == 1200
         assert packet["chain_shortlist"]["rows"][0]["breakeven_move_pct"] == 0.125
         assert packet["chain_shortlist"]["rows"][0]["contract_grade"] == "A"
+        assert packet["chain_shortlist"]["quality_summary"]["status"] == "clean"
+        assert packet["chain_shortlist"]["quality_summary"]["score"] >= 80
+        assert packet["chain_shortlist"]["quality_summary"]["primary_review_count"] == 1
+        assert packet["chain_shortlist"]["quality_summary"]["liquid_count"] == 1
         assert packet["sec_dilution_risk"]["status"] == "block_new_bullish_options"
         assert packet["sec_dilution_risk"]["count"] == 1
         assert packet["sec_dilution_risk"]["rows"][0]["form"] == "S-3"
@@ -977,6 +982,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert packet["decision_gate"]["blocker_count"] >= 2
         assert any("High earnings" in item for item in packet["decision_gate"]["blockers"])
         assert any("SEC offering" in item for item in packet["decision_gate"]["blockers"])
+        assert any("Chain quality is clean" in item for item in packet["decision_gate"]["confirmations"])
         json_path = data_dir / "swing_packet.json"
         md_path = data_dir / "swing_packet.md"
         assert json_path.exists()
@@ -992,6 +998,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
         assert "yahoo_chart, nasdaq_historical" in md
         assert "Earnings / Catalyst Event Risk" in md
         assert "avoid_new_option_entry_until_after_earnings_review" in md
+        assert "Quality: clean" in md
         assert "SEC Dilution / Offering Risk" in md
         assert "S-3" in md
 
@@ -1135,6 +1142,7 @@ def test_swing_packet_can_refresh_chain_shortlist_on_demand():
         assert packet["chain_shortlist"]["status"] == "ready"
         assert packet["chain_shortlist"]["count"] == 1
         assert packet["chain_shortlist"]["rows"][0]["contract"] == "AAPL 2027-01-15 C 220"
+        assert packet["chain_shortlist"]["quality_summary"]["status"] == "clean"
         assert packet["data_trust_check"]["data_trust"]["label"] == "ready"
         assert packet["decision_gate"]["status"] in {"ready_to_review", "selective_review"}
         assert (data_dir / "swing_packet.json").exists()

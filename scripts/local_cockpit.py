@@ -6167,6 +6167,7 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
             continue
         counts = df[col].fillna("").astype(str).str.strip()
         quality_counts[col] = int((counts != "").sum())
+    quality_summary = _chain_shortlist_quality_summary(top)
     return {
         "status": "ready",
         "count": int(len(df)),
@@ -6175,6 +6176,7 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
         "source_file": _clean_value(df["_source_file"].iloc[0]) if "_source_file" in df.columns else None,
         "source_mtime": _clean_value(df["_source_mtime"].iloc[0]) if "_source_mtime" in df.columns else None,
         "field_coverage": quality_counts,
+        "quality_summary": quality_summary,
         "rows": _records_from_frame(top[[
             col for col in [
                 "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "actual_dollars",
@@ -6194,6 +6196,111 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
             "Shortlist rows come from the saved 3m+ option-chain sweep.",
             "Free chain quotes can be delayed or incomplete; refresh before manual paper entry.",
         ],
+    }
+
+
+def _chain_shortlist_quality_summary(df: pd.DataFrame) -> dict[str, Any]:
+    if df is None or df.empty:
+        return {
+            "status": "missing",
+            "score": 0,
+            "contract_count": 0,
+            "warnings": ["No saved 3m+ chain contracts are available."],
+            "confirmations": [],
+        }
+    out = df.copy()
+    grade = out.get("contract_grade", pd.Series("", index=out.index)).fillna("").astype(str).str.upper()
+    lane = out.get("review_lane", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
+    swing = out.get("swing_fit_label", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
+    budget = out.get("budget_fit", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
+    readiness = pd.to_numeric(out.get("readiness_score", pd.Series(float("nan"), index=out.index)), errors="coerce")
+    spread = pd.to_numeric(out.get("spread_pct", pd.Series(float("nan"), index=out.index)), errors="coerce")
+    oi = pd.to_numeric(out.get("openInterest", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
+    volume = pd.to_numeric(out.get("volume", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
+
+    grade_counts = {label: int((grade == label).sum()) for label in ("A", "B", "C", "D") if int((grade == label).sum())}
+    primary_count = int((lane == "primary_review").sum())
+    clean_swing_count = int((swing == "clean_swing").sum())
+    reviewable_swing_count = int(swing.isin({"clean_swing", "reviewable_swing"}).sum())
+    inside_budget_count = int((budget == "inside_budget").sum())
+    stretch_budget_count = int((budget == "stretch").sum())
+    over_budget_count = int((budget == "over_budget").sum())
+    tight_spread_count = int((spread <= 0.12).fillna(False).sum())
+    liquid_count = int(((oi >= 100) & (spread <= 0.15)).fillna(False).sum())
+    active_volume_count = int((volume > 0).sum())
+    avg_readiness = _clean_value(readiness.dropna().mean() if not readiness.dropna().empty else None)
+    median_spread = _clean_value(spread.dropna().median() if not spread.dropna().empty else None)
+
+    score = 35
+    score += min(15, int((grade == "A").sum()) * 10 + int((grade == "B").sum()) * 6)
+    score += min(20, primary_count * 10)
+    score += min(15, clean_swing_count * 8)
+    score += min(10, inside_budget_count * 5)
+    score += min(10, liquid_count * 5)
+    if avg_readiness is not None:
+        score += int(max(0, min(10, (_float_value(avg_readiness) - 70) / 3)))
+    if median_spread is not None and _float_value(median_spread) <= 0.08:
+        score += 5
+    score -= min(15, over_budget_count * 5)
+    score = int(_clamp(score, 0, 100))
+
+    warnings: list[str] = []
+    confirmations: list[str] = []
+    if primary_count:
+        confirmations.append(f"{primary_count} primary-review contract(s).")
+    else:
+        warnings.append("No primary-review contract in the saved shortlist.")
+    if clean_swing_count:
+        confirmations.append(f"{clean_swing_count} clean-swing contract(s).")
+    else:
+        warnings.append("No contract is currently labeled clean_swing.")
+    if inside_budget_count:
+        confirmations.append(f"{inside_budget_count} contract(s) fit inside budget.")
+    elif stretch_budget_count:
+        warnings.append("Only stretch-budget contracts are available.")
+    elif over_budget_count:
+        warnings.append("Saved shortlist appears over budget.")
+    if liquid_count:
+        confirmations.append(f"{liquid_count} contract(s) have acceptable OI/spread liquidity.")
+    else:
+        warnings.append("No contract clears the OI/spread liquidity check.")
+    if active_volume_count == 0:
+        warnings.append("No saved contract has same-day volume in the snapshot.")
+
+    if primary_count and clean_swing_count and inside_budget_count and liquid_count:
+        status = "clean"
+    elif primary_count or reviewable_swing_count or inside_budget_count:
+        status = "review"
+    else:
+        status = "weak"
+
+    best = out.iloc[0].to_dict()
+    return {
+        "status": status,
+        "score": score,
+        "contract_count": int(len(out)),
+        "grade_counts": grade_counts,
+        "primary_review_count": primary_count,
+        "clean_swing_count": clean_swing_count,
+        "reviewable_swing_count": reviewable_swing_count,
+        "inside_budget_count": inside_budget_count,
+        "stretch_budget_count": stretch_budget_count,
+        "over_budget_count": over_budget_count,
+        "tight_spread_count": tight_spread_count,
+        "liquid_count": liquid_count,
+        "active_volume_count": active_volume_count,
+        "avg_readiness_score": avg_readiness,
+        "median_spread_pct": median_spread,
+        "best_contract": _clean_value(best.get("contract") or best.get("contract_query")),
+        "best_grade": _clean_value(best.get("contract_grade")),
+        "best_review_lane": _clean_value(best.get("review_lane")),
+        "best_readiness_score": _clean_value(best.get("readiness_score")),
+        "best_swing_fit_label": _clean_value(best.get("swing_fit_label")),
+        "best_spread_pct": _clean_value(best.get("spread_pct")),
+        "best_open_interest": _clean_value(best.get("openInterest")),
+        "best_budget_fit": _clean_value(best.get("budget_fit")),
+        "warnings": warnings[:6],
+        "confirmations": confirmations[:6],
     }
 
 
@@ -6572,6 +6679,9 @@ def _build_packet_decision_gate(
     sec_status = str(sec_risk.get("status") or "unknown").lower()
     chain_status = str(chain.get("status") or "missing").lower()
     chain_count = int(_float_value(chain.get("count")))
+    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    chain_quality_status = str(chain_quality.get("status") or "unknown").lower()
+    chain_quality_score = _float_value(chain_quality.get("score"), default=0.0)
     paper_count = int(_float_value(paper.get("selected_count")))
 
     if command_status == "fix_first":
@@ -6627,6 +6737,24 @@ def _build_packet_decision_gate(
         confirmations.append("No SEC offering/dilution blocker surfaced.")
 
     if chain_status == "ready" and chain_count > 0:
+        if chain_quality_status == "clean":
+            confirmations.append(
+                f"Chain quality is clean ({chain_quality_score:g}/100) with "
+                f"{chain_quality.get('primary_review_count') or 0} primary-review candidate(s)."
+            )
+        elif chain_quality_status == "review":
+            warnings.append(
+                f"Saved chain candidates need quality review ({chain_quality_score:g}/100)."
+            )
+            next_steps.append("Review spread, budget fit, and liquidity before choosing a contract.")
+        elif chain_quality_status == "weak":
+            blockers.append(
+                "Saved chain shortlist exists but lacks a clean liquid/budget-fit contract."
+            )
+            next_steps.append("Refresh the 3m+ chain scan or choose a cleaner contract.")
+        else:
+            warnings.append("Saved chain quality is unknown.")
+            next_steps.append("Refresh the 3m+ chain scan before choosing an options contract.")
         confirmations.append(f"{chain_count} saved 3m+ chain candidate(s) are available.")
     else:
         warnings.append("No saved 3m+ chain shortlist is ready.")
@@ -6690,6 +6818,7 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     decision_gate = packet.get("decision_gate") if isinstance(packet.get("decision_gate"), dict) else {}
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
+    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
     sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
     event_risk = packet.get("event_risk") if isinstance(packet.get("event_risk"), dict) else {}
     data_trust = packet.get("data_trust_check") if isinstance(packet.get("data_trust_check"), dict) else {}
@@ -6782,7 +6911,16 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         "## Chain Shortlist",
         f"- Status: {chain.get('status') or '-'}",
         f"- Rows: {chain.get('count') or 0}",
+        f"- Quality: {chain_quality.get('status') or '-'} ({chain_quality.get('score') or 0}/100)",
+        f"- Best: {chain_quality.get('best_contract') or '-'} "
+        f"{chain_quality.get('best_grade') or '-'} / {chain_quality.get('best_review_lane') or '-'}",
+        f"- Primary / clean / budget / liquid: {chain_quality.get('primary_review_count') or 0} / "
+        f"{chain_quality.get('clean_swing_count') or 0} / "
+        f"{chain_quality.get('inside_budget_count') or 0} / "
+        f"{chain_quality.get('liquid_count') or 0}",
     ])
+    for row in chain_quality.get("warnings", [])[:5]:
+        lines.append(f"- Chain warning: {row}")
     for row in chain.get("rows", [])[:8]:
         lines.append(
             f"- {row.get('contract', '-')} mid {row.get('mid', '-')} "
@@ -8265,6 +8403,7 @@ function swingPacketHtml(data) {
   const decisionGate = data.decision_gate || {};
   const climate = data.swing_climate || {};
   const chain = data.chain_shortlist || {};
+  const chainQuality = chain.quality_summary || {};
   const chainRefresh = data.chain_refresh || {};
   const paper = data.paper_candidates || {};
   const secRisk = data.sec_dilution_risk || {};
@@ -8299,6 +8438,14 @@ function swingPacketHtml(data) {
     ? `<div class="setup-grid">${chainRows.slice(0, 6).map(optionContractCard).join('')}</div>
        <div class="brief-list" style="margin-top:10px"><h4>Comparison table</h4>${table(chainRows.slice(0, 8), true)}</div>`
     : '<div class="empty">No saved 3m+ chain shortlist yet. Use Write + 3m+ chain scan to build one.</div>';
+  const chainQualityRows = [
+    {check: 'Primary review', value: chainQuality.primary_review_count || 0},
+    {check: 'Clean swing', value: chainQuality.clean_swing_count || 0},
+    {check: 'Inside budget', value: chainQuality.inside_budget_count || 0},
+    {check: 'Liquid OI/spread', value: chainQuality.liquid_count || 0},
+    {check: 'Active volume', value: chainQuality.active_volume_count || 0},
+    {check: 'Median spread', value: pct(chainQuality.median_spread_pct)}
+  ];
   const secRiskRows = secRows.slice(0, 8).map(r => ({
     ticker: r.ticker,
     form: r.form,
@@ -8321,6 +8468,17 @@ function swingPacketHtml(data) {
       <span>${cell(trust.history_source_summary || 'no history source')}</span>
     </div>
     ${trustRows.length ? table(trustRows, true) : '<div class="empty">No focus data-trust probe available yet.</div>'}
+  </div>`;
+  const chainQualityBlock = `<div class="brief-list">
+    <h4>Chain quality</h4>
+    <div class="review-meta">
+      <span class="pill">${cell(chainQuality.status || 'unknown')}</span>
+      <span>${cell(chainQuality.score || 0)}/100</span>
+      <span>${cell(chainQuality.best_contract || '-')}</span>
+      <span>${cell(chainQuality.best_grade || '-')} / ${cell(chainQuality.best_review_lane || '-')}</span>
+    </div>
+    ${table(chainQualityRows, true)}
+    ${(chainQuality.warnings || []).length ? `<ul>${chainQuality.warnings.slice(0, 4).map(n => `<li>${escHtml(n)}</li>`).join('')}</ul>` : ''}
   </div>`;
   const eventBlock = `<div class="brief-list">
     <h4>Earnings / catalyst event risk</h4>
@@ -8364,6 +8522,7 @@ function swingPacketHtml(data) {
     <div class="brief-tile"><span>Review queue</span><strong>${cell((data.today_review || {}).count || 0)}</strong></div>
     <div class="brief-tile"><span>Focus trust</span><strong>${cell(trust.label || 'unknown')} ${cell(trust.score || 0)}</strong></div>
     <div class="brief-tile"><span>Event risk</span><strong>${cell(eventRisk.status || 'unknown')}</strong></div>
+    <div class="brief-tile"><span>Chain quality</span><strong>${cell(chainQuality.status || 'unknown')} ${cell(chainQuality.score || 0)}</strong></div>
     <div class="brief-tile"><span>Chain rows</span><strong>${cell(chain.count || 0)}</strong></div>
     <div class="brief-tile"><span>Chain refreshed</span><strong>${cell(chainRefresh.attempted ? ((chainRefresh.row_count || 0) + ' rows') : 'no')}</strong></div>
     <div class="brief-tile"><span>SEC offering risk</span><strong>${cell(secRisk.status || 'unknown')}</strong></div>
@@ -8399,6 +8558,7 @@ function swingPacketHtml(data) {
       <div class="brief-list"><h4>Today review</h4>${todayReviewTable(todayRows.slice(0, 6))}</div>
       <div class="brief-list"><h4>Climate-gated setups</h4>${table(setupRows.slice(0, 6), true)}</div>
       ${trustBlock}
+      ${chainQualityBlock}
       ${eventBlock}
       ${secRiskBlock}
       <div class="brief-list"><h4>Paper candidates</h4>${table(paperRows.slice(0, 6), true)}</div>
