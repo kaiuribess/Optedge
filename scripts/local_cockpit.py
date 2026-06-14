@@ -3538,6 +3538,129 @@ def _swing_scout_components(row: pd.Series, asset: str) -> dict[str, Any]:
     }
 
 
+def _fmt_compact_number(value: Any, *, precision: int = 1) -> str | None:
+    val = _float_value(value, default=math.nan)
+    if not math.isfinite(val):
+        return None
+    if abs(val) >= 1_000_000_000:
+        return f"{val / 1_000_000_000:.1f}B"
+    if abs(val) >= 1_000_000:
+        return f"{val / 1_000_000:.1f}M"
+    if abs(val) >= 1_000:
+        return f"{val / 1_000:.1f}K"
+    return f"{val:.{precision}f}"
+
+
+def _fmt_ratio_pct(value: Any, *, precision: int = 0) -> str | None:
+    val = _float_value(value, default=math.nan)
+    if not math.isfinite(val):
+        return None
+    return f"{val * 100:.{precision}f}%"
+
+
+def _fmt_dollars(value: Any) -> str | None:
+    val = _float_value(value, default=math.nan)
+    if not math.isfinite(val):
+        return None
+    return f"${val:,.0f}" if abs(val) >= 100 else f"${val:,.2f}"
+
+
+def _join_factor_parts(parts: list[str | None], fallback: str) -> str:
+    clean = [part for part in parts if part]
+    return ", ".join(clean[:4]) if clean else fallback
+
+
+def _swing_factor_summary(factors: list[dict[str, Any]], limit: int = 3) -> str | None:
+    names = [str(item.get("factor") or "").strip() for item in factors if item.get("factor")]
+    return " + ".join(names[:limit]) if names else None
+
+
+def _swing_factor_breakdown(row: pd.Series, asset: str, components: dict[str, Any]) -> list[dict[str, Any]]:
+    cap_profile = components.get("market_cap_profile") if isinstance(components.get("market_cap_profile"), dict) else {}
+    readiness = components.get("readiness") if isinstance(components.get("readiness"), dict) else {}
+    factors: list[dict[str, Any]] = []
+
+    def add(factor: str, score: Any, detail: str, minimum: float = 0.1) -> None:
+        score_val = _float_value(score, default=0.0)
+        if score_val < minimum:
+            return
+        factors.append({
+            "factor": factor,
+            "score": round(score_val, 2),
+            "detail": detail[:160],
+        })
+
+    if asset != "futures":
+        cap_bonus = _float_value(cap_profile.get("bonus"), default=0.0)
+        cap = _fmt_compact_number(cap_profile.get("market_cap"), precision=0)
+        detail = _join_factor_parts([
+            str(cap_profile.get("bucket") or "unknown") + " cap",
+            f"${cap}" if cap else None,
+        ], "market cap profile")
+        add("Market cap", max(cap_bonus, 0.0), detail, minimum=0.1)
+
+    add("Squeeze", components.get("squeeze"), _join_factor_parts([
+        f"short float {_fmt_ratio_pct(row.get('short_pct_of_float'))}" if _fmt_ratio_pct(row.get("short_pct_of_float")) else None,
+        f"short vol {_fmt_ratio_pct(row.get('short_vol_ratio'))}" if _fmt_ratio_pct(row.get("short_vol_ratio")) else None,
+        f"short score {_fmt_compact_number(row.get('short_int_score'))}" if _fmt_compact_number(row.get("short_int_score")) else None,
+        f"UOA {_fmt_compact_number(row.get('uoa_score'))}" if _fmt_compact_number(row.get("uoa_score")) else None,
+        f"dark pool {_fmt_compact_number(row.get('dark_pool_score'))}" if _fmt_compact_number(row.get("dark_pool_score")) else None,
+    ], "short interest or flow pressure"))
+    add("Attention", components.get("attention"), _join_factor_parts([
+        f"social {_fmt_compact_number(row.get('social_score'))}" if _fmt_compact_number(row.get("social_score")) else None,
+        f"trends {_fmt_compact_number(row.get('gtrends_score'))}" if _fmt_compact_number(row.get("gtrends_score")) else None,
+        f"twitter {_fmt_compact_number(row.get('twitter_score'))}" if _fmt_compact_number(row.get("twitter_score")) else None,
+        f"mentions {_fmt_compact_number(row.get('mentions'), precision=0)}" if _fmt_compact_number(row.get("mentions"), precision=0) else None,
+    ], "retail attention lift"))
+    add("Momentum", components.get("momentum"), _join_factor_parts([
+        f"tech {_fmt_compact_number(row.get('tech_score'))}" if _fmt_compact_number(row.get("tech_score")) else None,
+        f"sector RS {_fmt_compact_number(row.get('sector_rs_score'))}" if _fmt_compact_number(row.get("sector_rs_score")) else None,
+        f"20d {_fmt_ratio_pct(row.get('ticker_ret_20d') or row.get('ret_20d'))}" if _fmt_ratio_pct(row.get("ticker_ret_20d") or row.get("ret_20d")) else None,
+        f"rank {_fmt_compact_number(row.get('rank_score'))}" if _fmt_compact_number(row.get("rank_score")) else None,
+        f"futures {_fmt_compact_number(row.get('futures_score'))}" if _fmt_compact_number(row.get("futures_score")) else None,
+    ], "price or macro momentum"))
+    add("Value", components.get("value"), _join_factor_parts([
+        f"value {_fmt_compact_number(row.get('value_score'))}" if _fmt_compact_number(row.get("value_score")) else None,
+        f"FCF {_fmt_ratio_pct(row.get('fcf_yield'))}" if _fmt_ratio_pct(row.get("fcf_yield")) else None,
+        f"growth {_fmt_ratio_pct(row.get('rev_growth'))}" if _fmt_ratio_pct(row.get("rev_growth")) else None,
+        f"fund {_fmt_compact_number(row.get('fund_score'))}" if _fmt_compact_number(row.get("fund_score")) else None,
+    ], "value or fundamental dislocation"))
+
+    execution_parts: list[str | None]
+    if asset == "option":
+        execution_parts = [
+            f"{int(_float_value(row.get('dte')))}d DTE" if math.isfinite(_float_value(row.get("dte"), default=math.nan)) else None,
+            f"spread {_fmt_ratio_pct(row.get('spread_pct'))}" if _fmt_ratio_pct(row.get("spread_pct")) else None,
+            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)" if _fmt_compact_number(row.get("suggested_contracts"), precision=0) else None,
+        ]
+    elif asset == "share":
+        execution_parts = [
+            f"size {_fmt_dollars(row.get('suggested_dollars'))}" if _fmt_dollars(row.get("suggested_dollars")) else None,
+            f"EV {_fmt_ratio_pct(row.get('ev_pct'))}" if _fmt_ratio_pct(row.get("ev_pct")) else None,
+        ]
+    elif asset == "futures":
+        reward = _float_value(row.get("reward_dollars"), default=math.nan)
+        risk = _float_value(row.get("risk_dollars"), default=math.nan)
+        rr = reward / risk if math.isfinite(reward) and math.isfinite(risk) and risk > 0 else math.nan
+        execution_parts = [
+            str(row.get("contract") or row.get("micro_contract") or "").strip() or None,
+            "micro" if bool(row.get("using_micro")) else None,
+            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)" if _fmt_compact_number(row.get("suggested_contracts"), precision=0) else None,
+            f"R/R {rr:.1f}x" if math.isfinite(rr) else None,
+        ]
+    else:
+        execution_parts = [str(row.get("value_bucket") or "").strip() or None]
+    add("Execution", components.get("execution"), _join_factor_parts(execution_parts, "sizing and execution quality"))
+    add("Quality", components.get("quality"), _join_factor_parts([
+        str(readiness.get("readiness_label") or "").strip() or None,
+        f"readiness {_fmt_compact_number(readiness.get('readiness_score'), precision=0)}" if _fmt_compact_number(readiness.get("readiness_score"), precision=0) else None,
+    ], "setup readiness"))
+    add("Confidence", components.get("confidence"), _join_factor_parts([
+        f"confidence {_fmt_compact_number(row.get('confidence'), precision=0)}" if _fmt_compact_number(row.get("confidence"), precision=0) else None,
+    ], "model confidence"))
+    return sorted(factors, key=lambda item: _float_value(item.get("score"), default=0.0), reverse=True)[:5]
+
+
 def _swing_scout_lane(row: pd.Series, asset: str, components: dict[str, Any]) -> str:
     if asset == "futures":
         return "futures_macro_swing"
@@ -3609,6 +3732,7 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
     readiness = components.get("readiness") if isinstance(components.get("readiness"), dict) else {}
     symbol = _setup_symbol(row, asset, OPPORTUNITY_SPECS[asset])
     setup = _setup_label(row, asset, symbol)
+    factor_breakdown = _swing_factor_breakdown(row, asset, components)
     return {
         "asset": asset,
         "ticker_or_symbol": symbol,
@@ -3642,6 +3766,8 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
         "futures_score": _clean_value(row.get("futures_score")),
         "ret_20d": _clean_value(row.get("ret_20d") or row.get("ticker_ret_20d")),
         "quality": _setup_quality(row, asset),
+        "factor_breakdown": factor_breakdown,
+        "factor_summary": _swing_factor_summary(factor_breakdown),
         "reasons": reasons,
         "warnings": warnings,
         "source_file": _clean_value(row.get("_source_file") or source_file),
@@ -3699,6 +3825,30 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
     if math.isfinite(short_vol_ratio) and short_vol_ratio >= 0.60:
         warnings.append("heavy short-volume pressure")
     base_score = _float_value(row.get("nasdaq_mover_score"), default=0.0) + short_pressure_bonus
+    factor_breakdown = [
+        {
+            "factor": "Momentum",
+            "score": round(abs(pct), 2),
+            "detail": f"{pct:+.1f}% move, {volume:,.0f} volume",
+        },
+    ]
+    if math.isfinite(short_vol_ratio):
+        factor_breakdown.append({
+            "factor": "Short volume",
+            "score": round(max(short_pressure_bonus, 0), 2),
+            "detail": f"FINRA short-volume {short_vol_ratio * 100:.0f}%",
+        })
+    if cap > 0:
+        factor_breakdown.append({
+            "factor": "Market cap",
+            "score": 8.0 if cap < 2_000_000_000 else 3.0,
+            "detail": f"${cap / 1_000_000:.0f}M market cap",
+        })
+    factor_breakdown = sorted(
+        factor_breakdown,
+        key=lambda item: _float_value(item.get("score"), default=0.0),
+        reverse=True,
+    )[:5]
     return {
         "asset": "share",
         "ticker_or_symbol": symbol,
@@ -3740,6 +3890,8 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         "sector": _clean_value(row.get("sector")),
         "industry": _clean_value(row.get("industry")),
         "name": _clean_value(row.get("name")),
+        "factor_breakdown": factor_breakdown,
+        "factor_summary": _swing_factor_summary(factor_breakdown),
         "reasons": reasons[:6],
         "warnings": warnings[:6],
         "source_file": "nasdaq_screener",
@@ -6985,12 +7137,15 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
     route = "chains" if action == "scan_swing_chain" else "research"
     reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
     warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
+    factor_breakdown = row.get("factor_breakdown") if isinstance(row.get("factor_breakdown"), list) else []
+    factor_summary = row.get("factor_summary") or _swing_factor_summary(factor_breakdown)
     reason_text = ", ".join(str(item) for item in reasons[:3]) or str(row.get("lane") or "swing radar")
+    factor_text = f" Factors: {factor_summary}." if factor_summary else ""
     warning_text = f" Warnings: {', '.join(str(item) for item in warnings[:2])}." if warnings else ""
     score = _float_value(row.get("swing_scout_score"), default=0.0)
     detail = (
         f"{row.get('setup') or symbol} scored {score:.0f}/100 in {str(row.get('lane') or 'swing radar').replace('_', ' ')}. "
-        f"{reason_text}.{warning_text}"
+        f"{reason_text}.{factor_text}{warning_text}"
     )
     return {
         "priority": int(round(_clamp(score, 0.0, 100.0))),
@@ -7006,6 +7161,8 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
         "score": _clean_value(row.get("swing_scout_score")),
         "readiness": _clean_value(row.get("readiness_label")),
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+        "factor_summary": _clean_value(factor_summary),
+        "factor_breakdown": factor_breakdown[:4],
     }
 
 
@@ -8664,6 +8821,11 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .setup-card small { color:var(--muted); display:block; margin-top:3px; }
 .setup-card .row { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
 .setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
+.factor-stack { display:grid; gap:6px; }
+.factor-row { border:1px solid var(--border-soft); background:rgba(255,255,255,.025); border-radius:8px; padding:7px 8px; display:grid; grid-template-columns:minmax(74px,.42fr) minmax(0,1fr) auto; gap:8px; align-items:start; }
+.factor-row strong { color:var(--text); font-size:12px; line-height:1.2; }
+.factor-row span { color:var(--muted); font-size:11px; line-height:1.35; }
+.factor-row em { justify-self:end; font-style:normal; color:#bbf7d0; font-size:11px; }
 .pill { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid var(--border); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:11px; background:var(--panel2); }
 .pill.ready { border-color:rgba(16,185,129,.7); color:#bbf7d0; background:rgba(16,185,129,.12); }
 .pill.review { border-color:rgba(245,158,11,.7); color:#fde68a; background:rgba(245,158,11,.12); }
@@ -9339,6 +9501,14 @@ function swingScoutCard(row) {
   const symbol = row.ticker_or_symbol || '';
   const reasons = Array.isArray(row.reasons) ? row.reasons.join(', ') : (row.reasons || '');
   const warnings = Array.isArray(row.warnings) ? row.warnings.join(', ') : (row.warnings || '');
+  const breakdown = Array.isArray(row.factor_breakdown) ? row.factor_breakdown.slice(0, 4) : [];
+  const factorRows = breakdown.length
+    ? `<div class="factor-stack">${breakdown.map(f => `<div class="factor-row">
+        <strong>${cell(f.factor || '-')}</strong>
+        <span>${cell(f.detail || '')}</span>
+        <em>${cell(f.score)}</em>
+      </div>`).join('')}</div>`
+    : '';
   const chainBtn = canScanOptionChainSymbol(symbol, row.asset)
     ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
     : '';
@@ -9356,6 +9526,7 @@ function swingScoutCard(row) {
     <div class="row"><span>Momentum / value</span><b>${cell(row.momentum_score)} / ${cell(row.value_score_component)}</b></div>
     <div class="row"><span>Execution</span><b>${cell(row.execution_score)}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_label)} ${cell(row.readiness_score)}</b></div>
+    ${factorRows}
     <div class="row"><span>Entry</span><b>${cell(row.entry_price)}</b></div>
     <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
@@ -9505,6 +9676,7 @@ function commandCenterHtml(data) {
           <p>${cell(r.detail)}</p>
           <div class="review-meta">
             <span class="pill">${cell(r.asset || '-')}</span>
+            ${r.factor_summary ? `<span class="pill">${cell(r.factor_summary)}</span>` : ''}
             <span>${cell(labelText(r.lane || '-'))}</span>
             <span>${cell(r.snapshot_freshness || '-')}</span>
           </div>

@@ -816,6 +816,11 @@ def test_command_center_summarizes_next_action_and_data_trust():
                 "snapshot_freshness": "fresh",
                 "reasons": ["3m+ runway", "momentum confirmation"],
                 "warnings": ["verify delayed quote"],
+                "factor_breakdown": [
+                    {"factor": "Momentum", "score": 18.5, "detail": "20d 12%, rank 2.0"},
+                    {"factor": "Execution", "score": 15.0, "detail": "180d DTE, spread 8%"},
+                ],
+                "factor_summary": "Momentum + Execution",
             }],
         }
         try:
@@ -840,6 +845,8 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["swing_actions"][0]["action"] == "scan_swing_chain"
         assert center["swing_actions"][0]["route"] == "chains"
         assert center["swing_actions"][0]["score"] == 88
+        assert center["swing_actions"][0]["factor_summary"] == "Momentum + Execution"
+        assert "Factors: Momentum + Execution" in center["swing_actions"][0]["detail"]
         assert "3m+ runway" in center["swing_actions"][0]["detail"]
         assert len(center["trust_ribbon"]) == 7
         ribbon = {row["label"]: row for row in center["trust_ribbon"]}
@@ -1706,7 +1713,13 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
     assert option["swing_scout_score"] >= 80
     assert option["dte"] >= 90
     assert "short/squeeze pressure" in option["reasons"]
+    assert option["factor_summary"]
+    option_factors = {item["factor"] for item in option["factor_breakdown"]}
+    assert {"Squeeze", "Momentum", "Execution"} & option_factors
     assert future["lane"] == "futures_macro_swing"
+    future_factors = {item["factor"] for item in future["factor_breakdown"]}
+    assert "Momentum" in future_factors
+    assert "Execution" in future_factors
     assert report["min_option_dte"] == 90
     assert report["reviewed_count"] == 4
     assert report["filters"]["include_wait"] is True
@@ -1766,6 +1779,8 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
     assert row["short_vol_ratio"] == 0.64
     assert row["dark_pool_score"] == -0.56
     assert row["swing_scout_score"] == 98
+    assert row["factor_summary"]
+    assert {item["factor"] for item in row["factor_breakdown"]} >= {"Momentum", "Short volume", "Market cap"}
     assert "FINRA short-volume 64%" in row["reasons"]
     assert "heavy short-volume pressure" in row["warnings"]
     assert "nasdaq_movers" in report["sources"]
