@@ -31,6 +31,7 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 import data_provider
+from engines import dark_pool as dark_pool_engine
 from engines.fred_public import fred_csv_history
 from engines.nasdaq_screener import small_cap_movers
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
@@ -486,6 +487,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "market pulse and options sentiment context",
         "primary": True,
         "caveat": "Informational market statistics, not a live options quote feed.",
+    },
+    {
+        "name": "FINRA RegSHO short volume",
+        "category": "market_structure/short_volume",
+        "coverage": "daily short-volume ratio by US equity symbol",
+        "credential": "none",
+        "quality": "official_public_delayed",
+        "used_by": "dark pool score, short-interest amplifier, small-cap mover context",
+        "primary": True,
+        "caveat": "Short-volume is not the same as short interest; use it as pressure context only.",
     },
     {
         "name": "Nasdaq option/historical",
@@ -3659,6 +3670,16 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
     pct = _float_value(row.get("pct_change"), default=0.0)
     volume = _float_value(row.get("volume"), default=0.0)
     cap = _float_value(row.get("market_cap"), default=0.0)
+    short_vol_ratio = _float_value(row.get("short_vol_ratio"), default=math.nan)
+    dark_pool_score = _float_value(row.get("dark_pool_score"), default=math.nan)
+    short_pressure_bonus = 0
+    if math.isfinite(short_vol_ratio):
+        if short_vol_ratio >= 0.60:
+            short_pressure_bonus = 7
+        elif short_vol_ratio >= 0.55:
+            short_pressure_bonus = 4
+        elif short_vol_ratio <= 0.35:
+            short_pressure_bonus = -2
     direction = "upside momentum" if pct >= 0 else "downside volatility"
     reasons = [
         f"Nasdaq screener {direction}",
@@ -3667,21 +3688,28 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
     ]
     if cap > 0:
         reasons.append(f"${cap / 1_000_000:.0f}M market cap")
+    if math.isfinite(short_vol_ratio):
+        reasons.append(f"FINRA short-volume {short_vol_ratio * 100:.0f}%")
     warnings = [
         "free/delayed screener row",
         "run focused scan before acting",
     ]
     if pct < 0:
         warnings.append("red mover: confirm reversal thesis")
+    if math.isfinite(short_vol_ratio) and short_vol_ratio >= 0.60:
+        warnings.append("heavy short-volume pressure")
+    base_score = _float_value(row.get("nasdaq_mover_score"), default=0.0) + short_pressure_bonus
     return {
         "asset": "share",
         "ticker_or_symbol": symbol,
         "setup": f"{symbol} small-cap mover",
         "lane": "nasdaq_small_cap_mover",
-        "swing_scout_score": int(_float_value(row.get("nasdaq_mover_score"), default=0.0)),
+        "swing_scout_score": int(round(_clamp(base_score, 0.0, 100.0))),
         "market_cap_bucket": _clean_value(row.get("market_cap_bucket")),
         "market_cap": _clean_value(row.get("market_cap")),
-        "squeeze_score": None,
+        "squeeze_score": _clean_value(
+            round(max(short_pressure_bonus, 0), 2) if math.isfinite(short_vol_ratio) else None
+        ),
         "attention_score": None,
         "momentum_score": _clean_value(abs(pct)),
         "value_score_component": None,
@@ -3699,7 +3727,8 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         "expiry": None,
         "spread_pct": None,
         "short_pct_of_float": None,
-        "short_vol_ratio": None,
+        "short_vol_ratio": _clean_value(short_vol_ratio if math.isfinite(short_vol_ratio) else None),
+        "dark_pool_score": _clean_value(dark_pool_score if math.isfinite(dark_pool_score) else None),
         "social_score": None,
         "gtrends_score": None,
         "tech_score": None,
@@ -3737,6 +3766,26 @@ def _append_nasdaq_mover_scout_rows(
         return 0, None
     if movers.empty:
         return 0, None
+    mover_symbols = [
+        str(symbol or "").strip().upper()
+        for symbol in movers.get("symbol", pd.Series(dtype=str)).tolist()
+        if str(symbol or "").strip()
+    ]
+    try:
+        short_flow = dark_pool_engine.run(mover_symbols, lookback_days=3)
+    except Exception:
+        short_flow = pd.DataFrame()
+    if isinstance(short_flow, pd.DataFrame) and not short_flow.empty and "ticker" in short_flow.columns:
+        enrich_cols = [
+            col for col in ("ticker", "short_vol_ratio", "short_vol", "total_vol", "dark_pool_score")
+            if col in short_flow.columns
+        ]
+        if len(enrich_cols) > 1:
+            movers = movers.merge(
+                short_flow[enrich_cols].rename(columns={"ticker": "symbol"}),
+                on="symbol",
+                how="left",
+            )
     added = 0
     seen_symbols = {str(row.get("ticker_or_symbol") or "").upper() for row in rows}
     for _, mover in movers.iterrows():

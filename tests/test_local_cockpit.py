@@ -1701,6 +1701,7 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
 
 def test_swing_scout_can_include_nasdaq_small_cap_movers():
     old_movers = cockpit_module.small_cap_movers
+    old_dark_pool = cockpit_module.dark_pool_engine.run
     cockpit_module.small_cap_movers = lambda max_rows=24: pd.DataFrame([{
         "symbol": "MOVE",
         "name": "Move Corp",
@@ -1713,6 +1714,13 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
         "nasdaq_mover_score": 91,
         "market_cap_bucket": "micro",
     }])
+    cockpit_module.dark_pool_engine.run = lambda universe, lookback_days=3: pd.DataFrame([{
+        "ticker": "MOVE",
+        "short_vol_ratio": 0.64,
+        "short_vol": 640_000,
+        "total_vol": 1_000_000,
+        "dark_pool_score": -0.56,
+    }])
     try:
         with tempfile.TemporaryDirectory() as td:
             report = build_swing_scout(
@@ -1723,6 +1731,7 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
             )
     finally:
         cockpit_module.small_cap_movers = old_movers
+        cockpit_module.dark_pool_engine.run = old_dark_pool
 
     assert report["count"] == 1
     row = report["rows"][0]
@@ -1732,6 +1741,11 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
     assert row["trade_status"] == "Review"
     assert row["source_file"] == "nasdaq_screener"
     assert row["pct_change"] == 8.4
+    assert row["short_vol_ratio"] == 0.64
+    assert row["dark_pool_score"] == -0.56
+    assert row["swing_scout_score"] == 98
+    assert "FINRA short-volume 64%" in row["reasons"]
+    assert "heavy short-volume pressure" in row["warnings"]
     assert "nasdaq_movers" in report["sources"]
     assert report["asset_counts"]["share"] == 1
     assert report["filters"]["include_nasdaq_movers"] is True
@@ -3205,6 +3219,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert report["primary_count"] >= 5
     assert "CBOE option chains" in names
     assert "CBOE put/call market statistics" in names
+    assert "FINRA RegSHO short volume" in names
     assert "Yahoo chart" in names
     assert "Google News RSS" in names
     assert "Yahoo Finance RSS" in names
