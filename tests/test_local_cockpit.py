@@ -1749,7 +1749,10 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert report["primary_count"] >= 5
     assert "CBOE option chains" in names
     assert "Yahoo chart" in names
+    assert "Google News RSS" in names
+    assert "Yahoo Finance RSS" in names
     assert "SEC EDGAR" in names
+    assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
     assert report["sec_cache"]["row_count"] >= 1
     assert report["ram_cache"]["ram_cache_enabled"] in {True, False}

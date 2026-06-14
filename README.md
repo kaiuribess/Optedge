@@ -384,14 +384,18 @@ python tests/test_share_positions.py
 python tests/test_futures_positions.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
+python tests/test_robinhood_agentic_queue.py
 python tests/test_symbol_resolver.py
 python tests/test_research_jobs.py
 python tests/test_lookup_symbol.py
 python tests/test_sec_companyfacts.py
+python tests/test_news.py
 python tests/test_local_cockpit.py
 python tests/test_fred_public.py
+python tests/test_data_provider_stooq.py
 python tests/test_performance_cache.py
 python tests/test_finbert_batching.py
+python tests/test_chain_provider_tradier.py
 ```
 
 If `pytest` and `ruff` are installed:
