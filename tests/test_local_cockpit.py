@@ -2784,6 +2784,9 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["readiness_score"] >= 65
     assert row["contract_grade"] == "A"
     assert row["review_lane"] == "primary_review"
+    assert row["chain_factor_summary"]
+    chain_factors = {item["factor"] for item in row["chain_factor_breakdown"]}
+    assert {"Runway", "Liquidity", "Spread", "Budget", "Break-even", "Swing fit"} <= chain_factors
     assert "inside premium budget" in row["grade_reasons"]
     assert "A-grade" in row["review_thesis"]
     assert "12.5% break-even move" in row["review_thesis"]
@@ -2804,6 +2807,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["decision"]["status"] == "primary_review"
     assert report["decision"]["label"] == "Best contract"
     assert report["decision"]["primary"]["contract_query"] == "AAPL 2027-01-15 C 220"
+    assert report["decision"]["primary"]["chain_factor_summary"] == row["chain_factor_summary"]
     assert report["decision"]["saveable_count"] == 1
     trade_plan = report["decision"]["trade_plan"]
     assert trade_plan["action"] == "review_contract"
