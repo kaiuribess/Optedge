@@ -164,8 +164,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "optionChainResultsHtml" in html
     assert "optionChainBatchResultsHtml" in html
     assert "optionChainDecisionHtml" in html
+    assert "optionChainTradePlanHtml" in html
     assert "Save primary contract" in html
     assert "decision-strip" in html
+    assert "Trade plan" in html
     assert "Save best A/B contracts" in html
     assert "Write shortlist files" in html
     assert "/api/export-chain-shortlist" in html
@@ -1691,6 +1693,22 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["decision"]["label"] == "Best contract"
     assert report["decision"]["primary"]["contract_query"] == "AAPL 2027-01-15 C 220"
     assert report["decision"]["saveable_count"] == 1
+    trade_plan = report["decision"]["trade_plan"]
+    assert trade_plan["action"] == "review_contract"
+    assert trade_plan["contract"] == "AAPL 2027-01-15 C 220"
+    assert trade_plan["quantity"] == 1
+    assert trade_plan["entry_price_reference"] == 5.0
+    assert trade_plan["premium_dollars_reference"] == 500.0
+    assert trade_plan["max_loss_dollars_reference"] == 500.0
+    assert trade_plan["stop_price_reference"] == 2.5
+    assert trade_plan["target_price_reference"] == 10.0
+    assert trade_plan["stop_loss_dollars_reference"] == 250.0
+    assert trade_plan["target_gain_dollars_reference"] == 500.0
+    assert trade_plan["reward_risk_reference"] == 2.0
+    assert trade_plan["breakeven_price"] == 225.0
+    assert trade_plan["breakeven_move_pct"] == 0.125
+    assert trade_plan["budget_fit"] == "inside_budget"
+    assert "Refresh live bid/ask" in trade_plan["checklist"][0]
     assert "Quote may be free/delayed" in " ".join(report["decision"]["risk_notes"])
     assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
     assert report["expiry_summary"][0]["reviewable_count"] == 1

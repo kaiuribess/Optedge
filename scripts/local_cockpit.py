@@ -2053,6 +2053,58 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]]) -> list[dict[str, A
     return sorted(summaries, key=lambda row: _float_value(row.get("dte"), default=9999.0))[:12]
 
 
+def _option_chain_trade_plan(
+    primary: dict[str, Any],
+    status: str,
+    risk_notes: list[str],
+) -> dict[str, Any]:
+    side = str(primary.get("side") or "").strip().lower()
+    mid = _float_value(primary.get("mid"), default=math.nan)
+    premium = _float_value(primary.get("premium_dollars"), default=math.nan)
+    contracts_for_budget = int(_float_value(primary.get("contracts_for_budget"), default=0.0))
+    quantity = 1 if contracts_for_budget >= 1 and math.isfinite(mid) and mid > 0 else 0
+    action = "review_contract" if status in {"primary_review", "secondary_review"} and quantity > 0 else "watch_only"
+    contract = str(primary.get("contract_query") or "").strip()
+    side_label = "call" if side.startswith("call") else "put" if side.startswith("put") else "option"
+    entry_text = f"{mid:.2f}" if math.isfinite(mid) else "unknown"
+    premium_text = f"${premium:.0f}" if math.isfinite(premium) else "unknown premium"
+    checklist = [
+        "Refresh live bid/ask before any paper/manual entry.",
+        "Skip if spread widens beyond the selected filter.",
+        "Confirm no same-symbol duplicate exposure.",
+        "Check current news and earnings timing.",
+    ]
+    if risk_notes:
+        checklist.append("Resolve listed risk notes before acting.")
+    summary = (
+        f"{quantity} contract {side_label} review at reference entry {entry_text}; "
+        f"premium reference {premium_text}."
+        if quantity > 0
+        else "No budget-safe contract quantity under the current premium limit."
+    )
+    return {
+        "action": action,
+        "contract": contract,
+        "side": side_label,
+        "quantity": quantity,
+        "entry_price_reference": _clean_value(mid),
+        "premium_dollars_reference": _clean_value(premium),
+        "max_loss_dollars_reference": _clean_value(premium),
+        "stop_price_reference": _clean_value(primary.get("stop_price_reference")),
+        "target_price_reference": _clean_value(primary.get("target_price_reference")),
+        "stop_loss_dollars_reference": _clean_value(primary.get("risk_dollars_reference")),
+        "target_gain_dollars_reference": _clean_value(primary.get("reward_dollars_reference")),
+        "reward_risk_reference": _clean_value(primary.get("reward_risk_reference")),
+        "breakeven_price": _clean_value(primary.get("breakeven_price")),
+        "breakeven_move_pct": _clean_value(primary.get("breakeven_move_pct")),
+        "budget_fit": _clean_value(primary.get("budget_fit")),
+        "budget_usage_pct": _clean_value(primary.get("budget_usage_pct")),
+        "contracts_for_budget": contracts_for_budget,
+        "summary": summary,
+        "checklist": checklist,
+    }
+
+
 def _option_chain_decision_pack(
     rows: list[dict[str, Any]],
     quote_quality: str,
@@ -2067,6 +2119,7 @@ def _option_chain_decision_pack(
             "risk_notes": ["No contracts matched the current filters."],
             "next_step": "Loosen filters or scan a different ticker.",
             "saveable_count": 0,
+            "trade_plan": None,
         }
     saveable = [
         row for row in rows
@@ -2131,6 +2184,7 @@ def _option_chain_decision_pack(
         status = "watch_only"
         label = "Watch only"
         next_step = "Do not force this chain; wait for better liquidity, spread, or DTE."
+    trade_plan = _option_chain_trade_plan(primary, status, risk_notes)
 
     return {
         "status": status,
@@ -2142,6 +2196,7 @@ def _option_chain_decision_pack(
         "risk_notes": risk_notes,
         "next_step": next_step,
         "saveable_count": len(saveable),
+        "trade_plan": trade_plan,
         "primary_grade": grade,
         "primary_lane": lane,
         "primary_readiness": readiness,
@@ -7694,6 +7749,21 @@ function optionContractCard(row) {
     <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save contract</button>
   </article>`;
 }
+function optionChainTradePlanHtml(plan) {
+  if (!plan) return '';
+  const checklist = (plan.checklist || []).slice(0, 5).map(item => `<li>${cell(item)}</li>`).join('');
+  return `<div class="brief-list"><h4>Trade plan</h4>
+    <ul>
+      <li>${cell(plan.summary || '-')}</li>
+      <li>Action: ${cell(labelText(plan.action || 'watch_only'))}</li>
+      <li>Stop / target: ${cell(plan.stop_price_reference)} / ${cell(plan.target_price_reference)}</li>
+      <li>Max loss ref: ${moneyShort(plan.max_loss_dollars_reference)}; stop loss ref: ${moneyShort(plan.stop_loss_dollars_reference)}</li>
+      <li>Target gain ref: ${moneyShort(plan.target_gain_dollars_reference)}; R/R ${ratio(plan.reward_risk_reference)}</li>
+      <li>Break-even: ${cell(plan.breakeven_price)} / ${pct(plan.breakeven_move_pct)}</li>
+    </ul>
+    <h4>Checks</h4><ul>${checklist || '<li>No checks listed.</li>'}</ul>
+  </div>`;
+}
 function optionChainDecisionHtml(data) {
   const decision = data.decision || {};
   const primary = decision.primary || null;
@@ -7730,6 +7800,7 @@ function optionChainDecisionHtml(data) {
       <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save primary contract</button>
     </div>
     <div class="decision-side">
+      ${optionChainTradePlanHtml(decision.trade_plan)}
       <div class="brief-list"><h4>Review risks</h4><ul>${risks}</ul></div>
       <div class="brief-list"><h4>Next step</h4><ul><li>${cell(decision.next_step || 'Refresh and compare before acting.')}</li><li>${cell(decision.saveable_count || 0)} A/B contract(s) saveable under these filters.</li></ul></div>
       <div class="decision-alt">${alternatives || '<span class="pill">No close alternatives</span>'}</div>
