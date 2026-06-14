@@ -49,6 +49,8 @@ DEFAULT_MAX_SPREAD = 0.15
 DEFAULT_MAX_AGE_HOURS = 24
 DEFAULT_MAX_PER_SECTOR = 2
 DEFAULT_MIN_OPTION_DTE = 90
+CHAIN_SHORTLIST_JSON = "option_chain_shortlist.json"
+CHAIN_SHORTLIST_CSV = "option_chain_shortlist.csv"
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -120,6 +122,73 @@ def _load_json_obj(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _series_or_default(df: pd.DataFrame, column: str, default: Any = "") -> pd.Series:
+    if column in df.columns:
+        return df[column]
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
+    json_path = data_dir / CHAIN_SHORTLIST_JSON
+    csv_path = data_dir / CHAIN_SHORTLIST_CSV
+    source_path: Path | None = None
+    rows: Any = []
+    generated_at = ""
+    if json_path.exists():
+        payload = _load_json_obj(json_path)
+        rows = payload.get("rows") if isinstance(payload, dict) else []
+        generated_at = _text(payload.get("generated_at")) if isinstance(payload, dict) else ""
+        source_path = json_path
+    elif csv_path.exists():
+        try:
+            rows = pd.read_csv(csv_path)
+        except Exception:
+            rows = []
+        source_path = csv_path
+    if isinstance(rows, pd.DataFrame):
+        df = rows.copy()
+    elif isinstance(rows, list):
+        df = pd.DataFrame([row for row in rows if isinstance(row, dict)])
+    else:
+        return pd.DataFrame()
+    if df.empty or source_path is None:
+        return pd.DataFrame()
+
+    out = pd.DataFrame()
+    out["ticker"] = _series_or_default(df, "symbol").astype(str).str.upper()
+    out["contract"] = _series_or_default(df, "contract_query")
+    out["side"] = _series_or_default(df, "side").astype(str).str.lower()
+    out["strike"] = _series_or_default(df, "strike")
+    out["expiry"] = _series_or_default(df, "expiry")
+    out["mid"] = pd.to_numeric(_series_or_default(df, "mid", 0.0), errors="coerce").fillna(0.0)
+    premium = pd.to_numeric(_series_or_default(df, "premium_dollars", float("nan")), errors="coerce")
+    out["actual_dollars"] = premium.fillna(out["mid"] * 100.0)
+    out["suggested_contracts"] = (out["mid"] > 0).astype(int)
+    out["stop_price"] = (out["mid"] * 0.50).round(2)
+    out["target_price"] = (out["mid"] * 2.00).round(2)
+    readiness = pd.to_numeric(_series_or_default(df, "readiness_score", 0), errors="coerce")
+    quality = pd.to_numeric(_series_or_default(df, "contract_quality_score", 0), errors="coerce")
+    out["confidence"] = readiness.fillna(quality).fillna(0).clip(lower=0, upper=100)
+    out["rank_score"] = (quality.fillna(0) / 25.0).round(4)
+    out["fused_score"] = out["rank_score"]
+    grade = _series_or_default(df, "contract_grade").astype(str).str.upper()
+    readiness_label = _series_or_default(df, "readiness_label").astype(str).str.lower()
+    out["trade_status"] = [
+        "Trade" if g in {"A", "B"} or r in {"ready", "review"} else "Watch"
+        for g, r in zip(grade, readiness_label, strict=False)
+    ]
+    out["spread_pct"] = pd.to_numeric(_series_or_default(df, "spread_pct", 0.0), errors="coerce").fillna(0.0)
+    out["dte"] = pd.to_numeric(_series_or_default(df, "dte", -1), errors="coerce").fillna(-1).astype(int)
+    out["chain_source"] = _series_or_default(df, "chain_source")
+    out["quote_quality"] = _series_or_default(df, "quote_quality")
+    out["top_headline"] = "3m+ option-chain shortlist candidate"
+    out["generated_at"] = _series_or_default(df, "generated_at", generated_at)
+    out["_source_file"] = source_path.name
+    out["_source_mtime"] = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc).isoformat()
+    out["_chain_shortlist"] = True
+    return out
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -287,8 +356,16 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
         "reward_dollars": round(reward, 2) if reward != "" else "",
         "suggested_dollars": round(suggested_dollars, 2),
         "suggested_contracts": contracts,
-        "reason_selected": "passed external option filters",
-        "notes": "manual paper-tracking candidate; no broker order placed",
+        "reason_selected": (
+            "passed external option filters from 3m+ chain shortlist"
+            if bool(row.get("_chain_shortlist", False))
+            else "passed external option filters"
+        ),
+        "notes": (
+            "3m+ chain-shortlist candidate; provisional stop/target references; no broker order placed"
+            if bool(row.get("_chain_shortlist", False))
+            else "manual paper-tracking candidate; no broker order placed"
+        ),
     })
     return out, ""
 
@@ -591,6 +668,9 @@ def build_external_orders(
 ) -> pd.DataFrame:
     data_dir = Path(data_dir)
     options = _load_latest_parquet(data_dir, "top_options_*.parquet")
+    chain_options = _load_option_chain_shortlist(data_dir)
+    if not chain_options.empty:
+        options = pd.concat([options, chain_options], ignore_index=True, sort=False)
     shares = _load_latest_parquet(data_dir, "top_shares_*.parquet")
     futures = _load_latest_parquet(data_dir, "top_futures_*.parquet")
     guard = _load_json_obj(data_dir / "research_guard_report.json")

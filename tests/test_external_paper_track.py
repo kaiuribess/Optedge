@@ -1,5 +1,8 @@
 from pathlib import Path
 import sys
+import json
+import tempfile
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -7,7 +10,8 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from scripts.export_external_paper_track import export_candidates
+from scripts.export_external_paper_track import build_external_orders, export_candidates
+from scripts.export_robinhood_agentic_queue import build_robinhood_queue
 
 
 def _option(**overrides):
@@ -163,6 +167,90 @@ def test_query_filters_to_matching_ticker_or_contract():
     assert out.loc[0, "ticker_or_symbol"] == "AAPL"
 
 
+def test_build_external_orders_includes_chain_shortlist_candidates():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "strike": 220.0,
+                "dte": 216,
+                "mid": 1.20,
+                "premium_dollars": 120.0,
+                "spread_pct": 0.04,
+                "openInterest": 1200,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "readiness_score": 91,
+                "contract_quality_score": 94,
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+            }],
+        }), encoding="utf-8")
+
+        out = build_external_orders(data_dir, asset="option", query="AAPL", max_options=3)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["ticker_or_symbol"] == "AAPL"
+    assert row["contract"] == "AAPL 2027-01-15 C 220"
+    assert row["quantity"] == 1
+    assert row["entry_price"] == 1.2
+    assert row["stop_price"] == 0.6
+    assert row["target_price"] == 2.4
+    assert "chain shortlist" in row["reason_selected"]
+    assert "chain-shortlist" in row["notes"]
+
+
+def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "MSFT",
+                "contract_query": "MSFT 2027-01-15 C 500",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "strike": 500.0,
+                "dte": 216,
+                "mid": 1.10,
+                "premium_dollars": 110.0,
+                "spread_pct": 0.03,
+                "openInterest": 1500,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "readiness_score": 92,
+                "contract_quality_score": 95,
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+            }],
+        }), encoding="utf-8")
+
+        queue = build_robinhood_queue(
+            data_dir,
+            account_budget=500,
+            max_orders=2,
+            max_candidates=3,
+            min_dte=180,
+            min_confidence=55,
+            query="MSFT",
+        )
+
+    assert queue["status"] == "ready"
+    assert len(queue["orders"]) == 1
+    assert queue["orders"][0]["symbol"] == "MSFT"
+    assert queue["orders"][0]["max_limit_price"] >= 1.1
+
+
 if __name__ == "__main__":
     test_excludes_zero_contract_options_by_default()
     test_excludes_watch_trades_by_default()
@@ -174,4 +262,6 @@ if __name__ == "__main__":
     test_dry_run_includes_exclusion_reasons()
     test_excludes_short_dated_options_by_default()
     test_query_filters_to_matching_ticker_or_contract()
-    print("10/10 external paper track tests passed")
+    test_build_external_orders_includes_chain_shortlist_candidates()
+    test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist()
+    print("12/12 external paper track tests passed")
