@@ -52,6 +52,10 @@ def test_cockpit_artifact_path_finds_latest_dashboard():
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
+    assert "--panel3:#0f1111" in html
+    assert "--accent:#20c997" in html
+    assert "--shadow:0 16px 38px" in html
+    assert ".view-tab.active" in html
     assert "Quick research command" in html
     assert "global-query" in html
     assert "globalLookup" in html
