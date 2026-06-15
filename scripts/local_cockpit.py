@@ -2531,10 +2531,48 @@ def _option_chain_trade_plan(
     }
 
 
+def _open_exposure_for_symbol(data_dir: Path, symbol: str) -> dict[str, Any]:
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return {"symbol": clean, "has_open": False, "open_count": 0, "asset_counts": {}, "labels": []}
+    try:
+        report = build_positions(data_dir, asset="all", query=clean, status="all", limit=500)
+    except Exception:
+        return {"symbol": clean, "has_open": False, "open_count": 0, "asset_counts": {}, "labels": []}
+    rows = [
+        row for row in (report.get("rows") or [])
+        if str(row.get("ticker_or_symbol") or "").upper() == clean
+    ]
+    asset_counts: dict[str, int] = {}
+    labels: list[str] = []
+    attention_count = 0
+    for row in rows:
+        asset = str(row.get("asset") or "unknown")
+        asset_counts[asset] = asset_counts.get(asset, 0) + 1
+        if row.get("attention"):
+            attention_count += 1
+        label = str(row.get("position_label") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return {
+        "symbol": clean,
+        "has_open": bool(rows),
+        "open_count": len(rows),
+        "asset_counts": asset_counts,
+        "attention_count": attention_count,
+        "labels": labels[:5],
+        "summary": (
+            f"{len(rows)} open {clean} position(s)"
+            if rows else f"No open {clean} positions found"
+        ),
+    }
+
+
 def _option_chain_decision_pack(
     rows: list[dict[str, Any]],
     quote_quality: str,
     source: str,
+    exposure: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not rows:
         return {
@@ -2546,6 +2584,7 @@ def _option_chain_decision_pack(
             "next_step": "Loosen filters or scan a different ticker.",
             "saveable_count": 0,
             "trade_plan": None,
+            "open_exposure": exposure or {},
         }
     saveable = [
         row for row in rows
@@ -2572,6 +2611,11 @@ def _option_chain_decision_pack(
     lane = str(primary.get("review_lane") or "review")
     readiness = str(primary.get("readiness_label") or "review")
     risk_notes: list[str] = []
+    exposure = exposure if isinstance(exposure, dict) else {}
+    if exposure.get("has_open"):
+        risk_notes.append(
+            f"Duplicate exposure check: {exposure.get('summary')}; review open positions before adding."
+        )
     if str(quote_quality or "").lower() != "live_or_broker":
         risk_notes.append("Quote may be free/delayed; refresh before acting.")
     spread = _float_value(primary.get("spread_pct"), default=math.nan)
@@ -2632,6 +2676,7 @@ def _option_chain_decision_pack(
         "primary_grade": grade,
         "primary_lane": lane,
         "primary_readiness": readiness,
+        "open_exposure": {k: _clean_value(v) for k, v in exposure.items()},
     }
 
 
@@ -2686,6 +2731,7 @@ def build_option_chain_scan(
     source = str(blob.get("source") or "unknown")
     quote_quality = blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed")
     source_attempts = blob.get("source_attempts") if isinstance(blob.get("source_attempts"), list) else []
+    open_exposure = _open_exposure_for_symbol(data_dir, ticker)
     today = datetime.now(timezone.utc).date()
     rows: list[dict[str, Any]] = []
     rejection_examples: list[dict[str, Any]] = []
@@ -2797,7 +2843,7 @@ def build_option_chain_scan(
     limited = [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]]
     summary = _option_chain_scan_summary(rows, max_premium)
     expiry_summary = _option_chain_expiry_summary(rows, max_premium)
-    decision = _option_chain_decision_pack(rows, str(quote_quality), source)
+    decision = _option_chain_decision_pack(rows, str(quote_quality), source, open_exposure)
     rejection_reason_counts = dict(
         sorted(rejection_reason_counts.items(), key=lambda item: (-item[1], item[0]))
     )
@@ -2812,6 +2858,7 @@ def build_option_chain_scan(
         "quote_quality": quote_quality,
         "data_delay": _clean_value(blob.get("data_delay")),
         "source_attempts": [{k: _clean_value(v) for k, v in row.items()} for row in source_attempts],
+        "open_exposure": open_exposure,
         "providers_checked": len(source_attempts),
         "spot": _clean_value(spot),
         "total_expirations": len(blob.get("expirations") or []),
@@ -11373,6 +11420,7 @@ function optionChainSummary(data) {
   const decision = data.decision || {};
   const primary = decision.primary || {};
   const tradePlan = decision.trade_plan || {};
+  const exposure = data.open_exposure || decision.open_exposure || {};
   const fields = [
     ['Symbol', data.symbol || '-'],
     ['Preset', data.preset_label || data.preset || '-'],
@@ -11389,6 +11437,7 @@ function optionChainSummary(data) {
     ['Decision', `${decision.label || '-'} ${decision.status || ''}`.trim()],
     ['Primary contract', primary.contract_query || '-'],
     ['Trade action', labelText(tradePlan.action || 'watch_only')],
+    ['Open exposure', exposure.has_open ? `${exposure.open_count || 0} open` : 'clear'],
     ['A/B saveable', decision.saveable_count || 0],
     ['Top rejects', countMapText(data.rejection_reason_counts || {})],
     ['Median spread', scan.median_spread_pct === null || scan.median_spread_pct === undefined ? '-' : ((Number(scan.median_spread_pct || 0) * 100).toFixed(1)) + '%'],
@@ -11544,6 +11593,7 @@ function optionChainDecisionHtml(data) {
   if (!primary) return '';
   const query = primary.contract_query || optionContractQuery(primary);
   const context = optionContractContext(primary);
+  const exposure = decision.open_exposure || {};
   const breakdown = Array.isArray(primary.chain_factor_breakdown) ? primary.chain_factor_breakdown.slice(0, 5) : [];
   const factorRows = breakdown.length
     ? `<div class="factor-stack">${breakdown.map(f => `<div class="factor-row">
@@ -11565,6 +11615,7 @@ function optionChainDecisionHtml(data) {
         <span class="pill ${escAttr(primary.readiness_label || 'review')}">${cell(decision.label || 'Chain decision')}</span>
         <span class="pill">${cell(decision.status || '-')}</span>
         <span class="pill">${cell(decision.quote_quality || data.quote_quality || '-')}</span>
+        ${exposure.has_open ? `<span class="pill review">${cell(exposure.open_count || 0)} open exposure</span>` : ''}
         ${primary.chain_factor_summary ? `<span class="pill">${cell(primary.chain_factor_summary)}</span>` : ''}
       </div>
       <h3>${cell(query || `${primary.symbol || ''} ${primary.side || ''} ${primary.strike || ''}`)}</h3>

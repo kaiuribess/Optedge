@@ -135,6 +135,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "canScanOptionChainSymbol" in html
     assert "Primary contract" in html
     assert "Trade action" in html
+    assert "Open exposure" in html
     assert "Save contract" in html
     assert "contract-watchlist-btn" in html
     assert "optionContractQuery" in html
@@ -2727,14 +2728,26 @@ def test_option_chain_scan_fetches_and_filters_contracts():
 
     try:
         cockpit_module._fetch_option_chain = fake_fetch
-        report = build_option_chain_scan(
-            "AAPL",
-            side="call",
-            min_dte=180,
-            max_dte=400,
-            max_spread_pct=0.10,
-            max_premium=600,
-        )
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            (data_dir / "open_positions.json").write_text(json.dumps([{
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 220.0,
+                "expiry": "2027-01-15",
+                "entry_price": 4.0,
+                "current_mid": 5.0,
+                "latest_exit_pressure": 25,
+            }]), encoding="utf-8")
+            report = build_option_chain_scan(
+                "AAPL",
+                data_dir=data_dir,
+                side="call",
+                min_dte=180,
+                max_dte=400,
+                max_spread_pct=0.10,
+                max_premium=600,
+            )
     finally:
         cockpit_module._fetch_option_chain = original
 
@@ -2810,10 +2823,15 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["scan_summary"]["clean_swing_count"] == 1
     assert report["scan_summary"]["grade_counts"]["A"] == 1
     assert report["scan_summary"]["primary_review_count"] == 1
+    assert report["open_exposure"]["has_open"] is True
+    assert report["open_exposure"]["open_count"] == 1
+    assert report["open_exposure"]["asset_counts"] == {"option": 1}
     assert report["decision"]["status"] == "primary_review"
     assert report["decision"]["label"] == "Best contract"
     assert report["decision"]["primary"]["contract_query"] == "AAPL 2027-01-15 C 220"
     assert report["decision"]["primary"]["chain_factor_summary"] == row["chain_factor_summary"]
+    assert report["decision"]["open_exposure"]["open_count"] == 1
+    assert "Duplicate exposure check" in " ".join(report["decision"]["risk_notes"])
     assert report["decision"]["saveable_count"] == 1
     trade_plan = report["decision"]["trade_plan"]
     assert trade_plan["action"] == "review_contract"
