@@ -240,6 +240,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data trust" in html
     assert "History source" in html
     assert "Option chain" in html
+    assert "Chain source" in html
+    assert "Chain providers" in html
     assert "SEC facts" in html
     assert "Free source map" in html
     assert "/api/free-data-sources" in html
@@ -3240,6 +3242,23 @@ def test_provider_status_checks_free_sources_without_running_scan():
         cockpit_module._fetch_option_chain = lambda *args, **kwargs: {
             "spot": 200.0,
             "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+            "source_attempts": [
+                {
+                    "provider": "cboe",
+                    "status": "ok",
+                    "rows": 2,
+                    "expirations": 1,
+                    "quote_quality": "free_or_delayed",
+                },
+                {
+                    "provider": "nasdaq_stocks",
+                    "status": "warn",
+                    "rows": 0,
+                    "expirations": 0,
+                },
+            ],
             "chains": {
                 "2027-01-15": pd.DataFrame([
                     {"strike": 200, "side": "call", "bid": 4.9, "ask": 5.1},
@@ -3284,6 +3303,15 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert report["data_trust"]["history_ok_count"] == 2
     assert report["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
     assert report["data_trust"]["option_chain_status"] == "ok"
+    assert report["data_trust"]["option_chain_source"] == "cboe"
+    assert report["data_trust"]["option_chain_rows"] == 2
+    assert report["data_trust"]["option_chain_quote_quality"] == "free_or_delayed"
+    assert report["data_trust"]["option_chain_data_delay"] == "delayed"
+    assert report["data_trust"]["option_chain_providers_checked"] == 2
+    assert report["data_trust"]["option_chain_usable_provider_count"] == 1
+    assert report["data_trust"]["option_chain_failed_provider_count"] == 1
+    assert report["data_trust"]["option_chain_provider_summary"] == "cboe:ok/2; nasdaq_stocks:warn/0"
+    assert "delayed" in report["data_trust"]["option_chain_warning"]
     assert report["data_trust"]["sec_companyfacts_status"] == "ok"
     assert report["data_trust"]["sec_companyfacts_rows"] == 2
     providers = {row["provider"]: row for row in report["rows"]}
@@ -3293,6 +3321,9 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert providers["Nasdaq historical"]["history_source"] == "nasdaq_historical"
     assert providers["Stooq CSV"]["status"] == "warn"
     assert providers["Option chain stack"]["rows"] == 2
+    assert providers["Option chain stack"]["usable_provider_count"] == 1
+    assert providers["Option chain stack"]["failed_provider_count"] == 1
+    assert providers["Option chain stack"]["provider_attempt_summary"] == "cboe:ok/2; nasdaq_stocks:warn/0"
     assert providers["SEC company facts"]["status"] == "ok"
     assert providers["SEC company facts"]["metric_count"] == 2
     assert providers["SEC company facts"]["watch_signals"] == "net margin positive"

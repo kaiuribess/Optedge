@@ -6658,17 +6658,35 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
     chains = blob.get("chains") if isinstance(blob, dict) else None
     attempts = blob.get("source_attempts") if isinstance(blob, dict) else None
     attempts = attempts if isinstance(attempts, list) else []
+    usable_attempts = [
+        row for row in attempts
+        if isinstance(row, dict) and str(row.get("status") or "").lower() == "ok"
+    ]
+    failed_attempts = [
+        row for row in attempts
+        if isinstance(row, dict) and str(row.get("status") or "").lower() != "ok"
+    ]
     attempt_names = [
         str(row.get("provider") or row.get("source") or "")
         for row in attempts
         if isinstance(row, dict) and (row.get("provider") or row.get("source"))
     ]
+    attempt_summary = "; ".join(
+        f"{row.get('provider') or row.get('source')}:"
+        f"{row.get('status') or 'unknown'}"
+        f"/{int(_float_value(row.get('rows'), default=0.0))}"
+        for row in attempts
+        if isinstance(row, dict)
+    )
     if not chains:
         return {
             "ok": False,
             "rows": 0,
             "providers_checked": len(attempts),
+            "usable_provider_count": len(usable_attempts),
+            "failed_provider_count": len(failed_attempts),
             "provider_attempts": ", ".join(attempt_names) if attempt_names else None,
+            "provider_attempt_summary": attempt_summary or None,
             "note": "No option-chain rows returned.",
         }
     total = 0
@@ -6684,7 +6702,10 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
         "quote_quality": blob.get("quote_quality") or ("free_or_delayed" if blob.get("source") else None),
         "data_delay": blob.get("data_delay"),
         "providers_checked": len(attempts),
+        "usable_provider_count": len(usable_attempts),
+        "failed_provider_count": len(failed_attempts),
         "provider_attempts": ", ".join(attempt_names) if attempt_names else None,
+        "provider_attempt_summary": attempt_summary or None,
         "spot": _clean_value(blob.get("spot")),
         "note": f"{len(chains)} expiration(s) returned.",
     }
@@ -6871,6 +6892,14 @@ def build_provider_status(
     chain_score = 25 if chain_ok else 0
     cache_score = round((min(symbol_cache_ok, 2) / 2) * 20)
     trust_score = int(history_score + chain_score + cache_score)
+    chain_probe = chain_rows[0] if chain_rows else {}
+    chain_quote_quality = str(chain_probe.get("quote_quality") or "")
+    chain_rows_count = int(_float_value(chain_probe.get("rows"), default=0.0))
+    chain_warning = ""
+    if include_chain and not chain_ok:
+        chain_warning = "option chain did not return usable rows"
+    elif include_chain and chain_quote_quality and chain_quote_quality != "live_or_broker":
+        chain_warning = "option chain is delayed/research-grade; verify live quotes before manual paper entry"
     if not working_history:
         trust_label = "blocked"
     elif chain_ok:
@@ -6902,6 +6931,15 @@ def build_provider_status(
             "option_chain_status": (
                 "skipped" if not include_chain else "ok" if chain_ok else "warn"
             ),
+            "option_chain_source": _clean_value(chain_probe.get("source")),
+            "option_chain_rows": chain_rows_count,
+            "option_chain_quote_quality": _clean_value(chain_quote_quality),
+            "option_chain_data_delay": _clean_value(chain_probe.get("data_delay")),
+            "option_chain_providers_checked": int(_float_value(chain_probe.get("providers_checked"), default=0.0)),
+            "option_chain_usable_provider_count": int(_float_value(chain_probe.get("usable_provider_count"), default=0.0)),
+            "option_chain_failed_provider_count": int(_float_value(chain_probe.get("failed_provider_count"), default=0.0)),
+            "option_chain_provider_summary": _clean_value(chain_probe.get("provider_attempt_summary")),
+            "option_chain_warning": chain_warning,
             "sec_companyfacts_status": "ok" if facts_ok else "warn",
             "sec_companyfacts_rows": sum(int(_float_value(row.get("rows"), default=0.0)) for row in facts_rows),
             "symbol_cache_ok_count": symbol_cache_ok,
@@ -10432,11 +10470,17 @@ function providerSummaryHtml(data) {
     ['Symbol', data.symbol || '-'],
     ['History source', trust.history_source_summary || '-'],
     ['Option chain', trust.option_chain_status || '-'],
+    ['Chain source', trust.option_chain_source || '-'],
+    ['Chain rows', trust.option_chain_rows ?? '-'],
+    ['Chain providers', trust.option_chain_provider_summary || '-'],
     ['SEC facts', `${trust.sec_companyfacts_status || '-'} / ${trust.sec_companyfacts_rows || 0}`],
     ['Working', `${data.ok_count || 0}/${data.provider_count || 0}`],
     ['Warnings', (data.warnings || []).length]
   ];
-  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+  const warning = trust.option_chain_warning
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Chain warning</h4><ul><li>${cell(trust.option_chain_warning)}</li></ul></div>`
+    : '';
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('') + warning;
 }
 function freeSourcesSummaryHtml(data) {
   const fields = [
