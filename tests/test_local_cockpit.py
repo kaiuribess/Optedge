@@ -2911,6 +2911,13 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
             "source": "cboe",
             "quote_quality": "free_or_delayed",
             "data_delay": "delayed",
+            "open_exposure": {
+                "has_open": symbol == "AAPL",
+                "open_count": 2 if symbol == "AAPL" else 0,
+                "asset_counts": {"option": 1, "share": 1} if symbol == "AAPL" else {},
+                "attention_count": 1 if symbol == "AAPL" else 0,
+                "summary": "2 open AAPL position(s)" if symbol == "AAPL" else "No open positions found",
+            },
             "total_contracts": 20,
             "rejected_count": 4,
             "top_rejection_reasons": [{"reason": "spread above filter", "count": 4}],
@@ -2944,9 +2951,17 @@ def test_option_chain_batch_scans_shortlist_and_ranks_contracts():
     assert report["rows"][0]["symbol"] == "MSFT"
     assert report["rows"][0]["contract_grade"] == "A"
     assert report["rows"][0]["candidate_source"] == "typed shortlist"
+    aapl_row = [row for row in report["rows"] if row["symbol"] == "AAPL"][0]
+    assert aapl_row["open_exposure_count"] == 2
+    assert aapl_row["open_exposure_assets"] == "option:1, share:1"
+    assert aapl_row["open_exposure_attention_count"] == 1
+    assert "open exposure" in " ".join(aapl_row["risk_flags"])
+    assert report["open_exposure_count"] == 2
+    assert report["open_exposure_symbols"] == ["AAPL"]
     assert report["symbol_summaries"][0]["quote_quality"] == "free_or_delayed"
     assert report["symbol_summaries"][0]["rejected_count"] == 4
     assert report["symbol_summaries"][0]["top_rejects"] == "spread above filter (4)"
+    assert report["symbol_summaries"][0]["open_exposure_count"] == 2
 
 
 def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
@@ -3092,6 +3107,10 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
                 "batch_data_delay": "delayed",
                 "candidate_source": "typed shortlist",
                 "candidate_reason": "AAPL",
+                "open_exposure_count": 1,
+                "open_exposure_assets": "option:1",
+                "open_exposure_summary": "1 open AAPL position(s)",
+                "open_exposure_attention_count": 1,
                 "risk_flags": ["free/delayed"],
                 "grade_reasons": ["tight spread", "3m+ swing"],
                 "review_thesis": "A-grade test contract.",
@@ -3114,6 +3133,8 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert payload["rows"][0]["breakeven_price"] == 225.0
         assert payload["rows"][0]["budget_fit"] == "inside_budget"
         assert payload["rows"][0]["reward_risk_reference"] == 2.0
+        assert payload["rows"][0]["open_exposure_count"] == 1
+        assert payload["rows"][0]["open_exposure_assets"] == "option:1"
 
 
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():

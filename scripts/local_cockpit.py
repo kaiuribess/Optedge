@@ -254,6 +254,10 @@ CHAIN_SHORTLIST_COLUMNS = [
     "data_delay",
     "candidate_source",
     "candidate_reason",
+    "open_exposure_count",
+    "open_exposure_assets",
+    "open_exposure_summary",
+    "open_exposure_attention_count",
     "risk_flags",
     "grade_reasons",
     "review_thesis",
@@ -2568,6 +2572,39 @@ def _open_exposure_for_symbol(data_dir: Path, symbol: str) -> dict[str, Any]:
     }
 
 
+def _chain_open_exposure_fields(exposure: dict[str, Any] | None) -> dict[str, Any]:
+    exposure = exposure if isinstance(exposure, dict) else {}
+    asset_counts = exposure.get("asset_counts") if isinstance(exposure.get("asset_counts"), dict) else {}
+    return {
+        "open_exposure_count": int(_float_value(exposure.get("open_count"), default=0.0)),
+        "open_exposure_assets": ", ".join(
+            f"{asset}:{count}" for asset, count in sorted(asset_counts.items())
+        ),
+        "open_exposure_summary": _clean_value(exposure.get("summary")),
+        "open_exposure_attention_count": int(_float_value(exposure.get("attention_count"), default=0.0)),
+    }
+
+
+def _add_open_exposure_warning(row: dict[str, Any], exposure: dict[str, Any] | None) -> dict[str, Any]:
+    out = dict(row)
+    fields = _chain_open_exposure_fields(exposure)
+    out.update(fields)
+    if fields["open_exposure_count"] <= 0:
+        return out
+    warning = f"open exposure: {fields['open_exposure_summary']}"
+    raw_flags = out.get("risk_flags")
+    if isinstance(raw_flags, list):
+        flags = [str(flag) for flag in raw_flags if str(flag).strip()]
+    elif raw_flags:
+        flags = [str(raw_flags)]
+    else:
+        flags = []
+    if warning not in flags:
+        flags.append(warning)
+    out["risk_flags"] = flags
+    return out
+
+
 def _option_chain_decision_pack(
     rows: list[dict[str, Any]],
     quote_quality: str,
@@ -3053,6 +3090,8 @@ def build_option_chain_batch(
             "grades": _clean_value((report.get("scan_summary") or {}).get("grade_counts")),
             "best_reviewable": _clean_value((report.get("scan_summary") or {}).get("best_reviewable")),
         }
+        exposure_fields = _chain_open_exposure_fields(report.get("open_exposure"))
+        summary.update(exposure_fields)
         symbol_summaries.append(summary)
         if not report.get("ok"):
             errors.append({
@@ -3064,7 +3103,7 @@ def build_option_chain_batch(
         source = str(report.get("source") or "unknown")
         source_counts[source] = source_counts.get(source, 0) + 1
         for rank, row in enumerate(report.get("rows", [])[:contracts_per_symbol], start=1):
-            item = dict(row)
+            item = _add_open_exposure_warning(row, report.get("open_exposure"))
             item["candidate_rank"] = idx
             item["candidate_source"] = candidate.get("source")
             item["candidate_score"] = candidate.get("score")
@@ -3098,6 +3137,14 @@ def build_option_chain_batch(
         "successful_scans": sum(1 for row in symbol_summaries if row.get("ok")),
         "error_count": len(errors),
         "row_count": len(rows),
+        "open_exposure_count": sum(
+            int(_float_value(row.get("open_exposure_count"), default=0.0))
+            for row in symbol_summaries
+        ),
+        "open_exposure_symbols": [
+            row.get("symbol") for row in symbol_summaries
+            if _float_value(row.get("open_exposure_count"), default=0.0) > 0
+        ],
         "grade_counts": grade_counts,
         "source_counts": source_counts,
         "candidates": candidates,
@@ -11510,7 +11557,11 @@ function optionContractContext(row) {
     reward_risk_reference: row.reward_risk_reference,
     budget_fit: row.budget_fit,
     dte: row.dte,
-    dte_bucket: row.dte_bucket
+    dte_bucket: row.dte_bucket,
+    open_exposure_count: row.open_exposure_count || 0,
+    open_exposure_assets: row.open_exposure_assets || '',
+    open_exposure_summary: row.open_exposure_summary || '',
+    open_exposure_attention_count: row.open_exposure_attention_count || 0
   };
 }
 function optionContractSavePayload(row) {
@@ -11558,6 +11609,7 @@ function optionContractCard(row) {
     <div class="row"><span>Open interest</span><b>${cell(row.openInterest)}</b></div>
     <div class="row"><span>Volume</span><b>${cell(row.volume)}</b></div>
     <div class="row"><span>Delta</span><b>${cell(row.delta)}</b></div>
+    <div class="row"><span>Open exposure</span><b>${Number(row.open_exposure_count || 0) > 0 ? cell(row.open_exposure_summary || `${row.open_exposure_count} open`) : 'clear'}</b></div>
     <div class="row"><span>Stop / target ref</span><b>${cell(stopRef)} / ${cell(targetRef)}</b></div>
     <div class="row"><span>Risk / reward ref</span><b>${moneyShort(row.risk_dollars_reference)} / ${moneyShort(row.reward_dollars_reference)} (${ratio(row.reward_risk_reference)})</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
@@ -11673,6 +11725,7 @@ function optionChainBatchSummary(data) {
     ['Scanned', data.symbols_scanned || 0],
     ['Successful', data.successful_scans || 0],
     ['Contracts shown', data.row_count || 0],
+    ['Open exposure', data.open_exposure_count ? `${data.open_exposure_count} open: ${(data.open_exposure_symbols || []).join(', ')}` : 'clear'],
     ['Grades', countMapText(data.grade_counts || {})],
     ['Sources', countMapText(data.source_counts || {})],
     ['Errors', data.error_count || 0],
