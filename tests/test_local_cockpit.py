@@ -676,6 +676,55 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready[0]["action"] == "preview_paper_candidate"
 
 
+def test_action_queue_promotes_reviewable_swing_scout_rows():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_watchlist = cockpit_module.load_watchlist
+    old_swing = cockpit_module.build_swing_scout
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {
+        "rows": [
+            {
+                "asset": "option",
+                "ticker_or_symbol": "AAPL",
+                "setup": "AAPL long-dated option swing",
+                "review_action": "review_now",
+                "review_label": "Review now",
+                "conviction_score": 87,
+                "reasons": ["momentum confirmation"],
+            },
+            {
+                "asset": "share",
+                "ticker_or_symbol": "WAIT",
+                "setup": "WAIT weak row",
+                "review_action": "wait",
+                "conviction_score": 40,
+            },
+        ],
+    }
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.build_swing_scout = old_swing
+
+    rows = [row for row in queue["rows"] if row["category"] == "swing_scout"]
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"
+    assert rows[0]["action"] == "scan_swing_chain"
+    assert rows[0]["priority"] >= 70
+    assert "conviction 87" in rows[0]["detail"]
+
+
 def test_today_review_combines_setups_saved_contracts_and_risk():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -683,6 +732,7 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         old_saved = cockpit_module.build_saved_option_contracts
         old_risk = cockpit_module.build_risk_summary
         old_queue = cockpit_module.build_action_queue
+        old_swing = cockpit_module.build_swing_scout
 
         def fake_gated(*args, **kwargs):
             return {
@@ -737,10 +787,25 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
                 }],
             }
 
+        def fake_swing(*args, **kwargs):
+            return {
+                "rows": [{
+                    "asset": "share",
+                    "ticker_or_symbol": "SMOL",
+                    "setup": "SMOL small-cap squeeze watch",
+                    "review_action": "review_now",
+                    "review_label": "Review now",
+                    "conviction_score": 88,
+                    "swing_scout_score": 92,
+                    "reasons": ["short/squeeze pressure", "retail/attention lift"],
+                }],
+            }
+
         cockpit_module.build_climate_gated_setups = fake_gated
         cockpit_module.build_saved_option_contracts = fake_saved
         cockpit_module.build_risk_summary = fake_risk
         cockpit_module.build_action_queue = fake_queue
+        cockpit_module.build_swing_scout = fake_swing
         try:
             review = build_today_review(data_dir, limit=8)
         finally:
@@ -748,6 +813,7 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
             cockpit_module.build_saved_option_contracts = old_saved
             cockpit_module.build_risk_summary = old_risk
             cockpit_module.build_action_queue = old_queue
+            cockpit_module.build_swing_scout = old_swing
 
         categories = {row["category"] for row in review["rows"]}
         actions = {row["action"] for row in review["rows"]}
@@ -755,13 +821,20 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         assert review["setup_count"] == 1
         assert review["saved_contract_count"] == 1
         assert review["risk_count"] == 2
+        assert review["swing_scout_count"] == 1
         assert "setup" in categories
         assert "saved_contract" in categories
         assert "position_risk" in categories
+        assert "swing_scout" in categories
         assert "scan_swing_chain" in actions
         assert "refresh_saved_quote" in actions
         assert "open_position_monitor" in actions
         assert any(row["route"] == "chains" for row in review["rows"])
+        swing_row = next(row for row in review["rows"] if row["category"] == "swing_scout")
+        assert swing_row["symbol"] == "SMOL"
+        assert swing_row["action"] == "scan_swing_chain"
+        assert swing_row["route"] == "chains"
+        assert "conviction 88" in swing_row["detail"]
 
 
 def test_command_center_summarizes_next_action_and_data_trust():
@@ -822,6 +895,9 @@ def test_command_center_summarizes_next_action_and_data_trust():
                 "setup": "AAPL 180d call swing",
                 "lane": "long_dated_option_swing",
                 "swing_scout_score": 88,
+                "review_action": "shortlist",
+                "review_label": "Shortlist",
+                "conviction_score": 78,
                 "readiness_label": "review",
                 "snapshot_freshness": "fresh",
                 "reasons": ["3m+ runway", "momentum confirmation"],
@@ -855,8 +931,12 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["swing_actions"][0]["action"] == "scan_swing_chain"
         assert center["swing_actions"][0]["route"] == "chains"
         assert center["swing_actions"][0]["score"] == 88
+        assert center["swing_actions"][0]["priority"] == 78
+        assert center["swing_actions"][0]["conviction_score"] == 78
+        assert center["swing_actions"][0]["review_action"] == "shortlist"
         assert center["swing_actions"][0]["factor_summary"] == "Momentum + Execution"
         assert "Factors: Momentum + Execution" in center["swing_actions"][0]["detail"]
+        assert "conviction 78/100" in center["swing_actions"][0]["detail"]
         assert "3m+ runway" in center["swing_actions"][0]["detail"]
         assert len(center["trust_ribbon"]) == 7
         ribbon = {row["label"]: row for row in center["trust_ribbon"]}

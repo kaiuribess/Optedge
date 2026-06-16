@@ -7128,6 +7128,40 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         ))
 
     try:
+        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=False)
+        for row in scout.get("rows", [])[:6]:
+            review_action = str(row.get("review_action") or "").lower()
+            if review_action not in {"review_now", "shortlist"}:
+                continue
+            symbol = row.get("ticker_or_symbol")
+            asset = str(row.get("asset") or "")
+            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "run_focused_scan"
+            priority = 68 if review_action == "review_now" else 57
+            priority += int(_float_value(row.get("conviction_score"), default=0.0) / 20.0)
+            detail = (
+                f"{row.get('setup') or symbol} is {row.get('review_label') or review_action} "
+                f"from Swing Scout at conviction {row.get('conviction_score')}; "
+                f"{', '.join(str(x) for x in (row.get('reasons') or [])[:3]) or row.get('lane') or 'swing candidate'}."
+            )
+            items.append(_queue_item(
+                priority,
+                "swing_scout",
+                "Review swing-scout candidate",
+                detail,
+                action,
+                symbol=symbol,
+                query=symbol,
+            ))
+    except Exception as exc:
+        items.append(_queue_item(
+            45,
+            "swing_scout",
+            "Swing scout unavailable",
+            f"Could not build swing scout actions: {str(exc)[:160]}",
+            "open_research",
+        ))
+
+    try:
         watchlist = load_watchlist(data_dir, enrich=True).get("entries", [])
         for row in watchlist:
             local_hits = int(_float_value(row.get("local_hits"), 0.0))
@@ -7222,6 +7256,8 @@ def _today_route_for_queue_action(action: Any) -> str:
         return "positions"
     if clean in {"preview_paper_candidate", "review_paper_export"}:
         return "paper"
+    if clean in {"scan_swing_chain"}:
+        return "chains"
     if clean in {
         "review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache",
         "warm_symbol_caches", "run_refresh_scan",
@@ -7385,6 +7421,38 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         notes.append(f"Risk review failed: {str(exc)[:160]}")
 
     try:
+        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=False)
+        for idx, row in enumerate((scout.get("rows") or [])[:6]):
+            review_action = str(row.get("review_action") or "").lower()
+            if review_action not in {"review_now", "shortlist"}:
+                continue
+            symbol = row.get("ticker_or_symbol")
+            asset = row.get("asset")
+            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "open_research"
+            route = "chains" if action == "scan_swing_chain" else "research"
+            reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
+            detail = (
+                f"{row.get('setup') or symbol} is {row.get('review_label') or review_action} "
+                f"at conviction {row.get('conviction_score')} and scout score {row.get('swing_scout_score')}. "
+                f"{', '.join(str(x) for x in reasons[:3]) or row.get('lane') or 'swing scout'}"
+            )
+            base_priority = 91 if review_action == "review_now" else 78
+            items.append(_today_review_item(
+                base_priority - idx,
+                "swing_scout",
+                "Review swing-scout candidate",
+                detail,
+                action,
+                route,
+                symbol=symbol,
+                query=symbol,
+                source="swing_scout",
+                asset=asset,
+            ))
+    except Exception as exc:
+        notes.append(f"Swing-scout review failed: {str(exc)[:160]}")
+
+    try:
         queue = build_action_queue(data_dir, limit=12)
         for row in (queue.get("rows") or [])[:10]:
             priority = min(_float_value(row.get("priority"), default=0.0), 82.0)
@@ -7423,6 +7491,7 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         "risk_count": category_counts.get("position_risk", 0),
         "setup_count": category_counts.get("setup", 0),
         "saved_contract_count": category_counts.get("saved_contract", 0),
+        "swing_scout_count": category_counts.get("swing_scout", 0),
         "rows": rows,
         "notes": notes + [
             "Today Review merges local setup gates, saved contracts, open-position risk, and action queue items.",
@@ -7446,6 +7515,11 @@ def _command_center_status(health_status: str, risk_level: str, review_count: in
 def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
     symbol = row.get("ticker_or_symbol")
     asset = row.get("asset")
+    review_action = str(row.get("review_action") or "").strip().lower()
+    conviction = _float_value(
+        row.get("conviction_score"),
+        default=_float_value(row.get("swing_scout_score"), default=0.0),
+    )
     action = (
         "scan_swing_chain"
         if str(asset or "").lower() == "option" and _can_scan_option_chain_symbol(symbol, asset)
@@ -7460,12 +7534,14 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
     factor_text = f" Factors: {factor_summary}." if factor_summary else ""
     warning_text = f" Warnings: {', '.join(str(item) for item in warnings[:2])}." if warnings else ""
     score = _float_value(row.get("swing_scout_score"), default=0.0)
+    review_text = str(row.get("review_label") or review_action or "Review").replace("_", " ")
     detail = (
-        f"{row.get('setup') or symbol} scored {score:.0f}/100 in {str(row.get('lane') or 'swing radar').replace('_', ' ')}. "
+        f"{row.get('setup') or symbol} is {review_text} with conviction {conviction:.0f}/100 "
+        f"and scout score {score:.0f}/100 in {str(row.get('lane') or 'swing radar').replace('_', ' ')}. "
         f"{reason_text}.{factor_text}{warning_text}"
     )
     return {
-        "priority": int(round(_clamp(score, 0.0, 100.0))),
+        "priority": int(round(_clamp(conviction, 0.0, 100.0))),
         "asset": _clean_value(asset),
         "label": _clean_value(row.get("setup") or symbol or "Swing radar item"),
         "detail": detail,
@@ -7476,6 +7552,9 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
         "source": "swing_scout",
         "lane": _clean_value(row.get("lane")),
         "score": _clean_value(row.get("swing_scout_score")),
+        "conviction_score": _clean_value(row.get("conviction_score")),
+        "review_action": _clean_value(row.get("review_action")),
+        "review_label": _clean_value(row.get("review_label")),
         "readiness": _clean_value(row.get("readiness_label")),
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
         "factor_summary": _clean_value(factor_summary),
