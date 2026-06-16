@@ -3488,6 +3488,21 @@ def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
                     "reasons": ["retail/attention lift"],
                 },
                 {
+                    "asset": "share",
+                    "ticker_or_symbol": "RISK",
+                    "swing_scout_score": 94,
+                    "lane": "nasdaq_small_cap_mover",
+                    "review_action": "wait",
+                    "readiness_label": "wait",
+                    "trade_status": "Wait",
+                    "active_halt": True,
+                    "market_structure_risk_score": 98,
+                    "market_structure_risk_flags": ["active_halt"],
+                    "warnings": ["active trading halt"],
+                    "warning_count": 1,
+                    "reasons": ["Nasdaq screener upside momentum"],
+                },
+                {
                     "asset": "futures",
                     "ticker_or_symbol": "CL=F",
                     "swing_scout_score": 90,
@@ -3517,7 +3532,11 @@ def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
         cockpit_module.build_best_setups = old_best
 
     assert report["candidate_count"] == 2
+    assert report["candidate_skipped_count"] == 1
     assert {row["symbol"] for row in report["candidates"]} == {"SMOL", "RGTI"}
+    assert report["excluded_candidates"][0]["symbol"] == "RISK"
+    assert report["excluded_candidates"][0]["reason_excluded"] == "active trading halt"
+    assert report["excluded_candidates"][0]["market_structure_risk_score"] == 98
     assert all(row["symbol"] != "CL=F" for row in report["candidates"])
     assert {row["candidate_source"] for row in report["rows"]} == {
         "swing scout share",

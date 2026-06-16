@@ -2972,24 +2972,82 @@ def build_option_chain_scan(
     }
 
 
-def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 8) -> list[dict[str, Any]]:
+def _chain_candidate_exclusion(row: dict[str, Any] | None) -> str | None:
+    if not isinstance(row, dict):
+        return None
+    warnings = [
+        str(item or "").strip().lower()
+        for item in (row.get("warnings") or row.get("risk_flags") or [])
+        if str(item or "").strip()
+    ]
+    flags = {
+        str(item or "").strip().lower()
+        for item in (
+            row.get("market_structure_risk_flags")
+            or row.get("risk_flags")
+            or []
+        )
+        if str(item or "").strip()
+    }
+    if bool(row.get("active_halt")) or "active_halt" in flags or any("active trading halt" in item for item in warnings):
+        return "active trading halt"
+    review_action = str(row.get("review_action") or "").strip().lower()
+    readiness = str(row.get("readiness_label") or "").strip().lower()
+    trade_status = str(row.get("trade_status") or "").strip().lower()
+    if review_action == "wait" or readiness == "wait" or trade_status == "wait":
+        return "wait-lane setup"
+    return None
+
+
+def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8) -> dict[str, Any]:
     limit = max(1, min(int(limit or 8), 20))
     rows: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
     seen: set[str] = set()
+    blocked_auto: dict[str, str] = {}
 
-    def add(symbol: Any, source: str, score: Any = None, reason: str = "") -> None:
+    def add(
+        symbol: Any,
+        source: str,
+        score: Any = None,
+        reason: str = "",
+        row: dict[str, Any] | None = None,
+        manual: bool = False,
+    ) -> None:
         clean = str(symbol or "").strip().upper()
         if not clean or clean in seen:
             return
         if clean.endswith("=F") or clean.startswith("^"):
             return
-        seen.add(clean)
-        rows.append({
+        candidate = {
             "symbol": clean,
             "source": source,
             "score": _clean_value(score),
             "reason": reason or source,
-        })
+            "asset": _clean_value(row.get("asset")) if isinstance(row, dict) else None,
+            "lane": _clean_value(row.get("lane")) if isinstance(row, dict) else None,
+            "review_action": _clean_value(row.get("review_action")) if isinstance(row, dict) else None,
+            "readiness_label": _clean_value(row.get("readiness_label")) if isinstance(row, dict) else None,
+            "warning_count": _clean_value(row.get("warning_count")) if isinstance(row, dict) else None,
+            "market_structure_risk_score": (
+                _clean_value(row.get("market_structure_risk_score")) if isinstance(row, dict) else None
+            ),
+        }
+        if clean in blocked_auto and not manual:
+            skipped = dict(candidate)
+            skipped["reason_excluded"] = blocked_auto[clean]
+            excluded.append(skipped)
+            return
+        reason_excluded = None if manual else _chain_candidate_exclusion(row)
+        if reason_excluded:
+            skipped = dict(candidate)
+            skipped["reason_excluded"] = reason_excluded
+            excluded.append(skipped)
+            if "halt" in reason_excluded:
+                blocked_auto[clean] = reason_excluded
+            return
+        seen.add(clean)
+        rows.append(candidate)
 
     raw_query = str(query or "").strip()
     if raw_query:
@@ -2998,8 +3056,8 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
             if not token:
                 continue
             resolution = resolve_symbol(token)
-            add(resolution.get("symbol") or token, "typed shortlist", 1.0, token)
-        return rows[:limit]
+            add(resolution.get("symbol") or token, "typed shortlist", 1.0, token, manual=True)
+        return {"candidates": rows[:limit], "excluded_candidates": excluded}
 
     try:
         gated = build_climate_gated_setups(data_dir, per_asset=6, limit=max(limit, 10), include_held=False)
@@ -3014,9 +3072,10 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
                 f"climate-gated {asset} setup",
                 row.get("climate_gate_score") or row.get("score"),
                 reason,
+                row,
             )
             if len(rows) >= limit:
-                return rows
+                return {"candidates": rows, "excluded_candidates": excluded}
     except Exception:
         pass
 
@@ -3039,9 +3098,10 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
                 f"swing scout {asset}",
                 row.get("swing_scout_score"),
                 reason,
+                row,
             )
             if len(rows) >= limit:
-                return rows
+                return {"candidates": rows, "excluded_candidates": excluded}
     except Exception:
         pass
 
@@ -3055,16 +3115,22 @@ def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 
             f"best {asset} setup",
             row.get("score"),
             row.get("reason_selected") or row.get("setup") or "",
+            row,
         )
         if len(rows) >= limit:
-            return rows
+            return {"candidates": rows, "excluded_candidates": excluded}
 
     for item in load_watchlist(data_dir).get("entries", []):
         add(item.get("symbol"), "research watchlist", 0.75, item.get("query") or "")
         if len(rows) >= limit:
-            return rows
+            return {"candidates": rows, "excluded_candidates": excluded}
 
-    return rows[:limit]
+    return {"candidates": rows[:limit], "excluded_candidates": excluded}
+
+
+def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 8) -> list[dict[str, Any]]:
+    """Compatibility wrapper for callers that only need the accepted queue."""
+    return _bulk_chain_symbol_selection(data_dir, query=query, limit=limit)["candidates"]
 
 
 def _chain_grade_rank(row: dict[str, Any]) -> int:
@@ -3089,7 +3155,9 @@ def build_option_chain_batch(
     symbols_limit = max(1, min(int(symbols_limit or 6), 20))
     contracts_per_symbol = max(1, min(int(contracts_per_symbol or 4), 12))
     limit = max(1, min(int(limit or 18), 80))
-    candidates = _bulk_chain_symbol_candidates(data_dir, query=query, limit=symbols_limit)
+    selection = _bulk_chain_symbol_selection(data_dir, query=query, limit=symbols_limit)
+    candidates = selection["candidates"]
+    excluded_candidates = selection["excluded_candidates"]
 
     rows: list[dict[str, Any]] = []
     symbol_summaries: list[dict[str, Any]] = []
@@ -3176,6 +3244,7 @@ def build_option_chain_batch(
         "query": str(query or "").strip(),
         "preset": _chain_preset_config(preset)[0],
         "candidate_count": len(candidates),
+        "candidate_skipped_count": len(excluded_candidates),
         "symbols_scanned": len(symbol_summaries),
         "successful_scans": sum(1 for row in symbol_summaries if row.get("ok")),
         "error_count": len(errors),
@@ -3191,6 +3260,7 @@ def build_option_chain_batch(
         "grade_counts": grade_counts,
         "source_counts": source_counts,
         "candidates": candidates,
+        "excluded_candidates": excluded_candidates,
         "symbol_summaries": symbol_summaries,
         "errors": errors,
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
@@ -12404,6 +12474,7 @@ function optionChainResultsHtml(data) {
 function optionChainBatchSummary(data) {
   const fields = [
     ['Candidates', data.candidate_count || 0],
+    ['Skipped', data.candidate_skipped_count || 0],
     ['Scanned', data.symbols_scanned || 0],
     ['Successful', data.successful_scans || 0],
     ['Contracts shown', data.row_count || 0],
@@ -12417,9 +12488,13 @@ function optionChainBatchSummary(data) {
 }
 function optionChainBatchResultsHtml(data) {
   const rows = data.rows || [];
+  const candidatePanel = `<div class="brief-list"><h4>Candidate queue</h4>${table(data.candidates || [], true)}</div>`;
+  const skippedPanel = (data.excluded_candidates || []).length
+    ? `<div class="brief-list"><h4>Skipped candidates</h4>${table(data.excluded_candidates || [], true)}</div>`
+    : '';
   if (!rows.length) {
     const errors = (data.errors || []).length ? `<div class="brief-list"><h4>Errors</h4>${table(data.errors || [], true)}</div>` : '';
-    return `<div class="empty">No shortlist contracts matched these filters.</div>${errors}`;
+    return `<div class="empty">No shortlist contracts matched these filters.</div><div class="brief-cols">${candidatePanel}${skippedPanel}${errors}</div>`;
   }
   const topCards = rows.slice(0, 8).map(optionContractCard).join('');
   const saveCount = bestChainBatchSaveRows(rows).length;
@@ -12431,6 +12506,8 @@ function optionChainBatchResultsHtml(data) {
     </div>
     <div class="setup-grid">${topCards}</div>
     <div class="brief-cols">
+      ${candidatePanel}
+      ${skippedPanel}
       <div class="brief-list"><h4>Symbol coverage</h4>${table(data.symbol_summaries || [], true)}</div>
       <div class="brief-list"><h4>Ranked contracts</h4>${table(rows, true)}</div>
     </div>
