@@ -325,10 +325,10 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
             try:
                 results[name] = fut.result(timeout=sla)
                 t = timings.get(name, {})
-                log.info("✓ %s engine completed (%.1fs, %d rows)", name,
+                log.info("[ok] %s engine completed (%.1fs, %d rows)", name,
                          t.get("elapsed", 0), t.get("rows", 0))
             except Exception as e:
-                log.error("✗ %s engine failed/timeout: %s", name, str(e)[:200])
+                log.error("[x] %s engine failed/timeout: %s", name, str(e)[:200])
                 results[name] = None
 
     results["_timings"] = timings
@@ -1346,14 +1346,14 @@ def main():
         except Exception as e:
             log.debug("browser open skipped: %s", e)
 
-    print(f"\n┌──────────────────────────────────────────┐")
-    print(f"│  Optedge run complete in {elapsed:5.1f}s")
-    print(f"│  {len(calls)} calls / {len(puts)} puts / {len(top_sh)} shares / {len(top_value)} value / {len(top_fut)} futures")
+    print("\n+------------------------------------------+")
+    print(f"|  Optedge run complete in {elapsed:5.1f}s")
+    print(f"|  {len(calls)} calls / {len(puts)} puts / {len(top_sh)} shares / {len(top_value)} value / {len(top_fut)} futures")
     if trending:
-        print(f"│  WSB trending added: {len(trending)}")
+        print(f"|  WSB trending added: {len(trending)}")
     if use_demo:
-        print(f"│  ⚠  DEMO MODE (synthetic data)")
-    print(f"└──────────────────────────────────────────┘")
+        print("|  [!] DEMO MODE (synthetic data)")
+    print("+------------------------------------------+")
     print("\n=== TOP LONG CALLS ===")
     for _, r in calls.head(10).iterrows():
         print(f"  {r['ticker']:<6} {r['contract']:<28} conf {int(r['confidence'])}")
@@ -1393,8 +1393,8 @@ def main():
             f"target {_fmt_cli_num(r.get('target_price'), 2)}  "
             f"{status}"
         )
-    print(f"\n→ Dashboard: file://{html_path}")
-    print(f"→ TradingView watchlist: {tv_path}")
+    print(f"\nDashboard: file://{html_path}")
+    print(f"TradingView watchlist: {tv_path}")
     if robinhood_queue_paths:
         count = len((robinhood_queue_summary or {}).get("orders") or [])
         max_submit = int((robinhood_queue_summary or {}).get("max_orders_to_submit") or 0)
@@ -1421,7 +1421,7 @@ def main_loop():
         return main()
     interval_sec = max(60, known.loop * 60)
     iteration = 0
-    print(f"\n=== LOOP MODE — running every {known.loop} min, Ctrl+C to stop ===\n", flush=True)
+    print(f"\n=== LOOP MODE - running every {known.loop} min, Ctrl+C to stop ===\n", flush=True)
     # v20.4: import health harness for whole-day reliability tracking
     try:
         from telemetry import health as _health
@@ -1437,7 +1437,7 @@ def main_loop():
                 _health.assert_can_continue()
             except Exception:
                 pass
-        print(f"\n┌─ Iteration {iteration} @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ─" + "─" * 30, flush=True)
+        print(f"\n-- Iteration {iteration} @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} " + "-" * 30, flush=True)
         iter_error: str = ""
         rc = 0
         try:
@@ -1449,9 +1449,9 @@ def main_loop():
             return 130
         except Exception as e:
             iter_error = f"{type(e).__name__}: {e}"
-            print(f"\n  ✗ iteration {iteration} crashed: {iter_error}")
+            print(f"\n  [x] iteration {iteration} crashed: {iter_error}")
             traceback.print_exc()
-            print("  continuing in next interval…")
+            print("  continuing in next interval...")
         # v20.4: record per-iter health row before we sleep
         if _have_health:
             try:
@@ -1466,7 +1466,7 @@ def main_loop():
         # Memory hygiene
         gc.collect()
         next_run = datetime.now() + pd.Timedelta(seconds=interval_sec)
-        print(f"\n└─ next run @ {next_run.strftime('%H:%M:%S')} (sleeping {known.loop} min)\n", flush=True)
+        print(f"\n-- next run @ {next_run.strftime('%H:%M:%S')} (sleeping {known.loop} min)\n", flush=True)
         try:
             time.sleep(interval_sec)
         except KeyboardInterrupt:
