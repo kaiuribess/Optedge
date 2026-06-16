@@ -34,6 +34,7 @@ import data_provider
 from engines import dark_pool as dark_pool_engine
 from engines.fred_public import fred_csv_history
 from engines.nasdaq_screener import small_cap_movers
+from engines.trading_halts import halt_rows_for_symbols
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
@@ -545,6 +546,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "dashboard autocomplete, ticker resolution, universe hygiene",
         "primary": True,
         "caveat": "Directory metadata is not a quote feed and does not imply options liquidity.",
+    },
+    {
+        "name": "Nasdaq Trader trade halt RSS",
+        "category": "market_structure/halts",
+        "coverage": "current US equity trade halts and pauses",
+        "credential": "none",
+        "quality": "official_public_near_realtime",
+        "used_by": "small-cap halt risk and action queue guardrails",
+        "primary": True,
+        "caveat": "Query no more than once per minute; use as halt-risk context, not execution data.",
     },
     {
         "name": "House/Senate disclosures",
@@ -7096,6 +7107,49 @@ def _sec_queue_detail(row: dict[str, Any]) -> str:
     return f"{ticker} filed {form} ({when}): {desc}."
 
 
+def _queue_attention_symbols(data_dir: Path) -> list[str]:
+    symbols: set[str] = set()
+    for filename in ("open_positions.json", "open_share_positions.json", "open_futures_positions.json"):
+        rows = _read_json(data_dir / filename)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw = row.get("ticker") or row.get("symbol") or row.get("ticker_or_symbol")
+            symbol = str(raw or "").strip().upper()
+            if symbol and _can_scan_option_chain_symbol(symbol, row.get("asset")):
+                symbols.add(symbol)
+    try:
+        for row in load_watchlist(data_dir, enrich=False).get("entries", []):
+            if not isinstance(row, dict):
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol and _can_scan_option_chain_symbol(symbol, row.get("asset")):
+                symbols.add(symbol)
+    except Exception:
+        pass
+    return sorted(symbols)
+
+
+def _halt_queue_label(row: dict[str, Any]) -> str:
+    return "Trading halt active" if bool(row.get("active_halt")) else "Recent trading halt"
+
+
+def _halt_queue_detail(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "").upper()
+    name = str(row.get("name") or "").strip()
+    reason = str(row.get("reason_code") or "unknown").strip()
+    market = str(row.get("market") or "").strip()
+    halted_at = str(row.get("halted_at") or row.get("halt_time") or "").strip()
+    resume = row.get("resumption_trade_time") or row.get("resumption_quote_time")
+    status = "still halted" if bool(row.get("active_halt")) else f"resumed {resume or 'reported'}"
+    label = f"{symbol} ({name})" if name else symbol
+    market_text = f" on {market}" if market else ""
+    time_text = f" at {halted_at}" if halted_at else ""
+    return f"{label}{market_text} had a {reason} halt{time_text}; {status}. Review before any swing action."
+
+
 def _queue_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
     category = str(item.get("category") or "")
     action = str(item.get("action") or "")
@@ -7212,6 +7266,36 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "SEC filing monitor unavailable",
             f"Could not read cached SEC filing monitor: {str(exc)[:160]}",
             "review_sec_filings",
+        ))
+
+    try:
+        halt_symbols = _queue_attention_symbols(data_dir)
+        halt_df = halt_rows_for_symbols(halt_symbols, cache_age=60)
+        if isinstance(halt_df, pd.DataFrame) and not halt_df.empty:
+            for _, halt_row in halt_df.head(5).iterrows():
+                row = halt_row.to_dict()
+                symbol = row.get("symbol")
+                priority = int(_float_value(row.get("halt_risk_score"), default=76.0))
+                if bool(row.get("active_halt")):
+                    priority = max(priority, 96)
+                else:
+                    priority = max(priority, 78)
+                items.append(_queue_item(
+                    priority,
+                    "trading_halt",
+                    _halt_queue_label(row),
+                    _halt_queue_detail(row),
+                    "review_trading_halt",
+                    symbol=symbol,
+                    query=symbol,
+                ))
+    except Exception as exc:
+        items.append(_queue_item(
+            38,
+            "trading_halt",
+            "Trade halt monitor unavailable",
+            f"Could not read Nasdaq Trader halt RSS context: {str(exc)[:160]}",
+            "review_data_health",
         ))
 
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
@@ -7334,7 +7418,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         "rows": items,
         "notes": [
             "Action queue is local decision support only; it does not place trades.",
-            "Highest priority goes to bad data health, SEC filing risk, and open-position exit risk.",
+            "Highest priority goes to bad data health, halt risk, SEC filing risk, and open-position exit risk.",
             "Paper candidates remain manual review items.",
         ],
     }
@@ -7388,7 +7472,10 @@ def _today_route_for_queue_action(action: Any) -> str:
         "warm_symbol_caches", "run_refresh_scan",
     }:
         return "data_health"
-    if clean in {"run_focused_scan", "review_watchlist", "review_sec_filings", "review_sec_filing_risk"}:
+    if clean in {
+        "run_focused_scan", "review_watchlist", "review_sec_filings",
+        "review_sec_filing_risk", "review_trading_halt",
+    }:
         return "research"
     return "research"
 
@@ -9382,6 +9469,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .review-card.position_risk { border-left:4px solid var(--warn); }
 .review-card.data_health { border-left:4px solid var(--bad); }
 .review-card.sec_filing { border-left:4px solid #38bdf8; }
+.review-card.trading_halt { border-left:4px solid #f97316; }
 .review-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .review-card h3 { margin:0; font-size:15px; line-height:1.25; }
 .review-card p { margin:0; color:var(--soft); font-size:12px; line-height:1.45; }
@@ -11139,6 +11227,13 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('sec-filings-results');
     return;
   }
+  if (action === 'review_trading_halt') {
+    setView('research');
+    if (q) $('symbol').value = q;
+    await lookup();
+    scrollToId('lookup-results');
+    return;
+  }
   if (q) {
     $('symbol').value = q;
     await lookup();
@@ -11184,6 +11279,10 @@ async function routeTodayReviewAction(action, route, query, symbol) {
     return;
   }
   if (action === 'review_sec_filings' || action === 'review_sec_filing_risk') {
+    await routeQueueAction(action, query, symbol);
+    return;
+  }
+  if (action === 'review_trading_halt') {
     await routeQueueAction(action, query, symbol);
     return;
   }

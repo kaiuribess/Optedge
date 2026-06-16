@@ -78,6 +78,20 @@ Why it helps:
 - Surfaces reviewable mover rows in Swing Scout, Today Review, Command Center, and the Action Queue.
 - Keeps these rows as review candidates only; they still need a focused Optedge scan and live quote check before any manual paper/live decision.
 
+### Nasdaq Trader trade halt RSS
+
+Status: implemented in `engines/trading_halts.py` and surfaced in the local cockpit Action Queue for watchlist/open-position symbols.
+
+Source:
+- https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts
+- https://www.nasdaqtrader.com/Trader.aspx?id=TradeHaltRSS
+
+Why it helps:
+- Adds an official no-key halt/pause risk layer for speculative small-cap swing candidates.
+- Flags watchlist or open-position symbols that are currently halted or recently resumed before the user reviews new swing actions.
+- Keeps halt rows as risk context only; a halt is not a standalone entry or exit signal.
+- Uses a one-minute cache by default to respect Nasdaq Trader's RSS refresh-frequency guideline.
+
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
@@ -85,6 +99,7 @@ Why it helps:
 - Official Treasury XML yield-curve feed.
 - Cboe market-wide put/call market statistics.
 - Nasdaq public stock screener for delayed small-cap mover discovery.
+- Nasdaq Trader trade halt RSS for halt/pause risk context.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.

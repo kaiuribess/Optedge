@@ -262,6 +262,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "review_sec_filings" in html
     assert "review_sec_filing_risk" in html
     assert ".review-card.sec_filing" in html
+    assert "review_trading_halt" in html
+    assert ".review-card.trading_halt" in html
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
@@ -717,6 +719,60 @@ def test_action_queue_prompts_sec_monitor_refresh_when_cache_missing():
     assert refresh
     assert refresh[0]["label"] == "Refresh SEC filing monitor"
     assert "missing" in refresh[0]["detail"]
+
+
+def test_action_queue_surfaces_trade_halt_risk_for_watchlist_symbol():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_swing = cockpit_module.build_swing_scout
+    old_watchlist = cockpit_module.load_watchlist
+    old_halts = cockpit_module.halt_rows_for_symbols
+    seen_symbols = {}
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {
+        "entries": [{"id": "move", "symbol": "MOVE", "query": "MOVE"}]
+    }
+
+    def fake_halts(symbols, cache_age=60):
+        seen_symbols["symbols"] = symbols
+        seen_symbols["cache_age"] = cache_age
+        return pd.DataFrame([{
+            "symbol": "MOVE",
+            "name": "Move Corp Cmn",
+            "market": "NASDAQ",
+            "reason_code": "T1",
+            "halted_at": "2026-06-16T14:19:52-04:00",
+            "resumption_trade_time": None,
+            "active_halt": True,
+            "halt_risk_score": 98,
+        }])
+
+    cockpit_module.halt_rows_for_symbols = fake_halts
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.halt_rows_for_symbols = old_halts
+
+    rows = [row for row in queue["rows"] if row["category"] == "trading_halt"]
+    assert rows
+    assert seen_symbols["symbols"] == ["MOVE"]
+    assert seen_symbols["cache_age"] == 60
+    assert rows[0]["label"] == "Trading halt active"
+    assert rows[0]["action"] == "review_trading_halt"
+    assert rows[0]["priority"] >= 98
+    assert rows[0]["symbol"] == "MOVE"
+    assert "T1 halt" in rows[0]["detail"]
 
 
 def test_action_queue_surfaces_ready_watchlist_ideas():
@@ -3564,6 +3620,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Yahoo Finance RSS" in names
     assert "SEC EDGAR" in names
     assert "Nasdaq Trader symbol directory" in names
+    assert "Nasdaq Trader trade halt RSS" in names
     assert "Treasury yield XML" in names
     assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
@@ -3885,6 +3942,7 @@ if __name__ == "__main__":
     test_action_queue_groups_stale_snapshots_into_refresh_action()
     test_action_queue_surfaces_cached_sec_filing_risk()
     test_action_queue_prompts_sec_monitor_refresh_when_cache_missing()
+    test_action_queue_surfaces_trade_halt_risk_for_watchlist_symbol()
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
@@ -3925,4 +3983,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("51/51 local cockpit tests passed")
+    print("52/52 local cockpit tests passed")
