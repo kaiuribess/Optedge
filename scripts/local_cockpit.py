@@ -7148,7 +7148,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         ))
 
     try:
-        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=False)
+        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=True)
         for row in scout.get("rows", [])[:6]:
             review_action = str(row.get("review_action") or "").lower()
             if review_action not in {"review_now", "shortlist"}:
@@ -7441,7 +7441,7 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         notes.append(f"Risk review failed: {str(exc)[:160]}")
 
     try:
-        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=False)
+        scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=True)
         for idx, row in enumerate((scout.get("rows") or [])[:6]):
             review_action = str(row.get("review_action") or "").lower()
             if review_action not in {"review_now", "shortlist"}:
@@ -7596,7 +7596,7 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "If data trust is warn/bad, refresh or inspect artifacts before acting on any setup.",
     ]
     try:
-        swing = build_swing_scout(data_dir, limit=5, include_wait=False, include_nasdaq_movers=False)
+        swing = build_swing_scout(data_dir, limit=5, include_wait=False, include_nasdaq_movers=True)
     except Exception as exc:
         swing = {"rows": [], "count": 0}
         notes.append(f"Swing radar unavailable: {str(exc)[:160]}")
@@ -9478,7 +9478,7 @@ tr.clickable-row:hover { background:#18201d; }
   </section>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Action queue</h2>
-    <div class="muted">Highest-priority local research items from data health, open positions, paper candidates, and watchlist context.</div>
+    <div class="muted">Highest-priority local research items from data health, open positions, paper candidates, Swing Scout, Nasdaq movers, and watchlist context.</div>
     <div class="status" id="queue-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="queue-results" class="table-wrap"></div></div>
   </section>

@@ -75,6 +75,7 @@ Why it helps:
 - Adds a no-key small-cap mover radar for names outside the latest Optedge scan files.
 - Captures price, percent change, volume, market cap, sector, and industry context.
 - Enriches fresh mover rows with FINRA short-volume pressure when the no-key RegSHO file is reachable.
+- Surfaces reviewable mover rows in Swing Scout, Today Review, Command Center, and the Action Queue.
 - Keeps these rows as review candidates only; they still need a focused Optedge scan and live quote check before any manual paper/live decision.
 
 ## Safe Free Sources Already In The Project

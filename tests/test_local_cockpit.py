@@ -105,6 +105,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Saved 3m+ chain contracts" in html
     assert "wireOptionChainActions($('swing-packet-results'))" in html
     assert "Action queue" in html
+    assert "Swing Scout, Nasdaq movers" in html
     assert "/api/action-queue" in html
     assert "queue-action-btn" in html
     assert "routeQueueAction" in html
@@ -682,31 +683,37 @@ def test_action_queue_promotes_reviewable_swing_scout_rows():
     old_paper = cockpit_module.build_paper_candidates
     old_watchlist = cockpit_module.load_watchlist
     old_swing = cockpit_module.build_swing_scout
+    swing_kwargs = {}
 
     cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
     cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
     cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
     cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
-    cockpit_module.build_swing_scout = lambda *args, **kwargs: {
-        "rows": [
-            {
-                "asset": "option",
-                "ticker_or_symbol": "AAPL",
-                "setup": "AAPL long-dated option swing",
-                "review_action": "review_now",
-                "review_label": "Review now",
-                "conviction_score": 87,
-                "reasons": ["momentum confirmation"],
-            },
-            {
-                "asset": "share",
-                "ticker_or_symbol": "WAIT",
-                "setup": "WAIT weak row",
-                "review_action": "wait",
-                "conviction_score": 40,
-            },
-        ],
-    }
+
+    def fake_swing(*args, **kwargs):
+        swing_kwargs.update(kwargs)
+        return {
+            "rows": [
+                {
+                    "asset": "option",
+                    "ticker_or_symbol": "AAPL",
+                    "setup": "AAPL long-dated option swing",
+                    "review_action": "review_now",
+                    "review_label": "Review now",
+                    "conviction_score": 87,
+                    "reasons": ["momentum confirmation"],
+                },
+                {
+                    "asset": "share",
+                    "ticker_or_symbol": "WAIT",
+                    "setup": "WAIT weak row",
+                    "review_action": "wait",
+                    "conviction_score": 40,
+                },
+            ],
+        }
+
+    cockpit_module.build_swing_scout = fake_swing
     try:
         with tempfile.TemporaryDirectory() as td:
             queue = build_action_queue(Path(td))
@@ -723,6 +730,7 @@ def test_action_queue_promotes_reviewable_swing_scout_rows():
     assert rows[0]["action"] == "scan_swing_chain"
     assert rows[0]["priority"] >= 70
     assert "conviction 87" in rows[0]["detail"]
+    assert swing_kwargs["include_nasdaq_movers"] is True
 
 
 def test_today_review_combines_setups_saved_contracts_and_risk():
@@ -733,6 +741,7 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         old_risk = cockpit_module.build_risk_summary
         old_queue = cockpit_module.build_action_queue
         old_swing = cockpit_module.build_swing_scout
+        swing_kwargs = {}
 
         def fake_gated(*args, **kwargs):
             return {
@@ -788,6 +797,7 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
             }
 
         def fake_swing(*args, **kwargs):
+            swing_kwargs.update(kwargs)
             return {
                 "rows": [{
                     "asset": "share",
@@ -835,6 +845,7 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         assert swing_row["action"] == "scan_swing_chain"
         assert swing_row["route"] == "chains"
         assert "conviction 88" in swing_row["detail"]
+        assert swing_kwargs["include_nasdaq_movers"] is True
 
 
 def test_command_center_summarizes_next_action_and_data_trust():
@@ -846,6 +857,7 @@ def test_command_center_summarizes_next_action_and_data_trust():
         old_sources = cockpit_module.build_free_data_sources
         old_perf = cockpit_module.build_performance_summary
         old_swing = cockpit_module.build_swing_scout
+        swing_kwargs = {}
 
         cockpit_module.build_data_health = lambda *args, **kwargs: {
             "status": "warn",
@@ -887,28 +899,32 @@ def test_command_center_summarizes_next_action_and_data_trust():
             "total_latest_engine_sec": 92.4,
             "warnings": [],
         }
-        cockpit_module.build_swing_scout = lambda *args, **kwargs: {
-            "count": 1,
-            "rows": [{
-                "asset": "option",
-                "ticker_or_symbol": "AAPL",
-                "setup": "AAPL 180d call swing",
-                "lane": "long_dated_option_swing",
-                "swing_scout_score": 88,
-                "review_action": "shortlist",
-                "review_label": "Shortlist",
-                "conviction_score": 78,
-                "readiness_label": "review",
-                "snapshot_freshness": "fresh",
-                "reasons": ["3m+ runway", "momentum confirmation"],
-                "warnings": ["verify delayed quote"],
-                "factor_breakdown": [
-                    {"factor": "Momentum", "score": 18.5, "detail": "20d 12%, rank 2.0"},
-                    {"factor": "Execution", "score": 15.0, "detail": "180d DTE, spread 8%"},
-                ],
-                "factor_summary": "Momentum + Execution",
-            }],
-        }
+        def fake_swing(*args, **kwargs):
+            swing_kwargs.update(kwargs)
+            return {
+                "count": 1,
+                "rows": [{
+                    "asset": "option",
+                    "ticker_or_symbol": "AAPL",
+                    "setup": "AAPL 180d call swing",
+                    "lane": "long_dated_option_swing",
+                    "swing_scout_score": 88,
+                    "review_action": "shortlist",
+                    "review_label": "Shortlist",
+                    "conviction_score": 78,
+                    "readiness_label": "review",
+                    "snapshot_freshness": "fresh",
+                    "reasons": ["3m+ runway", "momentum confirmation"],
+                    "warnings": ["verify delayed quote"],
+                    "factor_breakdown": [
+                        {"factor": "Momentum", "score": 18.5, "detail": "20d 12%, rank 2.0"},
+                        {"factor": "Execution", "score": 15.0, "detail": "180d DTE, spread 8%"},
+                    ],
+                    "factor_summary": "Momentum + Execution",
+                }],
+            }
+
+        cockpit_module.build_swing_scout = fake_swing
         try:
             center = build_command_center(data_dir)
         finally:
@@ -944,6 +960,7 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert ribbon["Validation alignment"]["value"] == "warn"
         assert ribbon["Chain readiness"]["value"] == "missing"
         assert ribbon["Free sources"]["value"] == "17/17"
+        assert swing_kwargs["include_nasdaq_movers"] is True
 
 
 def test_swing_packet_builds_and_writes_daily_decision_packet():
