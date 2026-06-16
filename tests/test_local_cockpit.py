@@ -2111,6 +2111,9 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
 def test_swing_scout_can_include_nasdaq_small_cap_movers():
     old_movers = cockpit_module.small_cap_movers
     old_dark_pool = cockpit_module.dark_pool_engine.run
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
     cockpit_module.small_cap_movers = lambda max_rows=24: pd.DataFrame([{
         "symbol": "MOVE",
         "name": "Move Corp",
@@ -2130,6 +2133,9 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
         "total_vol": 1_000_000,
         "dark_pool_score": -0.56,
     }])
+    cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
     try:
         with tempfile.TemporaryDirectory() as td:
             report = build_swing_scout(
@@ -2141,6 +2147,9 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
     finally:
         cockpit_module.small_cap_movers = old_movers
         cockpit_module.dark_pool_engine.run = old_dark_pool
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
 
     assert report["count"] == 1
     row = report["rows"][0]
@@ -2165,6 +2174,89 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
     assert report["asset_counts"]["share"] == 1
     assert report["review_action_counts"]["review_now"] == 1
     assert report["filters"]["include_nasdaq_movers"] is True
+
+
+def test_swing_scout_market_structure_risk_downgrades_nasdaq_movers():
+    old_movers = cockpit_module.small_cap_movers
+    old_dark_pool = cockpit_module.dark_pool_engine.run
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+    cockpit_module.small_cap_movers = lambda max_rows=24: pd.DataFrame([{
+        "symbol": "RISK",
+        "name": "Risk Move Corp",
+        "last_price": 3.75,
+        "pct_change": 18.2,
+        "volume": 4_200_000,
+        "market_cap": 180_000_000,
+        "sector": "Technology",
+        "industry": "Software",
+        "nasdaq_mover_score": 94,
+        "market_cap_bucket": "micro",
+    }, {
+        "symbol": "SAFE",
+        "name": "Safe Move Corp",
+        "last_price": 6.10,
+        "pct_change": 9.5,
+        "volume": 2_100_000,
+        "market_cap": 650_000_000,
+        "sector": "Industrials",
+        "industry": "Machinery",
+        "nasdaq_mover_score": 88,
+        "market_cap_bucket": "small",
+    }])
+    cockpit_module.dark_pool_engine.run = lambda universe, lookback_days=3: pd.DataFrame()
+    cockpit_module.halt_rows_for_symbols = lambda symbols, cache_age=60: pd.DataFrame([{
+        "symbol": "RISK",
+        "active_halt": True,
+        "halt_risk_score": 98,
+    }])
+    cockpit_module.threshold_rows_for_symbols = lambda symbols, cache_age=21600: pd.DataFrame([{
+        "symbol": "RISK",
+        "is_threshold": True,
+        "settlement_risk_score": 86,
+    }])
+    cockpit_module.circuit_rows_for_symbols = lambda symbols, cache_age=1800: pd.DataFrame([{
+        "symbol": "RISK",
+        "short_sale_restricted": True,
+        "ssr_risk_score": 82,
+    }])
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            report = build_swing_scout(
+                Path(td),
+                limit=5,
+                include_nasdaq_movers=True,
+                lane="nasdaq_small_cap_mover",
+                include_wait=True,
+                min_score=0,
+            )
+    finally:
+        cockpit_module.small_cap_movers = old_movers
+        cockpit_module.dark_pool_engine.run = old_dark_pool
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+
+    by_symbol = {row["ticker_or_symbol"]: row for row in report["rows"]}
+    assert set(by_symbol) == {"RISK", "SAFE"}
+    risky = by_symbol["RISK"]
+    safe = by_symbol["SAFE"]
+    assert risky["market_structure_risk_score"] == 98
+    assert set(risky["market_structure_risk_flags"]) == {
+        "active_halt", "regsho_threshold", "short_sale_restricted",
+    }
+    assert {"active trading halt", "Reg SHO threshold list", "short-sale circuit breaker active"} <= set(risky["warnings"])
+    assert risky["active_halt"] is True
+    assert risky["regsho_threshold"] is True
+    assert risky["short_sale_restricted"] is True
+    assert risky["trade_status"] == "Wait"
+    assert risky["review_action"] == "wait"
+    assert risky["conviction_score"] <= 40
+    assert risky["swing_scout_score"] < safe["swing_scout_score"]
+    assert "Market-structure risk" in {item["factor"] for item in risky["factor_breakdown"]}
+    assert safe["market_structure_risk_flags"] == []
+    assert safe["review_action"] in {"review_now", "shortlist"}
 
 
 def test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts():
@@ -4079,6 +4171,7 @@ if __name__ == "__main__":
     test_best_setups_include_saved_chain_shortlist_contracts()
     test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options()
     test_swing_scout_can_include_nasdaq_small_cap_movers()
+    test_swing_scout_market_structure_risk_downgrades_nasdaq_movers()
     test_climate_gated_setups_pass_clean_rows_and_hold_weak_contracts()
     test_position_monitor_reads_dedupes_and_filters_open_state()
     test_exit_review_summary_reads_jsonl_and_filters_actions()
@@ -4106,4 +4199,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("54/54 local cockpit tests passed")
+    print("55/55 local cockpit tests passed")

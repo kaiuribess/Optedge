@@ -4074,7 +4074,107 @@ def _swing_scout_query_text(row: dict[str, Any]) -> str:
     return " ".join(str(part or "") for part in parts).lower()
 
 
-def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
+def _market_structure_risk_maps(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    """Return market-structure risk context for live small-cap mover rows."""
+    wanted = {str(symbol or "").strip().upper() for symbol in symbols if str(symbol or "").strip()}
+    risk: dict[str, dict[str, Any]] = {
+        symbol: {
+            "score": 0.0,
+            "penalty": 0.0,
+            "warnings": [],
+            "risk_flags": [],
+            "active_halt": False,
+            "recent_halt": False,
+            "regsho_threshold": False,
+            "short_sale_restricted": False,
+        }
+        for symbol in wanted
+    }
+    if not wanted:
+        return risk
+
+    def row_symbol(row: pd.Series) -> str:
+        return str(row.get("symbol") or "").strip().upper()
+
+    def add_warning(symbol: str, warning: str) -> None:
+        if symbol not in risk:
+            return
+        warnings = risk[symbol].setdefault("warnings", [])
+        if warning not in warnings:
+            warnings.append(warning)
+
+    def add_flag(symbol: str, flag: str) -> None:
+        if symbol not in risk:
+            return
+        flags = risk[symbol].setdefault("risk_flags", [])
+        if flag not in flags:
+            flags.append(flag)
+
+    def bump(symbol: str, score: float, penalty: float) -> None:
+        if symbol not in risk:
+            return
+        risk[symbol]["score"] = max(_float_value(risk[symbol].get("score")), score)
+        risk[symbol]["penalty"] = max(_float_value(risk[symbol].get("penalty")), penalty)
+
+    try:
+        halts = halt_rows_for_symbols(sorted(wanted), cache_age=60)
+    except Exception:
+        halts = pd.DataFrame()
+    if isinstance(halts, pd.DataFrame) and not halts.empty:
+        for _, halt in halts.iterrows():
+            symbol = row_symbol(halt)
+            if symbol not in risk:
+                continue
+            active = bool(halt.get("active_halt"))
+            score = _float_value(halt.get("halt_risk_score"), default=96.0 if active else 72.0)
+            if active:
+                risk[symbol]["active_halt"] = True
+                add_warning(symbol, "active trading halt")
+                add_flag(symbol, "active_halt")
+                bump(symbol, score, 45.0)
+            else:
+                risk[symbol]["recent_halt"] = True
+                add_warning(symbol, "recent trading halt")
+                add_flag(symbol, "recent_halt")
+                bump(symbol, score, 16.0)
+
+    try:
+        thresholds = threshold_rows_for_symbols(sorted(wanted), cache_age=6 * 3600)
+    except Exception:
+        thresholds = pd.DataFrame()
+    if isinstance(thresholds, pd.DataFrame) and not thresholds.empty:
+        for _, threshold in thresholds.iterrows():
+            symbol = row_symbol(threshold)
+            if symbol not in risk:
+                continue
+            if bool(threshold.get("is_threshold")):
+                risk[symbol]["regsho_threshold"] = True
+                add_warning(symbol, "Reg SHO threshold list")
+                add_flag(symbol, "regsho_threshold")
+                bump(symbol, _float_value(threshold.get("settlement_risk_score"), default=86.0), 12.0)
+
+    try:
+        circuits = circuit_rows_for_symbols(sorted(wanted), cache_age=30 * 60)
+    except Exception:
+        circuits = pd.DataFrame()
+    if isinstance(circuits, pd.DataFrame) and not circuits.empty:
+        for _, circuit in circuits.iterrows():
+            symbol = row_symbol(circuit)
+            if symbol not in risk:
+                continue
+            if bool(circuit.get("short_sale_restricted")):
+                risk[symbol]["short_sale_restricted"] = True
+                add_warning(symbol, "short-sale circuit breaker active")
+                add_flag(symbol, "short_sale_restricted")
+                bump(symbol, _float_value(circuit.get("ssr_risk_score"), default=82.0), 8.0)
+
+    return risk
+
+
+def _nasdaq_mover_scout_record(
+    row: pd.Series,
+    market_risk: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     symbol = str(row.get("symbol") or "").strip().upper()
     pct = _float_value(row.get("pct_change"), default=0.0)
     volume = _float_value(row.get("volume"), default=0.0)
@@ -4107,7 +4207,25 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         warnings.append("red mover: confirm reversal thesis")
     if math.isfinite(short_vol_ratio) and short_vol_ratio >= 0.60:
         warnings.append("heavy short-volume pressure")
-    base_score = _float_value(row.get("nasdaq_mover_score"), default=0.0) + short_pressure_bonus
+    market_risk = market_risk if isinstance(market_risk, dict) else {}
+    risk_score = _float_value(market_risk.get("score"), default=0.0)
+    risk_penalty = _float_value(market_risk.get("penalty"), default=0.0)
+    risk_warnings = [
+        str(item).strip()
+        for item in (market_risk.get("warnings") or [])
+        if str(item).strip()
+    ]
+    risk_flags = [
+        str(item).strip()
+        for item in (market_risk.get("risk_flags") or [])
+        if str(item).strip()
+    ]
+    warnings.extend(risk_warnings)
+    base_score = (
+        _float_value(row.get("nasdaq_mover_score"), default=0.0)
+        + short_pressure_bonus
+        - risk_penalty
+    )
     factor_breakdown = [
         {
             "factor": "Momentum",
@@ -4126,6 +4244,12 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
             "factor": "Market cap",
             "score": 8.0 if cap < 2_000_000_000 else 3.0,
             "detail": f"${cap / 1_000_000:.0f}M market cap",
+        })
+    if risk_score > 0:
+        factor_breakdown.append({
+            "factor": "Market-structure risk",
+            "score": -round(min(45.0, risk_penalty), 2),
+            "detail": ", ".join(risk_warnings[:3]) or "Nasdaq market-structure warning",
         })
     factor_breakdown = sorted(
         factor_breakdown,
@@ -4173,6 +4297,13 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         "sector": _clean_value(row.get("sector")),
         "industry": _clean_value(row.get("industry")),
         "name": _clean_value(row.get("name")),
+        "market_structure_risk_score": _clean_value(round(risk_score, 2) if risk_score else None),
+        "market_structure_risk_flags": risk_flags,
+        "market_structure_warnings": risk_warnings,
+        "active_halt": bool(market_risk.get("active_halt")),
+        "recent_halt": bool(market_risk.get("recent_halt")),
+        "regsho_threshold": bool(market_risk.get("regsho_threshold")),
+        "short_sale_restricted": bool(market_risk.get("short_sale_restricted")),
         "factor_breakdown": factor_breakdown,
         "factor_summary": _swing_factor_summary(factor_breakdown),
         "reasons": reasons[:6],
@@ -4182,6 +4313,12 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         "snapshot_age_min": 0,
     }
     record.update(_swing_scout_review_state(record))
+    if record["active_halt"]:
+        record["readiness_label"] = "wait"
+        record["trade_status"] = "Wait"
+        record["review_action"] = "wait"
+        record["review_label"] = "Wait"
+        record["conviction_score"] = min(int(record.get("conviction_score") or 0), 40)
     return record
 
 
@@ -4223,10 +4360,12 @@ def _append_nasdaq_mover_scout_rows(
                 on="symbol",
                 how="left",
             )
+    market_risk = _market_structure_risk_maps(mover_symbols)
     added = 0
     seen_symbols = {str(row.get("ticker_or_symbol") or "").upper() for row in rows}
     for _, mover in movers.iterrows():
-        record = _nasdaq_mover_scout_record(mover)
+        symbol_key = str(mover.get("symbol") or "").strip().upper()
+        record = _nasdaq_mover_scout_record(mover, market_risk.get(symbol_key))
         symbol = str(record.get("ticker_or_symbol") or "").upper()
         if not symbol or symbol in seen_symbols:
             continue
