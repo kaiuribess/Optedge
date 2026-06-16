@@ -3208,6 +3208,7 @@ def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_D
     data_dir.mkdir(parents=True, exist_ok=True)
     csv_path = data_dir / "option_chain_shortlist.csv"
     json_path = data_dir / "option_chain_shortlist.json"
+    quality_summary = _chain_shortlist_quality_summary(pd.DataFrame(normalized))
     pd.DataFrame(normalized, columns=CHAIN_SHORTLIST_COLUMNS).to_csv(csv_path, index=False)
     payload = {
         "ok": True,
@@ -3221,6 +3222,15 @@ def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_D
         "successful_scans": report.get("successful_scans"),
         "grade_counts": report.get("grade_counts") or {},
         "source_counts": report.get("source_counts") or {},
+        "quality_summary": quality_summary,
+        "provider_summary": {
+            "source_counts": report.get("source_counts") or {},
+            "symbols_scanned": report.get("symbols_scanned"),
+            "successful_scans": report.get("successful_scans"),
+            "error_count": report.get("error_count"),
+            "open_exposure_count": report.get("open_exposure_count"),
+            "open_exposure_symbols": report.get("open_exposure_symbols") or [],
+        },
         "notes": [
             "External review shortlist only; no trades are placed.",
             "Rows come from Optedge's free/provider option-chain batch scan.",
@@ -3238,6 +3248,7 @@ def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_D
             "csv": "/artifact/option-chain-shortlist",
             "json": "/artifact/option-chain-shortlist-json",
         },
+        "quality_summary": quality_summary,
         "notes": payload["notes"],
     }
 
@@ -6595,13 +6606,22 @@ def _build_trust_ribbon(
     chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
     chain_status = chain_quality.get("status") or chain.get("status") or "missing"
     chain_score = _float_value(chain_quality.get("score"), default=0.0)
-    chain_detail = (
-        f"{int(_float_value(chain.get('count')))} saved, "
-        f"{int(_float_value(chain_quality.get('primary_review_count')))} primary, "
-        f"{int(_float_value(chain_quality.get('clean_swing_count')))} clean"
-        if chain.get("status") == "ready"
-        else "Run a 3m+ chain scan before choosing contracts."
-    )
+    source_counts = chain.get("source_counts") if isinstance(chain.get("source_counts"), dict) else {}
+    if chain.get("status") == "ready":
+        scan_counts = ""
+        if chain.get("successful_scans") is not None and chain.get("symbols_scanned") is not None:
+            scan_counts = f", {chain.get('successful_scans')}/{chain.get('symbols_scanned')} symbols"
+        source_note = ""
+        if source_counts:
+            source_note = ", sources " + ", ".join(f"{k}:{v}" for k, v in list(source_counts.items())[:3])
+        chain_detail = (
+            f"{int(_float_value(chain.get('count')))} saved{scan_counts}, "
+            f"{int(_float_value(chain_quality.get('primary_review_count')))} primary, "
+            f"{int(_float_value(chain_quality.get('clean_swing_count')))} clean"
+            f"{source_note}"
+        )
+    else:
+        chain_detail = "Run a 3m+ chain scan before choosing contracts."
     validation_level = str((validation_check or {}).get("level") or "warn")
     validation_detail = str((validation_check or {}).get("detail") or "Validation summary has not been refreshed yet.")
     aging_level = str((aging_check or {}).get("level") or "warn")
@@ -7716,6 +7736,8 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
     df = _load_option_chain_shortlist(data_dir)
     csv_path = artifact_path("option-chain-shortlist", data_dir)
     json_path = artifact_path("option-chain-shortlist-json", data_dir)
+    payload = _read_json(json_path) if json_path else None
+    payload = payload if isinstance(payload, dict) else {}
     if df is None or df.empty:
         return {
             "status": "missing",
@@ -7735,7 +7757,10 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
             continue
         counts = df[col].fillna("").astype(str).str.strip()
         quality_counts[col] = int((counts != "").sum())
-    quality_summary = _chain_shortlist_quality_summary(top)
+    quality_summary = payload.get("quality_summary") if isinstance(payload.get("quality_summary"), dict) else None
+    if not quality_summary:
+        quality_summary = _chain_shortlist_quality_summary(top)
+    provider_summary = payload.get("provider_summary") if isinstance(payload.get("provider_summary"), dict) else {}
     return {
         "status": "ready",
         "count": int(len(df)),
@@ -7745,6 +7770,10 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
         "source_mtime": _clean_value(df["_source_mtime"].iloc[0]) if "_source_mtime" in df.columns else None,
         "field_coverage": quality_counts,
         "quality_summary": quality_summary,
+        "provider_summary": provider_summary,
+        "source_counts": payload.get("source_counts") or provider_summary.get("source_counts") or {},
+        "symbols_scanned": payload.get("symbols_scanned") or provider_summary.get("symbols_scanned"),
+        "successful_scans": payload.get("successful_scans") or provider_summary.get("successful_scans"),
         "rows": _records_from_frame(top[[
             col for col in [
                 "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "actual_dollars",

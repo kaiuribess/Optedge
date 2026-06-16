@@ -2617,7 +2617,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
 
     new_factors_html = f"""
     <details class="dash-section" id="sect-v20-factors">
-      <summary><h2 class="section-title">v Factor coverage <span class="muted">(newer factor engines - click to expand)</span></h2></summary>
+      <summary><h2 class="section-title">Factor coverage <span class="muted">(newer factor engines - click to expand)</span></h2></summary>
       <div style="padding:10px 0">{v20_factor_table}</div>
     </details>
     """
@@ -2706,7 +2706,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
     if telemetry_body or health_body:
         engines_html = f"""
         <details class="dash-section" id="sect-telemetry">
-          <summary><h2 class="section-title">v Engines <span class="muted">(this run latency + rolling health)</span></h2></summary>
+          <summary><h2 class="section-title">Engine runtime <span class="muted">(this run latency + rolling health)</span></h2></summary>
           <div class="analytics-grid">{telemetry_body}{health_body}</div>
         </details>
         """
@@ -2720,7 +2720,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                          f"<td style='padding:6px' class='muted'>{html.escape(e.get('reason', '') or '-')}</td></tr>")
         empty_html = f"""
         <details class="dash-section" id="sect-empty-engines">
-          <summary><h2 class="section-title">v Empty engines this run <span class="muted">({len(empty_engines)} returned 0 rows - click for diagnosis)</span></h2></summary>
+          <summary><h2 class="section-title">Empty engines this run <span class="muted">({len(empty_engines)} returned 0 rows - click for diagnosis)</span></h2></summary>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:900px;border-collapse:collapse'>
             <thead><tr><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:left;padding:6px'>Likely cause</th></tr></thead>
             <tbody>{''.join(rows)}</tbody>

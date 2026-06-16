@@ -3198,6 +3198,8 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
                 "readiness_label": "ready",
                 "readiness_score": 91,
                 "contract_quality_score": 94,
+                "swing_fit_label": "clean_swing",
+                "swing_fit_score": 96,
                 "batch_quote_quality": "free_or_delayed",
                 "batch_source": "cboe",
                 "batch_data_delay": "delayed",
@@ -3231,6 +3233,14 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert payload["rows"][0]["reward_risk_reference"] == 2.0
         assert payload["rows"][0]["open_exposure_count"] == 1
         assert payload["rows"][0]["open_exposure_assets"] == "option:1"
+        assert payload["quality_summary"]["status"] == "clean"
+        assert payload["quality_summary"]["primary_review_count"] == 1
+        assert payload["provider_summary"]["source_counts"] == {"cboe": 1}
+        assert result["quality_summary"]["status"] == "clean"
+        summary = cockpit_module._build_chain_shortlist_summary(data_dir)
+        assert summary["quality_summary"]["status"] == "clean"
+        assert summary["source_counts"] == {"cboe": 1}
+        assert summary["successful_scans"] == 2
 
 
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():

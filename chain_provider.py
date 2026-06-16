@@ -1,4 +1,4 @@
-"""Multi-source options chain provider — v20.2.
+"""Multi-source options chain provider - v20.2.
 
 Layered, keyless sources (no signup required):
   PRIMARY   : CBOE delayed quotes JSON     (cdn.cboe.com/api/global/delayed_quotes)
@@ -9,9 +9,9 @@ Layered, keyless sources (no signup required):
 Why this order:
   - CBOE returns the entire chain (all expirations, all strikes, both sides,
     bid/ask, IV, OI, volume, AND Greeks) in a single HTTP call. Typical
-    response: ~0.2s. 410 tickers via 8 parallel workers ≈ 10s total.
+    response: ~0.2s. 410 tickers via 8 parallel workers ~= 10s total.
   - NASDAQ returns the same per-strike data (no Greeks) in one call. Used
-    when CBOE returns no contracts (rare — small caps, recent IPOs).
+    when CBOE returns no contracts (rare - small caps, recent IPOs).
   - Yahoo options JSON is keyless and lighter than the yfinance library path.
     It is unofficial/research-grade, so it stays behind CBOE/NASDAQ.
   - yfinance is the legacy path. Slow (3+ HTTP calls per ticker) and
@@ -806,7 +806,7 @@ def fetch_chain(ticker: str, cache_age: int = 600, include_diagnostics: bool = F
     if not blob:
         blob, attempt = _timed_attempt("cboe", lambda: _fetch_cboe(ticker, sess))
         attempts.append(attempt)
-    # NASDAQ (try stocks, then etf, then index — first one that returns wins)
+    # NASDAQ (try stocks, then etf, then index - first one that returns wins)
     if not blob:
         for ac in ("stocks", "etf", "index"):
             name = f"nasdaq_{ac}"

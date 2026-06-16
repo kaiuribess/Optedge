@@ -233,7 +233,7 @@ def test_dashboard_engine_panels_are_merged_into_one_section():
     assert html.count('id="sect-telemetry"') == 1
     assert "Engine health" not in html
     assert "Engine telemetry" not in html
-    assert "v Engines" in html
+    assert "Engine runtime" in html
     assert "This run" in html
     assert "Rolling health" in html
 
