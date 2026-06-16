@@ -106,6 +106,20 @@ Why it helps:
 - Uses the official pipe-delimited download file rather than scraping display text.
 - Keeps threshold-list inclusion as risk context only; it is not proof of a squeeze, issuer weakness, or trade edge.
 
+### Nasdaq Trader short-sale circuit breaker list
+
+Status: implemented in `engines/short_sale_circuit.py` and surfaced in the local cockpit Action Queue for watchlist/open-position symbols.
+
+Source:
+- https://www.nasdaqtrader.com/trader.aspx?id=shortsalecircuitbreaker
+- https://www.nasdaqtrader.com/Trader.aspx?id=SSCircuitBreakerdefs
+
+Why it helps:
+- Adds official no-key SEC Rule 201 short-sale restriction context for names that dropped enough to trigger the price test.
+- Flags saved or open symbols under SSR before the user reviews new small-cap swing actions.
+- Uses the official CSV download file rather than scraping display text.
+- Keeps SSR as downside-stress context only; it is not a squeeze signal or entry trigger by itself.
+
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
@@ -115,6 +129,7 @@ Why it helps:
 - Nasdaq public stock screener for delayed small-cap mover discovery.
 - Nasdaq Trader trade halt RSS for halt/pause risk context.
 - Nasdaq Trader Reg SHO threshold list for settlement/close-out risk context.
+- Nasdaq Trader short-sale circuit breaker list for SSR/downside-stress context.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.

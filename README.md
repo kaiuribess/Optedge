@@ -400,6 +400,7 @@ python tests/test_treasury_yield_curve.py
 python tests/test_data_provider_stooq.py
 python tests/test_trading_halts.py
 python tests/test_regsho_threshold.py
+python tests/test_short_sale_circuit.py
 python tests/test_performance_cache.py
 python tests/test_finbert_batching.py
 python tests/test_chain_provider_tradier.py

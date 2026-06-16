@@ -35,6 +35,7 @@ from engines import dark_pool as dark_pool_engine
 from engines.fred_public import fred_csv_history
 from engines.nasdaq_screener import small_cap_movers
 from engines.regsho_threshold import threshold_rows_for_symbols
+from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import (
@@ -567,6 +568,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "small-cap settlement risk and action queue guardrails",
         "primary": True,
         "caveat": "Daily settlement-risk context only; inclusion is not proof of a squeeze or issuer weakness.",
+    },
+    {
+        "name": "Nasdaq Trader short-sale circuit breakers",
+        "category": "market_structure/short_sale_restriction",
+        "coverage": "Nasdaq-listed securities with SEC Rule 201 short-sale price-test restriction",
+        "credential": "none",
+        "quality": "official_public_delayed",
+        "used_by": "SSR risk review for small-cap swing candidates and open positions",
+        "primary": True,
+        "caveat": "Restriction context only; SSR can indicate downside stress and does not guarantee a squeeze.",
     },
     {
         "name": "House/Senate disclosures",
@@ -7178,6 +7189,17 @@ def _threshold_queue_detail(row: dict[str, Any]) -> str:
     return f"{label} is on the {flag_text} threshold list for {market_text}. Treat as settlement-risk context before swing review."
 
 
+def _circuit_queue_detail(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "").upper()
+    name = str(row.get("name") or "").strip()
+    market = str(row.get("market_category") or "").strip()
+    triggered_at = str(row.get("triggered_at") or row.get("trigger_time") or "").strip()
+    label = f"{symbol} ({name})" if name else symbol
+    market_text = f" market category {market}" if market else "Nasdaq market"
+    time_text = f" triggered at {triggered_at}" if triggered_at else " triggered today"
+    return f"{label} is under SEC Rule 201 short-sale restriction for {market_text};{time_text}. Review downside stress before swing action."
+
+
 def _queue_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
     category = str(item.get("category") or "")
     action = str(item.get("action") or "")
@@ -7352,6 +7374,32 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "review_data_health",
         ))
 
+    try:
+        circuit_symbols = _queue_attention_symbols(data_dir)
+        circuit_df = circuit_rows_for_symbols(circuit_symbols, cache_age=30 * 60)
+        if isinstance(circuit_df, pd.DataFrame) and not circuit_df.empty:
+            for _, circuit_row in circuit_df.head(5).iterrows():
+                row = circuit_row.to_dict()
+                symbol = row.get("symbol")
+                priority = max(80, int(_float_value(row.get("ssr_risk_score"), default=80.0)))
+                items.append(_queue_item(
+                    priority,
+                    "short_sale_circuit",
+                    "Short-sale circuit breaker",
+                    _circuit_queue_detail(row),
+                    "review_short_sale_circuit",
+                    symbol=symbol,
+                    query=symbol,
+                ))
+    except Exception as exc:
+        items.append(_queue_item(
+            34,
+            "short_sale_circuit",
+            "Short-sale circuit monitor unavailable",
+            f"Could not read Nasdaq Trader short-sale circuit context: {str(exc)[:160]}",
+            "review_data_health",
+        ))
+
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
     for row in attention:
         pressure = _float_value(row.get("latest_exit_pressure"))
@@ -7472,7 +7520,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         "rows": items,
         "notes": [
             "Action queue is local decision support only; it does not place trades.",
-            "Highest priority goes to bad data health, halt/threshold risk, SEC filing risk, and open-position exit risk.",
+            "Highest priority goes to bad data health, halt/threshold/SSR risk, SEC filing risk, and open-position exit risk.",
             "Paper candidates remain manual review items.",
         ],
     }
@@ -7529,6 +7577,7 @@ def _today_route_for_queue_action(action: Any) -> str:
     if clean in {
         "run_focused_scan", "review_watchlist", "review_sec_filings",
         "review_sec_filing_risk", "review_trading_halt", "review_regsho_threshold",
+        "review_short_sale_circuit",
     }:
         return "research"
     return "research"
@@ -9525,6 +9574,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .review-card.sec_filing { border-left:4px solid #38bdf8; }
 .review-card.trading_halt { border-left:4px solid #f97316; }
 .review-card.regsho_threshold { border-left:4px solid #f59e0b; }
+.review-card.short_sale_circuit { border-left:4px solid #fb7185; }
 .review-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .review-card h3 { margin:0; font-size:15px; line-height:1.25; }
 .review-card p { margin:0; color:var(--soft); font-size:12px; line-height:1.45; }
@@ -11296,6 +11346,13 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('lookup-results');
     return;
   }
+  if (action === 'review_short_sale_circuit') {
+    setView('research');
+    if (q) $('symbol').value = q;
+    await lookup();
+    scrollToId('lookup-results');
+    return;
+  }
   if (q) {
     $('symbol').value = q;
     await lookup();
@@ -11349,6 +11406,10 @@ async function routeTodayReviewAction(action, route, query, symbol) {
     return;
   }
   if (action === 'review_regsho_threshold') {
+    await routeQueueAction(action, query, symbol);
+    return;
+  }
+  if (action === 'review_short_sale_circuit') {
     await routeQueueAction(action, query, symbol);
     return;
   }

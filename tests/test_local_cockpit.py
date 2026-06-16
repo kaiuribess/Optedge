@@ -266,6 +266,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert ".review-card.trading_halt" in html
     assert "review_regsho_threshold" in html
     assert ".review-card.regsho_threshold" in html
+    assert "review_short_sale_circuit" in html
+    assert ".review-card.short_sale_circuit" in html
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
@@ -831,6 +833,65 @@ def test_action_queue_surfaces_regsho_threshold_risk_for_watchlist_symbol():
     assert rows[0]["priority"] >= 86
     assert rows[0]["symbol"] == "MOVE"
     assert "Reg SHO" in rows[0]["detail"]
+
+
+def test_action_queue_surfaces_short_sale_circuit_risk_for_watchlist_symbol():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_swing = cockpit_module.build_swing_scout
+    old_watchlist = cockpit_module.load_watchlist
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+    seen_symbols = {}
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {
+        "entries": [{"id": "move", "symbol": "MOVE", "query": "MOVE"}]
+    }
+    cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+
+    def fake_circuits(symbols, cache_age=30 * 60):
+        seen_symbols["symbols"] = symbols
+        seen_symbols["cache_age"] = cache_age
+        return pd.DataFrame([{
+            "symbol": "MOVE",
+            "name": "Move Corp Cmn",
+            "market_category": "R",
+            "trigger_time": "6/16/2026 9:30:00 AM",
+            "triggered_at": "2026-06-16T09:30:00-04:00",
+            "short_sale_restricted": True,
+            "ssr_risk_score": 82,
+        }])
+
+    cockpit_module.circuit_rows_for_symbols = fake_circuits
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+
+    rows = [row for row in queue["rows"] if row["category"] == "short_sale_circuit"]
+    assert rows
+    assert seen_symbols["symbols"] == ["MOVE"]
+    assert seen_symbols["cache_age"] == 30 * 60
+    assert rows[0]["label"] == "Short-sale circuit breaker"
+    assert rows[0]["action"] == "review_short_sale_circuit"
+    assert rows[0]["priority"] >= 82
+    assert rows[0]["symbol"] == "MOVE"
+    assert "Rule 201" in rows[0]["detail"]
 
 
 def test_action_queue_surfaces_ready_watchlist_ideas():
@@ -3680,6 +3741,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Nasdaq Trader symbol directory" in names
     assert "Nasdaq Trader trade halt RSS" in names
     assert "Nasdaq Trader Reg SHO threshold list" in names
+    assert "Nasdaq Trader short-sale circuit breakers" in names
     assert "Treasury yield XML" in names
     assert "news" in report["category_counts"]
     assert "options" in report["category_counts"]
@@ -4003,6 +4065,7 @@ if __name__ == "__main__":
     test_action_queue_prompts_sec_monitor_refresh_when_cache_missing()
     test_action_queue_surfaces_trade_halt_risk_for_watchlist_symbol()
     test_action_queue_surfaces_regsho_threshold_risk_for_watchlist_symbol()
+    test_action_queue_surfaces_short_sale_circuit_risk_for_watchlist_symbol()
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
@@ -4043,4 +4106,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("53/53 local cockpit tests passed")
+    print("54/54 local cockpit tests passed")
