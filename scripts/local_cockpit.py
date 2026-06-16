@@ -639,6 +639,7 @@ FREE_DATA_SOURCE_REGISTRY = [
 ]
 
 WATCHLIST_FILENAME = "cockpit_watchlist.json"
+WATCHLIST_SEC_FILINGS_FILENAME = "watchlist_sec_filings.json"
 
 
 def _latest_file(data_dir: Path, pattern: str) -> Path | None:
@@ -1061,7 +1062,7 @@ def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> d
         }
         for row in rows
     )
-    return {
+    payload = {
         "generated_at": _now_iso(),
         "symbols_checked": len(symbols),
         "filing_count": len(rows),
@@ -1078,6 +1079,15 @@ def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> d
             "Filings are review prompts, not automatic trade entries or exits.",
         ],
     }
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / WATCHLIST_SEC_FILINGS_FILENAME).write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    return payload
 
 
 def _request_dte(expiry: Any) -> int | None:
@@ -7037,6 +7047,55 @@ def _queue_item(priority: int, category: str, label: str, detail: str,
     }
 
 
+def _cached_watchlist_sec_filings(data_dir: Path) -> dict[str, Any]:
+    path = data_dir / WATCHLIST_SEC_FILINGS_FILENAME
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return {"status": "missing", "rows": [], "cache_path": str(path)}
+    meta = _file_meta(path)
+    return {
+        **payload,
+        "status": "ready",
+        "cache_path": str(path),
+        "cache_age_minutes": _clean_value((meta or {}).get("age_minutes")),
+    }
+
+
+def _sec_queue_priority(row: dict[str, Any]) -> int:
+    signal = str(row.get("signal") or "").lower()
+    priority = int(_float_value(row.get("priority"), default=55.0))
+    if "dilution" in signal or "offering" in signal:
+        priority = max(priority, 96)
+    elif "material_event" in signal:
+        priority = max(priority, 86)
+    elif "ownership_change" in signal:
+        priority = max(priority, 78)
+    elif "fundamental_update" in signal:
+        priority = max(priority, 72)
+    return int(_clamp(priority, 0, 100))
+
+
+def _sec_queue_label(row: dict[str, Any]) -> str:
+    signal = str(row.get("signal") or "").lower()
+    if "dilution" in signal or "offering" in signal:
+        return "Review SEC offering risk"
+    if "material_event" in signal:
+        return "Review SEC material event"
+    if "ownership_change" in signal:
+        return "Review SEC ownership change"
+    return "Review SEC filing"
+
+
+def _sec_queue_detail(row: dict[str, Any]) -> str:
+    ticker = str(row.get("ticker") or "").upper()
+    form = str(row.get("form") or "filing").strip()
+    freshness = str(row.get("freshness") or "").replace("_", " ")
+    days = row.get("days_old")
+    when = f"{days}d old" if days not in (None, "") else freshness or "recent"
+    desc = str(row.get("description") or row.get("signal") or "official SEC filing").strip()
+    return f"{ticker} filed {form} ({when}): {desc}."
+
+
 def _queue_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
     category = str(item.get("category") or "")
     action = str(item.get("action") or "")
@@ -7107,6 +7166,52 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "Refresh stale market snapshots",
             f"{len(refresh_warnings)} freshness warning(s): {preview}.",
             "run_refresh_scan",
+        ))
+
+    try:
+        sec_monitor = _cached_watchlist_sec_filings(data_dir)
+        sec_rows = sec_monitor.get("rows") if isinstance(sec_monitor.get("rows"), list) else []
+        promoted = 0
+        for row in sec_rows:
+            if not isinstance(row, dict):
+                continue
+            priority = _sec_queue_priority(row)
+            if priority < 78:
+                continue
+            symbol = row.get("ticker")
+            items.append(_queue_item(
+                priority,
+                "sec_filing",
+                _sec_queue_label(row),
+                _sec_queue_detail(row),
+                "review_sec_filing_risk",
+                symbol=symbol,
+                query=symbol,
+            ))
+            promoted += 1
+            if promoted >= 4:
+                break
+        if not promoted:
+            entries = load_watchlist(data_dir, enrich=False).get("entries", [])
+            age_min = _float_value(sec_monitor.get("cache_age_minutes"), default=math.inf)
+            if entries and (
+                sec_monitor.get("status") == "missing" or age_min > 12 * 60
+            ):
+                stale_text = "missing" if sec_monitor.get("status") == "missing" else f"{age_min / 60:.1f}h old"
+                items.append(_queue_item(
+                    52,
+                    "sec_filing",
+                    "Refresh SEC filing monitor",
+                    f"Saved research targets exist, but SEC filing cache is {stale_text}.",
+                    "review_sec_filings",
+                ))
+    except Exception as exc:
+        items.append(_queue_item(
+            42,
+            "sec_filing",
+            "SEC filing monitor unavailable",
+            f"Could not read cached SEC filing monitor: {str(exc)[:160]}",
+            "review_sec_filings",
         ))
 
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
@@ -7229,7 +7334,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         "rows": items,
         "notes": [
             "Action queue is local decision support only; it does not place trades.",
-            "Highest priority goes to bad data health and open-position exit risk.",
+            "Highest priority goes to bad data health, SEC filing risk, and open-position exit risk.",
             "Paper candidates remain manual review items.",
         ],
     }
@@ -7283,7 +7388,7 @@ def _today_route_for_queue_action(action: Any) -> str:
         "warm_symbol_caches", "run_refresh_scan",
     }:
         return "data_health"
-    if clean in {"run_focused_scan", "review_watchlist"}:
+    if clean in {"run_focused_scan", "review_watchlist", "review_sec_filings", "review_sec_filing_risk"}:
         return "research"
     return "research"
 
@@ -9276,6 +9381,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .review-card.saved_contract { border-left:4px solid var(--good); }
 .review-card.position_risk { border-left:4px solid var(--warn); }
 .review-card.data_health { border-left:4px solid var(--bad); }
+.review-card.sec_filing { border-left:4px solid #38bdf8; }
 .review-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .review-card h3 { margin:0; font-size:15px; line-height:1.25; }
 .review-card p { margin:0; color:var(--soft); font-size:12px; line-height:1.45; }
@@ -11026,6 +11132,13 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('watchlist-results');
     return;
   }
+  if (action === 'review_sec_filings' || action === 'review_sec_filing_risk') {
+    setView('research');
+    if (q) $('symbol').value = q;
+    await loadWatchlistSecFilings();
+    scrollToId('sec-filings-results');
+    return;
+  }
   if (q) {
     $('symbol').value = q;
     await lookup();
@@ -11068,6 +11181,10 @@ async function routeTodayReviewAction(action, route, query, symbol) {
   if (route === 'data_health') {
     await loadSummary();
     scrollToId('health-results');
+    return;
+  }
+  if (action === 'review_sec_filings' || action === 'review_sec_filing_risk') {
+    await routeQueueAction(action, query, symbol);
     return;
   }
   if (action === 'open_research' || route === 'research') {

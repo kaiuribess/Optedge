@@ -259,6 +259,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/watchlist-sec-filings" in html
     assert "secFilingsTable" in html
     assert "loadWatchlistSecFilings" in html
+    assert "review_sec_filings" in html
+    assert "review_sec_filing_risk" in html
+    assert ".review-card.sec_filing" in html
     assert "Saved option contracts" in html
     assert "/api/saved-option-contracts" in html
     assert "savedContractsTable" in html
@@ -633,6 +636,87 @@ def test_action_queue_groups_stale_snapshots_into_refresh_action():
         assert refresh[0]["label"] == "Refresh stale market snapshots"
         assert "snapshot old" in refresh[0]["detail"]
         assert refresh[0]["priority"] == 82
+
+
+def test_action_queue_surfaces_cached_sec_filing_risk():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_swing = cockpit_module.build_swing_scout
+    old_watchlist = cockpit_module.load_watchlist
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            (data_dir / "watchlist_sec_filings.json").write_text(json.dumps({
+                "generated_at": "2026-06-16T12:00:00+00:00",
+                "rows": [{
+                    "priority": 94,
+                    "ticker": "AAPL",
+                    "form": "S-3",
+                    "filing_date": "2026-06-16",
+                    "days_old": 0,
+                    "freshness": "fresh",
+                    "signal": "dilution_or_offering_watch",
+                    "description": "Shelf registration statement",
+                    "url": "https://www.sec.gov/aapl",
+                }],
+            }), encoding="utf-8")
+
+            queue = build_action_queue(data_dir)
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.load_watchlist = old_watchlist
+
+    sec_rows = [row for row in queue["rows"] if row["category"] == "sec_filing"]
+    assert sec_rows
+    row = sec_rows[0]
+    assert row["label"] == "Review SEC offering risk"
+    assert row["action"] == "review_sec_filing_risk"
+    assert row["priority"] >= 96
+    assert row["symbol"] == "AAPL"
+    assert "S-3" in row["detail"]
+
+
+def test_action_queue_prompts_sec_monitor_refresh_when_cache_missing():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_swing = cockpit_module.build_swing_scout
+    old_watchlist = cockpit_module.load_watchlist
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {
+        "entries": [{"id": "aapl", "symbol": "AAPL", "query": "AAPL"}]
+    }
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.load_watchlist = old_watchlist
+
+    refresh = [
+        row for row in queue["rows"]
+        if row["category"] == "sec_filing" and row["action"] == "review_sec_filings"
+    ]
+    assert refresh
+    assert refresh[0]["label"] == "Refresh SEC filing monitor"
+    assert "missing" in refresh[0]["detail"]
 
 
 def test_action_queue_surfaces_ready_watchlist_ideas():
@@ -3570,6 +3654,9 @@ def test_watchlist_sec_filings_ranks_recent_official_filings():
         cockpit_module.recent_filings_for_symbol = fake_recent
         try:
             report = build_watchlist_sec_filings(data_dir, limit=10)
+            cache_payload = json.loads(
+                (data_dir / "watchlist_sec_filings.json").read_text(encoding="utf-8")
+            )
         finally:
             cockpit_module.recent_filings_for_symbol = old_recent
 
@@ -3581,6 +3668,8 @@ def test_watchlist_sec_filings_ranks_recent_official_filings():
     assert report["rows"][0]["form"] == "S-3"
     assert report["form_counts"]["S-3"] == 1
     assert report["signal_counts"]["material_event_review"] == 1
+    assert cache_payload["filing_count"] == 2
+    assert cache_payload["rows"][0]["ticker"] == "AAPL"
 
 
 def test_saved_option_contracts_preserve_chain_scan_context():
@@ -3794,6 +3883,8 @@ if __name__ == "__main__":
     test_warm_sec_ticker_cache_uses_data_dir_cache()
     test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates()
     test_action_queue_groups_stale_snapshots_into_refresh_action()
+    test_action_queue_surfaces_cached_sec_filing_risk()
+    test_action_queue_prompts_sec_monitor_refresh_when_cache_missing()
     test_action_queue_surfaces_ready_watchlist_ideas()
     test_today_review_combines_setups_saved_contracts_and_risk()
     test_command_center_summarizes_next_action_and_data_trust()
@@ -3834,4 +3925,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("49/49 local cockpit tests passed")
+    print("51/51 local cockpit tests passed")
