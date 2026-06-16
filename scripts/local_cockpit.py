@@ -34,6 +34,7 @@ import data_provider
 from engines import dark_pool as dark_pool_engine
 from engines.fred_public import fred_csv_history
 from engines.nasdaq_screener import small_cap_movers
+from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
 from scripts.export_external_paper_track import (
@@ -556,6 +557,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "small-cap halt risk and action queue guardrails",
         "primary": True,
         "caveat": "Query no more than once per minute; use as halt-risk context, not execution data.",
+    },
+    {
+        "name": "Nasdaq Trader Reg SHO threshold list",
+        "category": "market_structure/settlement",
+        "coverage": "Nasdaq threshold securities subject to Reg SHO or Rule 3210 close-out requirements",
+        "credential": "none",
+        "quality": "official_public_delayed",
+        "used_by": "small-cap settlement risk and action queue guardrails",
+        "primary": True,
+        "caveat": "Daily settlement-risk context only; inclusion is not proof of a squeeze or issuer weakness.",
     },
     {
         "name": "House/Senate disclosures",
@@ -7150,6 +7161,23 @@ def _halt_queue_detail(row: dict[str, Any]) -> str:
     return f"{label}{market_text} had a {reason} halt{time_text}; {status}. Review before any swing action."
 
 
+def _threshold_queue_detail(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or "").upper()
+    name = str(row.get("name") or "").strip()
+    market = str(row.get("market_category") or "").strip()
+    regsho = str(row.get("reg_sho_threshold_flag") or "").strip().upper()
+    rule_3210 = str(row.get("rule_3210") or "").strip().upper()
+    label = f"{symbol} ({name})" if name else symbol
+    flags = []
+    if regsho == "Y":
+        flags.append("Reg SHO")
+    if rule_3210 == "Y":
+        flags.append("Rule 3210")
+    flag_text = " / ".join(flags) or "threshold"
+    market_text = f" market category {market}" if market else "Nasdaq market"
+    return f"{label} is on the {flag_text} threshold list for {market_text}. Treat as settlement-risk context before swing review."
+
+
 def _queue_dedupe_key(item: dict[str, Any]) -> tuple[str, str, str]:
     category = str(item.get("category") or "")
     action = str(item.get("action") or "")
@@ -7298,6 +7326,32 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "review_data_health",
         ))
 
+    try:
+        threshold_symbols = _queue_attention_symbols(data_dir)
+        threshold_df = threshold_rows_for_symbols(threshold_symbols, cache_age=6 * 3600)
+        if isinstance(threshold_df, pd.DataFrame) and not threshold_df.empty:
+            for _, threshold_row in threshold_df.head(5).iterrows():
+                row = threshold_row.to_dict()
+                symbol = row.get("symbol")
+                priority = max(82, int(_float_value(row.get("settlement_risk_score"), default=82.0)))
+                items.append(_queue_item(
+                    priority,
+                    "regsho_threshold",
+                    "Reg SHO threshold risk",
+                    _threshold_queue_detail(row),
+                    "review_regsho_threshold",
+                    symbol=symbol,
+                    query=symbol,
+                ))
+    except Exception as exc:
+        items.append(_queue_item(
+            36,
+            "regsho_threshold",
+            "Reg SHO monitor unavailable",
+            f"Could not read Nasdaq Trader threshold-list context: {str(exc)[:160]}",
+            "review_data_health",
+        ))
+
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
     for row in attention:
         pressure = _float_value(row.get("latest_exit_pressure"))
@@ -7418,7 +7472,7 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         "rows": items,
         "notes": [
             "Action queue is local decision support only; it does not place trades.",
-            "Highest priority goes to bad data health, halt risk, SEC filing risk, and open-position exit risk.",
+            "Highest priority goes to bad data health, halt/threshold risk, SEC filing risk, and open-position exit risk.",
             "Paper candidates remain manual review items.",
         ],
     }
@@ -7474,7 +7528,7 @@ def _today_route_for_queue_action(action: Any) -> str:
         return "data_health"
     if clean in {
         "run_focused_scan", "review_watchlist", "review_sec_filings",
-        "review_sec_filing_risk", "review_trading_halt",
+        "review_sec_filing_risk", "review_trading_halt", "review_regsho_threshold",
     }:
         return "research"
     return "research"
@@ -9470,6 +9524,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .review-card.data_health { border-left:4px solid var(--bad); }
 .review-card.sec_filing { border-left:4px solid #38bdf8; }
 .review-card.trading_halt { border-left:4px solid #f97316; }
+.review-card.regsho_threshold { border-left:4px solid #f59e0b; }
 .review-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .review-card h3 { margin:0; font-size:15px; line-height:1.25; }
 .review-card p { margin:0; color:var(--soft); font-size:12px; line-height:1.45; }
@@ -11234,6 +11289,13 @@ async function routeQueueAction(action, query, symbol) {
     scrollToId('lookup-results');
     return;
   }
+  if (action === 'review_regsho_threshold') {
+    setView('research');
+    if (q) $('symbol').value = q;
+    await lookup();
+    scrollToId('lookup-results');
+    return;
+  }
   if (q) {
     $('symbol').value = q;
     await lookup();
@@ -11283,6 +11345,10 @@ async function routeTodayReviewAction(action, route, query, symbol) {
     return;
   }
   if (action === 'review_trading_halt') {
+    await routeQueueAction(action, query, symbol);
+    return;
+  }
+  if (action === 'review_regsho_threshold') {
     await routeQueueAction(action, query, symbol);
     return;
   }

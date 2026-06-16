@@ -92,6 +92,20 @@ Why it helps:
 - Keeps halt rows as risk context only; a halt is not a standalone entry or exit signal.
 - Uses a one-minute cache by default to respect Nasdaq Trader's RSS refresh-frequency guideline.
 
+### Nasdaq Trader Reg SHO threshold list
+
+Status: implemented in `engines/regsho_threshold.py` and surfaced in the local cockpit Action Queue for watchlist/open-position symbols.
+
+Source:
+- https://www.nasdaqtrader.com/trader.aspx?id=regshothreshold
+- https://www.nasdaqtrader.com/Trader.aspx?id=RegShoDefs
+
+Why it helps:
+- Adds official no-key settlement/mandatory close-out context for small-cap and high-short-pressure names.
+- Flags saved or open symbols that appear on Nasdaq's current Reg SHO or Rule 3210 threshold list.
+- Uses the official pipe-delimited download file rather than scraping display text.
+- Keeps threshold-list inclusion as risk context only; it is not proof of a squeeze, issuer weakness, or trade edge.
+
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
@@ -100,6 +114,7 @@ Why it helps:
 - Cboe market-wide put/call market statistics.
 - Nasdaq public stock screener for delayed small-cap mover discovery.
 - Nasdaq Trader trade halt RSS for halt/pause risk context.
+- Nasdaq Trader Reg SHO threshold list for settlement/close-out risk context.
 - FINRA daily short-volume files.
 - CFTC Commitments of Traders reports.
 - EIA/WASDE commodity data.

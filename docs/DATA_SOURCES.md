@@ -10,7 +10,7 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 - Small-cap mover discovery through Nasdaq's public stock screener endpoint, enriched with FINRA short-volume context when available, and surfaced as delayed review candidates in Swing Scout.
 - Reddit and retail-attention signals from WSB, r/options, and related public endpoints.
 - SEC data for insider transactions, recent filings, companyfacts fundamentals, Form 144, buybacks, and 13F-style institutional context.
-- Public macro and market structure inputs such as keyless FRED CSV series, official Treasury XML yield-curve fallback, yield curve, credit spreads, CFTC CoT, FINRA short volume, Nasdaq Trader trade halts, EIA, WASDE, VIX term structure, and sector ETF flows.
+- Public macro and market structure inputs such as keyless FRED CSV series, official Treasury XML yield-curve fallback, yield curve, credit spreads, CFTC CoT, FINRA short volume, Nasdaq Trader trade halts, Nasdaq Trader Reg SHO threshold securities, EIA, WASDE, VIX term structure, and sector ETF flows.
 - Optional sentiment models through local/GPU-enabled FinBERT variants.
 
 ## Reliability
