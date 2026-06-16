@@ -2999,6 +2999,61 @@ def _chain_candidate_exclusion(row: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _chain_candidate_fit(
+    source: str,
+    score: Any = None,
+    row: dict[str, Any] | None = None,
+    manual: bool = False,
+) -> dict[str, Any]:
+    score_val = _float_value(score, default=math.nan)
+    asset = str(row.get("asset") or "").strip().lower() if isinstance(row, dict) else ""
+    review_action = str(row.get("review_action") or "").strip().lower() if isinstance(row, dict) else ""
+    source_norm = str(source or "").strip().lower()
+    if manual:
+        priority = 92.0
+        fit = "manual typed symbol"
+        label = "Manual chain scan"
+    elif review_action == "review_now" or (math.isfinite(score_val) and score_val >= 85):
+        priority = 88.0
+        fit = "high-conviction swing candidate"
+        label = "High priority"
+    elif review_action == "shortlist" or (math.isfinite(score_val) and score_val >= 70):
+        priority = 74.0
+        fit = "shortlisted swing candidate"
+        label = "Shortlist"
+    elif review_action == "watch" or (math.isfinite(score_val) and score_val >= 55):
+        priority = 58.0
+        fit = "watchlist swing candidate"
+        label = "Watch"
+    else:
+        priority = 46.0
+        fit = "exploratory chain candidate"
+        label = "Explore"
+
+    if asset == "option":
+        overlay = "existing option thesis -> refresh chain"
+    elif asset == "share":
+        overlay = "share swing -> 3m+ options overlay"
+    elif asset == "value":
+        overlay = "value setup -> 3m+ options overlay"
+    elif "climate-gated" in source_norm:
+        overlay = "climate-gated setup -> 3m+ chain"
+    elif "watchlist" in source_norm:
+        overlay = "watchlist symbol -> 3m+ chain"
+    else:
+        overlay = "symbol -> 3m+ chain"
+
+    warning_count = _float_value(row.get("warning_count"), default=0.0) if isinstance(row, dict) else 0.0
+    if warning_count > 0 and not manual:
+        priority -= min(12.0, warning_count * 3.0)
+        fit += " with warnings"
+    return {
+        "chain_fit_label": fit,
+        "chain_candidate_label": f"{label}: {overlay}",
+        "chain_priority": _clean_value(round(_clamp(priority, 0.0, 100.0), 1)),
+    }
+
+
 def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8) -> dict[str, Any]:
     limit = max(1, min(int(limit or 8), 20))
     rows: list[dict[str, Any]] = []
@@ -3033,6 +3088,7 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
                 _clean_value(row.get("market_structure_risk_score")) if isinstance(row, dict) else None
             ),
         }
+        candidate.update(_chain_candidate_fit(source, score, row, manual=manual))
         if clean in blocked_auto and not manual:
             skipped = dict(candidate)
             skipped["reason_excluded"] = blocked_auto[clean]
@@ -9750,6 +9806,11 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .setup-card small { color:var(--muted); display:block; margin-top:3px; }
 .setup-card .row { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
 .setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
+.compact-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:8px; }
+.mini-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; display:grid; gap:6px; min-width:0; }
+.mini-card strong { font-size:15px; line-height:1.2; }
+.mini-card small { color:var(--soft); line-height:1.35; overflow-wrap:anywhere; }
+.mini-card .pill { justify-self:start; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .factor-stack { display:grid; gap:6px; }
 .factor-row { border:1px solid var(--border-soft); background:rgba(255,255,255,.025); border-radius:8px; padding:7px 8px; display:grid; grid-template-columns:minmax(74px,.42fr) minmax(0,1fr) auto; gap:8px; align-items:start; }
 .factor-row strong { color:var(--text); font-size:12px; line-height:1.2; }
@@ -10368,6 +10429,25 @@ function table(rows, clickRows=false) {
     return `<tr${attrs}>${cols.map(c => `<td>${cell(r[c])}</td>`).join('')}</tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function chainCandidateQueueHtml(rows, skipped=false) {
+  if (!rows || rows.length === 0) return '<div class="empty">No matching candidates.</div>';
+  return `<div class="compact-grid">${rows.map(row => {
+    const symbol = row.symbol || row.ticker_or_symbol || '-';
+    const label = row.chain_candidate_label || row.source || '3m+ chain candidate';
+    const fit = row.chain_fit_label || row.reason || '';
+    const score = row.chain_priority || row.score || '-';
+    const reason = skipped ? (row.reason_excluded || 'skipped') : (row.reason || '');
+    const attrs = symbol && symbol !== '-' ? ` data-symbol="${escAttr(symbol)}"` : '';
+    const cls = symbol && symbol !== '-' ? ' mini-card clickable-row' : ' mini-card';
+    return `<div class="${cls}"${attrs}>
+      <strong>${cell(symbol)}</strong>
+      <span class="pill">${cell(label)}</span>
+      <small>${cell(fit)}</small>
+      <small>${cell(reason)}</small>
+      <small class="muted">priority ${cell(score)}${row.source ? ' | ' + cell(row.source) : ''}</small>
+    </div>`;
+  }).join('')}</div>`;
 }
 function bestSetupCard(row) {
   const symbol = row.ticker_or_symbol || '';
@@ -12488,9 +12568,9 @@ function optionChainBatchSummary(data) {
 }
 function optionChainBatchResultsHtml(data) {
   const rows = data.rows || [];
-  const candidatePanel = `<div class="brief-list"><h4>Candidate queue</h4>${table(data.candidates || [], true)}</div>`;
+  const candidatePanel = `<div class="brief-list"><h4>Candidate queue</h4>${chainCandidateQueueHtml(data.candidates || [])}</div>`;
   const skippedPanel = (data.excluded_candidates || []).length
-    ? `<div class="brief-list"><h4>Skipped candidates</h4>${table(data.excluded_candidates || [], true)}</div>`
+    ? `<div class="brief-list"><h4>Skipped candidates</h4>${chainCandidateQueueHtml(data.excluded_candidates || [], true)}</div>`
     : '';
   if (!rows.length) {
     const errors = (data.errors || []).length ? `<div class="brief-list"><h4>Errors</h4>${table(data.errors || [], true)}</div>` : '';

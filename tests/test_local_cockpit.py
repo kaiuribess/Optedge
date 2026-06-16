@@ -103,6 +103,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write + 3m+ chain scan" in html
     assert "swing-packet-chain" in html
     assert "Saved 3m+ chain contracts" in html
+    assert "chainCandidateQueueHtml" in html
+    assert "Candidate queue" in html
+    assert "Skipped candidates" in html
     assert "wireOptionChainActions($('swing-packet-results'))" in html
     assert "Action queue" in html
     assert "Swing Scout, Nasdaq movers" in html
@@ -3534,6 +3537,12 @@ def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
     assert report["candidate_count"] == 2
     assert report["candidate_skipped_count"] == 1
     assert {row["symbol"] for row in report["candidates"]} == {"SMOL", "RGTI"}
+    smol = next(row for row in report["candidates"] if row["symbol"] == "SMOL")
+    rgti = next(row for row in report["candidates"] if row["symbol"] == "RGTI")
+    assert smol["chain_fit_label"] == "high-conviction swing candidate"
+    assert smol["chain_candidate_label"] == "High priority: share swing -> 3m+ options overlay"
+    assert smol["chain_priority"] >= 80
+    assert rgti["chain_candidate_label"] == "High priority: existing option thesis -> refresh chain"
     assert report["excluded_candidates"][0]["symbol"] == "RISK"
     assert report["excluded_candidates"][0]["reason_excluded"] == "active trading halt"
     assert report["excluded_candidates"][0]["market_structure_risk_score"] == 98
