@@ -179,6 +179,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "swing-scout-nasdaq" in html
     assert "swing-scout-hide-wait" in html
     assert "Nasdaq small-cap movers" in html
+    assert "Review actions" in html
     assert "small/mid-cap asymmetry" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
@@ -1720,12 +1721,18 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
     future = next(row for row in report["rows"] if row["ticker_or_symbol"] == "CL=F")
     assert option["market_cap_bucket"] == "small"
     assert option["swing_scout_score"] >= 80
+    assert option["conviction_score"] >= 70
+    assert option["review_action"] in {"review_now", "shortlist"}
+    assert option["review_label"] in {"Review now", "Shortlist"}
+    assert option["warning_count"] == len(option["warnings"])
     assert option["dte"] >= 90
     assert "short/squeeze pressure" in option["reasons"]
     assert option["factor_summary"]
     option_factors = {item["factor"] for item in option["factor_breakdown"]}
     assert {"Squeeze", "Momentum", "Execution"} & option_factors
     assert future["lane"] == "futures_macro_swing"
+    assert future["conviction_score"] >= 70
+    assert future["review_action"] in {"review_now", "shortlist"}
     future_factors = {item["factor"] for item in future["factor_breakdown"]}
     assert "Momentum" in future_factors
     assert "Execution" in future_factors
@@ -1733,6 +1740,8 @@ def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_optio
     assert report["reviewed_count"] == 4
     assert report["filters"]["include_wait"] is True
     assert report["filters"]["lane"] == "all"
+    assert sum(report["review_action_counts"].values()) == report["count"]
+    assert set(report["review_action_counts"]) <= {"review_now", "shortlist", "watch", "wait"}
     assert futures_only["filters"]["asset"] == "futures"
     assert squeeze_only["filters"]["lane"] == "small_cap_squeeze_watch"
     assert {row["asset"] for row in share_only["rows"]} == {"share"}
@@ -1788,12 +1797,17 @@ def test_swing_scout_can_include_nasdaq_small_cap_movers():
     assert row["short_vol_ratio"] == 0.64
     assert row["dark_pool_score"] == -0.56
     assert row["swing_scout_score"] == 98
+    assert row["conviction_score"] >= 80
+    assert row["review_action"] == "review_now"
+    assert row["review_label"] == "Review now"
+    assert row["warning_count"] == len(row["warnings"])
     assert row["factor_summary"]
     assert {item["factor"] for item in row["factor_breakdown"]} >= {"Momentum", "Short volume", "Market cap"}
     assert "FINRA short-volume 64%" in row["reasons"]
     assert "heavy short-volume pressure" in row["warnings"]
     assert "nasdaq_movers" in report["sources"]
     assert report["asset_counts"]["share"] == 1
+    assert report["review_action_counts"]["review_now"] == 1
     assert report["filters"]["include_nasdaq_movers"] is True
 
 

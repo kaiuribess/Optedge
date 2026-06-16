@@ -3901,6 +3901,44 @@ def _swing_scout_reasons(row: pd.Series, asset: str, components: dict[str, Any])
     return list(dict.fromkeys(reasons))[:6], list(dict.fromkeys(warnings))[:6]
 
 
+def _swing_scout_review_state(record: dict[str, Any]) -> dict[str, Any]:
+    score = _float_value(record.get("swing_scout_score"), default=0.0)
+    readiness = str(record.get("readiness_label") or "").strip().lower()
+    warnings = [str(item).lower() for item in (record.get("warnings") or []) if str(item).strip()]
+    warning_penalty = min(30.0, 5.0 * len(warnings))
+    if any("below 90 dte" in warning for warning in warnings):
+        warning_penalty += 25.0
+    if any("stale" in warning for warning in warnings):
+        warning_penalty += 10.0
+    if any("micro-cap execution risk" in warning for warning in warnings):
+        warning_penalty += 5.0
+    readiness_bonus = {
+        "ready": 10.0,
+        "review": 5.0,
+        "caution": -5.0,
+        "wait": -22.0,
+    }.get(readiness, 0.0)
+    conviction = int(round(_clamp(score + readiness_bonus - warning_penalty, 0.0, 100.0)))
+    if conviction >= 85 and readiness != "wait":
+        action = "review_now"
+        label = "Review now"
+    elif conviction >= 70 and readiness != "wait":
+        action = "shortlist"
+        label = "Shortlist"
+    elif conviction >= 55:
+        action = "watch"
+        label = "Watch"
+    else:
+        action = "wait"
+        label = "Wait"
+    return {
+        "review_action": action,
+        "review_label": label,
+        "conviction_score": conviction,
+        "warning_count": len(warnings),
+    }
+
+
 def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
     components = _swing_scout_components(row, asset)
     cap_profile = components["market_cap_profile"]
@@ -3922,7 +3960,7 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
     symbol = _setup_symbol(row, asset, OPPORTUNITY_SPECS[asset])
     setup = _setup_label(row, asset, symbol)
     factor_breakdown = _swing_factor_breakdown(row, asset, components)
-    return {
+    record = {
         "asset": asset,
         "ticker_or_symbol": symbol,
         "setup": setup,
@@ -3963,6 +4001,8 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
         "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
     }
+    record.update(_swing_scout_review_state(record))
+    return record
 
 
 def _swing_scout_query_text(row: dict[str, Any]) -> str:
@@ -4038,7 +4078,7 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         key=lambda item: _float_value(item.get("score"), default=0.0),
         reverse=True,
     )[:5]
-    return {
+    record = {
         "asset": "share",
         "ticker_or_symbol": symbol,
         "setup": f"{symbol} small-cap mover",
@@ -4087,6 +4127,8 @@ def _nasdaq_mover_scout_record(row: pd.Series) -> dict[str, Any]:
         "snapshot_freshness": "live_public_delayed",
         "snapshot_age_min": 0,
     }
+    record.update(_swing_scout_review_state(record))
+    return record
 
 
 def _append_nasdaq_mover_scout_rows(
@@ -4222,9 +4264,12 @@ def build_swing_scout(
         reverse=True,
     )[:limit]
     lane_counts: dict[str, int] = {}
+    review_action_counts: dict[str, int] = {}
     for row in rows:
         lane_name = str(row.get("lane") or "unknown")
         lane_counts[lane_name] = lane_counts.get(lane_name, 0) + 1
+        action_name = str(row.get("review_action") or "unknown")
+        review_action_counts[action_name] = review_action_counts.get(action_name, 0) + 1
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(rows),
@@ -4232,6 +4277,7 @@ def build_swing_scout(
         "rows": rows,
         "asset_counts": asset_counts,
         "lane_counts": lane_counts,
+        "review_action_counts": review_action_counts,
         "sources": source_files,
         "min_option_dte": MIN_SWING_OPTION_DTE,
         "filters": {
@@ -9790,9 +9836,10 @@ function swingScoutCard(row) {
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(labelText(row.lane || 'swing scout'))}</small></div>
-      <span class="pill ${escAttr(row.readiness_label || 'review')}">${cell(row.swing_scout_score)}/100</span>
+      <span class="pill ${escAttr(row.review_action || row.readiness_label || 'review')}">${cell(row.conviction_score ?? row.swing_scout_score)}/100</span>
     </header>
     <div class="row"><span>Asset</span><b>${cell(row.asset)}</b></div>
+    <div class="row"><span>Review action</span><b>${cell(row.review_label || labelText(row.review_action || '-'))} / ${cell(row.conviction_score)}</b></div>
     <div class="row"><span>Cap bucket</span><b>${cell(row.market_cap_bucket)}</b></div>
     <div class="row"><span>Squeeze / attention</span><b>${cell(row.squeeze_score)} / ${cell(row.attention_score)}</b></div>
     <div class="row"><span>Momentum / value</span><b>${cell(row.momentum_score)} / ${cell(row.value_score_component)}</b></div>
@@ -9820,6 +9867,7 @@ function swingScoutHtml(data) {
     <div class="brief-tile"><span>Min scout score</span><strong>${cell(filters.min_score ?? 45)}</strong></div>
     <div class="brief-tile"><span>Assets</span><strong>${countMapText(data.asset_counts || {})}</strong></div>
     <div class="brief-tile"><span>Lanes</span><strong>${countMapText(data.lane_counts || {})}</strong></div>
+    <div class="brief-tile"><span>Review actions</span><strong>${countMapText(data.review_action_counts || {})}</strong></div>
   </div>`;
   const cards = rows.length
     ? `<div class="setup-grid">${rows.map(swingScoutCard).join('')}</div>`
