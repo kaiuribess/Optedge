@@ -13,18 +13,20 @@ if str(ROOT) not in sys.path:
 
 import scripts.local_cockpit as cockpit_module
 from scripts.local_cockpit import (
-    add_watchlist_queries, add_watchlist_query, artifact_path, build_opportunities, build_paper_candidates,
+    add_watchlist_queries, add_watchlist_query, artifact_path, build_agentic_autopilot_status,
+    build_agentic_decision_journal,
+    build_broker_reconciliation, build_cboe_option_activity, build_opportunities, build_paper_candidates,
     build_action_queue, build_data_health, build_option_chain_scan, build_performance_summary,
     build_option_chain_batch,
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_macro_stress_pulse, build_options_sentiment,
     build_exit_review_summary, build_free_data_sources, build_positions, build_provider_status, build_risk_summary,
-    build_robinhood_agentic_queue_report,
+    build_robinhood_agentic_queue_report, build_position_hygiene,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_swing_scout, build_symbol_suggestions,
     build_swing_packet, build_watchlist_sec_filings,
-    build_today_review,
+    build_today_review, apply_position_hygiene,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
-    warm_sec_ticker_cache, write_option_chain_shortlist,
+    record_agentic_decision, warm_sec_ticker_cache, write_option_chain_shortlist, write_position_hygiene_plan,
 )
 
 
@@ -81,6 +83,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert 'data-view="research"' in html
     assert "setView" in html
     assert "Data health" in html
+    assert "healthSummaryHtml" in html
+    assert "healthIssueTable" in html
     assert "Opportunity quality" in html
     assert "opportunityQualityTable" in html
     assert "Command center" in html
@@ -90,8 +94,20 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data trust ribbon" in html
     assert "trust-card" in html
     assert "loadCommandCenter" in html
+    assert "loadView('overview')" in html
+    assert "loaders.slice(0, 1)" in html
+    assert "window.setTimeout" in html
+    assert "loadPositions().catch" not in html
+    assert "loadPaperCandidates(false).catch" not in html
+    assert "loadRobinhoodQueue(false).catch" not in html
+    assert "loadExplorer().catch" not in html
+    assert "loadWatchlist().catch" not in html
     assert "command-center-action-btn" in html
     assert "Best swing radar" in html
+    assert "Session plan" in html
+    assert "Review window" in html
+    assert "7:30 AM-1:00 PM PT" in html
+    assert "Position triage" in html
     assert "Swing packet" in html
     assert "/api/swing-packet" in html
     assert "/api/build-swing-packet" in html
@@ -168,6 +184,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/performance-summary" in html
     assert "performanceSummaryHtml" in html
     assert "Best setups" in html
+    assert "bestSetupsDecisionHtml" in html
     assert "/api/best-setups" in html
     assert "bestSetupsHtml" in html
     assert "loadBestSetups" in html
@@ -184,6 +201,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "swing-scout-hide-wait" in html
     assert "Nasdaq small-cap movers" in html
     assert "Review actions" in html
+    assert "actionQueueActionLabel" in html
+    assert "<th>Gate</th>" in html
+    assert "<th>Source</th>" in html
+    assert "setup_gate_label" in html
     assert "small/mid-cap asymmetry" in html
     assert "Opportunity explorer" in html
     assert "/api/opportunities" in html
@@ -195,6 +216,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write export files" in html
     assert "Chain shortlist" in html
     assert "/artifact/option-chain-shortlist" in html
+    assert "CBOE public activity" in html
+    assert "/api/cboe-option-activity" in html
+    assert "cboeActivityResultsHtml" in html
+    assert "cboe-activity-query" in html
     assert "Decision gate" in html
     assert "Focus data trust" in html
     assert "Event risk" in html
@@ -203,9 +228,40 @@ def test_cockpit_html_contains_lookup_controls():
     assert "SEC offering risk" in html
     assert "SEC dilution / offering risk" in html
     assert "Agentic options queue" in html
+    assert 'id="rh-min-dte" type="number" min="0" max="1200" step="1" value="90"' in html
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
     assert "loadRobinhoodQueue" in html
+    assert "Autopilot status" in html
+    assert "autopilot-summary" in html
+    assert "autopilot-actions" in html
+    assert "autopilot-notes" in html
+    assert "autopilot-preflight" in html
+    assert "Broker / local reconciliation" in html
+    assert "autopilot-broker" in html
+    assert "/api/broker-reconciliation" in html
+    assert "Position hygiene" in html
+    assert "hygiene-summary" in html
+    assert "/api/position-hygiene" in html
+    assert "/api/write-position-hygiene-plan" in html
+    assert "Preview expired cleanup" in html
+    assert "Apply expired cleanup" in html
+    assert "applyPositionHygiene" in html
+    assert "/api/apply-position-hygiene" in html
+    assert "/artifact/position-hygiene-plan" in html
+    assert "autopilot-packet-refresh" in html
+    assert "routeAutopilotAction" in html
+    assert "loadAgenticAutopilotStatus" in html
+    assert "/api/agentic-autopilot-status" in html
+    assert "/artifact/robinhood-live-order-tickets" in html
+    assert "/artifact/agentic-paper-positions" in html
+    assert "Local decision journal" in html
+    assert "/api/agentic-decision-journal" in html
+    assert "/api/agentic-decision" in html
+    assert "loadDecisionJournal" in html
+    assert "addDecisionJournalRow" in html
+    assert "rh-refresh-chain" in html
+    assert "rh-chain-preset" in html
     assert "Premium left" in html
     assert "Top rejects" in html
     assert "Option chain scan" in html
@@ -242,6 +298,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Provider status" in html
     assert "/api/provider-status" in html
     assert "loadProviderStatus" in html
+    assert "providerStatusTable" in html
     assert "Data trust" in html
     assert "History source" in html
     assert "Option chain" in html
@@ -356,9 +413,12 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["Validation open count mismatch"]["level"] == "bad"
         assert labels["Position aging count"]["level"] == "warn"
         assert labels["Duplicate open positions"]["level"] == "warn"
+        assert labels["Expired local option records"]["level"] == "bad"
         assert labels["Equity curve image corrupt"]["level"] == "bad"
         assert labels["SEC ticker cache missing"]["level"] == "warn"
         assert labels["Nasdaq symbol directory missing"]["level"] == "warn"
+        assert health["expired_local_option_rows"] == 2
+        assert "AAPL 2026-06-18 CALL 200" in health["expired_local_option_examples"]
         assert health["free_data_caches"]["sec_company_tickers"]["status"] == "missing"
         assert health["free_data_caches"]["nasdaq_symbol_directory"]["status"] == "missing"
 
@@ -574,6 +634,11 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         assert any(
             row["label"] == "Nasdaq symbol directory missing"
             and row["action"] == "warm_symbol_caches"
+            for row in queue["rows"]
+        )
+        assert any(
+            row["label"] == "Expired local option records"
+            and row["action"] == "preview_position_hygiene_cleanup"
             for row in queue["rows"]
         )
         assert any(row["category"] == "open_position" and row["symbol"] == "AAPL" for row in queue["rows"])
@@ -995,6 +1060,216 @@ def test_action_queue_promotes_reviewable_swing_scout_rows():
     assert swing_kwargs["include_nasdaq_movers"] is True
 
 
+def test_action_queue_uses_best_setup_decision_row_not_raw_top():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_watchlist = cockpit_module.load_watchlist
+    old_swing = cockpit_module.build_swing_scout
+    old_best = cockpit_module.build_best_setups
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.build_best_setups = lambda *args, **kwargs: {
+        "rows": [
+            {
+                "asset": "option",
+                "ticker_or_symbol": "STALE",
+                "setup": "STALE high raw score",
+                "score": 99,
+                "setup_gate_status": "avoid",
+                "setup_gate_label": "Avoid for now",
+                "setup_gate_reasons": ["snapshot is stale"],
+                "setup_gate_next_step": "Skip this setup until the blocking issue clears.",
+            },
+            {
+                "asset": "option",
+                "ticker_or_symbol": "CLEAN",
+                "setup": "CLEAN 3m+ swing call",
+                "score": 72,
+                "setup_gate_status": "ready",
+                "setup_gate_label": "Ready to research",
+                "setup_gate_reasons": ["readiness is ready"],
+                "setup_gate_next_step": "Open research; if thesis and live quote agree, consider paper tracking.",
+            },
+        ],
+        "decision_row": {
+            "asset": "option",
+            "ticker_or_symbol": "CLEAN",
+            "setup": "CLEAN 3m+ swing call",
+            "score": 72,
+            "setup_gate_status": "ready",
+            "setup_gate_label": "Ready to research",
+            "setup_gate_reasons": ["readiness is ready"],
+            "setup_gate_next_step": "Open research; if thesis and live quote agree, consider paper tracking.",
+        },
+    }
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.build_best_setups = old_best
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+
+    rows = [row for row in queue["rows"] if row["category"] == "best_setup"]
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "CLEAN"
+    assert rows[0]["action"] == "scan_swing_chain"
+    assert rows[0]["setup_gate_status"] == "ready"
+    assert rows[0]["setup_gate_label"] == "Ready to research"
+    assert "CLEAN 3m+ swing call" in rows[0]["detail"]
+    assert not any(row["symbol"] == "STALE" and row["category"] == "best_setup" for row in queue["rows"])
+
+
+def test_action_queue_marks_avoid_only_best_setup_as_held():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_watchlist = cockpit_module.load_watchlist
+    old_swing = cockpit_module.build_swing_scout
+    old_best = cockpit_module.build_best_setups
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {"checks": [], "status": "ok"}
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.build_best_setups = lambda *args, **kwargs: {
+        "rows": [{
+            "asset": "option",
+            "ticker_or_symbol": "RISKY",
+            "setup": "RISKY short-dated option",
+            "score": 80,
+            "setup_gate_status": "avoid",
+            "setup_gate_label": "Avoid for now",
+            "setup_gate_reasons": ["below 90 dte"],
+            "setup_gate_next_step": "Skip this setup until the blocking issue clears.",
+        }],
+        "decision_row": {
+            "asset": "option",
+            "ticker_or_symbol": "RISKY",
+            "setup": "RISKY short-dated option",
+            "score": 80,
+            "setup_gate_status": "avoid",
+            "setup_gate_label": "Avoid for now",
+            "setup_gate_reasons": ["below 90 dte"],
+            "setup_gate_next_step": "Skip this setup until the blocking issue clears.",
+        },
+    }
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.build_best_setups = old_best
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+
+    rows = [row for row in queue["rows"] if row["category"] == "best_setup"]
+    assert len(rows) == 1
+    assert rows[0]["label"] == "Best setup is held"
+    assert rows[0]["action"] == "open_research"
+    assert rows[0]["setup_gate_status"] == "avoid"
+    assert "below 90 dte" in rows[0]["detail"]
+
+
+def test_action_queue_validation_guard_reroutes_fresh_entry_actions():
+    old_health = cockpit_module.build_data_health
+    old_positions = cockpit_module.build_positions
+    old_paper = cockpit_module.build_paper_candidates
+    old_watchlist = cockpit_module.load_watchlist
+    old_swing = cockpit_module.build_swing_scout
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+
+    cockpit_module.build_data_health = lambda *args, **kwargs: {
+        "status": "bad",
+        "validation_guardrail": {
+            "level": "bad",
+            "label": "Validation guardrail blocking entries",
+            "detail": "Max drawdown is -72.4%. Win rate is 11.7%.",
+            "closed_positions": 1000,
+            "win_rate": 0.117,
+            "max_drawdown": -0.724,
+            "profit_factor": 2.35,
+        },
+        "checks": [],
+    }
+    cockpit_module.build_positions = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_paper_candidates = lambda *args, **kwargs: {
+        "rows": [{
+            "ticker_or_symbol": "AAPL",
+            "asset": "option",
+            "confidence": 88,
+        }],
+    }
+    cockpit_module.load_watchlist = lambda *args, **kwargs: {"entries": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {
+        "rows": [{
+            "asset": "option",
+            "ticker_or_symbol": "OBAI",
+            "setup": "OBAI small-cap mover",
+            "review_action": "review_now",
+            "review_label": "Review now",
+            "conviction_score": 95,
+            "reasons": ["momentum confirmation"],
+        }],
+    }
+    cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_action_queue(Path(td))
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_positions = old_positions
+        cockpit_module.build_paper_candidates = old_paper
+        cockpit_module.load_watchlist = old_watchlist
+        cockpit_module.build_swing_scout = old_swing
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+
+    guarded = [row for row in queue["rows"] if row.get("guarded_by_validation")]
+    assert queue["validation_guardrail"]["level"] == "bad"
+    assert {row["symbol"] for row in guarded} == {"AAPL", "OBAI"}
+    assert all(row["action"] == "review_data_health" for row in guarded)
+    assert all(row["route"] == "data_health" for row in guarded)
+    assert all(row["label"] == "Validation-blocked candidate" for row in guarded)
+    assert all(row["blocked_reason"].startswith("Max drawdown") for row in guarded)
+    assert {row["original_action"] for row in guarded} == {"preview_paper_candidate", "scan_swing_chain"}
+    assert not any(row["action"] in {"preview_paper_candidate", "scan_swing_chain"} for row in queue["rows"])
+
+
 def test_today_review_combines_setups_saved_contracts_and_risk():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1110,6 +1385,97 @@ def test_today_review_combines_setups_saved_contracts_and_risk():
         assert swing_kwargs["include_nasdaq_movers"] is True
 
 
+def test_today_review_validation_guard_reroutes_fresh_entry_actions():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_health = cockpit_module.build_data_health
+        old_gated = cockpit_module.build_climate_gated_setups
+        old_saved = cockpit_module.build_saved_option_contracts
+        old_risk = cockpit_module.build_risk_summary
+        old_queue = cockpit_module.build_action_queue
+        old_swing = cockpit_module.build_swing_scout
+
+        cockpit_module.build_data_health = lambda *args, **kwargs: {
+            "status": "bad",
+            "validation_guardrail": {
+                "level": "bad",
+                "label": "Validation guardrail blocking entries",
+                "detail": "Max drawdown is -72.4%. Win rate is 11.7%.",
+                "closed_positions": 1000,
+                "win_rate": 0.117,
+                "max_drawdown": -0.724,
+                "profit_factor": 2.35,
+            },
+            "checks": [],
+        }
+        cockpit_module.build_climate_gated_setups = lambda *args, **kwargs: {
+            "climate_label": "aggressive_swing",
+            "climate_score": 100,
+            "rows": [{
+                "ticker_or_symbol": "AAPL",
+                "asset": "option",
+                "setup": "AAPL clean swing call",
+                "climate_gate_score": 95,
+                "readiness_score": 90,
+                "climate_gate_reasons": ["passes DTE gate"],
+            }],
+            "held": [],
+        }
+        cockpit_module.build_saved_option_contracts = lambda *args, **kwargs: {
+            "rows": [{
+                "symbol": "MSFT",
+                "query": "MSFT 2026-10-16 C 500",
+                "side": "call",
+                "side_code": "C",
+                "expiry": "2026-10-16",
+                "strike": 500,
+                "review_action": "refresh_quote",
+                "review_score": 80,
+                "review_reasons": ["quote stale"],
+            }],
+        }
+        cockpit_module.build_risk_summary = lambda *args, **kwargs: {"highest_exit_pressure": [], "warnings": []}
+        cockpit_module.build_action_queue = lambda *args, **kwargs: {"rows": []}
+        cockpit_module.build_swing_scout = lambda *args, **kwargs: {
+            "rows": [{
+                "asset": "option",
+                "ticker_or_symbol": "NVDA",
+                "setup": "NVDA swing scout call",
+                "review_action": "review_now",
+                "review_label": "Review now",
+                "conviction_score": 95,
+                "swing_scout_score": 100,
+                "reasons": ["momentum confirmation"],
+            }],
+        }
+        try:
+            review = build_today_review(data_dir, limit=6)
+        finally:
+            cockpit_module.build_data_health = old_health
+            cockpit_module.build_climate_gated_setups = old_gated
+            cockpit_module.build_saved_option_contracts = old_saved
+            cockpit_module.build_risk_summary = old_risk
+            cockpit_module.build_action_queue = old_queue
+            cockpit_module.build_swing_scout = old_swing
+
+        guarded = [row for row in review["rows"] if row.get("guarded_by_validation")]
+        assert review["validation_guardrail"]["level"] == "bad"
+        assert review["review_now_count"] == 1
+        assert len(guarded) == 2
+        assert {row["symbol"] for row in guarded} == {"AAPL", "NVDA"}
+        assert all(row["action"] == "review_data_health" for row in guarded)
+        assert all(row["route"] == "data_health" for row in guarded)
+        assert all(row["original_action"] == "scan_swing_chain" for row in guarded)
+        assert all(row["label"] == "Validation-blocked candidate" for row in guarded)
+        assert all(row["blocked_reason"].startswith("Max drawdown") for row in guarded)
+        assert all("Original setup context" in row["detail"] for row in guarded)
+
+        refresh = next(row for row in review["rows"] if row["category"] == "saved_contract")
+        assert refresh["symbol"] == "MSFT"
+        assert refresh["action"] == "refresh_saved_quote"
+        assert refresh["route"] == "chains"
+
+
 def test_command_center_summarizes_next_action_and_data_trust():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1119,6 +1485,8 @@ def test_command_center_summarizes_next_action_and_data_trust():
         old_sources = cockpit_module.build_free_data_sources
         old_perf = cockpit_module.build_performance_summary
         old_swing = cockpit_module.build_swing_scout
+        old_rh = cockpit_module.build_robinhood_agentic_queue_report
+        old_session = cockpit_module._build_session_plan
         swing_kwargs = {}
 
         cockpit_module.build_data_health = lambda *args, **kwargs: {
@@ -1151,6 +1519,14 @@ def test_command_center_summarizes_next_action_and_data_trust():
             "total_open": 4,
             "attention_count": 1,
             "high_exit_pressure_count": 0,
+            "highest_exit_pressure": [{
+                "asset": "option",
+                "ticker_or_symbol": "AAPL",
+                "position_label": "AAPL C 220",
+                "latest_exit_pressure": 72,
+                "pnl_pct": -0.12,
+                "reprice_failed_count": 0,
+            }],
         }
         cockpit_module.build_free_data_sources = lambda *args, **kwargs: {
             "source_count": 17,
@@ -1160,6 +1536,33 @@ def test_command_center_summarizes_next_action_and_data_trust():
         cockpit_module.build_performance_summary = lambda *args, **kwargs: {
             "total_latest_engine_sec": 92.4,
             "warnings": [],
+        }
+        cockpit_module.build_robinhood_agentic_queue_report = lambda *args, **kwargs: {
+            "status": "ready",
+            "account_budget": 500,
+            "max_total_premium": 250,
+            "min_dte": 90,
+            "candidate_count": 1,
+            "rejected_count": 3,
+            "orders": [{"symbol": "AAPL", "contract": "AAPL 2026-12-18 C 220"}],
+            "readiness": {"label": "ready", "ready_to_submit_count": 1, "premium_cap_remaining": 150},
+            "diagnostics": {"label": "ready_guarded", "remediation": []},
+            "chain_refresh": {"attempted": False},
+            "sec_offering_risks": {},
+            "top_rejection_reasons": [{"reason": "spread above filter", "count": 2}],
+        }
+        cockpit_module._build_session_plan = lambda: {
+            "status": "active_window",
+            "tone": "good",
+            "label": "active window",
+            "now_pt": "2026-06-17 09:30 AM PT",
+            "window": "7:30 AM-1:00 PM PT",
+            "cadence": "30 min scan loop",
+            "min_option_dte": 90,
+            "max_orders": 1,
+            "next_step": "Run or keep the 30-minute loop active.",
+            "recommended_command": "python run.py --aggressive --bankroll 500 --loop 30 --turbo --no-open",
+            "notes": ["approval required"],
         }
         def fake_swing(*args, **kwargs):
             swing_kwargs.update(kwargs)
@@ -1196,6 +1599,8 @@ def test_command_center_summarizes_next_action_and_data_trust():
             cockpit_module.build_free_data_sources = old_sources
             cockpit_module.build_performance_summary = old_perf
             cockpit_module.build_swing_scout = old_swing
+            cockpit_module.build_robinhood_agentic_queue_report = old_rh
+            cockpit_module._build_session_plan = old_session
 
         assert center["status"] == "review_first"
         assert center["climate_label"] == "constructive_selective"
@@ -1203,8 +1608,20 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert center["health_counts"] == {"ok": 1, "warn": 1, "bad": 0}
         assert center["next_action"]["action"] == "scan_swing_chain"
         assert center["next_action"]["route"] == "chains"
+        assert center["top_queue"][0]["action"] == "scan_swing_chain"
+        assert center["top_queue"][0]["route"] == "chains"
         assert center["no_key_count"] == 17
-        assert len(center["cards"]) == 6
+        assert len(center["cards"]) == 8
+        assert center["session_plan"]["status"] == "active_window"
+        assert center["session_plan"]["min_option_dte"] == 90
+        assert "--loop 30" in center["session_plan"]["recommended_command"]
+        assert center["position_triage"][0]["symbol"] == "AAPL"
+        assert center["position_triage"][0]["action"] == "open_position_monitor"
+        assert center["position_triage"][0]["tone"] == "warn"
+        assert center["manual_review"]["label"] == "Ready: 1 candidate(s)"
+        assert center["manual_review"]["route"] == "robinhood"
+        assert center["manual_review"]["min_dte"] == 90
+        assert "1 ready-to-review" in center["manual_review"]["checks"][0]
         assert center["swing_radar_count"] == 1
         assert center["swing_actions"][0]["action"] == "scan_swing_chain"
         assert center["swing_actions"][0]["route"] == "chains"
@@ -1223,6 +1640,302 @@ def test_command_center_summarizes_next_action_and_data_trust():
         assert ribbon["Chain readiness"]["value"] == "missing"
         assert ribbon["Free sources"]["value"] == "17/17"
         assert swing_kwargs["include_nasdaq_movers"] is True
+
+
+def test_command_center_session_gate_defers_new_entries_after_review_window():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_health = cockpit_module.build_data_health
+        old_today = cockpit_module.build_today_review
+        old_risk = cockpit_module.build_risk_summary
+        old_sources = cockpit_module.build_free_data_sources
+        old_perf = cockpit_module.build_performance_summary
+        old_swing = cockpit_module.build_swing_scout
+        old_rh = cockpit_module.build_robinhood_agentic_queue_report
+        old_session = cockpit_module._build_session_plan
+
+        cockpit_module.build_data_health = lambda *args, **kwargs: {
+            "status": "warn",
+            "checks": [{"level": "warn", "label": "Dashboard freshness", "detail": "stale"}],
+        }
+        cockpit_module.build_today_review = lambda *args, **kwargs: {
+            "count": 1,
+            "review_now_count": 1,
+            "climate_label": "constructive_selective",
+            "climate_score": 70,
+            "rows": [{
+                "priority": 96,
+                "label": "Review climate-cleared setup",
+                "detail": "AAPL cleared setup gates.",
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "symbol": "AAPL",
+                "query": "AAPL",
+                "source": "climate_gated_setups",
+            }],
+        }
+        cockpit_module.build_risk_summary = lambda *args, **kwargs: {
+            "risk_level": "medium",
+            "total_open": 1,
+            "attention_count": 1,
+            "high_exit_pressure_count": 0,
+            "highest_exit_pressure": [{
+                "asset": "option",
+                "ticker_or_symbol": "TLT",
+                "position_label": "TLT C 80",
+                "latest_exit_pressure": 65,
+                "pnl_pct": 0.22,
+                "reprice_failed_count": 3,
+            }],
+        }
+        cockpit_module.build_free_data_sources = lambda *args, **kwargs: {
+            "source_count": 17,
+            "no_key_count": 17,
+            "primary_count": 10,
+        }
+        cockpit_module.build_performance_summary = lambda *args, **kwargs: {
+            "total_latest_engine_sec": 50.0,
+            "warnings": [],
+        }
+        cockpit_module.build_swing_scout = lambda *args, **kwargs: {"count": 0, "rows": []}
+        cockpit_module.build_robinhood_agentic_queue_report = lambda *args, **kwargs: {
+            "status": "ready",
+            "candidate_count": 1,
+            "rejected_count": 0,
+            "orders": [{"symbol": "AAPL"}],
+            "readiness": {"label": "ready", "ready_to_submit_count": 1, "premium_cap_remaining": 150},
+            "diagnostics": {},
+            "chain_refresh": {"attempted": False},
+        }
+        cockpit_module._build_session_plan = lambda: {
+            "status": "post_window",
+            "tone": "warn",
+            "label": "post window",
+            "now_pt": "2026-06-17 02:30 PM PT",
+            "window": "7:30 AM-1:00 PM PT",
+            "cadence": "30 min scan loop",
+            "min_option_dte": 90,
+            "max_orders": 1,
+            "next_step": "Stop adding new ideas; review open risk.",
+            "recommended_command": "python run.py --aggressive --bankroll 500 --loop 30",
+            "notes": [],
+        }
+
+        try:
+            center = build_command_center(data_dir)
+        finally:
+            cockpit_module.build_data_health = old_health
+            cockpit_module.build_today_review = old_today
+            cockpit_module.build_risk_summary = old_risk
+            cockpit_module.build_free_data_sources = old_sources
+            cockpit_module.build_performance_summary = old_perf
+            cockpit_module.build_swing_scout = old_swing
+            cockpit_module.build_robinhood_agentic_queue_report = old_rh
+            cockpit_module._build_session_plan = old_session
+
+        assert center["next_action"]["session_gate_applied"] is True
+        assert center["next_action"]["action"] == "open_position_monitor"
+        assert center["next_action"]["route"] == "positions"
+        assert center["next_action"]["symbol"] == "TLT"
+        assert center["next_action"]["original_action"] == "scan_swing_chain"
+        assert "Stop adding new ideas" in center["next_action"]["detail"]
+
+
+def test_command_center_validation_guard_defers_new_entries_during_active_window():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_health = cockpit_module.build_data_health
+        old_today = cockpit_module.build_today_review
+        old_risk = cockpit_module.build_risk_summary
+        old_sources = cockpit_module.build_free_data_sources
+        old_perf = cockpit_module.build_performance_summary
+        old_swing = cockpit_module.build_swing_scout
+        old_rh = cockpit_module.build_robinhood_agentic_queue_report
+        old_session = cockpit_module._build_session_plan
+
+        cockpit_module.build_data_health = lambda *args, **kwargs: {
+            "status": "bad",
+            "total_open": 1,
+            "checks": [{"level": "bad", "label": "Validation guardrail blocking entries", "detail": "Max drawdown is -35.0%."}],
+            "validation_guardrail": {
+                "level": "bad",
+                "label": "Validation guardrail blocking entries",
+                "detail": "Max drawdown is -35.0%.",
+                "closed_positions": 120,
+                "win_rate": 0.18,
+                "max_drawdown": -0.35,
+                "profit_factor": 0.8,
+            },
+        }
+        cockpit_module.build_today_review = lambda *args, **kwargs: {
+            "count": 1,
+            "review_now_count": 1,
+            "climate_label": "constructive_selective",
+            "climate_score": 74,
+            "rows": [{
+                "priority": 97,
+                "label": "Review climate-cleared setup",
+                "detail": "AAPL cleared setup gates.",
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "symbol": "AAPL",
+                "query": "AAPL",
+                "source": "climate_gated_setups",
+            }],
+        }
+        cockpit_module.build_risk_summary = lambda *args, **kwargs: {
+            "risk_level": "low",
+            "total_open": 1,
+            "attention_count": 0,
+            "high_exit_pressure_count": 0,
+            "highest_exit_pressure": [{
+                "asset": "option",
+                "ticker_or_symbol": "MSFT",
+                "position_label": "MSFT C 400",
+                "latest_exit_pressure": 35,
+                "pnl_pct": 0.12,
+                "reprice_failed_count": 0,
+            }],
+        }
+        cockpit_module.build_free_data_sources = lambda *args, **kwargs: {
+            "source_count": 17,
+            "no_key_count": 17,
+            "primary_count": 10,
+        }
+        cockpit_module.build_performance_summary = lambda *args, **kwargs: {
+            "total_latest_engine_sec": 40.0,
+            "warnings": [],
+        }
+        cockpit_module.build_swing_scout = lambda *args, **kwargs: {"count": 0, "rows": []}
+        cockpit_module.build_robinhood_agentic_queue_report = lambda *args, **kwargs: {
+            "status": "ready",
+            "candidate_count": 1,
+            "rejected_count": 0,
+            "orders": [{"symbol": "AAPL"}],
+            "readiness": {"label": "ready", "ready_to_submit_count": 1},
+            "diagnostics": {},
+            "chain_refresh": {"attempted": False},
+        }
+        cockpit_module._build_session_plan = lambda: {
+            "status": "active_window",
+            "tone": "good",
+            "label": "active window",
+            "now_pt": "2026-06-17 09:30 AM PT",
+            "window": "7:30 AM-1:00 PM PT",
+            "cadence": "30 min scan loop",
+            "min_option_dte": 90,
+            "max_orders": 1,
+            "next_step": "Run or keep the 30-minute loop active.",
+            "recommended_command": "python run.py --aggressive --bankroll 500 --loop 30",
+            "notes": [],
+        }
+
+        try:
+            center = build_command_center(data_dir)
+        finally:
+            cockpit_module.build_data_health = old_health
+            cockpit_module.build_today_review = old_today
+            cockpit_module.build_risk_summary = old_risk
+            cockpit_module.build_free_data_sources = old_sources
+            cockpit_module.build_performance_summary = old_perf
+            cockpit_module.build_swing_scout = old_swing
+            cockpit_module.build_robinhood_agentic_queue_report = old_rh
+            cockpit_module._build_session_plan = old_session
+
+        assert center["status"] == "fix_first"
+        assert center["validation_guardrail"]["level"] == "bad"
+        assert center["next_action"]["validation_guard_applied"] is True
+        assert center["next_action"]["session_gate_applied"] is False
+        assert center["next_action"]["source"] == "validation_guard"
+        assert center["next_action"]["action"] == "open_position_monitor"
+        assert center["next_action"]["route"] == "positions"
+        assert center["next_action"]["symbol"] == "MSFT"
+        assert center["next_action"]["original_action"] == "scan_swing_chain"
+        assert center["top_queue"][0]["action"] == "review_data_health"
+        assert center["top_queue"][0]["route"] == "data_health"
+        assert center["top_queue"][0]["original_action"] == "scan_swing_chain"
+        assert center["top_queue"][0]["guarded_by_validation"] is True
+        assert center["top_queue"][0]["label"] == "Validation-blocked candidate"
+        assert center["top_queue"][0]["original_label"] == "Review climate-cleared setup"
+        assert center["top_queue"][0]["blocked_reason"] == "Max drawdown is -35.0%."
+        assert "Original setup context" in center["top_queue"][0]["detail"]
+        assert center["manual_review"]["label"] == "Blocked by validation"
+        assert center["manual_review"]["tone"] == "bad"
+        assert center["manual_review"]["ready_to_submit_count"] == 0
+        assert center["manual_review"]["guarded_candidate_count"] == 1
+        assert center["manual_review"]["route"] == "data_health"
+        assert "Validation guardrail blocked" in center["manual_review"]["checks"][0]
+
+
+def test_manual_review_summary_surfaces_entry_gate_state():
+    manual = cockpit_module._command_manual_review_summary({
+        "status": "ready",
+        "candidate_count": 1,
+        "rejected_count": 3,
+        "max_total_premium": 250,
+        "min_dte": 90,
+        "orders": [{"symbol": "AAPL"}],
+        "readiness": {"ready_to_submit_count": 1, "premium_cap_remaining": 150},
+        "entry_gate": {
+            "status": "review_only",
+            "label": "Approval-required review",
+            "detail": "Fresh entries need manual approval after validation review.",
+            "new_entries_allowed_after_live_checks": False,
+            "approval_required": True,
+        },
+        "gated_ready_to_submit_count": 0,
+        "review_only_entry_candidate_count": 1,
+        "decision_log": {
+            "recent_count": 2,
+            "path": str(Path("data") / "robinhood_agentic_decisions.jsonl"),
+        },
+        "chain_refresh": {"attempted": True, "ok": True},
+    })
+
+    assert manual["label"] == "Review-only: 1 candidate(s)"
+    assert manual["tone"] == "warn"
+    assert manual["ready_to_submit_count"] == 0
+    assert manual["review_only_entry_candidate_count"] == 1
+    assert manual["entry_gate_label"] == "Approval-required review"
+    assert manual["decision_log_recent_count"] == 2
+    assert manual["route"] == "robinhood"
+    assert manual["checks"][0] == "Entry gate: Approval-required review"
+    assert any("2 recent local decision" in check for check in manual["checks"])
+
+    blocked = cockpit_module._command_manual_review_summary({
+        "status": "ready",
+        "candidate_count": 1,
+        "orders": [{"symbol": "AAPL"}],
+        "entry_gate": {
+            "status": "blocked",
+            "label": "Fresh entries blocked",
+            "detail": "Validation blockers need review first.",
+        },
+        "gated_ready_to_submit_count": 0,
+        "review_only_entry_candidate_count": 1,
+    })
+    assert blocked["label"] == "Fresh entries blocked"
+    assert blocked["tone"] == "bad"
+    assert blocked["route"] == "data_health"
+
+
+def test_validation_guardrail_uses_summary_closed_count_with_overall_metrics():
+    guard = cockpit_module._validation_guardrail({
+        "closed_positions": 1000,
+        "overall": {
+            "n": 1000,
+            "win_rate": 0.117,
+            "max_drawdown": -1.0,
+            "profit_factor": 2.34,
+        },
+    })
+
+    assert guard["closed_positions"] == 1000
+    assert guard["win_rate"] == 0.117
+    assert guard["max_drawdown"] == -1.0
+    assert guard["level"] == "bad"
+    assert "Max drawdown" in guard["detail"]
+    assert "Only 0 closed" not in " ".join(guard["warnings"])
 
 
 def test_swing_packet_builds_and_writes_daily_decision_packet():
@@ -1890,6 +2603,9 @@ def test_best_setups_builds_decision_shortlist_from_latest_snapshots():
         assert report["by_asset"]["option"][0]["readiness_label"] == "review"
         assert report["by_asset"]["option"][0]["readiness_score"] >= 65
         assert "missing stop" in report["by_asset"]["option"][0]["risk_flags"]
+        assert report["by_asset"]["option"][0]["setup_gate_status"] == "quote_check"
+        assert report["by_asset"]["option"][0]["setup_gate_label"] == "Needs live quote"
+        assert any("missing stop" in reason for reason in report["by_asset"]["option"][0]["setup_gate_reasons"])
         assert report["asset_summaries"][0]["rows"] == 3
         assert report["asset_summaries"][0]["actionable_rows"] == 1
         assert {row["asset"] for row in report["rows"]} == {"option", "share", "futures", "value"}
@@ -1924,6 +2640,89 @@ def test_best_setups_marks_clean_long_dated_option_ready():
         assert row["readiness_label"] == "ready"
         assert row["readiness_score"] >= 80
         assert row["risk_flags"] == []
+        assert row["setup_gate_status"] == "ready"
+        assert row["setup_gate_label"] == "Ready to research"
+        assert "readiness is ready" in row["setup_gate_reasons"]
+
+
+def test_best_setups_gate_marks_short_dated_option_avoid_when_reviewed():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "WEEKLY",
+            "side": "call",
+            "strike": 10,
+            "expiry": "2026-07-01",
+            "dte": 18,
+            "mid": 1.0,
+            "confidence": 90,
+            "rank_score": 2.0,
+            "trade_status": "Trade",
+            "suggested_contracts": 0,
+            "spread_pct": 0.08,
+            "stop_price": 0.5,
+            "target_price": 2.0,
+            "chain_source": "cboe",
+            "quote_quality": "free_or_delayed",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        report = build_best_setups(data_dir, per_asset=1, limit=1)
+
+    row = report["by_asset"]["option"][0]
+    assert row["ticker_or_symbol"] == "WEEKLY"
+    assert row["readiness_label"] == "wait"
+    assert row["setup_gate_status"] == "avoid"
+    assert row["setup_gate_label"] == "Avoid for now"
+    assert any("below 90 dte" in reason.lower() for reason in row["setup_gate_reasons"])
+
+
+def test_best_setups_decision_row_prefers_reviewable_over_higher_scored_avoid():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([
+            {
+                "ticker": "STALE",
+                "side": "call",
+                "strike": 10,
+                "expiry": "2026-12-18",
+                "dte": 180,
+                "mid": 1.0,
+                "confidence": 99,
+                "rank_score": 5.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "spread_pct": 0.08,
+                "stop_price": 0.5,
+                "target_price": 2.0,
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+                "snapshot_freshness": "stale",
+            },
+            {
+                "ticker": "CLEAN",
+                "side": "call",
+                "strike": 20,
+                "expiry": "2026-12-18",
+                "dte": 180,
+                "mid": 2.0,
+                "confidence": 82,
+                "rank_score": 1.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "spread_pct": 0.05,
+                "stop_price": 1.0,
+                "target_price": 4.0,
+                "chain_source": "tradier",
+                "quote_quality": "live_or_broker",
+            },
+        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+
+        report = build_best_setups(data_dir, per_asset=2, limit=2)
+
+    assert report["rows"][0]["ticker_or_symbol"] == "STALE"
+    assert report["rows"][0]["setup_gate_status"] == "avoid"
+    assert report["decision_row"]["ticker_or_symbol"] == "CLEAN"
+    assert report["decision_row"]["setup_gate_status"] == "ready"
 
 
 def test_best_setups_include_saved_chain_shortlist_contracts():
@@ -1972,6 +2771,9 @@ def test_best_setups_include_saved_chain_shortlist_contracts():
     assert "long swing runway" in row["swing_fit_reasons"]
     assert row["liquidity_label"] == "deep"
     assert row["quality"] == "spread 4.0% | cboe"
+    assert row["setup_gate_status"] == "quote_check"
+    assert row["setup_gate_label"] == "Needs live quote"
+    assert any("verify live option quote" in reason for reason in row["setup_gate_reasons"])
     assert report["asset_summaries"][0]["chain_shortlist_rows"] == 1
     assert "option_chain_shortlist" in report["sources"]
     assert any("Saved 3m+ chain shortlist" in note for note in report["notes"])
@@ -3133,13 +3935,740 @@ def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
         assert any("dte below 180" in row["reasons"] for row in preview["rejected"])
         assert preview["readiness"]["label"] == "ready"
         assert preview["readiness"]["premium_cap_remaining"] >= 0
-        assert preview["rejection_reason_counts"]["dte below 180"] == 1
-        assert preview["top_rejection_reasons"][0]["reason"] == "dte below 180"
+        assert preview["rejection_reason_counts"]["dte below 180"] >= 1
+        assert preview["diagnostics"]["reason_groups"]["below_min_dte"] >= 1
 
         written = build_robinhood_agentic_queue_report(data_dir, write=True)
         assert written["wrote_files"] is True
         assert (data_dir / "robinhood_agentic_queue.json").exists()
         assert (data_dir / "robinhood_agentic_prompt.md").exists()
+        assert (data_dir / "robinhood_agentic_cycle.json").exists()
+        assert (data_dir / "robinhood_agentic_cycle_prompt.md").exists()
+
+
+def test_agentic_decision_journal_records_local_review_rows():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+
+        empty = build_agentic_decision_journal(data_dir)
+        assert empty["recent_count"] == 0
+        assert empty["exists"] is False
+
+        out = record_agentic_decision(
+            {"decision": "skipped", "symbol": "aapl", "reason": "entry gate blocked"},
+            data_dir,
+        )
+
+        assert out["ok"] is True
+        assert out["recent_count"] == 1
+        assert out["action_counts"]["skipped"] == 1
+        row = out["rows"][0]
+        assert row["decision"] == "skipped"
+        assert row["symbol"] == "AAPL"
+        assert row["reason"] == "entry gate blocked"
+        assert row["source"] == "local_cockpit"
+        assert (data_dir / "robinhood_agentic_decisions.jsonl").exists()
+
+
+def test_agentic_autopilot_status_summarizes_gate_tickets_and_paper_book():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        contract = "AAPL 2027-01-15 C 200"
+        now = datetime.now(timezone.utc).isoformat()
+        ticket = {
+            "symbol": "AAPL",
+            "contract": contract,
+            "option_side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "generated_at": now,
+            "quantity": 1,
+            "limit_price": 1.25,
+            "estimated_premium_dollars": 125.0,
+            "entry_gate_status": "blocked",
+            "confirmation_required": True,
+            "confidence": 91,
+            "rank_score": 2.4,
+        }
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "ready",
+            "generated_at": now,
+            "orders": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "blocked",
+                "label": "Fresh entries blocked",
+                "new_entries_allowed_after_live_checks": False,
+                "blockers": ["validation max drawdown is -72.4%"],
+                "warnings": ["execution mode defaults to approval_required"],
+            },
+            "review_only_entry_candidates": [ticket],
+            "entry_candidates": [],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "confirmation_required": True,
+            "generated_at": now,
+            "tickets": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text(json.dumps([
+            {
+                "status": "open",
+                "symbol": "AAPL",
+                "contract": contract,
+                "option_side": "call",
+                "strike": 200,
+                "expiry": "2027-01-15",
+                "quantity": 1,
+                "entry_price": 1.2,
+                "paper_limit_price": 1.25,
+                "stop_price_reference": 0.6,
+                "target_price_reference": 2.4,
+                "opened_at": now,
+            }
+        ]), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": "2027-01-15",
+                "direction": "long_call",
+                "current_price": 1.5,
+                "latest_exit_action": "hold",
+                "latest_exit_pressure": 25,
+                "last_reprice_source": "test_chain",
+            }
+        ]), encoding="utf-8")
+        record_agentic_decision(
+            {"decision": "reviewed", "symbol": "AAPL", "contract": contract, "reason": "paper only"},
+            data_dir,
+        )
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["status"] == "blocked"
+        assert status["label"] == "Entry gate blocked"
+        assert status["queue_freshness"] == "fresh"
+        assert status["cycle_freshness"] == "fresh"
+        assert status["ticket_packet_freshness"] == "fresh"
+        assert status["entry_gate_status"] == "blocked"
+        assert status["fresh_entries_allowed"] is False
+        assert status["ticket_preflight_block_count"] >= 1
+        assert status["ticket_preflight_warn_count"] >= 1
+        assert status["live_ticket_count"] == 1
+        assert status["paper_open_count"] == 1
+        assert status["paper_book_summary"]["priced_count"] == 1
+        assert status["paper_book_summary"]["needs_quote_count"] == 0
+        assert status["paper_book_summary"]["unrealized_pnl_dollars"] == 30.0
+        assert status["decision_recent_count"] == 1
+        assert status["decision_log_needed"] is False
+        assert status["decision_debt_reasons"] == []
+        assert "validation max drawdown is -72.4%" in status["blockers"]
+        assert status["warnings"] == ["execution mode defaults to approval_required"]
+        assert status["tickets"][0]["paper_tracked"] is True
+        assert status["tickets"][0]["optedge_duplicate"] is True
+        assert status["tickets"][0]["confirmation_required"] is True
+        assert status["tickets"][0]["preflight_status"] == "blocked"
+        assert status["tickets"][0]["preflight_blocks"] >= 1
+        assert any(row["check"] == "Entry gate" and row["level"] == "block" for row in status["ticket_preflight"])
+        assert any(row["check"] == "Paper duplicate" and row["level"] == "warn" for row in status["ticket_preflight"])
+        assert status["tickets"][0]["freshness"] == "fresh"
+        assert status["paper_positions"][0]["contract"] == contract
+        assert status["paper_positions"][0]["current_price"] == 1.5
+        assert round(status["paper_positions"][0]["pnl_pct"], 4) == 0.25
+        assert status["paper_positions"][0]["pnl_dollars"] == 30.0
+        assert status["paper_positions"][0]["review_action"] == "hold_review"
+        assert status["paper_positions"][0]["mark_source"] == "test_chain"
+        actions = [row["action"] for row in status["next_actions"]]
+        assert "review_validation" in actions
+        assert "review_ticket" in actions
+        assert "review_paper_book" in actions
+
+
+def test_agentic_autopilot_status_blocks_stale_packets_and_tickets():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        stale_time = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        ticket = {
+            "symbol": "VICI",
+            "contract": "VICI 2026-09-18 P 27.5",
+            "option_side": "put",
+            "strike": 27.5,
+            "expiry": "2026-09-18",
+            "generated_at": stale_time,
+            "quantity": 1,
+            "limit_price": 1.08,
+            "confidence": 94,
+            "rank_score": 1.9,
+        }
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "ready",
+            "generated_at": stale_time,
+            "orders": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": stale_time,
+            "auto_submit_allowed": True,
+            "entry_gate": {
+                "status": "open",
+                "label": "Fresh entries open",
+                "new_entries_allowed_after_live_checks": True,
+                "blockers": [],
+                "warnings": [],
+            },
+            "entry_candidates": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": stale_time,
+            "tickets": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["status"] == "stale"
+        assert status["label"] == "Refresh required"
+        assert status["fresh_entries_allowed"] is False
+        assert status["queue_freshness"] == "stale"
+        assert status["cycle_freshness"] == "stale"
+        assert status["ticket_packet_freshness"] == "stale"
+        assert any("agentic queue is stale" in blocker for blocker in status["blockers"])
+        assert any("agentic cycle is stale" in blocker for blocker in status["blockers"])
+        assert any("live ticket packet is stale" in blocker for blocker in status["blockers"])
+        assert status["tickets"][0]["status"] == "stale"
+        assert status["tickets"][0]["freshness"] == "stale"
+        assert status["tickets"][0]["preflight_status"] == "blocked"
+        assert any(row["check"] == "Fresh packet" and row["level"] == "block" for row in status["ticket_preflight"])
+        assert status["next_actions"][0]["action"] == "refresh_autopilot_packet"
+
+
+def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        ticket = {
+            "symbol": "AAPL",
+            "contract": "AAPL 2027-01-15 C 200",
+            "option_side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "generated_at": now,
+            "quantity": 1,
+            "limit_price": 1.25,
+            "estimated_premium_dollars": 125.0,
+            "confirmation_required": True,
+            "live_submit_allowed_by_this_script": False,
+        }
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "ready",
+            "generated_at": now,
+            "orders": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "open",
+                "label": "Fresh entries open",
+                "new_entries_allowed_after_live_checks": True,
+                "blockers": [],
+                "warnings": [],
+            },
+            "entry_candidates": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": now,
+            "tickets": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": now,
+            "accounts": [{
+                "nickname": "Agentic",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+                "option_positions": [],
+            }],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["status"] == "ticket_ready"
+        assert status["fresh_entries_allowed"] is True
+        assert status["ticket_preflight_block_count"] == 0
+        assert status["ticket_preflight_warn_count"] == 0
+        assert status["decision_recent_count"] == 0
+        assert status["decision_log_needed"] is True
+        assert any("staged live ticket" in reason for reason in status["decision_debt_reasons"])
+        assert status["tickets"][0]["preflight_status"] == "pass"
+        assert status["tickets"][0]["preflight_blocks"] == 0
+        assert status["tickets"][0]["preflight_warnings"] == 0
+        checks = {(row["check"], row["level"]) for row in status["ticket_preflight"]}
+        assert ("Fresh packet", "pass") in checks
+        assert ("Entry gate", "pass") in checks
+        assert ("Confirmation", "pass") in checks
+        assert ("Execution mode", "pass") in checks
+        actions = [row["action"] for row in status["next_actions"]]
+        assert "log_decision" in actions
+
+
+def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        expired_expiry = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2027-01-15",
+                "current_price": 1.5,
+                "suggested_contracts": 1,
+            },
+            {
+                "ticker": "MSFT",
+                "side": "put",
+                "strike": 300,
+                "expiry": "2027-01-15",
+                "current_price": 2.0,
+                "suggested_contracts": 1,
+            },
+            {
+                "ticker": "GOOG",
+                "side": "call",
+                "strike": 100,
+                "expiry": expired_expiry,
+                "current_price": 0.0,
+                "suggested_contracts": 1,
+            },
+        ]), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text(json.dumps([{
+            "status": "open",
+            "symbol": "TSLA",
+            "option_side": "call",
+            "strike": "250.00",
+            "expiry": "2027-01-15",
+            "quantity": 1,
+            "entry_price": 1.0,
+        }]), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": now,
+            "accounts": [
+                {
+                    "nickname": "Default",
+                    "agentic_allowed": False,
+                    "option_level": "option_level_2",
+                    "option_positions": [
+                        {
+                            "chain_symbol": "AAPL",
+                            "option_type": "call",
+                            "strike_price": "200",
+                            "expiration_date": "2027-01-15",
+                            "quantity": "1.0000",
+                            "average_price": "1.2500",
+                        },
+                        {
+                            "chain_symbol": "ROBN",
+                            "option_type": "call",
+                            "strike_price": "20.00",
+                            "expiration_date": "2026-12-18",
+                            "quantity": "2.0000",
+                            "average_price": "6.4500",
+                        },
+                    ],
+                },
+                {
+                    "nickname": "Agentic",
+                    "agentic_allowed": True,
+                    "option_level": "",
+                    "option_positions": [],
+                },
+            ],
+        }), encoding="utf-8")
+
+        report = build_broker_reconciliation(data_dir)
+
+        assert report["status"] == "mismatch"
+        assert report["broker_option_count"] == 2
+        assert report["optedge_option_count"] == 3
+        assert report["paper_option_count"] == 1
+        assert report["matched_count"] == 1
+        assert report["broker_only_count"] == 1
+        assert report["local_only_count"] == 1
+        assert report["local_expired_count"] == 1
+        assert report["paper_only_count"] == 1
+        assert report["agentic_option_ready"] is False
+        assert any("options-approved account exists" in warning for warning in report["warnings"])
+        statuses = {row["contract"]: row["status"] for row in report["rows"]}
+        assert statuses["AAPL 2027-01-15 CALL 200"] == "matched"
+        assert statuses["ROBN 2026-12-18 CALL 20"] == "broker_only"
+        assert statuses["MSFT 2027-01-15 PUT 300"] == "local_only"
+        assert statuses[f"GOOG {expired_expiry} CALL 100"] == "local_expired"
+        assert statuses["TSLA 2027-01-15 CALL 250"] == "paper_only"
+
+
+def test_agentic_autopilot_blocks_ticket_when_broker_reconciliation_mismatches():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        ticket = {
+            "symbol": "AAPL",
+            "contract": "AAPL 2027-01-15 C 200",
+            "option_side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "generated_at": now,
+            "quantity": 1,
+            "limit_price": 1.25,
+            "estimated_premium_dollars": 125.0,
+            "confirmation_required": True,
+            "live_submit_allowed_by_this_script": False,
+        }
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "ready",
+            "generated_at": now,
+            "orders": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "open",
+                "label": "Fresh entries open",
+                "new_entries_allowed_after_live_checks": True,
+                "blockers": [],
+                "warnings": [],
+            },
+            "entry_candidates": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": now,
+            "tickets": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": now,
+            "accounts": [{
+                "nickname": "Default",
+                "agentic_allowed": False,
+                "option_level": "option_level_2",
+                "option_positions": [{
+                    "chain_symbol": "ROBN",
+                    "option_type": "call",
+                    "strike_price": "20",
+                    "expiration_date": "2026-12-18",
+                    "quantity": "2.0000",
+                }],
+            }],
+        }), encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["status"] == "blocked"
+        assert status["broker_reconciliation_status"] == "mismatch"
+        assert status["broker_only_count"] == 1
+        assert status["broker_reconciliation_rows"][0]["status"] == "broker_only"
+        assert any("broker/local position mismatch" in blocker for blocker in status["blockers"])
+        actions = [row["action"] for row in status["next_actions"]]
+        assert "review_broker_sync" in actions
+        assert status["tickets"][0]["preflight_status"] == "blocked"
+
+
+def test_position_hygiene_builds_safe_cleanup_plan_without_mutating_positions():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        expired_expiry = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        original_open = [
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": expired_expiry,
+                "entry_price": 1.0,
+                "current_price": 0.0,
+                "suggested_contracts": 1,
+                "reprice_failed_count": 3,
+            },
+            {
+                "ticker": "MSFT",
+                "side": "put",
+                "strike": 300,
+                "expiry": "2027-01-15",
+                "entry_price": 2.0,
+                "current_price": 2.5,
+                "suggested_contracts": 1,
+                "reprice_failed_count": 25,
+            },
+        ]
+        (data_dir / "open_positions.json").write_text(json.dumps(original_open), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": now,
+            "accounts": [{
+                "nickname": "Default",
+                "agentic_allowed": False,
+                "option_level": "option_level_2",
+                "option_positions": [{
+                    "chain_symbol": "ROBN",
+                    "option_type": "call",
+                    "strike_price": "35",
+                    "expiration_date": "2026-12-18",
+                    "quantity": "2.0000",
+                }],
+            }],
+        }), encoding="utf-8")
+
+        report = build_position_hygiene(data_dir)
+
+        assert report["status"] == "needs_review"
+        assert report["broker_only_count"] == 1
+        assert report["local_expired_count"] == 1
+        assert report["local_only_count"] == 1
+        actions = {row["contract"]: row["action"] for row in report["rows"]}
+        assert actions["ROBN 2026-12-18 CALL 35"] == "import_or_mark_unmanaged_broker_position"
+        assert actions[f"AAPL {expired_expiry} CALL 200"] == "close_or_archive_expired_local_record"
+        assert actions["MSFT 2027-01-15 PUT 300"] == "verify_local_position_against_broker"
+        assert json.loads((data_dir / "open_positions.json").read_text(encoding="utf-8")) == original_open
+
+        written = write_position_hygiene_plan(data_dir)
+        assert written["wrote_file"] is True
+        assert (data_dir / "position_hygiene_plan.json").exists()
+        saved = json.loads((data_dir / "position_hygiene_plan.json").read_text(encoding="utf-8"))
+        assert saved["action_count"] == report["action_count"]
+
+
+def test_position_hygiene_apply_preview_does_not_mutate_positions():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        expired_expiry = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        future_expiry = (datetime.now(timezone.utc) + timedelta(days=120)).date().isoformat()
+        open_rows = [
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": expired_expiry,
+                "entry_time": (datetime.now(timezone.utc) - timedelta(days=20)).isoformat(),
+                "entry_price": 1.0,
+                "current_price": 0.25,
+            },
+            {
+                "ticker": "MSFT",
+                "side": "put",
+                "strike": 300,
+                "expiry": future_expiry,
+                "entry_price": 2.0,
+                "current_price": 2.5,
+            },
+        ]
+        closed_rows = [{"ticker": "OLD", "exit_reason": "hard_target"}]
+        (data_dir / "open_positions.json").write_text(json.dumps(open_rows), encoding="utf-8")
+        (data_dir / "closed_positions.json").write_text(json.dumps(closed_rows), encoding="utf-8")
+
+        report = apply_position_hygiene(data_dir, apply=False)
+
+        assert report["status"] == "preview"
+        assert report["expired_to_close_count"] == 1
+        assert report["open_before"] == 2
+        assert report["open_after"] == 2
+        assert report["closed_before"] == 1
+        assert report["closed_after"] == 1
+        assert report["backup_paths"] == []
+        assert report["rows"][0]["action"] == "preview_move_to_closed_positions"
+        assert json.loads((data_dir / "open_positions.json").read_text(encoding="utf-8")) == open_rows
+        assert json.loads((data_dir / "closed_positions.json").read_text(encoding="utf-8")) == closed_rows
+        assert list(data_dir.glob("*.hygiene_backup_*.json")) == []
+
+
+def test_position_hygiene_apply_backs_up_and_moves_only_expired_options():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        expired_expiry = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        future_expiry = (datetime.now(timezone.utc) + timedelta(days=120)).date().isoformat()
+        open_rows = [
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": expired_expiry,
+                "entry_time": (datetime.now(timezone.utc) - timedelta(days=20)).isoformat(),
+                "entry_price": 1.0,
+                "current_price": 0.25,
+                "trade_status": "Watch",
+            },
+            {
+                "ticker": "MSFT",
+                "side": "put",
+                "strike": 300,
+                "expiry": future_expiry,
+                "entry_price": 2.0,
+                "current_price": 2.5,
+                "trade_status": "Trade",
+            },
+        ]
+        closed_rows = [{"ticker": "OLD", "exit_reason": "hard_target"}]
+        (data_dir / "open_positions.json").write_text(json.dumps(open_rows), encoding="utf-8")
+        (data_dir / "closed_positions.json").write_text(json.dumps(closed_rows), encoding="utf-8")
+
+        report = apply_position_hygiene(data_dir, apply=True)
+
+        assert report["status"] == "applied"
+        assert report["wrote_files"] is True
+        assert report["expired_to_close_count"] == 1
+        assert report["open_before"] == 2
+        assert report["open_after"] == 1
+        assert report["closed_before"] == 1
+        assert report["closed_after"] == 2
+        assert len(report["backup_paths"]) == 2
+        assert all(Path(path).exists() for path in report["backup_paths"])
+        remaining_open = json.loads((data_dir / "open_positions.json").read_text(encoding="utf-8"))
+        saved_closed = json.loads((data_dir / "closed_positions.json").read_text(encoding="utf-8"))
+        assert [row["ticker"] for row in remaining_open] == ["MSFT"]
+        closed = saved_closed[-1]
+        assert closed["ticker"] == "AAPL"
+        assert closed["exit_reason"] == "expired_hygiene"
+        assert closed["exit_price"] == 0.0
+        assert closed["pnl_pct"] == -1.0
+        assert closed["trade_status"] == "Closed"
+        assert closed["hygiene_source"] == "position_hygiene"
+        assert "broker orders" in report["notes"][-1]
+
+
+def test_agentic_autopilot_paper_book_marks_targets_and_missing_quotes():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        future_expiry = (datetime.now(timezone.utc) + timedelta(days=180)).date().isoformat()
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "empty",
+            "generated_at": now,
+            "orders": [],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "blocked",
+                "label": "Fresh entries blocked",
+                "new_entries_allowed_after_live_checks": False,
+                "blockers": ["validation blocked"],
+                "warnings": [],
+            },
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": now,
+            "tickets": [],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text(json.dumps([
+            {
+                "status": "open",
+                "symbol": "AAPL",
+                "contract": f"AAPL {future_expiry} C 200",
+                "option_side": "call",
+                "strike": 200,
+                "expiry": future_expiry,
+                "quantity": 1,
+                "entry_price": 1.0,
+                "stop_price_reference": 0.5,
+                "target_price_reference": 2.0,
+                "opened_at": now,
+            },
+            {
+                "status": "open",
+                "symbol": "MSFT",
+                "contract": f"MSFT {future_expiry} P 300",
+                "option_side": "put",
+                "strike": 300,
+                "expiry": future_expiry,
+                "quantity": 1,
+                "entry_price": 1.5,
+                "stop_price_reference": 0.75,
+                "target_price_reference": 3.0,
+                "opened_at": now,
+            },
+        ]), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200,
+                "expiry": future_expiry,
+                "current_price": 2.2,
+                "latest_exit_action": "hold",
+                "latest_exit_pressure": 10,
+                "last_reprice_source": "test_chain",
+            }
+        ]), encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["paper_open_count"] == 2
+        assert status["paper_book_summary"]["priced_count"] == 1
+        assert status["paper_book_summary"]["needs_quote_count"] == 1
+        assert status["paper_book_summary"]["review_count"] == 2
+        rows = {row["symbol"]: row for row in status["paper_positions"]}
+        assert rows["AAPL"]["review_action"] == "target_review"
+        assert round(rows["AAPL"]["pnl_dollars"], 2) == 120.0
+        assert round(rows["AAPL"]["pnl_pct"], 4) == 1.2
+        assert rows["MSFT"]["review_action"] == "refresh_quote"
+        assert rows["MSFT"]["current_price"] is None
+
+
+def test_agentic_autopilot_paper_book_does_not_fake_zero_pnl_without_quotes():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        future_expiry = (datetime.now(timezone.utc) + timedelta(days=180)).date().isoformat()
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "empty",
+            "generated_at": now,
+            "orders": [],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "blocked",
+                "label": "Fresh entries blocked",
+                "new_entries_allowed_after_live_checks": False,
+                "blockers": [],
+                "warnings": [],
+            },
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": now,
+            "tickets": [],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text(json.dumps([{
+            "status": "open",
+            "symbol": "MSFT",
+            "contract": f"MSFT {future_expiry} P 300",
+            "option_side": "put",
+            "strike": 300,
+            "expiry": future_expiry,
+            "quantity": 1,
+            "entry_price": 1.5,
+            "stop_price_reference": 0.75,
+            "target_price_reference": 3.0,
+            "opened_at": now,
+        }]), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["paper_book_summary"]["priced_count"] == 0
+        assert status["paper_book_summary"]["needs_quote_count"] == 1
+        assert status["paper_book_summary"]["current_value_dollars"] is None
+        assert status["paper_book_summary"]["unrealized_pnl_dollars"] is None
+        assert status["paper_positions"][0]["review_action"] == "refresh_quote"
 
 
 def test_option_chain_scan_fetches_and_filters_contracts():
@@ -3716,12 +5245,107 @@ def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
     assert report["expiry_summary"][0]["puts"] == 1
 
 
+def test_cboe_option_activity_filters_3m_plus_public_contracts():
+    old_run = cockpit_module.cboe_symbol_data_engine.run
+    old_resolve = cockpit_module.resolve_symbol
+    try:
+        cockpit_module.resolve_symbol = lambda query: {"symbol": "AAPL", "name": "Apple Inc."}
+        cockpit_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame([
+            {
+                "ticker": "AAPL",
+                "expiry": "2026-10-16",
+                "strike": 200.0,
+                "option_side": "call",
+                "cboe_activity_volume": 1200,
+                "cboe_activity_matched": 1100,
+                "cboe_activity_routed": 100,
+                "cboe_activity_bid": 4.9,
+                "cboe_activity_ask": 5.1,
+                "cboe_activity_last": 5.0,
+                "cboe_activity_contract": "AAPL Oct 16 200.0 Call",
+                "cboe_activity_venues": "Cboe Options,BZX Options",
+                "cboe_activity_source": "cboe_symbol_data",
+            },
+            {
+                "ticker": "AAPL",
+                "expiry": "2026-07-17",
+                "strike": 190.0,
+                "option_side": "put",
+                "cboe_activity_volume": 2000,
+                "cboe_activity_bid": 2.0,
+                "cboe_activity_ask": 2.4,
+                "cboe_activity_contract": "AAPL Jul 17 190.0 Put",
+                "cboe_activity_venues": "Cboe Options",
+                "cboe_activity_source": "cboe_symbol_data",
+            },
+        ])
+
+        report = build_cboe_option_activity(query="Apple", min_dte=90, max_dte=400, min_volume=1)
+    finally:
+        cockpit_module.cboe_symbol_data_engine.run = old_run
+        cockpit_module.resolve_symbol = old_resolve
+
+    assert report["status"] == "ready"
+    assert report["symbol"] == "AAPL"
+    assert report["count"] == 1
+    row = report["rows"][0]
+    assert row["contract"] == "AAPL Oct 16 200.0 Call"
+    assert row["side"] == "call"
+    assert row["premium_dollars"] == 500.0
+    assert row["cboe_activity_spread_pct"] == 0.04
+    assert row["cboe_activity_readiness"] == "active"
+    assert report["summary"]["total_volume"] == 1200
+    assert report["summary"]["side_counts"] == {"call": 1}
+    assert "not consolidated OPRA" in " ".join(report["notes"])
+
+
+def test_cboe_option_activity_marks_zero_bid_ask_as_context_only():
+    old_run = cockpit_module.cboe_symbol_data_engine.run
+    old_resolve = cockpit_module.resolve_symbol
+    try:
+        cockpit_module.resolve_symbol = lambda query: {"symbol": "AAPL", "name": "Apple Inc."}
+        cockpit_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame([{
+            "ticker": "AAPL",
+            "expiry": "2026-10-16",
+            "strike": 350.0,
+            "option_side": "call",
+            "cboe_activity_volume": 1500,
+            "cboe_activity_matched": 1500,
+            "cboe_activity_routed": 0,
+            "cboe_activity_bid": 0.0,
+            "cboe_activity_ask": 0.0,
+            "cboe_activity_last": 2.1,
+            "cboe_activity_contract": "AAPL Oct 16 350.0 Call",
+            "cboe_activity_venues": "BZX Options",
+            "cboe_activity_source": "cboe_symbol_data",
+        }])
+
+        report = build_cboe_option_activity(query="Apple", min_dte=90, max_dte=400, min_volume=1)
+    finally:
+        cockpit_module.cboe_symbol_data_engine.run = old_run
+        cockpit_module.resolve_symbol = old_resolve
+
+    assert report["status"] == "ready"
+    assert report["count"] == 1
+    row = report["rows"][0]
+    assert row["premium_dollars"] is None
+    assert row["last_premium_dollars"] == 210.0
+    assert row["cboe_activity_readiness"] == "review"
+    assert row["cboe_activity_score"] < 78
+    assert "missing public bid/ask" in row["cboe_activity_flags"]
+
+
 def test_provider_status_checks_free_sources_without_running_scan():
     old_yahoo = cockpit_module.data_provider._yahoo_v8_history
     old_nasdaq = cockpit_module.data_provider._nasdaq_history
     old_stooq = cockpit_module.data_provider._stooq_history
+    old_get_history = cockpit_module.data_provider.get_history
     old_chain = cockpit_module._fetch_option_chain
     old_companyfacts = cockpit_module.companyfacts_for_symbol
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+    old_ftd = cockpit_module.sec_ftd_engine.run
     idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
     hist = pd.DataFrame({
         "Open": [10.0, 11.0],
@@ -3739,6 +5363,9 @@ def test_provider_status_checks_free_sources_without_running_scan():
             hist.copy(), "nasdaq_historical", "free_or_delayed",
         )
         cockpit_module.data_provider._stooq_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.data_provider.get_history = lambda *args, **kwargs: cockpit_module.data_provider._tag_history(
+            hist.copy(), "yahoo_chart", "free_or_delayed",
+        )
         cockpit_module._fetch_option_chain = lambda *args, **kwargs: {
             "spot": 200.0,
             "source": "cboe",
@@ -3776,6 +5403,10 @@ def test_provider_status_checks_free_sources_without_running_scan():
             "metrics": {"revenue": 100.0, "net_income": 20.0},
             "watch_signals": ["net margin positive"],
         }
+        cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.sec_ftd_engine.run = lambda *args, **kwargs: pd.DataFrame()
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
             (data_dir / "sec_company_tickers.json").write_text(
@@ -3792,16 +5423,24 @@ def test_provider_status_checks_free_sources_without_running_scan():
         cockpit_module.data_provider._yahoo_v8_history = old_yahoo
         cockpit_module.data_provider._nasdaq_history = old_nasdaq
         cockpit_module.data_provider._stooq_history = old_stooq
+        cockpit_module.data_provider.get_history = old_get_history
         cockpit_module._fetch_option_chain = old_chain
         cockpit_module.companyfacts_for_symbol = old_companyfacts
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+        cockpit_module.sec_ftd_engine.run = old_ftd
 
     assert report["symbol"] == "AAPL"
-    assert report["provider_count"] == 7
-    assert report["ok_count"] == 6
+    assert report["provider_count"] == 12
+    assert report["ok_count"] == 11
     assert report["data_trust"]["label"] == "ready"
     assert report["data_trust"]["score"] >= 80
     assert report["data_trust"]["history_ok_count"] == 2
     assert report["data_trust"]["history_source_summary"] == "yahoo_chart, nasdaq_historical"
+    assert report["data_trust"]["history_stack_status"] == "ok"
+    assert report["data_trust"]["history_stack_source"] == "yahoo_chart"
+    assert report["data_trust"]["history_stack_rows"] == 2
     assert report["data_trust"]["option_chain_status"] == "ok"
     assert report["data_trust"]["option_chain_source"] == "cboe"
     assert report["data_trust"]["option_chain_rows"] == 2
@@ -3814,7 +5453,12 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert "delayed" in report["data_trust"]["option_chain_warning"]
     assert report["data_trust"]["sec_companyfacts_status"] == "ok"
     assert report["data_trust"]["sec_companyfacts_rows"] == 2
+    assert report["data_trust"]["market_structure_status"] == "clear"
+    assert report["data_trust"]["market_structure_flags"] == []
+    assert report["data_trust"]["market_structure_risk_score"] == 0
     providers = {row["provider"]: row for row in report["rows"]}
+    assert providers["Layered history stack"]["rows"] == 2
+    assert providers["Layered history stack"]["history_source"] == "yahoo_chart"
     assert providers["Yahoo chart"]["rows"] == 2
     assert providers["Yahoo chart"]["history_source"] == "yahoo_chart"
     assert providers["Nasdaq historical"]["last_close"] == 12.5
@@ -3829,9 +5473,165 @@ def test_provider_status_checks_free_sources_without_running_scan():
     assert providers["SEC company facts"]["watch_signals"] == "net margin positive"
     assert providers["SEC company ticker cache"]["status"] == "ok"
     assert providers["Nasdaq symbol directory cache"]["status"] == "ok"
-    assert no_chain["provider_count"] == 6
+    assert providers["Nasdaq Trader trade halt RSS"]["status"] == "ok"
+    assert providers["Nasdaq Trader Reg SHO threshold list"]["status"] == "ok"
+    assert providers["Nasdaq Trader short-sale circuit breaker"]["status"] == "ok"
+    assert providers["SEC fails-to-deliver"]["status"] == "ok"
+    assert "No recent SEC fails-to-deliver" in providers["SEC fails-to-deliver"]["note"]
+    assert no_chain["provider_count"] == 11
     assert no_chain["data_trust"]["option_chain_status"] == "skipped"
     assert all(row["provider"] != "Option chain stack" for row in no_chain["rows"])
+
+
+def test_provider_status_surfaces_market_structure_risk_for_symbol():
+    old_yahoo = cockpit_module.data_provider._yahoo_v8_history
+    old_nasdaq = cockpit_module.data_provider._nasdaq_history
+    old_stooq = cockpit_module.data_provider._stooq_history
+    old_get_history = cockpit_module.data_provider.get_history
+    old_companyfacts = cockpit_module.companyfacts_for_symbol
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+    old_ftd = cockpit_module.sec_ftd_engine.run
+    idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
+    hist = pd.DataFrame({
+        "Open": [10.0, 11.0],
+        "High": [11.0, 13.0],
+        "Low": [9.0, 10.0],
+        "Close": [10.5, 12.5],
+        "Volume": [1000, 1500],
+    }, index=idx)
+
+    try:
+        tagged = cockpit_module.data_provider._tag_history(hist.copy(), "yahoo_chart", "free_or_delayed")
+        cockpit_module.data_provider._yahoo_v8_history = lambda *args, **kwargs: tagged.copy()
+        cockpit_module.data_provider._nasdaq_history = lambda *args, **kwargs: tagged.copy()
+        cockpit_module.data_provider._stooq_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.data_provider.get_history = lambda *args, **kwargs: tagged.copy()
+        cockpit_module.companyfacts_for_symbol = lambda *args, **kwargs: {
+            "symbol": "RISK",
+            "cik": "1",
+            "company_name": "Risk Corp",
+            "count": 1,
+            "rows": [{"metric": "revenue"}],
+        }
+        cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame([{
+            "symbol": "RISK",
+            "active_halt": True,
+            "halt_risk_score": 98,
+        }])
+        cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame([{
+            "symbol": "RISK",
+            "is_threshold": True,
+            "settlement_risk_score": 86,
+        }])
+        cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame([{
+            "symbol": "RISK",
+            "short_sale_restricted": True,
+            "ssr_risk_score": 82,
+        }])
+        cockpit_module.sec_ftd_engine.run = lambda *args, **kwargs: pd.DataFrame([{
+            "ticker": "RISK",
+            "sec_ftd_score": 1.8,
+            "sec_ftd_latest_date": "2026-06-12",
+            "sec_ftd_fails": 750000,
+            "sec_ftd_dollars": 1800000.0,
+            "sec_ftd_active_days": 3,
+            "sec_ftd_source": "sec_fails_to_deliver",
+        }])
+        with tempfile.TemporaryDirectory() as td:
+            report = build_provider_status(Path(td), query="RISK", include_chain=False)
+    finally:
+        cockpit_module.data_provider._yahoo_v8_history = old_yahoo
+        cockpit_module.data_provider._nasdaq_history = old_nasdaq
+        cockpit_module.data_provider._stooq_history = old_stooq
+        cockpit_module.data_provider.get_history = old_get_history
+        cockpit_module.companyfacts_for_symbol = old_companyfacts
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+        cockpit_module.sec_ftd_engine.run = old_ftd
+
+    assert report["status"] == "warn"
+    assert report["data_trust"]["label"] == "blocked"
+    assert report["data_trust"]["score"] <= 35
+    assert report["data_trust"]["market_structure_status"] == "risk_review"
+    assert set(report["data_trust"]["market_structure_flags"]) == {
+        "active_halt", "regsho_threshold", "short_sale_restricted", "sec_ftd_pressure",
+    }
+    assert report["data_trust"]["market_structure_risk_score"] == 98
+    assert report["data_trust"]["market_structure_warning_count"] == 4
+    assert any("halt" in warning.lower() for warning in report["warnings"])
+    providers = {row["provider"]: row for row in report["rows"]}
+    assert providers["Nasdaq Trader trade halt RSS"]["status"] == "warn"
+    assert providers["Nasdaq Trader trade halt RSS"]["risk_flag_name"] == "active_halt"
+    assert providers["Nasdaq Trader Reg SHO threshold list"]["risk_flag_name"] == "regsho_threshold"
+    assert providers["Nasdaq Trader short-sale circuit breaker"]["risk_flag_name"] == "short_sale_restricted"
+    assert providers["SEC fails-to-deliver"]["status"] == "warn"
+    assert providers["SEC fails-to-deliver"]["risk_flag_name"] == "sec_ftd_pressure"
+    assert "review settlement pressure" in providers["SEC fails-to-deliver"]["note"]
+
+
+def test_provider_status_uses_layered_history_stack_when_raw_probes_fail():
+    old_yahoo = cockpit_module.data_provider._yahoo_v8_history
+    old_nasdaq = cockpit_module.data_provider._nasdaq_history
+    old_stooq = cockpit_module.data_provider._stooq_history
+    old_get_history = cockpit_module.data_provider.get_history
+    old_chain = cockpit_module._fetch_option_chain
+    old_companyfacts = cockpit_module.companyfacts_for_symbol
+    old_halts = cockpit_module.halt_rows_for_symbols
+    old_thresholds = cockpit_module.threshold_rows_for_symbols
+    old_circuits = cockpit_module.circuit_rows_for_symbols
+    old_ftd = cockpit_module.sec_ftd_engine.run
+    idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
+    hist = pd.DataFrame({
+        "Open": [10.0, 11.0],
+        "High": [11.0, 13.0],
+        "Low": [9.0, 10.0],
+        "Close": [10.5, 12.5],
+        "Volume": [1000, 1500],
+    }, index=idx)
+
+    try:
+        cockpit_module.data_provider._yahoo_v8_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.data_provider._nasdaq_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.data_provider._stooq_history = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.data_provider.get_history = lambda *args, **kwargs: cockpit_module.data_provider._tag_history(
+            hist.copy(), "stooq_csv", "delayed",
+        )
+        cockpit_module._fetch_option_chain = lambda *args, **kwargs: {}
+        cockpit_module.companyfacts_for_symbol = lambda *args, **kwargs: {}
+        cockpit_module.halt_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.threshold_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.circuit_rows_for_symbols = lambda *args, **kwargs: pd.DataFrame()
+        cockpit_module.sec_ftd_engine.run = lambda *args, **kwargs: pd.DataFrame()
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            report = build_provider_status(data_dir, query="AAPL", include_chain=False)
+    finally:
+        cockpit_module.data_provider._yahoo_v8_history = old_yahoo
+        cockpit_module.data_provider._nasdaq_history = old_nasdaq
+        cockpit_module.data_provider._stooq_history = old_stooq
+        cockpit_module.data_provider.get_history = old_get_history
+        cockpit_module._fetch_option_chain = old_chain
+        cockpit_module.companyfacts_for_symbol = old_companyfacts
+        cockpit_module.halt_rows_for_symbols = old_halts
+        cockpit_module.threshold_rows_for_symbols = old_thresholds
+        cockpit_module.circuit_rows_for_symbols = old_circuits
+        cockpit_module.sec_ftd_engine.run = old_ftd
+
+    providers = {row["provider"]: row for row in report["rows"]}
+    assert providers["Layered history stack"]["status"] == "ok"
+    assert providers["Layered history stack"]["history_source"] == "stooq_csv"
+    assert providers["Yahoo chart"]["status"] == "warn"
+    assert providers["Nasdaq historical"]["status"] == "warn"
+    assert providers["Stooq CSV"]["status"] == "warn"
+    assert providers["SEC fails-to-deliver"]["status"] == "ok"
+    assert report["data_trust"]["history_ok_count"] == 0
+    assert report["data_trust"]["history_stack_status"] == "ok"
+    assert report["data_trust"]["history_stack_source"] == "stooq_csv"
+    assert report["data_trust"]["history_stack_quality"] == "delayed"
+    assert report["data_trust"]["label"] == "ready"
 
 
 def test_free_data_sources_registry_lists_no_key_coverage():
@@ -3851,6 +5651,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert report["source_count"] >= 10
     assert report["no_key_count"] == report["source_count"]
     assert report["primary_count"] >= 5
+    assert "Layered history stack" in names
     assert "CBOE option chains" in names
     assert "CBOE put/call market statistics" in names
     assert "FINRA RegSHO short volume" in names
@@ -3858,6 +5659,7 @@ def test_free_data_sources_registry_lists_no_key_coverage():
     assert "Google News RSS" in names
     assert "Yahoo Finance RSS" in names
     assert "SEC EDGAR" in names
+    assert "SEC fails-to-deliver" in names
     assert "Nasdaq Trader symbol directory" in names
     assert "Nasdaq Trader trade halt RSS" in names
     assert "Nasdaq Trader Reg SHO threshold list" in names
@@ -4187,8 +5989,17 @@ if __name__ == "__main__":
     test_action_queue_surfaces_regsho_threshold_risk_for_watchlist_symbol()
     test_action_queue_surfaces_short_sale_circuit_risk_for_watchlist_symbol()
     test_action_queue_surfaces_ready_watchlist_ideas()
+    test_action_queue_promotes_reviewable_swing_scout_rows()
+    test_action_queue_uses_best_setup_decision_row_not_raw_top()
+    test_action_queue_marks_avoid_only_best_setup_as_held()
+    test_action_queue_validation_guard_reroutes_fresh_entry_actions()
     test_today_review_combines_setups_saved_contracts_and_risk()
+    test_today_review_validation_guard_reroutes_fresh_entry_actions()
     test_command_center_summarizes_next_action_and_data_trust()
+    test_command_center_session_gate_defers_new_entries_after_review_window()
+    test_command_center_validation_guard_defers_new_entries_during_active_window()
+    test_manual_review_summary_surfaces_entry_gate_state()
+    test_validation_guardrail_uses_summary_closed_count_with_overall_metrics()
     test_swing_packet_builds_and_writes_daily_decision_packet()
     test_swing_packet_can_refresh_chain_shortlist_on_demand()
     test_enriched_watchlist_sorts_ready_ideas_first()
@@ -4215,16 +6026,31 @@ if __name__ == "__main__":
     test_performance_summary_reads_engine_perf_health_cache_and_finbert_state()
     test_paper_candidate_panel_builds_and_writes_filtered_exports()
     test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
+    test_agentic_decision_journal_records_local_review_rows()
+    test_agentic_autopilot_status_summarizes_gate_tickets_and_paper_book()
+    test_agentic_autopilot_status_blocks_stale_packets_and_tickets()
+    test_agentic_autopilot_preflight_passes_clean_confirmation_ticket()
+    test_broker_reconciliation_surfaces_broker_and_local_mismatches()
+    test_agentic_autopilot_blocks_ticket_when_broker_reconciliation_mismatches()
+    test_position_hygiene_builds_safe_cleanup_plan_without_mutating_positions()
+    test_position_hygiene_apply_preview_does_not_mutate_positions()
+    test_position_hygiene_apply_backs_up_and_moves_only_expired_options()
+    test_agentic_autopilot_paper_book_marks_targets_and_missing_quotes()
+    test_agentic_autopilot_paper_book_does_not_fake_zero_pnl_without_quotes()
     test_option_chain_scan_fetches_and_filters_contracts()
     test_option_chain_batch_scans_shortlist_and_ranks_contracts()
     test_option_chain_batch_uses_swing_scout_candidates_when_blank()
     test_option_chain_shortlist_writer_creates_portable_artifacts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
+    test_cboe_option_activity_filters_3m_plus_public_contracts()
+    test_cboe_option_activity_marks_zero_bid_ask_as_context_only()
     test_provider_status_checks_free_sources_without_running_scan()
+    test_provider_status_surfaces_market_structure_risk_for_symbol()
+    test_provider_status_uses_layered_history_stack_when_raw_probes_fail()
     test_free_data_sources_registry_lists_no_key_coverage()
     test_saved_option_contracts_extracts_watchlist_option_requests()
     test_watchlist_sec_filings_ranks_recent_official_filings()
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("55/55 local cockpit tests passed")
+    print("79/79 local cockpit tests passed")

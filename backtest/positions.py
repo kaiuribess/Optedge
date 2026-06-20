@@ -206,6 +206,144 @@ def _current_mid_for_position(pos: Dict, chain_blobs: Dict[str, dict]) -> Option
     return last if last > 0 else None
 
 
+def _asof_utc(asof: Optional[datetime] = None) -> datetime:
+    if isinstance(asof, datetime):
+        if asof.tzinfo is None:
+            return asof.replace(tzinfo=timezone.utc)
+        return asof.astimezone(timezone.utc)
+    return datetime.now(timezone.utc)
+
+
+def _expiry_datetime(pos: Dict) -> Optional[datetime]:
+    raw = str(pos.get("expiry") or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    try:
+        parsed = pd.to_datetime(raw, errors="coerce", utc=True)
+        if pd.isna(parsed):
+            return None
+        return parsed.to_pydatetime()
+    except Exception:
+        return None
+
+
+def _age_days(pos: Dict, now: datetime) -> Optional[float]:
+    try:
+        entry_ts = pd.to_datetime(pos.get("entry_time"), errors="coerce", utc=True)
+        if pd.isna(entry_ts):
+            return None
+        return max(0.0, (pd.Timestamp(now) - entry_ts).total_seconds() / 86400.0)
+    except Exception:
+        return None
+
+
+def _expiry_final_value(pos: Dict, chain_blobs: Optional[Dict[str, dict]] = None) -> Tuple[float, str]:
+    """Return a conservative expiry value and explain the price source.
+
+    If a fresh underlying spot is available from an option-chain blob, intrinsic
+    value is used. Otherwise the position is marked at zero rather than creating
+    a fake ITM value from missing spot data.
+    """
+    ticker = (pos.get("ticker") or "").upper()
+    spot = None
+    if chain_blobs:
+        blob = chain_blobs.get(ticker)
+        if blob:
+            try:
+                candidate = float(blob.get("spot") or 0)
+                if candidate > 0:
+                    spot = candidate
+            except Exception:
+                spot = None
+    if spot is None:
+        return 0.0, "zero_after_expiry_without_final_spot"
+
+    try:
+        strike = float(pos.get("strike") or 0)
+    except Exception:
+        strike = 0.0
+    side = str(pos.get("side") or "").lower()
+    if side == "put":
+        return max(0.0, strike - spot), "intrinsic_from_chain_spot"
+    return max(0.0, spot - strike), "intrinsic_from_chain_spot"
+
+
+def _expired_close_row(pos: Dict, now: datetime,
+                       chain_blobs: Optional[Dict[str, dict]] = None) -> Dict:
+    final, source = _expiry_final_value(pos, chain_blobs)
+    try:
+        entry = float(pos.get("entry_price") or 0)
+    except Exception:
+        entry = 0.0
+    pnl_pct = ((final - entry) / entry) if entry > 0 else 0.0
+    return {
+        **pos,
+        "exit_time": now.isoformat(),
+        "exit_price": final,
+        "exit_reason": "expired",
+        "pnl_pct": pnl_pct,
+        "age_days": _age_days(pos, now),
+        "trade_status": "Closed",
+        "latest_exit_action": "expired",
+        "expiry_close_price_source": source,
+    }
+
+
+def close_expired_positions(asof: Optional[datetime] = None,
+                            chain_blobs: Optional[Dict[str, dict]] = None,
+                            log_reviews: bool = True) -> Dict[str, float]:
+    """Move expired local option positions from open to closed.
+
+    This is a lightweight safety fallback used by normal runs after MTM. It does
+    not need option-chain access, so stale expired records cannot survive just
+    because repricing failed.
+    """
+    open_rows = _load(OPEN_FILE)
+    if not open_rows:
+        return {"open": 0, "closed_this_iter": 0, "mean_unrealized_pct": 0.0}
+
+    now = _asof_utc(asof)
+    still_open: List[Dict] = []
+    newly_closed: List[Dict] = []
+    for pos in open_rows:
+        exp_dt = _expiry_datetime(pos)
+        if exp_dt is not None and now >= exp_dt:
+            newly_closed.append(_expired_close_row(pos, now, chain_blobs))
+        else:
+            still_open.append(pos)
+
+    if not newly_closed:
+        return {"open": len(open_rows), "closed_this_iter": 0, "mean_unrealized_pct": 0.0}
+
+    if log_reviews:
+        try:
+            from backtest.exit_rules import compute_exit_pressure, log_exit_review
+            for closed in newly_closed:
+                review = compute_exit_pressure(closed, None, asset="option")
+                review.update({
+                    "action": "expired",
+                    "current_price": closed.get("exit_price"),
+                    "current_pnl_pct": closed.get("pnl_pct"),
+                    "reasons": list(dict.fromkeys([*review.get("reasons", []), "option expired"])),
+                })
+                log_exit_review(review)
+        except Exception as e:
+            log.debug("expired position review logging skipped: %s", e)
+
+    prev_closed = _load(CLOSED_FILE)
+    _save(CLOSED_FILE, prev_closed + newly_closed)
+    _save(OPEN_FILE, still_open)
+    log.info("positions: auto-closed %d expired local option position(s)", len(newly_closed))
+    return {"open": len(still_open),
+            "closed_this_iter": len(newly_closed),
+            "mean_unrealized_pct": 0.0}
+
+
 def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                    current_signals: Optional[pd.DataFrame] = None) -> Dict[str, float]:
     """Re-fetch the current chain for each unique open-position ticker and

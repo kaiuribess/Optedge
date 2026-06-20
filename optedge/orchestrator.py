@@ -273,6 +273,11 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
             from engines import credit_spread as _cs_mod
             tasks["credit_spread"] = lambda: _cs_mod.run(universe_all)
         except Exception: pass
+    if _v20_on("sec_ftd"):
+        try:
+            from engines import sec_ftd as _ftd_mod
+            tasks["sec_ftd"] = lambda: _ftd_mod.run(universe_heavy)
+        except Exception: pass
 
     results = {}
     timings = {}
@@ -386,6 +391,8 @@ def main():
                     help="Skip FRED yield-curve PCA engine (v20)")
     ap.add_argument("--skip-credit-spread", action="store_true",
                     help="Skip FRED IG/HY credit spread engine (v20)")
+    ap.add_argument("--skip-sec-ftd", action="store_true",
+                    help="Skip SEC fails-to-deliver context engine (free/no-key)")
     ap.add_argument("--skip-finbert", action="store_true",
                     help="Skip FinBERT sentiment engine (v20.3, GPU-aware, optional)")
     ap.add_argument("--fast-insider", action="store_true",
@@ -425,10 +432,21 @@ def main():
                     help="Max option candidates to hand to the Robinhood agent")
     ap.add_argument("--robinhood-max-orders", type=int, default=2,
                     help="Max option orders the Robinhood agent may submit from the candidate queue")
-    ap.add_argument("--robinhood-min-dte", type=int, default=180,
-                    help="Minimum DTE for Robinhood agentic option candidates")
+    ap.add_argument("--robinhood-min-dte", type=int, default=90,
+                    help="Minimum DTE for Robinhood agentic option candidates (default 90d+ swing)")
     ap.add_argument("--robinhood-min-confidence", type=float, default=55.0,
                     help="Minimum confidence for Robinhood agentic option candidates")
+    ap.add_argument("--robinhood-max-premium-per-order", type=float, default=None,
+                    help="Max premium per option order for Robinhood Agentic queue")
+    ap.add_argument("--robinhood-refresh-chain", action="store_true",
+                    help="Refresh the free/provider option-chain shortlist before building the Robinhood queue")
+    ap.add_argument("--robinhood-chain-preset", default="auto",
+                    choices=["auto", "swing", "leaps", "liquid", "custom"],
+                    help="Chain refresh preset for Robinhood queue (auto uses DTE to choose swing/leaps)")
+    ap.add_argument("--robinhood-chain-symbols-limit", type=int, default=6,
+                    help="Max symbols to scan during Robinhood chain refresh")
+    ap.add_argument("--robinhood-chain-contracts-per-symbol", type=int, default=4,
+                    help="Max contracts per symbol to keep during Robinhood chain refresh")
     ap.add_argument("--quiet", action="store_true",
                     help="Reduce log verbosity (only WARNING and above)")
     ap.add_argument("--minimal", action="store_true",
@@ -736,6 +754,7 @@ def main():
                 "twitter": args.skip_twitter, "r_options": args.skip_r_options,
                 "yield_curve": args.skip_yield_curve,
                 "credit_spread": args.skip_credit_spread,
+                "sec_ftd": args.skip_sec_ftd,
             }
             results = run_engines_concurrent(
                 universe_options, universe_all,
@@ -905,12 +924,13 @@ def main():
         r_options_df = _to_df(results.get("r_options"))
         yield_curve_df = _to_df(results.get("yield_curve"))
         credit_spread_df = _to_df(results.get("credit_spread"))
+        sec_ftd_df = _to_df(results.get("sec_ftd"))
         engine_timings = results.get("_timings", {}) if isinstance(results, dict) else {}
     except NameError:
         cot_df = thirteen_f_df = vix_term_df = eia_df = wasde_df = pd.DataFrame()
         buybacks_df = gtrends_df = form_144_df = whisper_df = pd.DataFrame()
         hyperliquid_df = twitter_df = r_options_df = pd.DataFrame()
-        yield_curve_df = credit_spread_df = pd.DataFrame()
+        yield_curve_df = credit_spread_df = sec_ftd_df = pd.DataFrame()
         engine_timings = {}
 
     # v20 Tier C — derive cluster_buys from insider engine output (post-process)
@@ -938,6 +958,7 @@ def main():
         "r_options":    "no r/options sticky mentions in universe",
         "yield_curve":  "FRED_API_KEY missing or curve series unavailable",
         "credit_spread":"FRED_API_KEY missing or HY/IG series unavailable",
+        "sec_ftd":      "no SEC fails-to-deliver rows overlapped the universe, or SEC fetch failed",
         "cluster_buys": "no insider triple-buys in last 90 days",
     }
     v20_df_map = {
@@ -946,7 +967,8 @@ def main():
         "gtrends": gtrends_df, "form_144": form_144_df, "whisper": whisper_df,
         "hyperliquid": hyperliquid_df, "twitter": twitter_df,
         "r_options": r_options_df, "yield_curve": yield_curve_df,
-        "credit_spread": credit_spread_df, "cluster_buys": cluster_buys_df,
+        "credit_spread": credit_spread_df, "sec_ftd": sec_ftd_df,
+        "cluster_buys": cluster_buys_df,
     }
     empty_engines = []
     for name, df in v20_df_map.items():
@@ -1073,7 +1095,8 @@ def main():
                                              r_options=r_options_df,
                                              yield_curve=yield_curve_df,
                                              credit_spread=credit_spread_df,
-                                             cluster_buys=cluster_buys_df)
+                                             cluster_buys=cluster_buys_df,
+                                             sec_ftd=sec_ftd_df)
     if has_predictor:
         ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, coefs)
     ranked_shares = bt_sizing.add_sizing_to_shares(ranked_shares, bankroll=args.bankroll,
@@ -1129,6 +1152,7 @@ def main():
                 yield_curve=yield_curve_df,
                 credit_spread=credit_spread_df,
                 cluster_buys=cluster_buys_df,
+                sec_ftd=sec_ftd_df,
             )
         except Exception as e:
             log.debug("futures context enrichment skipped: %s", e)
@@ -1174,6 +1198,7 @@ def main():
     _save(congress_df, "congress")
     _save(social_df, "social")
     _save(analyst_df, "analyst")
+    _save(sec_ftd_df, "sec_ftd")
     with open(out_dir / f"macro_{asof_tag}.json", "w") as f:
         json.dump(macro_state, f, indent=2, default=str)
 
@@ -1193,6 +1218,10 @@ def main():
         if not top_opts.empty:
             _pos.add_new_signals(top_opts, run_asof)
         _pos.mark_to_market(run_asof, current_signals=ranked_opts)
+        expired_cleanup = _pos.close_expired_positions(run_asof)
+        if expired_cleanup.get("closed_this_iter", 0) > 0:
+            log.info("positions: expired cleanup closed %d stale local option record(s)",
+                     expired_cleanup.get("closed_this_iter", 0))
     except Exception as e:
         log.debug("position tracking skipped: %s", e)
 
@@ -1321,15 +1350,24 @@ def main():
                 max_candidates=args.robinhood_max_candidates,
                 min_dte=args.robinhood_min_dte,
                 min_confidence=args.robinhood_min_confidence,
+                max_premium_per_order=args.robinhood_max_premium_per_order,
+                refresh_chain=args.robinhood_refresh_chain,
+                chain_preset=args.robinhood_chain_preset,
+                chain_symbols_limit=args.robinhood_chain_symbols_limit,
+                chain_contracts_per_symbol=args.robinhood_chain_contracts_per_symbol,
             )
             robinhood_queue_paths = _write_robinhood_queue(queue, out_dir)
             robinhood_queue_summary = queue
+            rh_diag = queue.get("diagnostics") if isinstance(queue.get("diagnostics"), dict) else {}
+            rh_refresh = queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
             log.info(
-                "robinhood agentic queue: %s (%d candidates, max %d orders, min_dte %d)",
+                "robinhood agentic queue: %s (%d candidates, max %d orders, min_dte %d, diagnosis=%s, chain_refresh=%s)",
                 robinhood_queue_paths[0],
                 len(queue.get("orders") or []),
                 int(queue.get("max_orders_to_submit") or 0),
                 int(queue.get("min_dte") or 0),
+                rh_diag.get("label") or "-",
+                "ok" if rh_refresh.get("ok") else "off" if not rh_refresh.get("attempted") else "failed",
             )
         except Exception as e:
             log.warning("robinhood agentic queue export failed: %s", e)
@@ -1398,9 +1436,27 @@ def main():
     if robinhood_queue_paths:
         count = len((robinhood_queue_summary or {}).get("orders") or [])
         max_submit = int((robinhood_queue_summary or {}).get("max_orders_to_submit") or 0)
+        rh_diag = (
+            robinhood_queue_summary.get("diagnostics")
+            if isinstance(robinhood_queue_summary, dict)
+            and isinstance(robinhood_queue_summary.get("diagnostics"), dict)
+            else {}
+        )
+        rh_refresh = (
+            robinhood_queue_summary.get("chain_refresh")
+            if isinstance(robinhood_queue_summary, dict)
+            and isinstance(robinhood_queue_summary.get("chain_refresh"), dict)
+            else {}
+        )
+        refresh_label = (
+            "ok" if rh_refresh.get("ok")
+            else "off" if not rh_refresh.get("attempted")
+            else "failed"
+        )
         print(
             f"Robinhood agentic queue: {robinhood_queue_paths[0]} "
-            f"({count} candidates, max {max_submit} orders)"
+            f"({count} candidates, max {max_submit} orders, "
+            f"diagnosis {rh_diag.get('label') or '-'}, chain refresh {refresh_label})"
         )
     return 0
 

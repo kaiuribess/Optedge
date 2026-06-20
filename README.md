@@ -54,7 +54,7 @@ Optedge is intentionally broad. Each scan can combine many independent signals, 
 | Insider, filings, and Congress | SEC Form 4 parsing, recent SEC filing lookup, insider buys/sells, officer/director weighting, Finnhub MSPR aggregate insider sentiment, Form 144 planned sales, buybacks, 13F context, cluster-buy detection, and STOCK Act disclosures |
 | Macro, rates, credit, and volatility | VIX, SPY momentum, Treasury yields, curve slope, CPI, unemployment, Fed funds, HY/IG credit spreads, keyless FRED CSV fallback, and volatility regime context |
 | Futures, commodities, and crypto | Equity index, rates, energy, metals, agriculture, crypto futures, trend/range/volatility features, CFTC CoT, EIA energy data, USDA WASDE, and Hyperliquid-style crypto context |
-| Market structure and technicals | Dark-pool/FINRA short-volume proxy, short interest, squeeze setups, sector ETF flows, trend, momentum, RSI, MACD, relative strength, 52-week range position, and volatility regime |
+| Market structure and technicals | Dark-pool/FINRA short-volume proxy, SEC fails-to-deliver context, short interest, squeeze setups, sector ETF flows, trend, momentum, RSI, MACD, relative strength, 52-week range position, and volatility regime |
 | Risk, portfolio, and telemetry | Sector concentration, portfolio Greeks, drawdown breaker, research guard report, engine health, empty-engine diagnostics, and engine latency telemetry |
 
 ## Multi-Asset Trade Lifecycle
@@ -342,6 +342,7 @@ Optedge uses free or locally configured sources where possible, including:
 - Nasdaq public stock screener for delayed small-cap mover discovery in Swing Scout.
 - Reddit and retail-attention feeds.
 - SEC EDGAR filings.
+- SEC fails-to-deliver files for delayed settlement-pressure context.
 - News and earnings feeds.
 - Macro, rates, credit, energy, agriculture, volatility, and futures context.
 - Optional FinBERT sentiment scoring when the local environment supports it.
@@ -389,11 +390,13 @@ python tests/test_futures_positions.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
 python tests/test_robinhood_agentic_queue.py
+python tests/test_auto_agentic_paper.py
 python tests/test_symbol_resolver.py
 python tests/test_research_jobs.py
 python tests/test_lookup_symbol.py
 python tests/test_sec_companyfacts.py
 python tests/test_news.py
+python tests/test_short_interest.py
 python tests/test_local_cockpit.py
 python tests/test_fred_public.py
 python tests/test_treasury_yield_curve.py

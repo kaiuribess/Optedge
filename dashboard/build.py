@@ -1362,7 +1362,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
         pnl_color = "#10b981" if (avg_ret or 0) >= 0 else "#ef4444"
         return f"""
 <section class="panel">
-  <h3>Analyst Performance Tracking <span class="muted">(lifecycle validation)</span></h3>
+  <h3>Signal Performance Tracking <span class="muted">(lifecycle validation)</span></h3>
   <div class="perf-headline">
     <div><span class="lab">Open</span><span class="val">{open_count}</span></div>
     <div><span class="lab">Closed</span><span class="val">{closed}</span></div>
@@ -1392,7 +1392,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     if not forward_summary or forward_summary.get("signals", pd.DataFrame()).empty:
         return f"""
 <section class="panel">
-  <h3>Analyst Performance Tracking <span class="muted">(auto-updated each run)</span></h3>
+  <h3>Signal Performance Tracking <span class="muted">(auto-updated each run)</span></h3>
   <p class="muted">No tracked signals yet. Run <code>python run.py</code> daily and a track record will accumulate here automatically. Each ranked trade is logged to <code>logs/signals_*.parquet</code> and re-priced on every subsequent run.</p>
 </section>
 """
@@ -1469,7 +1469,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
 
     return f"""
 <section class="panel">
-  <h3>Analyst Performance Tracking <span class="muted">({int(ovr['n_signals'])} signals re-priced)</span></h3>
+  <h3>Signal Performance Tracking <span class="muted">({int(ovr['n_signals'])} signals re-priced)</span></h3>
   <div class="perf-headline">
     <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{ovr['win_rate']*100:.1f}%</span></div>
     <div><span class="lab">Avg P&amp;L</span><span class="val" style="color:{pnl_color}">{ovr['avg_pnl_pct']*100:+.2f}%</span></div>
@@ -1527,14 +1527,14 @@ def _analyst_panel(analyst: pd.DataFrame, top_n: int = 10) -> str:
     bears_html = "".join(_row(r, "#ef4444") for _, r in bears.iterrows()) or "<p class='muted'>No clear bears</p>"
     return f"""
 <section class="panel">
-  <h3>Analyst Analyst Recommendations <span class="muted">(Finnhub, latest month consensus)</span></h3>
+  <h3>Analyst Recommendations <span class="muted">(Finnhub, latest month consensus)</span></h3>
   <div class="two-col">
     <div>
-      <h4 class="sub">Bull Top buy ratings</h4>
+      <h4 class="sub">Top buy ratings</h4>
       <div class="cong-list">{bulls_html}</div>
     </div>
     <div>
-      <h4 class="sub">Warning Top sell ratings</h4>
+      <h4 class="sub">Top sell ratings</h4>
       <div class="cong-list">{bears_html}</div>
     </div>
   </div>
@@ -1943,7 +1943,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     return f"""
 <details class="dash-section" open id="sect-analytics">
 <summary><h2 class="section-title" style="display:flex;align-items:center;gap:12px;">
-  v Analyst Live Analytics <span class="muted" style="font-size:13px;font-weight:400;">P&amp;L  -  Win Rates  -  Factor IC  -  Open Positions</span>
+  Live Signal Analytics <span class="muted" style="font-size:13px;font-weight:400;">P&amp;L  -  Win Rates  -  Factor IC  -  Open Positions</span>
 </h2></summary>
 
 <style>

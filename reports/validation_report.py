@@ -44,6 +44,9 @@ POSITION_AGING_JSON = DATA_DIR / "position_aging_summary.json"
 
 MIN_CLOSED_SIGNALS = 500
 BREAKEVEN_WIN_RATE = 0.50
+DEFAULT_EQUITY_ALLOCATION_PCT = 0.01
+MAX_EQUITY_ALLOCATION_PCT = 0.10
+EQUITY_RETURN_MODE = "normalized_signal_allocation"
 
 
 def _latest_archive_cutoff() -> Optional[pd.Timestamp]:
@@ -248,8 +251,54 @@ def _max_drawdown(returns: pd.Series) -> Optional[float]:
     if r.empty:
         return None
     equity = (1.0 + r).cumprod()
+    equity = pd.concat([pd.Series([1.0]), equity], ignore_index=True)
     peak = equity.cummax()
     return float((equity / peak - 1.0).min())
+
+
+def _allocation_series(df: pd.DataFrame) -> pd.Series:
+    """Best-effort per-signal account allocation for validation drawdowns.
+
+    Old recommendation history often lacks dollar exposure. In that case use a
+    transparent 1% account allocation per signal so an option expiring worthless
+    is a -1% account event, not a false -100% account wipeout.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    idx = df.index
+    allocation = pd.Series(DEFAULT_EQUITY_ALLOCATION_PCT, index=idx, dtype=float)
+    if "kelly_pct" in df.columns:
+        kelly = pd.to_numeric(df["kelly_pct"], errors="coerce")
+        allocation = allocation.where(~((kelly > 0) & np.isfinite(kelly)), kelly)
+    if "suggested_dollars" in df.columns:
+        dollars = pd.to_numeric(df["suggested_dollars"], errors="coerce")
+        bankroll = pd.to_numeric(df.get("bankroll", pd.Series(np.nan, index=idx)), errors="coerce")
+        dollar_alloc = dollars / bankroll.where(bankroll > 0)
+        allocation = allocation.where(~((dollar_alloc > 0) & np.isfinite(dollar_alloc)), dollar_alloc)
+    if "portfolio_weight" in df.columns:
+        weight = pd.to_numeric(df["portfolio_weight"], errors="coerce")
+        allocation = allocation.where(~((weight > 0) & np.isfinite(weight)), weight)
+    return allocation.clip(lower=0.0, upper=MAX_EQUITY_ALLOCATION_PCT).fillna(DEFAULT_EQUITY_ALLOCATION_PCT)
+
+
+def _equity_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -> pd.Series:
+    """Return per-signal account contributions for the validation equity curve."""
+    if df is None or df.empty or return_col not in df.columns:
+        return pd.Series(dtype=float)
+    idx = df.index
+    if "equity_return" in df.columns:
+        direct = pd.to_numeric(df["equity_return"], errors="coerce").dropna()
+        if not direct.empty:
+            return direct
+    if {"pnl_dollars", "bankroll"} <= set(df.columns):
+        pnl_dollars = pd.to_numeric(df["pnl_dollars"], errors="coerce")
+        bankroll = pd.to_numeric(df["bankroll"], errors="coerce")
+        direct = (pnl_dollars / bankroll.where(bankroll > 0)).dropna()
+        if not direct.empty:
+            return direct.clip(lower=-1.0)
+    raw = pd.to_numeric(df[return_col], errors="coerce")
+    allocation = _allocation_series(df).reindex(idx)
+    return (raw * allocation).dropna().clip(lower=-1.0)
 
 
 def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
@@ -278,7 +327,8 @@ def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
         "avg_return": float(r.mean()),
         "median_return": float(r.median()),
         "profit_factor": _profit_factor(r),
-        "max_drawdown": _max_drawdown(r),
+        "max_drawdown": _max_drawdown(_equity_return_series(df, return_col)),
+        "max_drawdown_mode": EQUITY_RETURN_MODE,
         "best": float(r.max()),
         "worst": float(r.min()),
     }
@@ -574,7 +624,10 @@ def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
     sort_col = "exit_time" if "exit_time" in curve.columns else "entry_time"
     if sort_col in curve.columns:
         curve = curve.sort_values(sort_col)
-    r = _num(curve["pnl_pct_after_slippage"]).fillna(0.0)
+    r = _equity_return_series(curve, "pnl_pct_after_slippage").fillna(0.0)
+    if r.empty:
+        _write_empty_equity_curve(path)
+        return
     equity = (1.0 + r).cumprod()
     try:
         import matplotlib.pyplot as plt
@@ -582,9 +635,9 @@ def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
         plt.figure(figsize=(9, 4.5))
         plt.plot(range(1, len(equity) + 1), equity.values, linewidth=2.0, color="#2563eb")
         plt.axhline(1.0, color="#64748b", linewidth=1.0, linestyle="--")
-        plt.title("Optedge Closed-Signal Equity Curve")
+        plt.title("Optedge Normalized Closed-Signal Equity Curve")
         plt.xlabel("Closed signal")
-        plt.ylabel("Equity multiple")
+        plt.ylabel("Equity multiple (normalized allocation)")
         plt.grid(True, alpha=0.25)
         plt.tight_layout()
         plt.savefig(path, dpi=140)
@@ -619,7 +672,7 @@ def _write_equity_curve_pil(equity: pd.Series, path: Path) -> None:
         draw = ImageDraw.Draw(img)
         draw.rectangle([20, 18, width - 20, height - 20], fill=panel, outline=grid)
         font = ImageFont.load_default()
-        draw.text((margin_l, 20), "Optedge Closed-Signal Equity Curve", fill=text, font=font)
+        draw.text((margin_l, 20), "Optedge Normalized Closed-Signal Equity Curve", fill=text, font=font)
 
         lo = min(min(vals), 1.0)
         hi = max(max(vals), 1.0)
@@ -763,6 +816,15 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "total_signals": total_signals,
         "closed_positions": closed_count,
         "open_positions": open_count,
+        "equity_curve": {
+            "mode": EQUITY_RETURN_MODE,
+            "default_allocation_pct": DEFAULT_EQUITY_ALLOCATION_PCT,
+            "max_allocation_pct": MAX_EQUITY_ALLOCATION_PCT,
+            "description": (
+                "Drawdown and equity curve use per-signal account contributions. "
+                "When exact exposure is unavailable, each signal is treated as a 1% account allocation."
+            ),
+        },
         "overall": overall,
         "all_time_overall": _stats(all_time_closed),
         "after_slippage": after_slippage,
@@ -885,6 +947,7 @@ def render_html(summary: Dict[str, Any]) -> str:
     slip = summary["after_slippage"]
     bench = summary["benchmarks"]
     baseline = summary["random_baseline"]
+    equity = summary.get("equity_curve") if isinstance(summary.get("equity_curve"), dict) else {}
     warnings = summary.get("warnings") or []
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No major validation warnings.</li>"
     return f"""<!doctype html>
@@ -934,6 +997,8 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
           ("Median return", _fmt_pct(overall.get("median_return"))),
           ("Profit factor", _fmt(overall.get("profit_factor"))),
           ("Max drawdown", _fmt_pct(overall.get("max_drawdown"))),
+          ("Drawdown mode", equity.get("mode", "n/a")),
+          ("Default signal allocation", _fmt_pct(equity.get("default_allocation_pct"))),
       ])}
     </section>
     <section>
@@ -964,6 +1029,7 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 
   <section>
     <h2>Equity Curve</h2>
+    <p class="muted">{html.escape(str(equity.get("description") or "Equity curve uses normalized signal allocation."))}</p>
     <img src="equity_curve.png" alt="Optedge equity curve">
   </section>
 

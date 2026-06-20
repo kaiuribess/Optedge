@@ -8,7 +8,7 @@ Optedge combines multiple families of evidence:
 - Earnings: calendar proximity, whisper signals, IV-crush risk.
 - Insider and filings: insider transactions, Form 144, buybacks, 13F context.
 - Macro and futures: yield curve, credit spreads, EIA, WASDE, CoT, futures trend/range features.
-- Market structure: unusual options activity, put/call, dark-pool and short-volume proxies, sector ETF flows.
+- Market structure: unusual options activity, put/call, dark-pool and short-volume proxies, SEC fails-to-deliver context, sector ETF flows.
 - Technicals: trend, momentum, relative strength, volatility regime.
 
 Each factor should prove its value through forward testing, information coefficient tracking, and validation buckets before being trusted in sizing.

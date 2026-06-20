@@ -186,15 +186,24 @@ def _safe_merge_score(df: pd.DataFrame, other: pd.DataFrame,
         return df
     extra_cols = extra_cols or []
     if other is None or other.empty:
-        df[score_col] = fill_value
+        new_cols = {}
+        if score_col in df.columns:
+            df[score_col] = fill_value
+        else:
+            new_cols[score_col] = fill_value
         for c in extra_cols:
             if c not in df.columns:
-                df[c] = None
+                new_cols[c] = None
+        if new_cols:
+            df = pd.concat([df, pd.DataFrame(new_cols, index=df.index)], axis=1)
         return df
     keep = ["ticker", score_col] + [c for c in extra_cols if c in other.columns]
     keep = [c for c in keep if c in other.columns]
     if "ticker" not in keep or score_col not in keep:
-        df[score_col] = fill_value
+        if score_col in df.columns:
+            df[score_col] = fill_value
+        else:
+            df = pd.concat([df, pd.DataFrame({score_col: fill_value}, index=df.index)], axis=1)
         return df
     df = df.merge(other[keep], on="ticker", how="left", suffixes=("", "_dup"))
     df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(fill_value)
@@ -232,7 +241,8 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
                      r_options: pd.DataFrame = None,
                      yield_curve: pd.DataFrame = None,
                      credit_spread: pd.DataFrame = None,
-                     cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
+                     cluster_buys: pd.DataFrame = None,
+                     sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
     """Common merge logic — used by both options and shares tracks."""
     df = contracts.copy() if contracts is not None and not contracts.empty else pd.DataFrame()
     if not df.empty and not mp_summary.empty:
@@ -381,7 +391,16 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     # Short interest (squeeze potential)
     if not df.empty and short_int is not None and not short_int.empty:
         si_cols = ["ticker", "short_int_score", "short_pct_of_float",
-                   "short_ratio_days_to_cover", "short_int_change_pct"]
+                   "short_ratio_days_to_cover", "short_int_change_pct",
+                   "shares_short", "shares_short_prior_month",
+                   "finra_short_interest_shares",
+                   "finra_short_interest_prior_shares",
+                   "finra_short_interest_avg_daily_volume",
+                   "finra_short_interest_days_to_cover",
+                   "finra_short_interest_change_pct",
+                   "finra_short_interest_settlement_date",
+                   "finra_short_interest_market_class",
+                   "finra_short_interest_source"]
         keep = [c for c in si_cols if c in short_int.columns]
         df = df.merge(short_int[keep], on="ticker", how="left", suffixes=("", "_si"))
     elif not df.empty:
@@ -441,8 +460,13 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
                             ["credit_hy_oas", "credit_spread_chg_5d"])
     df = _safe_merge_score(df, cluster_buys, "cluster_buys_score",
                             ["cluster_n_buyers", "cluster_buys_dollar"])
+    df = _safe_merge_score(df, sec_ftd,      "sec_ftd_score",
+                            ["sec_ftd_latest_date", "sec_ftd_fails",
+                             "sec_ftd_dollars", "sec_ftd_active_days",
+                             "sec_ftd_note"])
 
     if not df.empty:
+        df = df.copy()
         df["macro_tilt"] = macro.get("macro_tilt", 0.0)
         df["regime"] = macro.get("regime", "neutral")
 
@@ -780,7 +804,8 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
                 r_options: pd.DataFrame = None,
                 yield_curve: pd.DataFrame = None,
                 credit_spread: pd.DataFrame = None,
-                cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
+                cluster_buys: pd.DataFrame = None,
+                sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
     """Score small caps for long shares.
 
     Built from the multi-factor stack only (no option pricing). Bullish-aligned
@@ -881,7 +906,16 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
                             "obv_slope"])
     df = _safe_merge_score(df, short_int, "short_int_score",
                            ["short_pct_of_float", "short_ratio_days_to_cover",
-                            "short_int_change_pct"])
+                            "short_int_change_pct", "shares_short",
+                            "shares_short_prior_month",
+                            "finra_short_interest_shares",
+                            "finra_short_interest_prior_shares",
+                            "finra_short_interest_avg_daily_volume",
+                            "finra_short_interest_days_to_cover",
+                            "finra_short_interest_change_pct",
+                            "finra_short_interest_settlement_date",
+                            "finra_short_interest_market_class",
+                            "finra_short_interest_source"])
     df = _safe_merge_score(df, cot, "cot_score",
                            ["cot_market", "cot_net_change", "cot_report_date"])
     df = _safe_merge_score(df, thirteen_f, "thirteen_f_score",
@@ -911,6 +945,12 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
                            ["credit_hy_oas", "credit_spread_chg_5d"])
     df = _safe_merge_score(df, cluster_buys, "cluster_buys_score",
                            ["cluster_n_buyers", "cluster_buys_dollar"])
+    df = _safe_merge_score(df, sec_ftd, "sec_ftd_score",
+                           ["sec_ftd_latest_date", "sec_ftd_fails",
+                            "sec_ftd_dollars", "sec_ftd_active_days",
+                            "sec_ftd_note"])
+
+    df = df.copy()
 
     # Cross-sectional z-scores (no side multiplier — shares are inherently long bullish)
     sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
@@ -945,6 +985,7 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     df["z_yield_curve"] = zscore(df["curve_score"].fillna(0))
     df["z_credit_spread"] = zscore(df["credit_score"].fillna(0))
     df["z_cluster_buys"] = zscore(df["cluster_buys_score"].fillna(0))
+    df["z_sec_ftd"] = zscore(df["sec_ftd_score"].fillna(0))
 
     # Bullish-tilt fusion (shares-only)
     sw = _regime_adjusted_weights(macro)
@@ -981,6 +1022,7 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         "yield_curve": sw.get("yield_curve", 0.02),
         "credit_spread": sw.get("credit_spread", 0.02),
         "cluster_buys": sw.get("cluster_buys", 0.03),
+        "sec_ftd": sw.get("sec_ftd", 0.02),
     }
     share_total = sum(share_raw.values()) or 1.0
     share_w = {k: v / share_total for k, v in share_raw.items()}
@@ -1018,6 +1060,7 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         + share_w["yield_curve"] * df["z_yield_curve"]
         + share_w["credit_spread"] * df["z_credit_spread"]
         + share_w["cluster_buys"] * df["z_cluster_buys"]
+        + share_w["sec_ftd"] * df["z_sec_ftd"]
     )
 
     # Long-only: keep bullish-aligned above threshold
@@ -1064,7 +1107,8 @@ def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
                            r_options: pd.DataFrame = None,
                            yield_curve: pd.DataFrame = None,
                            credit_spread: pd.DataFrame = None,
-                           cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
+                           cluster_buys: pd.DataFrame = None,
+                           sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
     """Attach non-option factor context to futures via their ETF proxy."""
     if futures_df is None or futures_df.empty or "etf" not in futures_df.columns:
         return futures_df
@@ -1080,7 +1124,9 @@ def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
         whisper=whisper, hyperliquid=hyperliquid, twitter=twitter,
         r_options=r_options, yield_curve=yield_curve,
         credit_spread=credit_spread, cluster_buys=cluster_buys,
+        sec_ftd=sec_ftd,
     )
+    out = out.copy()
     if value is not None and not value.empty:
         value_cols = ["ticker", "value_score", "value_bucket", "earnings_yield",
                       "fcf_yield", "graham_score"]
@@ -1097,7 +1143,7 @@ def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
         "thirteen_f_score", "vix_term_score", "eia_score", "wasde_score",
         "buyback_score", "gtrends_score", "form_144_score", "whisper_score",
         "hyperliquid_score", "twitter_score", "r_options_score", "curve_score",
-        "credit_score", "cluster_buys_score",
+        "credit_score", "cluster_buys_score", "sec_ftd_score",
     ]
     missing = [col for col in factor_cols if col not in out.columns]
     if missing:

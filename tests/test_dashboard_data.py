@@ -238,6 +238,37 @@ def test_dashboard_engine_panels_are_merged_into_one_section():
     assert "Rolling health" in html
 
 
+def test_dashboard_section_labels_are_not_mislabeled_as_analyst_only():
+    analytics_html = dashboard_build._build_analytics_html()
+    assert "Live Signal Analytics" in analytics_html
+    assert "Analyst Live Analytics" not in analytics_html
+
+    performance_html = dashboard_build._performance_panel(None, {
+        "open_positions": 0,
+        "closed_positions": 0,
+        "overall": {},
+        "assets": {},
+    })
+    assert "Signal Performance Tracking" in performance_html
+    assert "Analyst Performance Tracking" not in performance_html
+
+    analyst_html = dashboard_build._analyst_panel(dashboard_build.pd.DataFrame([
+        {
+            "ticker": "AAPL",
+            "analyst_total": 8,
+            "analyst_score": 1.2,
+            "analyst_momentum": 1,
+            "analyst_strong_buy": 2,
+            "analyst_buy": 4,
+            "analyst_hold": 2,
+            "analyst_sell": 0,
+            "analyst_strong_sell": 0,
+        }
+    ]))
+    assert "Analyst Recommendations" in analyst_html
+    assert "Analyst Analyst Recommendations" not in analyst_html
+
+
 def test_dashboard_includes_export_and_workflow_controls():
     old_root = dashboard_build.ROOT
     with tempfile.TemporaryDirectory() as td:
@@ -274,5 +305,6 @@ if __name__ == "__main__":
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
     test_dashboard_performance_prefers_validation_over_forward_telemetry()
     test_dashboard_engine_panels_are_merged_into_one_section()
+    test_dashboard_section_labels_are_not_mislabeled_as_analyst_only()
     test_dashboard_includes_export_and_workflow_controls()
-    print("6/6 dashboard data tests passed")
+    print("7/7 dashboard data tests passed")

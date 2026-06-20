@@ -731,11 +731,12 @@ def build_external_orders(
     dry_run: bool = False,
     query: str = "",
     min_option_dte: int = DEFAULT_MIN_OPTION_DTE,
+    include_chain_shortlist: bool = True,
 ) -> pd.DataFrame:
     data_dir = Path(data_dir)
     options = _load_latest_parquet(data_dir, "top_options_*.parquet")
-    chain_options = _load_option_chain_shortlist(data_dir)
-    if not chain_options.empty:
+    chain_options = _load_option_chain_shortlist(data_dir) if include_chain_shortlist else pd.DataFrame()
+    if include_chain_shortlist and not chain_options.empty:
         options = pd.concat([options, chain_options], ignore_index=True, sort=False)
     shares = _load_latest_parquet(data_dir, "top_shares_*.parquet")
     futures = _load_latest_parquet(data_dir, "top_futures_*.parquet")

@@ -13,6 +13,7 @@ import json
 import math
 import mimetypes
 import re
+import shutil
 import struct
 import sys
 import time
@@ -26,12 +27,19 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python always has zoneinfo in supported versions.
+    ZoneInfo = None
+
 ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
 if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 import data_provider
+from engines import cboe_symbol_data as cboe_symbol_data_engine
 from engines import dark_pool as dark_pool_engine
+from engines import sec_ftd as sec_ftd_engine
 from engines.fred_public import fred_csv_history
 from engines.nasdaq_screener import small_cap_movers
 from engines.regsho_threshold import threshold_rows_for_symbols
@@ -44,7 +52,9 @@ from scripts.export_external_paper_track import (
     write_outputs as write_paper_outputs,
 )
 from scripts.export_robinhood_agentic_queue import (
-    build_robinhood_queue, write_outputs as write_robinhood_queue_outputs,
+    append_agent_decision, build_agentic_cycle_packet, build_robinhood_queue,
+    decision_log_summary,
+    write_outputs as write_robinhood_queue_outputs,
 )
 from scripts.research_jobs import (
     create_job, create_refresh_job, job_dashboard_path, job_lookup_path, list_jobs,
@@ -61,6 +71,8 @@ from scripts.symbol_resolver import (
 FRESH_SNAPSHOT_MINUTES = 90.0
 STALE_SNAPSHOT_MINUTES = 360.0
 MIN_SWING_OPTION_DTE = 90
+AGENTIC_FRESH_MINUTES = 45.0
+AGENTIC_STALE_MINUTES = 90.0
 
 ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
@@ -76,6 +88,13 @@ ARTIFACTS = {
     "swing-packet-md": ("swing_packet.md", "text/markdown; charset=utf-8"),
     "robinhood-agentic-queue": ("robinhood_agentic_queue.json", "application/json; charset=utf-8"),
     "robinhood-agentic-prompt": ("robinhood_agentic_prompt.md", "text/markdown; charset=utf-8"),
+    "robinhood-agentic-cycle": ("robinhood_agentic_cycle.json", "application/json; charset=utf-8"),
+    "robinhood-agentic-cycle-prompt": ("robinhood_agentic_cycle_prompt.md", "text/markdown; charset=utf-8"),
+    "agentic-paper-positions": ("agentic_paper_positions.json", "application/json; charset=utf-8"),
+    "agentic-paper-orders": ("agentic_paper_orders.jsonl", "application/x-ndjson; charset=utf-8"),
+    "robinhood-live-order-tickets": ("robinhood_live_order_tickets.json", "application/json; charset=utf-8"),
+    "robinhood-broker-snapshot": ("robinhood_broker_snapshot.json", "application/json; charset=utf-8"),
+    "position-hygiene-plan": ("position_hygiene_plan.json", "application/json; charset=utf-8"),
 }
 
 OPPORTUNITY_SPECS = {
@@ -440,6 +459,16 @@ MACRO_STRESS_SERIES = [
 
 FREE_DATA_SOURCE_REGISTRY = [
     {
+        "name": "Layered history stack",
+        "category": "prices",
+        "coverage": "Yahoo chart -> yfinance -> Nasdaq historical -> Stooq fallback ladder",
+        "credential": "none",
+        "quality": "free_or_delayed",
+        "used_by": "shared data_provider.get_history path for engines, repricing, pulse views, backtests",
+        "primary": True,
+        "caveat": "Research-grade delayed/free data; not a broker execution quote.",
+    },
+    {
         "name": "Yahoo chart",
         "category": "prices",
         "coverage": "US equities, ETFs, indexes, futures proxies",
@@ -490,6 +519,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "caveat": "Not an execution quote; availability can vary by ticker.",
     },
     {
+        "name": "CBOE option symbol activity",
+        "category": "options/activity",
+        "coverage": "public Cboe option contract volume, matched/routed flow, and top-of-book context",
+        "credential": "none",
+        "quality": "public_exchange_context",
+        "used_by": "Robinhood agentic queue activity sanity checks",
+        "primary": True,
+        "caveat": "Cboe venue activity is not consolidated OPRA and is not an execution quote.",
+    },
+    {
         "name": "CBOE put/call market statistics",
         "category": "options_sentiment",
         "coverage": "market-wide total, equity, and index option put/call ratios",
@@ -538,6 +577,16 @@ FREE_DATA_SOURCE_REGISTRY = [
         "used_by": "insider, form 144, FDA catalyst fallback, 13F, symbol search, ticker lookup fundamentals",
         "primary": True,
         "caveat": "Filing timestamps and issuer mappings need normalization.",
+    },
+    {
+        "name": "SEC fails-to-deliver",
+        "category": "market_structure/settlement",
+        "coverage": "delayed aggregate fails-to-deliver by US equity symbol",
+        "credential": "none",
+        "quality": "official_public_delayed",
+        "used_by": "share and futures ETF-proxy settlement-pressure context",
+        "primary": True,
+        "caveat": "FTD is delayed context and is not proof of abusive shorting or a standalone squeeze signal.",
     },
     {
         "name": "Nasdaq Trader symbol directory",
@@ -713,6 +762,50 @@ def _snapshot_freshness(age_minutes: float | None) -> str:
     if age_minutes <= FRESH_SNAPSHOT_MINUTES:
         return "fresh"
     if age_minutes <= STALE_SNAPSHOT_MINUTES:
+        return "aging"
+    return "stale"
+
+
+def _parse_iso_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    text = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except Exception:
+        parsed = pd.to_datetime(text, errors="coerce", utc=True)
+        if pd.isna(parsed):
+            return None
+        dt = parsed.to_pydatetime()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _iso_age_minutes(value: Any) -> float | None:
+    dt = _parse_iso_utc(value)
+    if dt is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 60.0)
+
+
+def _short_age_label(age_minutes: float | None) -> str:
+    if age_minutes is None:
+        return "missing"
+    if age_minutes < 1:
+        return "<1m"
+    if age_minutes < 120:
+        return f"{age_minutes:.0f}m"
+    return f"{age_minutes / 60.0:.1f}h"
+
+
+def _agentic_freshness(age_minutes: float | None) -> str:
+    if age_minutes is None:
+        return "missing"
+    if age_minutes <= AGENTIC_FRESH_MINUTES:
+        return "fresh"
+    if age_minutes <= AGENTIC_STALE_MINUTES:
         return "aging"
     return "stale"
 
@@ -3668,6 +3761,98 @@ def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
     return _readiness(score, flags)
 
 
+def _setup_gate(record: dict[str, Any]) -> dict[str, Any]:
+    """Turn readiness/flags into one compact decision gate for the cockpit."""
+    asset = str(record.get("asset") or "").strip().lower()
+    readiness = str(record.get("readiness_label") or "").strip().lower()
+    trade_status = str(record.get("trade_status") or "").strip().lower()
+    freshness = str(record.get("snapshot_freshness") or "").strip().lower()
+    flags = [str(flag).strip().lower() for flag in (record.get("risk_flags") or []) if str(flag).strip()]
+    blockers: list[str] = []
+    checks: list[str] = []
+    needs_quote = False
+
+    if trade_status in {"skip", "blocked"}:
+        blockers.append(f"trade status is {trade_status}")
+    elif trade_status == "watch":
+        checks.append("trade status is Watch")
+    if readiness == "wait":
+        blockers.append("readiness is wait")
+    elif readiness == "review":
+        checks.append("readiness requires review")
+    elif readiness == "ready":
+        checks.append("readiness is ready")
+    if freshness == "stale":
+        blockers.append("snapshot is stale")
+    elif freshness == "aging":
+        checks.append("snapshot is aging")
+
+    severe_flag_terms = (
+        "below 90 dte", "no contract size", "no share size", "very wide spread",
+        "avoid swing fit", "status skip", "status blocked",
+    )
+    quote_flag_terms = (
+        "verify live quote", "unknown quote source", "missing spread", "wide spread",
+        "missing stop", "missing target", "aging snapshot",
+    )
+    for flag in flags:
+        if any(term in flag for term in severe_flag_terms):
+            blockers.append(flag)
+        elif any(term in flag for term in quote_flag_terms):
+            checks.append(flag)
+            if asset == "option" and (
+                "quote" in flag or "spread" in flag or "stop" in flag or "target" in flag
+            ):
+                needs_quote = True
+        elif flag:
+            checks.append(flag)
+
+    if asset == "option":
+        quote_quality = str(record.get("quality") or "").lower()
+        if "free" in quote_quality or "delayed" in quote_quality or "cboe" in quote_quality:
+            checks.append("verify live option quote before action")
+            needs_quote = True
+
+    if blockers:
+        status = "avoid"
+        label = "Avoid for now"
+        next_step = "Skip this setup until the blocking issue clears."
+        reasons = blockers[:4]
+    elif needs_quote:
+        status = "quote_check"
+        label = "Needs live quote"
+        next_step = "Refresh chain/quote and confirm spread before paper review."
+        reasons = checks[:4] or ["live quote required before action"]
+    elif checks and readiness != "ready":
+        status = "review"
+        label = "Review first"
+        next_step = "Open research and clear the review items before acting."
+        reasons = checks[:4]
+    else:
+        status = "ready"
+        label = "Ready to research"
+        next_step = "Open research; if thesis and live quote agree, consider paper tracking."
+        reasons = checks[:4] or ["local readiness is clean"]
+
+    return {
+        "setup_gate_status": status,
+        "setup_gate_label": label,
+        "setup_gate_reasons": reasons,
+        "setup_gate_next_step": next_step,
+    }
+
+
+def _setup_gate_priority(record: dict[str, Any]) -> tuple[int, float]:
+    status = str(record.get("setup_gate_status") or "").strip().lower()
+    priority = {
+        "ready": 4,
+        "quote_check": 3,
+        "review": 2,
+        "avoid": 0,
+    }.get(status, 1)
+    return priority, _float_value(record.get("score"), default=0.0)
+
+
 def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
     spec = OPPORTUNITY_SPECS[asset]
     symbol = _setup_symbol(row, asset, spec)
@@ -3713,6 +3898,7 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
             if key in row:
                 record[key] = _clean_value(row.get(key))
     record.update(readiness)
+    record.update(_setup_gate(record))
     return record
 
 
@@ -3790,10 +3976,14 @@ def build_best_setups(
 
     rows = sorted(rows, key=lambda row: _float_value(row.get("_sort_score")), reverse=True)[:limit]
     clean_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
+    decision_row = None
+    if clean_rows:
+        decision_row = sorted(clean_rows, key=_setup_gate_priority, reverse=True)[0]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(clean_rows),
         "rows": clean_rows,
+        "decision_row": decision_row,
         "by_asset": by_asset,
         "asset_summaries": summaries,
         "sources": sources,
@@ -4897,12 +5087,16 @@ def build_robinhood_agentic_queue_report(
     account_budget: float = 500.0,
     max_candidates: int = 5,
     max_orders: int = 2,
-    min_dte: int = 180,
+    min_dte: int = MIN_SWING_OPTION_DTE,
     min_confidence: float = 55.0,
     query: str = "",
+    refresh_chain: bool = False,
+    chain_preset: str = "auto",
+    chain_symbols_limit: int = 6,
+    chain_contracts_per_symbol: int = 4,
     write: bool = False,
 ) -> dict[str, Any]:
-    """Build or write the long-dated option candidate queue for agent review."""
+    """Build or write the 90d+ option candidate queue for agent review."""
     queue = build_robinhood_queue(
         data_dir=data_dir,
         account_budget=account_budget,
@@ -4911,11 +5105,37 @@ def build_robinhood_agentic_queue_report(
         min_dte=min_dte,
         min_confidence=min_confidence,
         query=query,
+        refresh_chain=refresh_chain,
+        chain_preset=chain_preset,
+        chain_symbols_limit=chain_symbols_limit,
+        chain_contracts_per_symbol=chain_contracts_per_symbol,
     )
+    try:
+        cycle_packet = build_agentic_cycle_packet(queue, data_dir)
+    except Exception as exc:
+        cycle_packet = {
+            "entry_gate": {
+                "status": "unknown",
+                "label": "Entry gate unavailable",
+                "detail": str(exc)[:160],
+                "new_entries_allowed_after_live_checks": False,
+                "approval_required": True,
+                "blockers": [str(exc)[:160]],
+                "warnings": [],
+            },
+            "queue_summary": {},
+            "entry_candidates": [],
+            "review_only_entry_candidates": [],
+        }
     paths: dict[str, str] = {}
     if write:
         queue_path, prompt_path = write_robinhood_queue_outputs(queue, data_dir)
-        paths = {"queue": str(queue_path), "prompt": str(prompt_path)}
+        paths = {
+            "queue": str(queue_path),
+            "prompt": str(prompt_path),
+            "cycle": str(data_dir / "robinhood_agentic_cycle.json"),
+            "cycle_prompt": str(data_dir / "robinhood_agentic_cycle_prompt.md"),
+        }
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "wrote_files": bool(paths),
@@ -4929,7 +5149,16 @@ def build_robinhood_agentic_queue_report(
         "min_dte": queue.get("min_dte"),
         "min_confidence": queue.get("min_confidence"),
         "estimated_total_candidate_premium": queue.get("estimated_total_candidate_premium"),
+        "chain_refresh": queue.get("chain_refresh") or {"attempted": False},
+        "entry_gate": cycle_packet.get("entry_gate") or {},
+        "gated_ready_to_submit_count": (
+            (cycle_packet.get("queue_summary") or {}).get("gated_ready_to_submit_count")
+        ),
+        "review_only_entry_candidate_count": len(cycle_packet.get("review_only_entry_candidates") or []),
+        "decision_log": cycle_packet.get("decision_log") or {},
         "readiness": queue.get("readiness") or {},
+        "diagnostics": queue.get("diagnostics") or {},
+        "sec_offering_risks": queue.get("sec_offering_risks") or {},
         "rejection_reason_counts": queue.get("rejection_reason_counts") or {},
         "top_rejection_reasons": queue.get("top_rejection_reasons") or [],
         "candidate_count": len(queue.get("orders") or []),
@@ -4937,11 +5166,1013 @@ def build_robinhood_agentic_queue_report(
         "orders": queue.get("orders") or [],
         "rejected": (queue.get("rejected") or [])[:25],
         "notes": [
-            "This is a long-dated options handoff queue for an external agent.",
+            "This is a 90d+ options handoff queue for external/manual review.",
             "It does not place trades or store broker credentials.",
             "The agent should verify live quotes, spread, positions, buying power, and current news.",
         ],
     }
+
+
+def _agentic_option_side(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"c", "call", "calls"}:
+        return "call"
+    if text in {"p", "put", "puts"}:
+        return "put"
+    return text
+
+
+def _agentic_expiry_key(value: Any) -> str:
+    parsed = _parse_iso_utc(value)
+    if parsed is not None:
+        return parsed.date().isoformat()
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else text
+
+
+def _agentic_strike_key(value: Any) -> str:
+    strike = _float_value(value, default=math.nan)
+    if math.isfinite(strike):
+        return f"{strike:g}"
+    return str(value or "").strip()
+
+
+def _agentic_contract_key(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "").strip().upper()
+    side = _agentic_option_side(row.get("option_side") or row.get("side") or row.get("option_type") or row.get("right"))
+    expiry = _agentic_expiry_key(row.get("expiry") or row.get("expiration_date"))
+    strike = _agentic_strike_key(row.get("strike") or row.get("strike_price"))
+    return "|".join([symbol, side, expiry, strike])
+
+
+def _agentic_direction_key(row: dict[str, Any]) -> str:
+    symbol = str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "").strip().upper()
+    direction = str(row.get("direction") or "").strip().lower()
+    side = _agentic_option_side(row.get("option_side") or row.get("side") or row.get("option_type") or row.get("right"))
+    return "|".join([symbol, direction or side])
+
+
+def _agentic_open_option_keys(open_positions: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    contract_keys: set[str] = set()
+    direction_keys: set[str] = set()
+    for raw in open_positions:
+        if not isinstance(raw, dict):
+            continue
+        row = {
+            "symbol": raw.get("symbol") or raw.get("ticker"),
+            "option_side": raw.get("option_side") or raw.get("side"),
+            "strike": raw.get("strike"),
+            "expiry": raw.get("expiry"),
+            "direction": raw.get("direction") or (
+                f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"
+            ),
+        }
+        contract_key = _agentic_contract_key(row)
+        direction_key = _agentic_direction_key(row)
+        if contract_key.strip("|"):
+            contract_keys.add(contract_key)
+        if direction_key.strip("|"):
+            direction_keys.add(direction_key)
+    return contract_keys, direction_keys
+
+
+def _agentic_ticket_preflight(
+    ticket: dict[str, Any],
+    *,
+    contract_key: str,
+    direction_key: str,
+    ticket_freshness: str,
+    queue_freshness: str,
+    cycle_freshness: str,
+    ticket_packet_freshness: str,
+    entry_gate: dict[str, Any],
+    blockers: list[str],
+    paper_contract_keys: set[str],
+    optedge_contract_keys: set[str],
+    optedge_direction_keys: set[str],
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+
+    def add(level: str, label: str, detail: str) -> None:
+        checks.append({"level": level, "label": label, "detail": detail})
+
+    if queue_freshness == "stale" or cycle_freshness == "stale" or ticket_packet_freshness == "stale" or ticket_freshness == "stale":
+        add("block", "Fresh packet", "Queue, cycle, and ticket files must be refreshed before live review.")
+    elif queue_freshness == "aging" or cycle_freshness == "aging" or ticket_packet_freshness == "aging" or ticket_freshness == "aging":
+        add("warn", "Fresh packet", "Packet is aging; refresh if market conditions changed.")
+    else:
+        add("pass", "Fresh packet", "Queue, cycle, and ticket timestamps are fresh.")
+
+    gate_status = str(entry_gate.get("status") or "").strip().lower()
+    if gate_status == "blocked" or blockers:
+        add("block", "Entry gate", "Fresh entries are blocked by validation, guardrail, stale-data, or kill-switch checks.")
+    elif entry_gate.get("new_entries_allowed_after_live_checks"):
+        add("pass", "Entry gate", "Local gate allows review after live broker/quote checks.")
+    else:
+        add("warn", "Entry gate", "Entry gate is not explicitly open; treat this as review-only.")
+
+    missing = [
+        name for name in ("symbol", "option_side", "strike", "expiry", "limit_price", "quantity")
+        if ticket.get(name) in (None, "")
+    ]
+    if missing:
+        add("block", "Contract fields", f"Missing required field(s): {', '.join(missing)}.")
+    else:
+        add("pass", "Contract fields", "Exact symbol, side, strike, expiry, limit, and quantity are present.")
+
+    quantity = _float_value(ticket.get("quantity"), default=0.0)
+    limit_price = _float_value(ticket.get("limit_price"), default=0.0)
+    premium = _float_value(
+        ticket.get("estimated_premium_dollars"),
+        default=quantity * limit_price * 100.0 if quantity > 0 and limit_price > 0 else 0.0,
+    )
+    if quantity <= 0:
+        add("block", "Order size", "Quantity must be positive.")
+    elif premium <= 0:
+        add("block", "Order size", "Estimated premium could not be calculated.")
+    elif premium > 250:
+        add("warn", "Order size", f"Estimated premium ${premium:.0f} is above the usual $500-account half-budget cap.")
+    else:
+        add("pass", "Order size", f"Estimated premium ${premium:.0f} fits the small-account cap.")
+
+    expiry_dt = _parse_iso_utc(ticket.get("expiry"))
+    dte = None
+    if expiry_dt is not None:
+        dte = (expiry_dt.date() - datetime.now(timezone.utc).date()).days
+    if dte is None:
+        add("block", "Swing DTE", "Expiry could not be parsed.")
+    elif dte < MIN_SWING_OPTION_DTE:
+        add("block", "Swing DTE", f"{dte} DTE is below the {MIN_SWING_OPTION_DTE} DTE swing floor.")
+    else:
+        add("pass", "Swing DTE", f"{dte} DTE meets the {MIN_SWING_OPTION_DTE}+ DTE swing floor.")
+
+    if contract_key in paper_contract_keys:
+        add("warn", "Paper duplicate", "This exact contract is already tracked in local paper.")
+    else:
+        add("pass", "Paper duplicate", "No matching local paper contract is open.")
+    if contract_key in optedge_contract_keys or direction_key in optedge_direction_keys:
+        add("warn", "Optedge duplicate", "Optedge already has matching contract or same-direction exposure.")
+    else:
+        add("pass", "Optedge duplicate", "No matching local Optedge option exposure found.")
+
+    if ticket.get("confirmation_required", True):
+        add("pass", "Confirmation", "Ticket is confirmation-required and has not been broker-submitted by this cockpit.")
+    else:
+        add("block", "Confirmation", "Ticket is not marked confirmation-required.")
+
+    if ticket.get("live_submit_allowed_by_this_script"):
+        add("block", "Execution mode", "Local ticket claims script live-submit is allowed; keep cockpit approval-gated.")
+    else:
+        add("pass", "Execution mode", "Local script is not allowed to place broker orders.")
+
+    block_count = sum(1 for row in checks if row["level"] == "block")
+    warn_count = sum(1 for row in checks if row["level"] == "warn")
+    status = "blocked" if block_count else "warn" if warn_count else "pass"
+    return {
+        "status": status,
+        "block_count": block_count,
+        "warn_count": warn_count,
+        "checks": checks,
+    }
+
+
+def _agentic_open_option_marks(open_positions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    marks: dict[str, dict[str, Any]] = {}
+    for raw in open_positions:
+        if not isinstance(raw, dict):
+            continue
+        row = {
+            "symbol": raw.get("symbol") or raw.get("ticker"),
+            "option_side": raw.get("option_side") or raw.get("side"),
+            "strike": raw.get("strike"),
+            "expiry": raw.get("expiry"),
+            "direction": raw.get("direction") or (
+                f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"
+            ),
+        }
+        contract_key = _agentic_contract_key(row)
+        if not contract_key.strip("|"):
+            continue
+        current_price = _float_value(
+            raw.get("current_price", raw.get("current_mid", raw.get("last_price"))),
+            default=math.nan,
+        )
+        marks[contract_key] = {
+            "contract_key": contract_key,
+            "current_price": current_price if math.isfinite(current_price) else None,
+            "source": _clean_value(raw.get("last_reprice_source") or raw.get("source") or "optedge_open_positions"),
+            "latest_exit_pressure": _clean_value(raw.get("latest_exit_pressure")),
+            "latest_exit_action": _clean_value(raw.get("latest_exit_action")),
+            "reprice_failed_count": int(_float_value(raw.get("reprice_failed_count"), default=0.0)),
+            "trade_status": _clean_value(raw.get("trade_status")),
+            "research_guard_status": _clean_value(raw.get("research_guard_status")),
+        }
+    return marks
+
+
+def _agentic_paper_book(
+    active_paper: list[dict[str, Any]],
+    open_positions: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    marks = _agentic_open_option_marks(open_positions)
+    rows: list[dict[str, Any]] = []
+    total_entry = 0.0
+    total_value = 0.0
+    total_pnl = 0.0
+    priced_count = 0
+    needs_quote_count = 0
+    review_count = 0
+    pnl_values: list[float] = []
+    now = datetime.now(timezone.utc)
+
+    for raw in active_paper[-50:]:
+        if not isinstance(raw, dict):
+            continue
+        contract_key = _agentic_contract_key(raw)
+        mark = marks.get(contract_key, {})
+        quantity = max(0, int(_float_value(raw.get("quantity"), default=0.0)))
+        entry_price = _float_value(raw.get("entry_price") or raw.get("paper_limit_price"), default=math.nan)
+        current_price = _float_value(mark.get("current_price"), default=math.nan)
+        entry_premium = entry_price * quantity * 100.0 if math.isfinite(entry_price) and quantity > 0 else math.nan
+        current_value = current_price * quantity * 100.0 if math.isfinite(current_price) and quantity > 0 else math.nan
+        pnl_pct = ((current_price - entry_price) / entry_price) if (
+            math.isfinite(entry_price) and entry_price > 0 and math.isfinite(current_price)
+        ) else math.nan
+        pnl_dollars = (current_value - entry_premium) if math.isfinite(current_value) and math.isfinite(entry_premium) else math.nan
+        stop_price = _float_value(raw.get("stop_price_reference"), default=math.nan)
+        target_price = _float_value(raw.get("target_price_reference"), default=math.nan)
+        opened_at = _parse_iso_utc(raw.get("opened_at"))
+        age_days = (now - opened_at).total_seconds() / 86400.0 if opened_at else None
+        expiry_dt = _parse_iso_utc(raw.get("expiry"))
+        dte = (expiry_dt.date() - now.date()).days if expiry_dt else None
+
+        if math.isfinite(entry_premium):
+            total_entry += entry_premium
+        if math.isfinite(current_value):
+            total_value += current_value
+        if math.isfinite(pnl_dollars):
+            total_pnl += pnl_dollars
+        if math.isfinite(pnl_pct):
+            pnl_values.append(pnl_pct)
+
+        if math.isfinite(current_price):
+            priced_count += 1
+            if math.isfinite(stop_price) and current_price <= stop_price:
+                review_action = "stop_review"
+                review_reason = "current mark is at or below paper stop reference"
+            elif math.isfinite(target_price) and current_price >= target_price:
+                review_action = "target_review"
+                review_reason = "current mark is at or above paper target reference"
+            elif dte is not None and dte < 14:
+                review_action = "expiry_review"
+                review_reason = "less than 14 DTE remains"
+            elif mark.get("latest_exit_action") in {"watch", "tighten_stop", "close_early"}:
+                review_action = "exit_review"
+                review_reason = f"Optedge lifecycle action is {mark.get('latest_exit_action')}"
+            else:
+                review_action = "hold_review"
+                review_reason = "priced and no paper stop/target trigger"
+        else:
+            needs_quote_count += 1
+            review_action = "refresh_quote"
+            review_reason = "no matching current Optedge option mark found"
+        if review_action != "hold_review":
+            review_count += 1
+
+        rows.append({
+            "symbol": _clean_value(raw.get("symbol") or raw.get("ticker_or_symbol")),
+            "contract": _clean_value(raw.get("contract")),
+            "status": _clean_value(raw.get("status")),
+            "option_side": _clean_value(raw.get("option_side")),
+            "strike": _clean_value(raw.get("strike")),
+            "expiry": _clean_value(raw.get("expiry")),
+            "dte": _clean_value(dte),
+            "quantity": quantity,
+            "entry_price": _clean_value(entry_price if math.isfinite(entry_price) else None),
+            "current_price": _clean_value(current_price if math.isfinite(current_price) else None),
+            "pnl_pct": _clean_value(pnl_pct if math.isfinite(pnl_pct) else None),
+            "pnl_dollars": _clean_value(pnl_dollars if math.isfinite(pnl_dollars) else None),
+            "entry_premium_dollars": _clean_value(entry_premium if math.isfinite(entry_premium) else None),
+            "current_value_dollars": _clean_value(current_value if math.isfinite(current_value) else None),
+            "stop_price_reference": _clean_value(raw.get("stop_price_reference")),
+            "target_price_reference": _clean_value(raw.get("target_price_reference")),
+            "age_days": _clean_value(round(age_days, 2) if age_days is not None else None),
+            "mark_source": _clean_value(mark.get("source")),
+            "latest_exit_action": _clean_value(mark.get("latest_exit_action")),
+            "latest_exit_pressure": _clean_value(mark.get("latest_exit_pressure")),
+            "reprice_failed_count": _clean_value(mark.get("reprice_failed_count")),
+            "review_action": review_action,
+            "review_reason": review_reason,
+            "paper_override_validation_gate": bool(raw.get("paper_override_validation_gate")),
+            "swing_fit_label": _clean_value(raw.get("swing_fit_label")),
+        })
+
+    summary = {
+        "open_count": len(rows),
+        "priced_count": priced_count,
+        "needs_quote_count": needs_quote_count,
+        "review_count": review_count,
+        "entry_premium_dollars": _clean_value(round(total_entry, 2)),
+        "current_value_dollars": _clean_value(round(total_value, 2) if priced_count else None),
+        "unrealized_pnl_dollars": _clean_value(round(total_pnl, 2) if priced_count else None),
+        "avg_pnl_pct": _clean_value(sum(pnl_values) / len(pnl_values) if pnl_values else None),
+        "worst_pnl_pct": _clean_value(min(pnl_values) if pnl_values else None),
+        "best_pnl_pct": _clean_value(max(pnl_values) if pnl_values else None),
+    }
+    return rows[-12:], summary
+
+
+def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
+    direct_positions = (
+        snapshot.get("option_positions")
+        or snapshot.get("options_positions")
+        or snapshot.get("positions")
+        or []
+    )
+    rows: list[dict[str, Any]] = []
+    if isinstance(direct_positions, list):
+        for raw in direct_positions:
+            if isinstance(raw, dict):
+                rows.append(dict(raw))
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        account_positions = (
+            account.get("option_positions")
+            or account.get("options_positions")
+            or account.get("positions")
+            or []
+        )
+        if not isinstance(account_positions, list):
+            continue
+        account_label = (
+            account.get("nickname")
+            or account.get("label")
+            or account.get("brokerage_account_type")
+            or account.get("type")
+            or "account"
+        )
+        for raw in account_positions:
+            if not isinstance(raw, dict):
+                continue
+            row = dict(raw)
+            row.setdefault("account_label", account_label)
+            row.setdefault("account_agentic_allowed", account.get("agentic_allowed"))
+            row.setdefault("account_option_level", account.get("option_level"))
+            rows.append(row)
+    return rows, accounts
+
+
+def _broker_option_record(raw: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(
+        raw.get("symbol")
+        or raw.get("chain_symbol")
+        or raw.get("ticker")
+        or raw.get("ticker_or_symbol")
+        or ""
+    ).strip().upper()
+    side = _agentic_option_side(
+        raw.get("option_side")
+        or raw.get("option_type")
+        or raw.get("side")
+        or raw.get("right")
+    )
+    expiry = _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date"))
+    strike = _agentic_strike_key(raw.get("strike") or raw.get("strike_price"))
+    quantity = _float_value(raw.get("quantity") or raw.get("contracts"), default=0.0)
+    row = {
+        "symbol": symbol,
+        "option_side": side,
+        "strike": strike,
+        "expiry": expiry,
+        "quantity": _clean_value(quantity),
+        "average_price": _clean_value(raw.get("average_price") or raw.get("avg_price") or raw.get("entry_price")),
+        "current_price": _clean_value(raw.get("current_price") or raw.get("mark_price") or raw.get("last_price")),
+        "account": _clean_value(raw.get("account_label") or raw.get("account") or raw.get("nickname")),
+        "agentic_allowed": _clean_value(raw.get("account_agentic_allowed") or raw.get("agentic_allowed")),
+        "option_level": _clean_value(raw.get("account_option_level") or raw.get("option_level")),
+    }
+    missing = [
+        label for label, value in (
+            ("symbol", symbol),
+            ("side", side),
+            ("strike", strike),
+            ("expiry", expiry),
+        ) if value in ("", None)
+    ]
+    row["contract_key"] = _agentic_contract_key(row)
+    row["missing_fields"] = missing
+    row["contract"] = (
+        f"{symbol} {expiry} {side.upper()} {strike}"
+        if not missing else raw.get("contract") or raw.get("local_symbol") or symbol
+    )
+    return {k: _clean_value(v) for k, v in row.items()}
+
+
+def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, Any]:
+    symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("ticker_or_symbol") or "").strip().upper()
+    side = _agentic_option_side(raw.get("option_side") or raw.get("side"))
+    expiry = _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date"))
+    strike = _agentic_strike_key(raw.get("strike") or raw.get("strike_price"))
+    row = {
+        "symbol": symbol,
+        "option_side": side,
+        "strike": strike,
+        "expiry": expiry,
+        "quantity": _clean_value(raw.get("quantity") or raw.get("suggested_contracts")),
+        "entry_price": _clean_value(raw.get("entry_price") or raw.get("paper_limit_price")),
+        "current_price": _clean_value(raw.get("current_price") or raw.get("current_mid") or raw.get("last_price")),
+        "trade_status": _clean_value(raw.get("trade_status") or raw.get("status")),
+        "latest_exit_action": _clean_value(raw.get("latest_exit_action")),
+        "latest_exit_pressure": _clean_value(raw.get("latest_exit_pressure")),
+        "source": source,
+    }
+    expiry_dt = _parse_iso_utc(expiry)
+    row["dte"] = (expiry_dt.date() - datetime.now(timezone.utc).date()).days if expiry_dt else None
+    row["contract_key"] = _agentic_contract_key(row)
+    row["contract"] = raw.get("contract") or f"{symbol} {expiry} {side.upper()} {strike}"
+    return {k: _clean_value(v) for k, v in row.items()}
+
+
+def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> dict[str, Any]:
+    """Compare local Optedge/paper option state with an optional broker snapshot."""
+    data_dir = Path(data_dir)
+    snapshot_path = data_dir / "robinhood_broker_snapshot.json"
+    snapshot = _read_json(snapshot_path)
+    open_positions = _read_json(data_dir / "open_positions.json")
+    paper_positions = _read_json(data_dir / "agentic_paper_positions.json")
+    open_positions = open_positions if isinstance(open_positions, list) else []
+    paper_positions = paper_positions if isinstance(paper_positions, list) else []
+    active_paper = [
+        row for row in paper_positions
+        if isinstance(row, dict) and str(row.get("status") or "").lower() != "closed"
+    ]
+
+    local_rows = [
+        _agentic_local_option_record(row, "optedge")
+        for row in open_positions
+        if isinstance(row, dict)
+    ]
+    paper_rows = [
+        _agentic_local_option_record(row, "paper")
+        for row in active_paper
+        if isinstance(row, dict)
+    ]
+    local_keys = {str(row.get("contract_key")) for row in local_rows if str(row.get("contract_key") or "").strip("|")}
+    paper_keys = {str(row.get("contract_key")) for row in paper_rows if str(row.get("contract_key") or "").strip("|")}
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "missing_snapshot",
+            "label": "Broker snapshot missing",
+            "snapshot_path": str(snapshot_path),
+            "snapshot_exists": False,
+            "snapshot_age": "missing",
+            "snapshot_age_minutes": None,
+            "broker_option_count": 0,
+            "optedge_option_count": len(local_rows),
+            "paper_option_count": len(paper_rows),
+            "matched_count": 0,
+            "broker_only_count": 0,
+            "local_only_count": len(local_rows),
+            "paper_only_count": len(paper_rows),
+            "missing_contract_fields_count": 0,
+            "rows": [],
+            "warnings": ["Add data/robinhood_broker_snapshot.json before trusting live Robinhood reconciliation."],
+            "notes": [
+                "This reconciliation is local/offline and does not connect to a broker.",
+                "A broker snapshot should contain current option positions with symbol, side, strike, expiry, and quantity.",
+            ],
+        }
+
+    snapshot_age = _iso_age_minutes(snapshot.get("generated_at"))
+    broker_raw_rows, accounts = _broker_snapshot_option_rows(snapshot)
+    broker_rows = [_broker_option_record(row) for row in broker_raw_rows if isinstance(row, dict)]
+    broker_keys = {
+        str(row.get("contract_key"))
+        for row in broker_rows
+        if not row.get("missing_fields") and str(row.get("contract_key") or "").strip("|")
+    }
+    rows: list[dict[str, Any]] = []
+    matched_count = 0
+    broker_only_count = 0
+    missing_contract_fields_count = 0
+    for row in broker_rows:
+        key = str(row.get("contract_key") or "")
+        missing = row.get("missing_fields") if isinstance(row.get("missing_fields"), list) else []
+        in_optedge = key in local_keys
+        in_paper = key in paper_keys
+        if missing:
+            status = "broker_missing_contract_fields"
+            missing_contract_fields_count += 1
+        elif in_optedge or in_paper:
+            status = "matched"
+            matched_count += 1
+        else:
+            status = "broker_only"
+            broker_only_count += 1
+        rows.append({
+            "status": status,
+            "source": "broker",
+            "contract": row.get("contract"),
+            "symbol": row.get("symbol"),
+            "option_side": row.get("option_side"),
+            "strike": row.get("strike"),
+            "expiry": row.get("expiry"),
+            "quantity": row.get("quantity"),
+            "account": row.get("account"),
+            "average_price": row.get("average_price"),
+            "current_price": row.get("current_price"),
+            "local_match": "both" if in_optedge and in_paper else "optedge" if in_optedge else "paper" if in_paper else "-",
+            "missing_fields": ", ".join(missing),
+        })
+
+    local_only_count = 0
+    local_expired_count = 0
+    for row in local_rows:
+        key = str(row.get("contract_key") or "")
+        if key in broker_keys:
+            continue
+        dte = _float_value(row.get("dte"), default=math.nan)
+        is_expired = math.isfinite(dte) and dte < 0
+        if is_expired:
+            local_expired_count += 1
+        else:
+            local_only_count += 1
+        rows.append({
+            "status": "local_expired" if is_expired else "local_only",
+            "source": "optedge",
+            "contract": row.get("contract"),
+            "symbol": row.get("symbol"),
+            "option_side": row.get("option_side"),
+            "strike": row.get("strike"),
+            "expiry": row.get("expiry"),
+            "dte": row.get("dte"),
+            "quantity": row.get("quantity"),
+            "trade_status": row.get("trade_status"),
+            "latest_exit_action": row.get("latest_exit_action"),
+            "latest_exit_pressure": row.get("latest_exit_pressure"),
+            "local_match": "-",
+        })
+
+    paper_only_count = 0
+    paper_expired_count = 0
+    for row in paper_rows:
+        key = str(row.get("contract_key") or "")
+        if key in broker_keys:
+            continue
+        dte = _float_value(row.get("dte"), default=math.nan)
+        is_expired = math.isfinite(dte) and dte < 0
+        if is_expired:
+            paper_expired_count += 1
+        else:
+            paper_only_count += 1
+        rows.append({
+            "status": "paper_expired" if is_expired else "paper_only",
+            "source": "paper",
+            "contract": row.get("contract"),
+            "symbol": row.get("symbol"),
+            "option_side": row.get("option_side"),
+            "strike": row.get("strike"),
+            "expiry": row.get("expiry"),
+            "dte": row.get("dte"),
+            "quantity": row.get("quantity"),
+            "trade_status": row.get("trade_status"),
+            "local_match": "-",
+        })
+
+    option_ready_accounts = [
+        row for row in accounts
+        if isinstance(row, dict) and str(row.get("option_level") or "").lower() in {"option_level_2", "option_level_3"}
+    ]
+    agentic_accounts = [
+        row for row in accounts
+        if isinstance(row, dict) and bool(row.get("agentic_allowed"))
+    ]
+    agentic_option_ready = any(
+        str(row.get("option_level") or "").lower() in {"option_level_2", "option_level_3"}
+        for row in agentic_accounts
+    )
+    warnings: list[str] = []
+    if agentic_accounts and not agentic_option_ready:
+        warnings.append("Agentic account snapshot does not show options approval.")
+    if option_ready_accounts and not agentic_option_ready:
+        warnings.append("An options-approved account exists, but it is not marked agentic in the snapshot.")
+    if snapshot_age is None:
+        warnings.append("Broker snapshot timestamp is missing.")
+    elif snapshot_age > AGENTIC_STALE_MINUTES:
+        warnings.append(f"Broker snapshot is stale ({_short_age_label(snapshot_age)} old).")
+    if broker_only_count:
+        warnings.append(f"{broker_only_count} broker option position(s) are not tracked by Optedge or local paper.")
+    if local_only_count:
+        warnings.append(f"{local_only_count} local Optedge option position(s) are not in the broker snapshot.")
+    if local_expired_count:
+        warnings.append(f"{local_expired_count} expired Optedge option position(s) are still open locally.")
+    if paper_only_count:
+        warnings.append(f"{paper_only_count} local paper option position(s) are not in the broker snapshot.")
+    if paper_expired_count:
+        warnings.append(f"{paper_expired_count} expired paper option position(s) are still open locally.")
+    if missing_contract_fields_count:
+        warnings.append(f"{missing_contract_fields_count} broker row(s) need strike/side/expiry details to match exactly.")
+
+    if (
+        broker_only_count or local_only_count or paper_only_count
+        or local_expired_count or paper_expired_count or missing_contract_fields_count
+    ):
+        status = "mismatch"
+        label = "Broker/local mismatch"
+    elif not broker_rows and not local_rows and not paper_rows:
+        status = "empty"
+        label = "No option positions"
+    elif warnings:
+        status = "review"
+        label = "Broker sync review"
+    else:
+        status = "synced"
+        label = "Broker/local synced"
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "label": label,
+        "snapshot_path": str(snapshot_path),
+        "snapshot_exists": True,
+        "snapshot_generated_at": _clean_value(snapshot.get("generated_at")),
+        "snapshot_age": _short_age_label(snapshot_age),
+        "snapshot_age_minutes": round(snapshot_age, 1) if snapshot_age is not None else None,
+        "broker_option_count": len(broker_rows),
+        "optedge_option_count": len(local_rows),
+        "paper_option_count": len(paper_rows),
+        "matched_count": matched_count,
+        "broker_only_count": broker_only_count,
+        "local_only_count": local_only_count,
+        "paper_only_count": paper_only_count,
+        "local_expired_count": local_expired_count,
+        "paper_expired_count": paper_expired_count,
+        "missing_contract_fields_count": missing_contract_fields_count,
+        "agentic_account_count": len(agentic_accounts),
+        "option_ready_account_count": len(option_ready_accounts),
+        "agentic_option_ready": agentic_option_ready,
+        "warnings": warnings[:10],
+        "rows": rows[: max(1, min(int(limit or 80), 250))],
+        "notes": [
+            "This is a local reconciliation view; it does not submit, cancel, or replace broker orders.",
+            "Use it to make sure live Robinhood positions match Optedge before reviewing new entries or exits.",
+        ],
+    }
+
+
+def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Summarize the local Robinhood/autopilot state for the cockpit."""
+    data_dir = Path(data_dir)
+    queue = _read_json(data_dir / "robinhood_agentic_queue.json")
+    cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
+    tickets_blob = _read_json(data_dir / "robinhood_live_order_tickets.json")
+    paper_positions = _read_json(data_dir / "agentic_paper_positions.json")
+    open_positions = _read_json(data_dir / "open_positions.json")
+    queue = queue if isinstance(queue, dict) else {}
+    cycle = cycle if isinstance(cycle, dict) else {}
+    tickets = tickets_blob.get("tickets") if isinstance(tickets_blob, dict) else []
+    tickets = tickets if isinstance(tickets, list) else []
+    paper_positions = paper_positions if isinstance(paper_positions, list) else []
+    open_positions = open_positions if isinstance(open_positions, list) else []
+
+    active_paper = [
+        row for row in paper_positions
+        if isinstance(row, dict) and str(row.get("status") or "").lower() != "closed"
+    ]
+    paper_contract_keys, paper_direction_keys = _agentic_open_option_keys(active_paper)
+    optedge_contract_keys, optedge_direction_keys = _agentic_open_option_keys(open_positions)
+    broker_reconciliation = build_broker_reconciliation(data_dir)
+    entry_gate = cycle.get("entry_gate") if isinstance(cycle.get("entry_gate"), dict) else {}
+    hard_pause_reasons = cycle.get("hard_pause_reasons") if isinstance(cycle.get("hard_pause_reasons"), list) else []
+    gate_blockers = entry_gate.get("blockers") if isinstance(entry_gate.get("blockers"), list) else []
+    gate_warnings = entry_gate.get("warnings") if isinstance(entry_gate.get("warnings"), list) else []
+    queue_age = _iso_age_minutes(queue.get("generated_at"))
+    cycle_age = _iso_age_minutes(cycle.get("generated_at"))
+    ticket_packet_generated_at = tickets_blob.get("generated_at") if isinstance(tickets_blob, dict) else None
+    ticket_packet_age = _iso_age_minutes(ticket_packet_generated_at)
+    queue_freshness = _agentic_freshness(queue_age)
+    cycle_freshness = _agentic_freshness(cycle_age)
+    ticket_packet_freshness = _agentic_freshness(ticket_packet_age)
+    kill_switch = (data_dir / "agentic_trading_disabled.flag").exists()
+    blockers = []
+    if kill_switch:
+        blockers.append("kill-switch file is present")
+    if queue and queue_freshness == "missing":
+        blockers.append("agentic queue timestamp is missing")
+    elif queue_freshness == "stale":
+        blockers.append(f"agentic queue is stale ({_short_age_label(queue_age)} old)")
+    if cycle and cycle_freshness == "missing":
+        blockers.append("agentic cycle timestamp is missing")
+    elif cycle_freshness == "stale":
+        blockers.append(f"agentic cycle is stale ({_short_age_label(cycle_age)} old)")
+    if tickets and ticket_packet_freshness == "missing":
+        blockers.append("live ticket packet timestamp is missing")
+    elif tickets and ticket_packet_freshness == "stale":
+        blockers.append(f"live ticket packet is stale ({_short_age_label(ticket_packet_age)} old)")
+    blockers.extend(str(x) for x in hard_pause_reasons if str(x).strip())
+    blockers.extend(str(x) for x in gate_blockers if str(x).strip())
+    broker_status = str(broker_reconciliation.get("status") or "")
+    if tickets and broker_status == "missing_snapshot":
+        blockers.append("broker snapshot is missing for staged live-ticket reconciliation")
+    elif tickets and broker_status == "mismatch":
+        blockers.append("broker/local position mismatch must be reviewed before live-ticket action")
+    freshness_warnings = []
+    if queue_freshness == "aging":
+        freshness_warnings.append(f"agentic queue is aging ({_short_age_label(queue_age)} old)")
+    if cycle_freshness == "aging":
+        freshness_warnings.append(f"agentic cycle is aging ({_short_age_label(cycle_age)} old)")
+    if tickets and ticket_packet_freshness == "aging":
+        freshness_warnings.append(f"live ticket packet is aging ({_short_age_label(ticket_packet_age)} old)")
+    if not tickets and broker_status in {"missing_snapshot", "mismatch", "review"}:
+        freshness_warnings.extend(str(x) for x in (broker_reconciliation.get("warnings") or [])[:3])
+
+    ticket_rows = []
+    preflight_rows = []
+    for ticket in tickets[-20:]:
+        if not isinstance(ticket, dict):
+            continue
+        contract_key = _agentic_contract_key(ticket)
+        direction_key = _agentic_direction_key(ticket)
+        paper_tracked = contract_key in paper_contract_keys
+        optedge_duplicate = contract_key in optedge_contract_keys or direction_key in optedge_direction_keys
+        ticket_age = _iso_age_minutes(ticket.get("generated_at") or ticket_packet_generated_at)
+        ticket_freshness = _agentic_freshness(ticket_age)
+        status = "paper_tracked" if paper_tracked else "stale" if ticket_freshness == "stale" else "blocked" if blockers else "confirmation_required"
+        preflight = _agentic_ticket_preflight(
+            ticket,
+            contract_key=contract_key,
+            direction_key=direction_key,
+            ticket_freshness=ticket_freshness,
+            queue_freshness=queue_freshness,
+            cycle_freshness=cycle_freshness,
+            ticket_packet_freshness=ticket_packet_freshness,
+            entry_gate=entry_gate,
+            blockers=blockers,
+            paper_contract_keys=paper_contract_keys,
+            optedge_contract_keys=optedge_contract_keys,
+            optedge_direction_keys=optedge_direction_keys,
+        )
+        for check in preflight["checks"]:
+            preflight_rows.append({
+                "contract": _clean_value(ticket.get("contract")),
+                "level": check.get("level"),
+                "check": check.get("label"),
+                "detail": check.get("detail"),
+            })
+        ticket_rows.append({
+            "status": status,
+            "symbol": _clean_value(ticket.get("symbol")),
+            "contract": _clean_value(ticket.get("contract")),
+            "option_side": _clean_value(ticket.get("option_side")),
+            "strike": _clean_value(ticket.get("strike")),
+            "expiry": _clean_value(ticket.get("expiry")),
+            "quantity": _clean_value(ticket.get("quantity")),
+            "limit_price": _clean_value(ticket.get("limit_price")),
+            "estimated_premium_dollars": _clean_value(ticket.get("estimated_premium_dollars")),
+            "entry_gate_status": _clean_value(ticket.get("entry_gate_status")),
+            "confirmation_required": bool(ticket.get("confirmation_required", True)),
+            "paper_tracked": paper_tracked,
+            "optedge_duplicate": optedge_duplicate,
+            "preflight_status": preflight["status"],
+            "preflight_blocks": preflight["block_count"],
+            "preflight_warnings": preflight["warn_count"],
+            "freshness": ticket_freshness,
+            "age": _short_age_label(ticket_age),
+            "swing_fit_label": _clean_value(ticket.get("swing_fit_label")),
+            "confidence": _clean_value(ticket.get("confidence")),
+            "rank_score": _clean_value(ticket.get("rank_score")),
+        })
+
+    if kill_switch:
+        status = "disabled"
+        tone = "bad"
+        label = "Kill switch active"
+        detail = "No local paper or live review entries should be taken until the kill switch is removed."
+    elif cycle.get("hard_pause"):
+        status = "paused"
+        tone = "bad"
+        label = "Hard pause"
+        detail = "Cycle packet has hard-pause reasons that must be cleared first."
+    elif any("stale" in str(reason).lower() for reason in blockers):
+        status = "stale"
+        tone = "bad"
+        label = "Refresh required"
+        detail = "Agentic queue, cycle, or ticket data is too old for live review."
+    elif str(entry_gate.get("status") or "").lower() == "blocked":
+        status = "blocked"
+        tone = "warn"
+        label = "Entry gate blocked"
+        detail = "Fresh live entries are review-only until validation/risk blockers clear."
+    elif ticket_rows and blockers:
+        status = "blocked"
+        tone = "warn"
+        label = "Ticket blocked"
+        detail = "A staged ticket exists, but broker/local, freshness, or guardrail blockers must clear first."
+    elif ticket_rows:
+        status = "ticket_ready"
+        tone = "good"
+        label = "Ticket staged"
+        detail = "A live-ready ticket exists, but broker submission still requires explicit confirmation."
+    elif queue.get("status") == "ready":
+        status = "queue_ready"
+        tone = "review"
+        label = "Queue ready"
+        detail = "Queue candidates exist; write/build tickets after live checks."
+    else:
+        status = "idle"
+        tone = "neutral"
+        label = "No staged ticket"
+        detail = "Build the Robinhood queue after the latest scan to stage the next review."
+
+    decision = build_agentic_decision_journal(data_dir, limit=10)
+    decision_recent_count = int(_float_value(decision.get("recent_count"), default=0.0))
+    decision_debt_reasons: list[str] = []
+    if decision_recent_count == 0:
+        if ticket_rows:
+            decision_debt_reasons.append(
+                "staged live ticket has not been recorded as reviewed, skipped, or paper-tracked"
+            )
+        if active_paper:
+            decision_debt_reasons.append(
+                "local paper position has not been recorded as held, closed, or reviewed"
+            )
+        if queue.get("orders"):
+            decision_debt_reasons.append(
+                "agentic queue candidate has not been recorded in the local decision journal"
+            )
+        elif cycle.get("review_only_entry_candidates"):
+            decision_debt_reasons.append(
+                "review-only entry candidate has not been recorded in the local decision journal"
+            )
+    decision_log_needed = bool(decision_debt_reasons)
+    if decision_log_needed:
+        freshness_warnings.append(
+            "local decision journal has no recent review rows for current queue/ticket/paper state"
+        )
+
+    next_actions = []
+    if status == "disabled":
+        next_actions.append({
+            "label": "Review kill switch",
+            "action": "review_kill_switch",
+            "detail": "Remove agentic_trading_disabled.flag only after you intentionally want local paper/review flow back on.",
+        })
+    if status == "stale":
+        next_actions.append({
+            "label": "Refresh autopilot packet",
+            "action": "refresh_autopilot_packet",
+            "detail": "Rebuild queue, cycle packet, and live-ready ticket files from the latest Optedge scan.",
+        })
+    if status in {"idle", "queue_ready"}:
+        next_actions.append({
+            "label": "Build agentic packet",
+            "action": "build_autopilot_packet",
+            "detail": "Write the Robinhood handoff queue and cycle packet before reviewing candidates.",
+        })
+    if str(entry_gate.get("status") or "").lower() == "blocked":
+        next_actions.append({
+            "label": "Review validation blockers",
+            "action": "review_validation",
+            "detail": "Keep fresh entries blocked until drawdown, win-rate, and guardrail warnings improve.",
+        })
+    if broker_status in {"missing_snapshot", "mismatch", "review"}:
+        next_actions.append({
+            "label": "Review broker sync",
+            "action": "review_broker_sync",
+            "detail": "Compare broker positions with Optedge/local paper before any new entry or exit action.",
+        })
+    if decision_log_needed:
+        next_actions.append({
+            "label": "Log local decision",
+            "action": "log_decision",
+            "detail": "Record reviewed, skipped, held, or closed so the next cycle knows what actually happened.",
+        })
+    if ticket_rows:
+        next_actions.append({
+            "label": "Check staged ticket",
+            "action": "review_ticket",
+            "detail": "Verify current quote, spread, duplicate exposure, buying power, and news before any manual order.",
+        })
+    if active_paper:
+        next_actions.append({
+            "label": "Review paper position",
+            "action": "review_paper_book",
+            "detail": "Compare local paper entry against latest exit pressure and decide hold/skip/close in the journal.",
+        })
+
+    paper_book_rows, paper_book_summary = _agentic_paper_book(active_paper, open_positions)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "tone": tone,
+        "label": label,
+        "detail": detail,
+        "queue_status": _clean_value(queue.get("status")),
+        "queue_generated_at": _clean_value(queue.get("generated_at")),
+        "cycle_generated_at": _clean_value(cycle.get("generated_at")),
+        "queue_age_minutes": round(queue_age, 1) if queue_age is not None else None,
+        "cycle_age_minutes": round(cycle_age, 1) if cycle_age is not None else None,
+        "ticket_packet_age_minutes": round(ticket_packet_age, 1) if ticket_packet_age is not None else None,
+        "queue_freshness": queue_freshness,
+        "cycle_freshness": cycle_freshness,
+        "ticket_packet_freshness": ticket_packet_freshness,
+        "queue_age": _short_age_label(queue_age),
+        "cycle_age": _short_age_label(cycle_age),
+        "ticket_packet_age": _short_age_label(ticket_packet_age),
+        "entry_gate_status": _clean_value(entry_gate.get("status")),
+        "entry_gate_label": _clean_value(entry_gate.get("label")),
+        "fresh_entries_allowed": bool(entry_gate.get("new_entries_allowed_after_live_checks")) and not blockers,
+        "auto_submit_allowed": bool(cycle.get("auto_submit_allowed")),
+        "hard_pause": bool(cycle.get("hard_pause")),
+        "kill_switch": kill_switch,
+        "candidate_count": len(queue.get("orders") or []),
+        "review_only_entry_candidate_count": len(cycle.get("review_only_entry_candidates") or []),
+        "gated_entry_candidate_count": len(cycle.get("entry_candidates") or []),
+        "live_ticket_count": len(tickets),
+        "paper_open_count": len(active_paper),
+        "paper_book_summary": paper_book_summary,
+        "broker_reconciliation_status": broker_reconciliation.get("status"),
+        "broker_reconciliation_label": broker_reconciliation.get("label"),
+        "broker_snapshot_age": broker_reconciliation.get("snapshot_age"),
+        "broker_option_count": broker_reconciliation.get("broker_option_count"),
+        "broker_matched_count": broker_reconciliation.get("matched_count"),
+        "broker_only_count": broker_reconciliation.get("broker_only_count"),
+        "local_only_count": broker_reconciliation.get("local_only_count"),
+        "paper_only_count": broker_reconciliation.get("paper_only_count"),
+        "local_expired_count": broker_reconciliation.get("local_expired_count"),
+        "paper_expired_count": broker_reconciliation.get("paper_expired_count"),
+        "broker_missing_contract_fields_count": broker_reconciliation.get("missing_contract_fields_count"),
+        "agentic_option_ready": broker_reconciliation.get("agentic_option_ready"),
+        "decision_recent_count": decision_recent_count,
+        "decision_log_needed": decision_log_needed,
+        "decision_debt_reasons": decision_debt_reasons[:6],
+        "blockers": blockers[:10],
+        "warnings": (freshness_warnings + [str(x) for x in gate_warnings if str(x).strip()])[:10],
+        "next_actions": next_actions[:5],
+        "files": {
+            "paper_positions": str(data_dir / "agentic_paper_positions.json"),
+            "paper_orders": str(data_dir / "agentic_paper_orders.jsonl"),
+            "live_tickets": str(data_dir / "robinhood_live_order_tickets.json"),
+            "queue": str(data_dir / "robinhood_agentic_queue.json"),
+            "cycle": str(data_dir / "robinhood_agentic_cycle.json"),
+            "decision_log": str(data_dir / "robinhood_agentic_decisions.jsonl"),
+        },
+        "tickets": ticket_rows,
+        "ticket_preflight": preflight_rows[:80],
+        "ticket_preflight_block_count": sum(1 for row in preflight_rows if row.get("level") == "block"),
+        "ticket_preflight_warn_count": sum(1 for row in preflight_rows if row.get("level") == "warn"),
+        "paper_positions": paper_book_rows,
+        "broker_reconciliation": broker_reconciliation,
+        "broker_reconciliation_rows": broker_reconciliation.get("rows") or [],
+        "recent_decisions": decision.get("rows") or [],
+        "notes": [
+            "Local paper entries can be automatic, but this cockpit does not submit broker orders.",
+            "Live tickets remain confirmation-required and must be checked against current Robinhood quotes.",
+        ],
+    }
+
+
+def build_agentic_decision_journal(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str, Any]:
+    """Return the local Robinhood/Codex review decision journal."""
+    summary = decision_log_summary(data_dir, limit=limit)
+    rows = summary.get("latest") if isinstance(summary.get("latest"), list) else []
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "path": summary.get("path"),
+        "exists": summary.get("exists"),
+        "recent_count": summary.get("recent_count"),
+        "action_counts": summary.get("action_counts") or {},
+        "allowed_decisions": summary.get("allowed_decisions") or [],
+        "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
+        "notes": summary.get("notes") or [
+            "This journal records local review outcomes only.",
+            "It is not broker confirmation and does not place trades.",
+        ],
+    }
+
+
+def record_agentic_decision(decision: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Append one local Robinhood/Codex review decision and return the refreshed journal."""
+    decision = decision if isinstance(decision, dict) else {}
+    try:
+        queue = build_robinhood_queue(data_dir=data_dir, account_budget=500, min_dte=MIN_SWING_OPTION_DTE)
+        packet = build_agentic_cycle_packet(queue, data_dir)
+        gate = packet.get("entry_gate") if isinstance(packet.get("entry_gate"), dict) else {}
+    except Exception:
+        gate = {}
+    enriched = dict(decision)
+    enriched.setdefault("entry_gate_status", gate.get("status"))
+    enriched.setdefault("source", "local_cockpit")
+    append_agent_decision(enriched, data_dir=data_dir)
+    out = build_agentic_decision_journal(data_dir)
+    out["ok"] = True
+    out["message"] = "Decision logged locally."
+    return out
 
 
 def build_opportunities(
@@ -5078,6 +6309,287 @@ def build_positions(
             "This is research output only; no orders are placed.",
         ],
     }
+
+
+def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[str, Any]:
+    """Build a non-destructive cleanup/reconciliation plan for local position state."""
+    data_dir = Path(data_dir)
+    limit = max(1, min(int(limit or 120), 500))
+    reconciliation = build_broker_reconciliation(data_dir, limit=500)
+    open_positions = _read_json(data_dir / "open_positions.json")
+    open_positions = open_positions if isinstance(open_positions, list) else []
+    rows: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+
+    def add(row: dict[str, Any]) -> None:
+        status = str(row.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+        rows.append({k: _clean_value(v) for k, v in row.items()})
+
+    for raw in reconciliation.get("rows") or []:
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status") or "")
+        if status == "local_expired":
+            add({
+                "status": "local_expired",
+                "severity": "cleanup",
+                "action": "close_or_archive_expired_local_record",
+                "contract": raw.get("contract"),
+                "symbol": raw.get("symbol"),
+                "expiry": raw.get("expiry"),
+                "dte": raw.get("dte"),
+                "reason": "Option is past expiry but still appears in open_positions.json.",
+                "safe_next_step": "Run a fresh scan/reprice or review then move to closed history; do not treat as live exposure.",
+                "source": "open_positions.json",
+            })
+        elif status == "broker_only":
+            add({
+                "status": "broker_only",
+                "severity": "broker_review",
+                "action": "import_or_mark_unmanaged_broker_position",
+                "contract": raw.get("contract"),
+                "symbol": raw.get("symbol"),
+                "expiry": raw.get("expiry"),
+                "quantity": raw.get("quantity"),
+                "reason": "Broker snapshot has an option position not tracked by Optedge or local paper.",
+                "safe_next_step": "Decide whether to import into local tracking or mark as unmanaged before new entries.",
+                "source": "robinhood_broker_snapshot.json",
+            })
+        elif status == "local_only":
+            add({
+                "status": "local_only",
+                "severity": "sync_review",
+                "action": "verify_local_position_against_broker",
+                "contract": raw.get("contract"),
+                "symbol": raw.get("symbol"),
+                "expiry": raw.get("expiry"),
+                "dte": raw.get("dte"),
+                "latest_exit_action": raw.get("latest_exit_action"),
+                "latest_exit_pressure": raw.get("latest_exit_pressure"),
+                "reason": "Optedge says this is open, but the broker snapshot does not show it.",
+                "safe_next_step": "Confirm whether this was only a research recommendation, paper-only, or missing from broker snapshot.",
+                "source": "open_positions.json",
+            })
+        elif status == "paper_only":
+            add({
+                "status": "paper_only",
+                "severity": "paper_review",
+                "action": "review_local_paper_position",
+                "contract": raw.get("contract"),
+                "symbol": raw.get("symbol"),
+                "expiry": raw.get("expiry"),
+                "dte": raw.get("dte"),
+                "reason": "Local paper book has a position that is not in the broker snapshot.",
+                "safe_next_step": "Log held/closed/skipped in the local decision journal.",
+                "source": "agentic_paper_positions.json",
+            })
+
+    existing_contracts = {str(row.get("contract") or "") for row in rows}
+    for pos in open_positions:
+        if not isinstance(pos, dict):
+            continue
+        contract = _agentic_local_option_record(pos, "optedge").get("contract")
+        if str(contract or "") in existing_contracts:
+            continue
+        fail_count = int(_float_value(pos.get("reprice_failed_count"), default=0.0))
+        latest_pressure = _float_value(pos.get("latest_exit_pressure"), default=0.0)
+        if fail_count >= 20 or latest_pressure >= 60:
+            add({
+                "status": "repricing_or_exit_pressure",
+                "severity": "review",
+                "action": "refresh_quote_or_exit_review",
+                "contract": contract,
+                "symbol": pos.get("ticker") or pos.get("symbol"),
+                "expiry": pos.get("expiry"),
+                "reprice_failed_count": fail_count,
+                "latest_exit_action": pos.get("latest_exit_action"),
+                "latest_exit_pressure": _clean_value(pos.get("latest_exit_pressure")),
+                "reason": "Open position has repeated repricing trouble or elevated exit pressure.",
+                "safe_next_step": "Refresh quote/chain and log a hold, close, or stop update decision.",
+                "source": "open_positions.json",
+            })
+
+    severity_rank = {"broker_review": 5, "cleanup": 4, "sync_review": 3, "paper_review": 2, "review": 1}
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            severity_rank.get(str(row.get("severity") or ""), 0),
+            -_float_value(row.get("dte"), default=9999.0),
+            str(row.get("contract") or ""),
+        ),
+        reverse=True,
+    )
+    plan_path = data_dir / "position_hygiene_plan.json"
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "needs_review" if rows else "clean",
+        "plan_path": str(plan_path),
+        "open_option_count": len(open_positions),
+        "broker_reconciliation_status": reconciliation.get("status"),
+        "broker_option_count": reconciliation.get("broker_option_count"),
+        "broker_only_count": reconciliation.get("broker_only_count"),
+        "local_only_count": reconciliation.get("local_only_count"),
+        "local_expired_count": reconciliation.get("local_expired_count"),
+        "paper_only_count": reconciliation.get("paper_only_count"),
+        "paper_expired_count": reconciliation.get("paper_expired_count"),
+        "action_count": len(rows),
+        "counts": counts,
+        "rows": rows[:limit],
+        "notes": [
+            "This is a review plan only; it does not delete, move, close, or place broker orders.",
+            "Expired local positions should be closed by the lifecycle tracker on the next scan/reprice pass.",
+            "Broker-only rows should be imported or marked unmanaged before trusting live-ticket actions.",
+        ],
+    }
+
+
+def write_position_hygiene_plan(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    report = build_position_hygiene(data_dir, limit=500)
+    path = Path(report["plan_path"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    report["wrote_file"] = True
+    report["path"] = str(path)
+    return report
+
+
+def _hygiene_backup_path(path: Path, asof: datetime) -> Path:
+    stamp = asof.strftime("%Y%m%d_%H%M%S")
+    base = path.with_name(f"{path.stem}.hygiene_backup_{stamp}{path.suffix}")
+    candidate = base
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}.hygiene_backup_{stamp}_{index:02d}{path.suffix}")
+        index += 1
+    return candidate
+
+
+def _option_is_expired_for_hygiene(position: dict[str, Any], asof: datetime) -> bool:
+    if not isinstance(position, dict):
+        return False
+    expiry_dt = _parse_iso_utc(position.get("expiry") or position.get("expiration_date"))
+    return expiry_dt is not None and asof >= expiry_dt
+
+
+def _option_hygiene_close_row(position: dict[str, Any], asof: datetime) -> dict[str, Any]:
+    entry = _float_value(position.get("entry_price"), default=0.0)
+    entry_dt = _parse_iso_utc(position.get("entry_time"))
+    age_days = (
+        max(0.0, (asof - entry_dt).total_seconds() / 86400.0)
+        if entry_dt is not None
+        else None
+    )
+    exit_price = 0.0
+    pnl_pct = ((exit_price - entry) / entry) if entry > 0 else 0.0
+    contract = _agentic_local_option_record(position, "optedge").get("contract")
+    closed = {
+        **position,
+        "asset": position.get("asset") or "option",
+        "exit_time": asof.isoformat(),
+        "exit_price": exit_price,
+        "exit_reason": "expired_hygiene",
+        "pnl_pct": pnl_pct,
+        "age_days": age_days,
+        "trade_status": "Closed",
+        "latest_exit_action": "expired",
+        "latest_exit_pressure": max(_float_value(position.get("latest_exit_pressure"), 0.0), 100.0),
+        "hygiene_applied_at": asof.isoformat(),
+        "hygiene_source": "position_hygiene",
+        "hygiene_contract": contract,
+        "hygiene_exit_price_source": "zero_after_expiry_without_final_spot",
+        "hygiene_note": (
+            "Moved from open_positions.json by local hygiene because the option expiry "
+            "date is in the past and no fresh final mark was available."
+        ),
+    }
+    return {k: _clean_value(v) for k, v in closed.items()}
+
+
+def apply_position_hygiene(
+    data_dir: Path = DATA_DIR,
+    *,
+    apply: bool = False,
+    limit: int = 120,
+) -> dict[str, Any]:
+    """Preview or apply safe local cleanup for expired option records."""
+    data_dir = Path(data_dir)
+    limit = max(1, min(int(limit or 120), 500))
+    asof = datetime.now(timezone.utc)
+    open_path = data_dir / "open_positions.json"
+    closed_path = data_dir / "closed_positions.json"
+    open_rows_raw = _read_json(open_path)
+    closed_rows_raw = _read_json(closed_path)
+    open_rows = open_rows_raw if isinstance(open_rows_raw, list) else []
+    closed_rows = closed_rows_raw if isinstance(closed_rows_raw, list) else []
+
+    expired_rows: list[dict[str, Any]] = []
+    still_open: list[dict[str, Any]] = []
+    preview_rows: list[dict[str, Any]] = []
+    for position in open_rows:
+        if isinstance(position, dict) and _option_is_expired_for_hygiene(position, asof):
+            closed = _option_hygiene_close_row(position, asof)
+            expired_rows.append(closed)
+            record = _agentic_local_option_record(position, "optedge")
+            preview_rows.append({
+                "contract": record.get("contract"),
+                "symbol": record.get("symbol"),
+                "expiry": record.get("expiry"),
+                "dte": record.get("dte"),
+                "entry_price": _clean_value(position.get("entry_price")),
+                "exit_price": closed.get("exit_price"),
+                "pnl_pct": closed.get("pnl_pct"),
+                "exit_reason": closed.get("exit_reason"),
+                "action": "move_to_closed_positions" if apply else "preview_move_to_closed_positions",
+                "note": closed.get("hygiene_note"),
+            })
+        else:
+            still_open.append(position)
+
+    backup_paths: list[str] = []
+    wrote_files = False
+    if apply and expired_rows:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        for path in (open_path, closed_path):
+            if path.exists():
+                backup = _hygiene_backup_path(path, asof)
+                shutil.copy2(path, backup)
+                backup_paths.append(str(backup))
+        open_path.write_text(json.dumps(still_open, indent=2, sort_keys=True), encoding="utf-8")
+        closed_path.write_text(
+            json.dumps(closed_rows + expired_rows, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        wrote_files = True
+
+    report = {
+        "generated_at": asof.isoformat(),
+        "status": (
+            "applied" if wrote_files
+            else "preview" if expired_rows
+            else "clean"
+        ),
+        "apply": bool(apply),
+        "wrote_files": wrote_files,
+        "open_path": str(open_path),
+        "closed_path": str(closed_path),
+        "backup_paths": backup_paths,
+        "open_before": len(open_rows),
+        "open_after": len(still_open) if apply else len(open_rows),
+        "closed_before": len(closed_rows),
+        "closed_after": len(closed_rows) + len(expired_rows) if apply else len(closed_rows),
+        "expired_to_close_count": len(expired_rows),
+        "rows": preview_rows[:limit],
+        "notes": [
+            "Only expired local option records are eligible for this cleanup.",
+            "Preview mode does not modify files.",
+            "Apply mode backs up open_positions.json and closed_positions.json before writing.",
+            "This does not place broker orders or claim a broker close.",
+        ],
+    }
+    if apply and not expired_rows:
+        report["notes"].append("No expired local option records were found, so no files were changed.")
+    return report
 
 
 def _exit_review_symbol(row: dict[str, Any]) -> str:
@@ -7028,6 +8540,100 @@ def _history_probe_result(df: pd.DataFrame, note: str = "") -> dict[str, Any]:
     }
 
 
+def _market_structure_probe_result(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+    source_label: str,
+    clear_note: str,
+    flag_key: str,
+    score_key: str,
+    risk_note: str,
+    active_key: str | None = None,
+) -> dict[str, Any]:
+    """Normalize official no-key market-structure checks for one ticker."""
+    if df is None or df.empty:
+        return {
+            "ok": True,
+            "rows": 0,
+            "symbol": symbol,
+            "market_structure_flag": False,
+            "risk_flag": False,
+            "note": clear_note,
+        }
+    records = df.to_dict("records")
+    row = records[0] if records else {}
+    score = int(_clamp(_float_value(row.get(score_key), default=70.0), 0, 100))
+    active = bool(row.get(active_key)) if active_key else True
+    flag_name = flag_key if active else f"recent_{flag_key}"
+    note = risk_note
+    if not active and active_key:
+        note = f"Recent {source_label.lower()} row found for {symbol}; review context before swing action."
+    return {
+        "ok": False,
+        "rows": len(records),
+        "symbol": symbol,
+        "source": _clean_value(row.get("source") or row.get("source_url") or source_label),
+        "market_structure_flag": True,
+        "risk_flag": True,
+        "risk_flag_name": flag_name,
+        flag_key: True,
+        score_key: score,
+        "risk_score": score,
+        "note": note,
+    }
+
+
+def _sec_ftd_probe_result(df: pd.DataFrame, *, symbol: str) -> dict[str, Any]:
+    """Normalize delayed SEC FTD context into the provider/data-trust panel."""
+    if df is None or df.empty:
+        return {
+            "ok": True,
+            "rows": 0,
+            "symbol": symbol,
+            "market_structure_flag": False,
+            "risk_flag": False,
+            "note": "No recent SEC fails-to-deliver row found for this symbol.",
+        }
+    records = df.to_dict("records")
+    row = records[0] if records else {}
+    ftd_score = _float_value(row.get("sec_ftd_score"), default=0.0)
+    fails = int(_float_value(row.get("sec_ftd_fails"), default=0.0))
+    dollars = _float_value(row.get("sec_ftd_dollars"), default=0.0)
+    active_days = int(_float_value(row.get("sec_ftd_active_days"), default=0.0))
+    risk_score = int(_clamp(45 + ftd_score * 18, 0, 88))
+    elevated = bool(ftd_score >= 1.25 or fails >= 500_000 or dollars >= 1_000_000)
+    latest = _clean_value(row.get("sec_ftd_latest_date")) or "latest SEC file"
+    if elevated:
+        note = (
+            f"{symbol} has elevated delayed SEC fails-to-deliver context "
+            f"({fails:,} fails, ${dollars:,.0f}, {active_days} active day(s), {latest}); "
+            "review settlement pressure but do not treat it as proof of abusive shorting."
+        )
+    else:
+        note = (
+            f"{symbol} has a low delayed SEC fails-to-deliver row "
+            f"({fails:,} fails, ${dollars:,.0f}, {latest}); context only."
+        )
+    return {
+        "ok": not elevated,
+        "rows": len(records),
+        "symbol": symbol,
+        "source": _clean_value(row.get("sec_ftd_source") or "sec_fails_to_deliver"),
+        "market_structure_flag": elevated,
+        "risk_flag": elevated,
+        "risk_flag_name": "sec_ftd_pressure" if elevated else None,
+        "sec_ftd_pressure": elevated,
+        "sec_ftd_score": round(ftd_score, 3),
+        "sec_ftd_latest_date": latest,
+        "sec_ftd_fails": fails,
+        "sec_ftd_dollars": round(dollars, 2),
+        "sec_ftd_active_days": active_days,
+        "risk_score": risk_score if elevated else 0,
+        "note": note,
+    }
+
+
 def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
     chains = blob.get("chains") if isinstance(blob, dict) else None
     attempts = blob.get("source_attempts") if isinstance(blob, dict) else None
@@ -7082,6 +8688,194 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
         "provider_attempt_summary": attempt_summary or None,
         "spot": _clean_value(blob.get("spot")),
         "note": f"{len(chains)} expiration(s) returned.",
+    }
+
+
+def _cboe_activity_readiness(row: dict[str, Any]) -> dict[str, Any]:
+    volume = _float_value(row.get("cboe_activity_volume"), default=0.0)
+    spread = _float_value(row.get("cboe_activity_spread_pct"), default=math.nan)
+    bid = _float_value(row.get("cboe_activity_bid"), default=math.nan)
+    ask = _float_value(row.get("cboe_activity_ask"), default=math.nan)
+    has_public_bid_ask = math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask > 0
+    flags: list[str] = []
+    score = 55.0
+    if volume >= 1000:
+        score += 22
+    elif volume >= 250:
+        score += 14
+    elif volume >= 50:
+        score += 7
+    else:
+        flags.append("thin public CBOE volume")
+        score -= 10
+    if has_public_bid_ask and math.isfinite(spread):
+        if spread <= 0.10:
+            score += 16
+        elif spread <= 0.20:
+            score += 7
+            flags.append("verify spread")
+        else:
+            score -= 18
+            flags.append("wide public CBOE spread")
+    else:
+        flags.append("missing public bid/ask")
+        score -= 12
+    if score >= 78:
+        label = "active"
+    elif score >= 60:
+        label = "review"
+    else:
+        label = "thin"
+    return {
+        "cboe_activity_readiness": label,
+        "cboe_activity_score": int(_clamp(score, 0, 100)),
+        "cboe_activity_flags": flags,
+    }
+
+
+def build_cboe_option_activity(
+    data_dir: Path = DATA_DIR,
+    query: str = "AAPL",
+    min_dte: int = MIN_SWING_OPTION_DTE,
+    max_dte: int = 900,
+    min_volume: int = 1,
+    limit: int = 60,
+) -> dict[str, Any]:
+    """Interactive no-key CBOE option activity lookup for the cockpit."""
+    del data_dir  # reserved for future persisted activity snapshots
+    resolution = resolve_symbol(query or "AAPL")
+    symbol = str(resolution.get("symbol") or query or "").strip().upper()
+    min_dte = max(0, int(min_dte or 0))
+    max_dte = max(min_dte, int(max_dte or 900))
+    min_volume = max(0, int(min_volume or 0))
+    limit = max(1, min(int(limit or 60), 250))
+    if not symbol or not _can_scan_option_chain_symbol(symbol, "option"):
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "skipped",
+            "query": query,
+            "symbol": symbol,
+            "count": 0,
+            "rows": [],
+            "summary": {},
+            "notes": ["CBOE option activity is only checked for equity/ETF option symbols."],
+        }
+
+    try:
+        df = cboe_symbol_data_engine.run([symbol], min_volume=min_volume)
+    except Exception as exc:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "warn",
+            "query": query,
+            "symbol": symbol,
+            "count": 0,
+            "rows": [],
+            "summary": {"error": str(exc)[:200]},
+            "notes": [
+                "CBOE public option activity fetch failed.",
+                "This panel is context only and does not affect existing scans or orders.",
+            ],
+        }
+
+    if df is None or df.empty:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "status": "empty",
+            "query": query,
+            "symbol": symbol,
+            "count": 0,
+            "rows": [],
+            "summary": {"source_rows": 0},
+            "notes": [
+                "No current public CBOE activity rows matched this ticker.",
+                "CBOE venue activity is not consolidated OPRA and not an execution quote.",
+            ],
+        }
+
+    asof = pd.Timestamp.now(tz="UTC").normalize()
+    rows: list[dict[str, Any]] = []
+    for raw in df.to_dict(orient="records"):
+        expiry = pd.to_datetime(raw.get("expiry"), errors="coerce", utc=True)
+        if pd.isna(expiry):
+            continue
+        dte = int((expiry.normalize() - asof).days)
+        if dte < min_dte or dte > max_dte:
+            continue
+        bid = _float_value(raw.get("cboe_activity_bid"), default=math.nan)
+        ask = _float_value(raw.get("cboe_activity_ask"), default=math.nan)
+        last = _float_value(raw.get("cboe_activity_last"), default=math.nan)
+        has_bid_ask = math.isfinite(bid) and math.isfinite(ask) and bid > 0 and ask > 0
+        mid = (bid + ask) / 2.0 if has_bid_ask else math.nan
+        spread_pct = ((ask - bid) / mid) if math.isfinite(mid) and mid > 0 else math.nan
+        row = {
+            "ticker": symbol,
+            "expiry": expiry.date().isoformat(),
+            "dte": dte,
+            "side": raw.get("option_side"),
+            "strike": _clean_value(raw.get("strike")),
+            "contract": raw.get("cboe_activity_contract"),
+            "cboe_activity_volume": int(_float_value(raw.get("cboe_activity_volume"), default=0.0)),
+            "cboe_activity_matched": int(_float_value(raw.get("cboe_activity_matched"), default=0.0)),
+            "cboe_activity_routed": int(_float_value(raw.get("cboe_activity_routed"), default=0.0)),
+            "cboe_activity_bid": _clean_value(round(bid, 4) if math.isfinite(bid) else None),
+            "cboe_activity_ask": _clean_value(round(ask, 4) if math.isfinite(ask) else None),
+            "cboe_activity_mid": _clean_value(round(mid, 4) if math.isfinite(mid) else None),
+            "cboe_activity_spread_pct": _clean_value(round(spread_pct, 4) if math.isfinite(spread_pct) else None),
+            "premium_dollars": _clean_value(round(mid * 100, 2) if math.isfinite(mid) else None),
+            "cboe_activity_last": _clean_value(round(last, 4) if math.isfinite(last) else None),
+            "last_premium_dollars": _clean_value(round(last * 100, 2) if math.isfinite(last) else None),
+            "cboe_activity_venues": raw.get("cboe_activity_venues"),
+            "cboe_activity_source": raw.get("cboe_activity_source") or "cboe_symbol_data",
+        }
+        row.update(_cboe_activity_readiness(row))
+        rows.append({k: _clean_value(v) for k, v in row.items()})
+
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _float_value(row.get("cboe_activity_score"), default=0.0),
+            _float_value(row.get("cboe_activity_volume"), default=0.0),
+        ),
+        reverse=True,
+    )[:limit]
+    side_counts: dict[str, int] = {}
+    readiness_counts: dict[str, int] = {}
+    total_volume = 0
+    venues: set[str] = set()
+    for row in rows:
+        side = str(row.get("side") or "unknown")
+        side_counts[side] = side_counts.get(side, 0) + 1
+        readiness = str(row.get("cboe_activity_readiness") or "unknown")
+        readiness_counts[readiness] = readiness_counts.get(readiness, 0) + 1
+        total_volume += int(_float_value(row.get("cboe_activity_volume"), default=0.0))
+        for venue in str(row.get("cboe_activity_venues") or "").split(","):
+            if venue.strip():
+                venues.add(venue.strip())
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "status": "ready" if rows else "empty",
+        "query": query,
+        "symbol": symbol,
+        "count": len(rows),
+        "rows": rows,
+        "summary": {
+            "source_rows": int(len(df)),
+            "shown_rows": len(rows),
+            "total_volume": total_volume,
+            "side_counts": side_counts,
+            "readiness_counts": readiness_counts,
+            "venues": sorted(venues),
+            "min_dte": min_dte,
+            "max_dte": max_dte,
+            "min_volume": min_volume,
+        },
+        "notes": [
+            "CBOE symbol activity is public venue context only, not consolidated OPRA and not an execution quote.",
+            "Use this to find active contracts to compare against the full option-chain scan and Robinhood quote.",
+            "Default DTE filter matches Optedge's 3m+ swing minimum.",
+        ],
     }
 
 
@@ -7174,6 +8968,14 @@ def build_provider_status(
     symbol = str(resolution.get("symbol") or query or "AAPL").upper()
     rows = [
         _provider_probe(
+            "Layered history stack",
+            "history_stack",
+            lambda: _history_probe_result(
+                data_provider.get_history(symbol, "1mo", "1d", cache_age=300),
+                "Unified engine path: Yahoo chart -> yfinance -> Nasdaq historical -> Stooq CSV.",
+            ),
+        ),
+        _provider_probe(
             "Yahoo chart",
             "history",
             lambda: _history_probe_result(data_provider._yahoo_v8_history(symbol, "1mo", "1d")),
@@ -7246,12 +9048,106 @@ def build_provider_status(
         "note": "Official no-key symbol directory for broader ticker search and ETF flags.",
     })
 
+    if not symbol.endswith("=F") and not symbol.startswith("^"):
+        rows.extend([
+            _provider_probe(
+                "Nasdaq Trader trade halt RSS",
+                "market_structure",
+                lambda: _market_structure_probe_result(
+                    halt_rows_for_symbols([symbol], cache_age=60),
+                    symbol=symbol,
+                    source_label="trade halt",
+                    clear_note="No current Nasdaq Trader halt/pause row for this symbol.",
+                    flag_key="active_halt",
+                    score_key="halt_risk_score",
+                    active_key="active_halt",
+                    risk_note=(
+                        f"{symbol} has an active or recent Nasdaq Trader halt/pause row; "
+                        "review before any swing action."
+                    ),
+                ),
+            ),
+            _provider_probe(
+                "Nasdaq Trader Reg SHO threshold list",
+                "market_structure",
+                lambda: _market_structure_probe_result(
+                    threshold_rows_for_symbols([symbol], cache_age=6 * 3600),
+                    symbol=symbol,
+                    source_label="Reg SHO threshold",
+                    clear_note="Symbol is not on the current Nasdaq Trader threshold list.",
+                    flag_key="regsho_threshold",
+                    score_key="settlement_risk_score",
+                    risk_note=(
+                        f"{symbol} is on the Reg SHO or Rule 3210 threshold list; "
+                        "treat this as settlement-risk context."
+                    ),
+                ),
+            ),
+            _provider_probe(
+                "Nasdaq Trader short-sale circuit breaker",
+                "market_structure",
+                lambda: _market_structure_probe_result(
+                    circuit_rows_for_symbols([symbol], cache_age=30 * 60),
+                    symbol=symbol,
+                    source_label="short-sale circuit breaker",
+                    clear_note="Symbol is not on the current Nasdaq Trader short-sale circuit list.",
+                    flag_key="short_sale_restricted",
+                    score_key="ssr_risk_score",
+                    risk_note=(
+                        f"{symbol} is under SEC Rule 201 short-sale restriction; "
+                        "review downside stress before swing action."
+                    ),
+                ),
+            ),
+            _provider_probe(
+                "SEC fails-to-deliver",
+                "market_structure",
+                lambda: _sec_ftd_probe_result(
+                    sec_ftd_engine.run([symbol], max_files=1),
+                    symbol=symbol,
+                ),
+            ),
+        ])
+    else:
+        rows.append({
+            "provider": "Equity market-structure checks",
+            "category": "market_structure",
+            "status": "ok",
+            "latency_ms": 0,
+            "rows": 0,
+            "market_structure_flag": False,
+            "risk_flag": False,
+            "note": "Skipped because this symbol is not a US equity ticker.",
+        })
+
     history_rows = [row for row in rows if row.get("category") == "history"]
     working_history = [row for row in history_rows if row.get("status") == "ok"]
     chain_rows = [row for row in rows if row.get("category") == "options"]
     chain_ok = (not include_chain) or any(row.get("status") == "ok" for row in chain_rows)
     facts_rows = [row for row in rows if row.get("category") == "fundamentals"]
     facts_ok = any(row.get("status") == "ok" for row in facts_rows)
+    stack_rows = [row for row in rows if row.get("category") == "history_stack"]
+    stack_probe = stack_rows[0] if stack_rows else {}
+    stack_ok = bool(stack_probe.get("status") == "ok")
+    market_structure_rows = [row for row in rows if row.get("category") == "market_structure"]
+    market_structure_flags = [
+        str(row.get("risk_flag_name") or row.get("provider") or "").strip()
+        for row in market_structure_rows
+        if bool(row.get("risk_flag") or row.get("market_structure_flag"))
+    ]
+    market_structure_warnings = [
+        str(row.get("note") or row.get("provider") or "").strip()
+        for row in market_structure_rows
+        if bool(row.get("risk_flag") or row.get("market_structure_flag"))
+    ]
+    market_structure_risk_score = max(
+        [int(_float_value(row.get("risk_score"), default=0.0)) for row in market_structure_rows]
+        or [0]
+    )
+    active_halt_flagged = any(
+        row.get("risk_flag_name") == "active_halt" and bool(row.get("active_halt"))
+        for row in market_structure_rows
+    )
     symbol_cache_ok = sum(1 for row in rows if row.get("category") == "symbol_search" and row.get("status") == "ok")
     history_sources = [
         str(row.get("history_source") or row.get("provider") or "").strip()
@@ -7266,6 +9162,10 @@ def build_provider_status(
     chain_score = 25 if chain_ok else 0
     cache_score = round((min(symbol_cache_ok, 2) / 2) * 20)
     trust_score = int(history_score + chain_score + cache_score)
+    if active_halt_flagged:
+        trust_score = min(trust_score, 35)
+    elif market_structure_flags:
+        trust_score = max(0, trust_score - 15)
     chain_probe = chain_rows[0] if chain_rows else {}
     chain_quote_quality = str(chain_probe.get("quote_quality") or "")
     chain_rows_count = int(_float_value(chain_probe.get("rows"), default=0.0))
@@ -7274,18 +9174,26 @@ def build_provider_status(
         chain_warning = "option chain did not return usable rows"
     elif include_chain and chain_quote_quality and chain_quote_quality != "live_or_broker":
         chain_warning = "option chain is delayed/research-grade; verify live quotes before manual paper entry"
-    if not working_history:
+    if not working_history and not stack_ok:
         trust_label = "blocked"
+    elif active_halt_flagged:
+        trust_label = "blocked"
+    elif market_structure_flags:
+        trust_label = "risk_review"
     elif chain_ok:
         trust_label = "ready"
     else:
         trust_label = "partial"
 
     ok_count = sum(1 for row in rows if row.get("status") == "ok")
-    warnings = [
-        f"{row.get('provider')} did not return usable data."
-        for row in rows if row.get("status") != "ok"
-    ]
+    warnings = []
+    for row in rows:
+        if row.get("status") == "ok":
+            continue
+        if bool(row.get("risk_flag") or row.get("market_structure_flag")):
+            warnings.append(str(row.get("note") or f"{row.get('provider')} flagged risk."))
+        else:
+            warnings.append(f"{row.get('provider')} did not return usable data.")
     return {
         "generated_at": _now_iso(),
         "query": query,
@@ -7302,6 +9210,10 @@ def build_provider_status(
             "history_sources": history_sources,
             "history_source_summary": ", ".join(history_sources) if history_sources else "none",
             "history_quality_counts": history_quality_counts,
+            "history_stack_status": "ok" if stack_ok else "warn",
+            "history_stack_source": _clean_value(stack_probe.get("history_source")),
+            "history_stack_quality": _clean_value(stack_probe.get("history_quality")),
+            "history_stack_rows": int(_float_value(stack_probe.get("rows"), default=0.0)),
             "option_chain_status": (
                 "skipped" if not include_chain else "ok" if chain_ok else "warn"
             ),
@@ -7317,8 +9229,14 @@ def build_provider_status(
             "sec_companyfacts_status": "ok" if facts_ok else "warn",
             "sec_companyfacts_rows": sum(int(_float_value(row.get("rows"), default=0.0)) for row in facts_rows),
             "symbol_cache_ok_count": symbol_cache_ok,
+            "market_structure_status": "risk_review" if market_structure_flags else "clear",
+            "market_structure_flags": market_structure_flags,
+            "market_structure_warning_count": len(market_structure_warnings),
+            "market_structure_warnings": market_structure_warnings,
+            "market_structure_risk_score": market_structure_risk_score,
             "notes": [
-                "Ready means at least one free history source worked and the option-chain check passed or was skipped.",
+                "Ready means the layered history path or at least one free history source worked, and the option-chain check passed or was skipped.",
+                "Market-structure checks are official no-key halt, Reg SHO, and short-sale restriction context.",
                 "This is source trust only; it is not a signal-quality or profitability score.",
             ],
         },
@@ -7343,6 +9261,63 @@ def _queue_item(priority: int, category: str, label: str, detail: str,
         "symbol": _clean_value(symbol),
         "query": _clean_value(query or symbol),
     }
+
+
+def _best_setup_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(row, dict) or not row:
+        return None
+    symbol = row.get("ticker_or_symbol") or row.get("ticker") or row.get("symbol")
+    asset = str(row.get("asset") or "").strip().lower()
+    gate_status = str(row.get("setup_gate_status") or "").strip().lower()
+    gate_label = str(row.get("setup_gate_label") or gate_status or "Review setup").strip()
+    setup = str(row.get("setup") or symbol or "Best setup").strip()
+    score = _float_value(row.get("score"), default=math.nan)
+    next_step = str(row.get("setup_gate_next_step") or "Open research and verify current data.").strip()
+    reasons = row.get("setup_gate_reasons")
+    if isinstance(reasons, list):
+        reason_text = "; ".join(str(reason) for reason in reasons[:3] if str(reason).strip())
+    else:
+        reason_text = str(reasons or "").strip()
+
+    action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "open_research"
+    label = "Review gated best setup"
+    priority = 67
+    if gate_status == "ready":
+        priority = 73
+    elif gate_status == "quote_check":
+        priority = 70
+    elif gate_status == "review":
+        priority = 62
+    elif gate_status == "avoid":
+        priority = 44
+        label = "Best setup is held"
+        action = "open_research"
+
+    score_text = f" score {score:.1f}" if math.isfinite(score) else ""
+    detail_parts = [f"{setup} is {gate_label.lower()}{score_text}."]
+    if reason_text:
+        detail_parts.append(reason_text)
+    if next_step:
+        detail_parts.append(next_step)
+    item = _queue_item(
+        priority,
+        "best_setup",
+        label,
+        " ".join(detail_parts),
+        action,
+        symbol=symbol,
+        query=symbol,
+    )
+    item.update({
+        "asset": _clean_value(asset),
+        "source": "best_setups_decision_row",
+        "setup_gate_status": _clean_value(gate_status),
+        "setup_gate_label": _clean_value(gate_label),
+        "setup_gate_next_step": _clean_value(next_step),
+        "setup_gate_reasons": _clean_value(reasons if isinstance(reasons, list) else [reason_text] if reason_text else []),
+        "score": _clean_value(score if math.isfinite(score) else None),
+    })
+    return item
 
 
 def _cached_watchlist_sec_filings(data_dir: Path) -> dict[str, Any]:
@@ -7501,14 +9476,25 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
     refresh_warnings: list[str] = []
 
     health = build_data_health(data_dir)
+    validation_guard = (
+        health.get("validation_guardrail")
+        if isinstance(health.get("validation_guardrail"), dict)
+        else {}
+    )
     for check in health.get("checks", []):
         level = str(check.get("level") or "ok")
         label = str(check.get("label") or "Data health warning")
         if level == "bad":
+            action = (
+                "preview_position_hygiene_cleanup"
+                if label == "Expired local option records"
+                else "refresh_or_fix_artifact"
+            )
             items.append(_queue_item(
-                100, "data_health", check.get("label") or "Data health issue",
+                98 if action == "preview_position_hygiene_cleanup" else 100,
+                "data_health", check.get("label") or "Data health issue",
                 check.get("detail") or "A dashboard data-health check failed.",
-                "refresh_or_fix_artifact",
+                action,
             ))
         elif level == "warn":
             if _is_refreshable_market_warning(label):
@@ -7517,10 +9503,14 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             action = (
                 "warm_symbol_caches"
                 if label.startswith(("SEC ticker cache", "Nasdaq symbol directory"))
+                else "preview_position_hygiene_cleanup"
+                if label == "Expired local option records"
                 else "review_data_health"
             )
             items.append(_queue_item(
-                75 if action == "warm_symbol_caches" else 70,
+                85 if action == "preview_position_hygiene_cleanup"
+                else 75 if action == "warm_symbol_caches"
+                else 70,
                 "data_health", check.get("label") or "Data health warning",
                 check.get("detail") or "A dashboard data-health warning is active.",
                 action,
@@ -7683,6 +9673,20 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         ))
 
     try:
+        setups = build_best_setups(data_dir, per_asset=3, limit=12)
+        setup_item = _best_setup_queue_item(setups.get("decision_row"))
+        if setup_item is not None:
+            items.append(setup_item)
+    except Exception as exc:
+        items.append(_queue_item(
+            42,
+            "best_setup",
+            "Best setup review unavailable",
+            f"Could not build gated best setup review: {str(exc)[:160]}",
+            "review_data_health",
+        ))
+
+    try:
         paper = build_paper_candidates(data_dir, max_new=5, dry_run=False)
         for row in paper.get("rows", [])[:5]:
             symbol = row.get("ticker_or_symbol")
@@ -7778,11 +9782,13 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             "continue_monitoring",
         ))
 
+    items = _guard_entry_action_rows(items, validation_guard)
     items = sorted(_dedupe_queue_items(items), key=lambda item: item["priority"], reverse=True)[:limit]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(items),
         "rows": items,
+        "validation_guardrail": {k: _clean_value(v) for k, v in validation_guard.items()},
         "notes": [
             "Action queue is local decision support only; it does not place trades.",
             "Highest priority goes to bad data health, halt/threshold/SSR risk, SEC filing risk, and open-position exit risk.",
@@ -7826,6 +9832,321 @@ def _today_review_item(
     }
 
 
+def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
+    """Compact first-screen summary for the manual/Robinhood review queue."""
+    readiness = queue.get("readiness") if isinstance(queue.get("readiness"), dict) else {}
+    diagnostics = queue.get("diagnostics") if isinstance(queue.get("diagnostics"), dict) else {}
+    chain_refresh = queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
+    sec_risks = queue.get("sec_offering_risks") if isinstance(queue.get("sec_offering_risks"), dict) else {}
+    orders = queue.get("orders") if isinstance(queue.get("orders"), list) else []
+    top_rejects = queue.get("top_rejection_reasons") if isinstance(queue.get("top_rejection_reasons"), list) else []
+    remediation = diagnostics.get("remediation") if isinstance(diagnostics.get("remediation"), list) else []
+    entry_gate = queue.get("entry_gate") if isinstance(queue.get("entry_gate"), dict) else {}
+    decision_log = queue.get("decision_log") if isinstance(queue.get("decision_log"), dict) else {}
+
+    status = str(queue.get("status") or readiness.get("label") or "unknown").strip().lower()
+    gate_status = str(entry_gate.get("status") or "").strip().lower()
+    diagnosis = str(diagnostics.get("label") or "").strip()
+    candidates = int(_float_value(queue.get("candidate_count"), default=0.0))
+    rejected = int(_float_value(queue.get("rejected_count"), default=0.0))
+    ready_to_submit = int(_float_value(
+        queue.get("gated_ready_to_submit_count"),
+        default=_float_value(readiness.get("ready_to_submit_count"), default=candidates),
+    ))
+    review_only_count = int(_float_value(queue.get("review_only_entry_candidate_count"), default=0.0))
+    premium_left = readiness.get("premium_cap_remaining")
+    max_premium = queue.get("max_total_premium") or queue.get("max_premium_per_order")
+    first_order = orders[0] if orders else {}
+    first_symbol = (
+        first_order.get("symbol")
+        or first_order.get("ticker")
+        or first_order.get("ticker_or_symbol")
+        or first_order.get("contract")
+    )
+    top_reject = str(top_rejects[0].get("reason") or "-") if top_rejects else "-"
+
+    if gate_status == "blocked":
+        tone = "bad"
+        label = entry_gate.get("label") or "Fresh entries blocked"
+        detail = entry_gate.get("detail") or "Entry candidates are review-only until blockers clear."
+    elif gate_status == "review_only":
+        tone = "warn"
+        label = f"Review-only: {review_only_count or candidates} candidate(s)"
+        detail = entry_gate.get("detail") or "Fresh entries require manual approval and validation review."
+    elif candidates > 0 and status in {"ready", "queued", "review"}:
+        tone = "good"
+        label = f"Ready: {candidates} candidate(s)"
+        detail = (
+            f"Top review: {first_symbol or 'open queue'}; "
+            f"budget cap ${_fmt_compact_number(max_premium, precision=0) or '-'}."
+        )
+    elif candidates > 0:
+        tone = "warn"
+        label = f"Review: {candidates} candidate(s)"
+        detail = diagnosis or "Candidates exist, but queue readiness needs a manual check."
+    elif status in {"disabled", "blocked", "killed"}:
+        tone = "bad"
+        label = "Blocked"
+        detail = diagnosis or "Manual queue is blocked by a guardrail."
+    else:
+        tone = "warn"
+        label = "No clean candidate"
+        detail = remediation[0] if remediation else f"No order cleared filters; top reject: {top_reject}."
+
+    chain_label = "not refreshed"
+    if chain_refresh.get("attempted"):
+        chain_label = "refreshed" if chain_refresh.get("ok") else "refresh failed"
+    checks = [
+        f"{ready_to_submit} ready-to-review order(s)",
+        f"{review_only_count} review-only candidate(s)",
+        f"{int(_float_value(decision_log.get('recent_count'), default=0.0))} recent local decision(s)",
+        f"{rejected} rejected by filters",
+        f"{len(sec_risks)} SEC offering-risk symbol(s)",
+        f"Chain {chain_label}",
+    ]
+    if entry_gate:
+        checks.insert(0, f"Entry gate: {entry_gate.get('label') or gate_status or 'unknown'}")
+    if premium_left not in (None, "", "-"):
+        checks.append(f"${_fmt_compact_number(premium_left, precision=0) or premium_left} premium room")
+
+    return {
+        "status": queue.get("status") or "unknown",
+        "label": label,
+        "detail": detail,
+        "tone": tone,
+        "candidate_count": candidates,
+        "rejected_count": rejected,
+        "ready_to_submit_count": ready_to_submit,
+        "review_only_entry_candidate_count": review_only_count,
+        "entry_gate": entry_gate,
+        "entry_gate_status": gate_status or None,
+        "entry_gate_label": entry_gate.get("label"),
+        "decision_log_recent_count": int(_float_value(decision_log.get("recent_count"), default=0.0)),
+        "decision_log_path": decision_log.get("path"),
+        "top_reject": top_reject,
+        "diagnosis": diagnosis or queue.get("status") or "unknown",
+        "first_symbol": _clean_value(first_symbol),
+        "min_dte": queue.get("min_dte"),
+        "account_budget": queue.get("account_budget"),
+        "max_premium": max_premium,
+        "premium_left": premium_left,
+        "sec_offering_risk_count": len(sec_risks),
+        "chain_refresh": chain_label,
+        "checks": checks,
+        "action": "review_data_health" if gate_status == "blocked" else "review_robinhood_queue",
+        "route": "data_health" if gate_status == "blocked" else "robinhood",
+        "query": _clean_value(first_symbol),
+        "symbol": _clean_value(first_symbol),
+    }
+
+
+def _guard_manual_review_summary(
+    manual: dict[str, Any],
+    validation_guard: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep the manual trade card consistent with the command-center guardrail."""
+    if not isinstance(manual, dict):
+        manual = {}
+    validation_guard = validation_guard if isinstance(validation_guard, dict) else {}
+    level = str(validation_guard.get("level") or "").strip().lower()
+    if level != "bad":
+        return manual
+
+    guarded = dict(manual)
+    raw_checks = guarded.get("checks") if isinstance(guarded.get("checks"), list) else []
+    guard_detail = str(
+        validation_guard.get("detail")
+        or "Validation is blocking fresh entries until risk improves."
+    )
+    guarded.update({
+        "label": "Blocked by validation",
+        "detail": guard_detail,
+        "tone": "bad",
+        "ready_to_submit_count": 0,
+        "guarded_candidate_count": manual.get("candidate_count"),
+        "action": "review_data_health",
+        "route": "data_health",
+        "checks": [
+            "Validation guardrail blocked fresh entries",
+            *raw_checks,
+        ][:6],
+    })
+    return guarded
+
+
+def _command_position_triage(risk: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
+    """Build first-screen open-position risk cards from the current risk summary."""
+    rows = risk.get("highest_exit_pressure") if isinstance(risk.get("highest_exit_pressure"), list) else []
+    if not rows:
+        rows = risk.get("worst_positions") if isinstance(risk.get("worst_positions"), list) else []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("ticker_or_symbol") or row.get("ticker") or row.get("symbol") or "").strip().upper()
+        label = str(row.get("position_label") or symbol or "Open position").strip()
+        key = str(row.get("position_id") or label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        pressure = _float_value(row.get("latest_exit_pressure"), default=0.0)
+        pnl = _float_value(row.get("pnl_pct"), default=math.nan)
+        reprice_failed = int(_float_value(row.get("reprice_failed_count"), default=0.0))
+        if pressure >= 80:
+            tone = "bad"
+            action_label = "Review exit"
+        elif pressure >= 60 or reprice_failed >= 2:
+            tone = "warn"
+            action_label = "Review stop"
+        elif math.isfinite(pnl) and pnl <= -0.30:
+            tone = "warn"
+            action_label = "Review loss"
+        else:
+            tone = "good"
+            action_label = "Monitor"
+        pnl_text = f"{pnl * 100:+.1f}%" if math.isfinite(pnl) else "-"
+        detail = f"Exit pressure {pressure:.0f}; open P&L {pnl_text}."
+        if reprice_failed:
+            detail += f" Reprice failures {reprice_failed}."
+        out.append({
+            "symbol": _clean_value(symbol),
+            "label": _clean_value(label),
+            "asset": _clean_value(row.get("asset")),
+            "detail": detail,
+            "tone": tone,
+            "action_label": action_label,
+            "exit_pressure": _clean_value(pressure),
+            "pnl_pct": _clean_value(pnl if math.isfinite(pnl) else None),
+            "reprice_failed_count": reprice_failed,
+            "action": "open_position_monitor",
+            "route": "positions",
+            "query": _clean_value(symbol),
+        })
+        if len(out) >= max(1, int(limit or 4)):
+            break
+    return out
+
+
+def _is_entry_review_action(action: Any, route: Any) -> bool:
+    clean_action = str(action or "").strip().lower()
+    clean_route = str(route or "").strip().lower()
+    if clean_action in {"refresh_saved_quote"}:
+        return False
+    if clean_route in {"chains", "paper", "robinhood"}:
+        return True
+    return clean_action in {
+        "scan_swing_chain",
+        "preview_paper_candidate",
+        "review_robinhood_queue",
+    }
+
+
+def _guard_entry_action_rows(
+    rows: list[dict[str, Any]],
+    validation_guard: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Route fresh-entry rows to guardrail review when validation says not to add risk."""
+    validation_guard = validation_guard if isinstance(validation_guard, dict) else {}
+    if str(validation_guard.get("level") or "").strip().lower() != "bad":
+        return rows
+    detail = str(
+        validation_guard.get("detail")
+        or "Validation is blocking fresh entries until risk improves."
+    )
+    guarded: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not _is_entry_review_action(row.get("action"), row.get("route")):
+            guarded.append(row)
+            continue
+        original_detail = str(row.get("detail") or row.get("label") or "").strip()
+        guarded_row = dict(row)
+        guarded_row["original_action"] = row.get("action")
+        guarded_row["original_route"] = row.get("route")
+        guarded_row["action"] = "review_data_health"
+        guarded_row["route"] = "data_health"
+        guarded_row["source"] = "validation_guard"
+        guarded_row["guarded_by_validation"] = True
+        guarded_row["blocked_reason"] = detail
+        guarded_row["original_label"] = row.get("label")
+        guarded_row["label"] = "Validation-blocked candidate"
+        guarded_row["detail"] = (
+            f"{detail} Original setup context: {original_detail}"
+            if original_detail else detail
+        )
+        guarded.append(guarded_row)
+    return guarded
+
+
+def _command_next_action(
+    first_action: dict[str, Any],
+    session_plan: dict[str, Any],
+    position_triage: list[dict[str, Any]],
+    status_detail: str,
+    validation_guard: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Choose the first action while respecting the preferred review window."""
+    action = str(first_action.get("action") or "open_research")
+    route = str(first_action.get("route") or "research")
+    session_status = str(session_plan.get("status") or "").strip().lower()
+    validation_guard = validation_guard if isinstance(validation_guard, dict) else {}
+    guard_level = str(validation_guard.get("level") or "").strip().lower()
+    guarded_entry = guard_level == "bad" and _is_entry_review_action(action, route)
+    session_blocked_entry = session_status in {"post_window", "research_only"} and _is_entry_review_action(action, route)
+    if guarded_entry or session_blocked_entry:
+        gate_source = "validation_guard" if guarded_entry else "session_gate"
+        gate_label = "Review validation/risk first" if guarded_entry else "Review open-position risk"
+        gate_detail = (
+            validation_guard.get("detail")
+            if guarded_entry
+            else session_plan.get("next_step")
+        ) or status_detail
+        if position_triage:
+            top = position_triage[0]
+            return {
+                "priority": max(70, int(_float_value(first_action.get("priority"), default=0.0))),
+                "label": gate_label,
+                "detail": f"{gate_detail} Top triage: {top.get('label')} - {top.get('detail')}",
+                "action": top.get("action") or "open_position_monitor",
+                "route": top.get("route") or "positions",
+                "symbol": top.get("symbol"),
+                "query": top.get("query") or top.get("symbol"),
+                "source": gate_source,
+                "session_gate_applied": session_blocked_entry,
+                "validation_guard_applied": guarded_entry,
+                "original_action": action,
+                "original_route": route,
+            }
+        return {
+            "priority": first_action.get("priority"),
+            "label": "Review only" if session_blocked_entry else "Fix validation/risk first",
+            "detail": gate_detail,
+            "action": "review_data_health" if guarded_entry else "open_research",
+            "route": "data_health" if guarded_entry else "research",
+            "symbol": None,
+            "query": None,
+            "source": gate_source,
+            "session_gate_applied": session_blocked_entry,
+            "validation_guard_applied": guarded_entry,
+            "original_action": action,
+            "original_route": route,
+        }
+    return {
+        "priority": first_action.get("priority"),
+        "label": first_action.get("label") or "No urgent action",
+        "detail": first_action.get("detail") or status_detail,
+        "action": action,
+        "route": route,
+        "symbol": first_action.get("symbol"),
+        "query": first_action.get("query") or first_action.get("symbol"),
+        "source": first_action.get("source"),
+        "session_gate_applied": False,
+        "validation_guard_applied": False,
+    }
+
+
 def _today_route_for_queue_action(action: Any) -> str:
     clean = str(action or "").strip().lower()
     if clean in {"open_position_monitor"}:
@@ -7839,6 +10160,8 @@ def _today_route_for_queue_action(action: Any) -> str:
         "warm_symbol_caches", "run_refresh_scan",
     }:
         return "data_health"
+    if clean in {"preview_position_hygiene_cleanup"}:
+        return "positions"
     if clean in {
         "run_focused_scan", "review_watchlist", "review_sec_filings",
         "review_sec_filing_risk", "review_trading_halt", "review_regsho_threshold",
@@ -8050,6 +10373,18 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
     except Exception as exc:
         notes.append(f"Action queue merge failed: {str(exc)[:160]}")
 
+    validation_guard: dict[str, Any] = {}
+    try:
+        health = build_data_health(data_dir)
+        validation_guard = (
+            health.get("validation_guardrail")
+            if isinstance(health.get("validation_guardrail"), dict)
+            else {}
+        )
+    except Exception as exc:
+        notes.append(f"Validation guardrail check failed: {str(exc)[:160]}")
+
+    items = _guard_entry_action_rows(items, validation_guard)
     items = sorted(_dedupe_queue_items(items), key=lambda item: int(item.get("priority") or 0), reverse=True)
     rows = [{k: _clean_value(v) for k, v in item.items()} for item in items[:limit]]
     category_counts: dict[str, int] = {}
@@ -8072,6 +10407,7 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
         "setup_count": category_counts.get("setup", 0),
         "saved_contract_count": category_counts.get("saved_contract", 0),
         "swing_scout_count": category_counts.get("swing_scout", 0),
+        "validation_guardrail": {k: _clean_value(v) for k, v in validation_guard.items()},
         "rows": rows,
         "notes": notes + [
             "Today Review merges local setup gates, saved contracts, open-position risk, and action queue items.",
@@ -8090,6 +10426,55 @@ def _command_center_status(health_status: str, risk_level: str, review_count: in
     if review_count > 0:
         return "ready_to_review", "Review the top queue item before opening anything new."
     return "quiet", "No urgent queue items surfaced; wait or run a fresh scan."
+
+
+def _build_session_plan(now: datetime | None = None) -> dict[str, Any]:
+    """Return a plain-English plan for the preferred Optedge review window."""
+    tz = ZoneInfo("America/Los_Angeles") if ZoneInfo else timezone.utc
+    local_now = now.astimezone(tz) if now else datetime.now(tz)
+    minute = local_now.hour * 60 + local_now.minute
+    start = 7 * 60 + 30
+    end = 13 * 60
+    is_weekday = local_now.weekday() < 5
+    command = (
+        "python run.py --aggressive --bankroll 500 --loop 30 --turbo --no-open "
+        "--robinhood-agentic-queue --robinhood-budget 500 --robinhood-min-dte 90 "
+        "--robinhood-refresh-chain --robinhood-chain-preset swing "
+        "--robinhood-max-candidates 5 --robinhood-max-orders 1"
+    )
+    if not is_weekday:
+        status = "research_only"
+        tone = "warn"
+        next_step = "Market is outside the normal weekday review window; use watchlist, chain scans, and validation review."
+    elif start <= minute <= end:
+        status = "active_window"
+        tone = "good"
+        next_step = "Run or keep the 30-minute loop active; review the manual queue after each completed scan."
+    elif minute < start:
+        status = "pre_window"
+        tone = "warn"
+        next_step = "Prepare watchlist and start the loop at 7:30 AM PT."
+    else:
+        status = "post_window"
+        tone = "warn"
+        next_step = "Stop adding new ideas, review exits/open risk, and let validation catch up."
+    return {
+        "status": status,
+        "tone": tone,
+        "label": status.replace("_", " "),
+        "now_pt": local_now.strftime("%Y-%m-%d %I:%M %p PT"),
+        "window": "7:30 AM-1:00 PM PT",
+        "cadence": "30 min scan loop",
+        "min_option_dte": MIN_SWING_OPTION_DTE,
+        "max_orders": 1,
+        "next_step": next_step,
+        "recommended_command": command,
+        "notes": [
+            "Queue review stays approval-required; no automatic broker execution.",
+            "90d+ option floor avoids weekly-options churn while keeping 3m+ swing setups available.",
+            "Use 180d+ manually when you want a slower LEAPS-style review.",
+        ],
+    }
 
 
 def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
@@ -8145,22 +10530,60 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
 def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Build a first-screen decision summary from local cockpit artifacts."""
     health = build_data_health(data_dir)
+    validation_guard = (
+        health.get("validation_guardrail")
+        if isinstance(health.get("validation_guardrail"), dict)
+        else {}
+    )
     today = build_today_review(data_dir, limit=8)
     risk = build_risk_summary(data_dir)
     sources = build_free_data_sources(data_dir)
     performance = build_performance_summary(data_dir)
     chain = _build_chain_shortlist_summary(data_dir)
+    session_plan = _build_session_plan()
+    try:
+        robinhood_queue = build_robinhood_agentic_queue_report(
+            data_dir,
+            account_budget=500,
+            max_candidates=5,
+            max_orders=1,
+            min_dte=MIN_SWING_OPTION_DTE,
+        )
+    except Exception as exc:
+        robinhood_queue = {
+            "status": "unavailable",
+            "candidate_count": 0,
+            "rejected_count": 0,
+            "diagnostics": {"label": "queue unavailable", "remediation": [str(exc)[:160]]},
+        }
+        notes_extra = f"Manual trade queue unavailable: {str(exc)[:160]}"
+    else:
+        notes_extra = ""
+    manual_review = _guard_manual_review_summary(
+        _command_manual_review_summary(robinhood_queue),
+        validation_guard,
+    )
+    position_triage = _command_position_triage(risk, limit=4)
     notes = [
         "Command Center is a first-pass review surface built from local Optedge artifacts.",
         "It does not place trades and does not replace the detailed panels below.",
         "If data trust is warn/bad, refresh or inspect artifacts before acting on any setup.",
     ]
+    if notes_extra:
+        notes.append(notes_extra)
     try:
         swing = build_swing_scout(data_dir, limit=5, include_wait=False, include_nasdaq_movers=True)
     except Exception as exc:
         swing = {"rows": [], "count": 0}
         notes.append(f"Swing radar unavailable: {str(exc)[:160]}")
-    swing_actions = [_command_swing_action(row) for row in (swing.get("rows") or [])[:5]]
+    swing_actions = _guard_entry_action_rows(
+        [_command_swing_action(row) for row in (swing.get("rows") or [])[:5]],
+        validation_guard,
+    )
+    top_queue = _guard_entry_action_rows(
+        today.get("rows", [])[:4] if isinstance(today.get("rows"), list) else [],
+        validation_guard,
+    )
 
     checks = health.get("checks") if isinstance(health.get("checks"), list) else []
     health_counts = {
@@ -8180,6 +10603,12 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "value": today.get("climate_label") or "-",
             "detail": today.get("climate_posture") or "Use the swing climate panel for the full playbook.",
             "tone": "good" if _float_value(today.get("climate_score"), default=50.0) >= 60 else "warn",
+        },
+        {
+            "label": "Review window",
+            "value": session_plan["label"],
+            "detail": session_plan["next_step"],
+            "tone": session_plan["tone"],
         },
         {
             "label": "Data trust",
@@ -8214,17 +10643,20 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             ),
             "tone": "good" if swing_actions else "warn",
         },
+        {
+            "label": "Manual trade queue",
+            "value": manual_review["label"],
+            "detail": manual_review["detail"],
+            "tone": manual_review["tone"],
+        },
     ]
-    next_action = {
-        "priority": first_action.get("priority"),
-        "label": first_action.get("label") or "No urgent action",
-        "detail": first_action.get("detail") or status_detail,
-        "action": first_action.get("action") or "open_research",
-        "route": first_action.get("route") or "research",
-        "symbol": first_action.get("symbol"),
-        "query": first_action.get("query") or first_action.get("symbol"),
-        "source": first_action.get("source"),
-    }
+    next_action = _command_next_action(
+        first_action,
+        session_plan,
+        position_triage,
+        status_detail,
+        validation_guard=validation_guard,
+    )
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": status,
@@ -8237,13 +10669,17 @@ def build_command_center(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "health_counts": health_counts,
         "risk_level": risk.get("risk_level"),
         "total_open": risk.get("total_open", health.get("total_open", 0)),
+        "validation_guardrail": {k: _clean_value(v) for k, v in validation_guard.items()},
         "source_count": sources.get("source_count", 0),
         "no_key_count": sources.get("no_key_count", 0),
         "primary_source_count": sources.get("primary_count", 0),
         "trust_ribbon": _build_trust_ribbon(health, sources, performance, chain),
+        "session_plan": {k: _clean_value(v) for k, v in session_plan.items()},
+        "manual_review": {k: _clean_value(v) for k, v in manual_review.items()},
+        "position_triage": [{k: _clean_value(v) for k, v in row.items()} for row in position_triage],
         "next_action": {k: _clean_value(v) for k, v in next_action.items()},
         "cards": [{k: _clean_value(v) for k, v in row.items()} for row in cards],
-        "top_queue": today.get("rows", [])[:4],
+        "top_queue": top_queue,
         "swing_radar_count": len(swing_actions),
         "swing_actions": [{k: _clean_value(v) for k, v in row.items()} for row in swing_actions],
         "notes": notes,
@@ -8609,10 +11045,14 @@ def _build_packet_data_trust_summary(data_dir: Path, query: str | None) -> dict[
             "history_quality_counts": trust.get("history_quality_counts") or {},
             "option_chain_status": "handled_by_chain_shortlist",
             "symbol_cache_ok_count": trust.get("symbol_cache_ok_count"),
+            "market_structure_status": trust.get("market_structure_status"),
+            "market_structure_flags": trust.get("market_structure_flags") or [],
+            "market_structure_warning_count": trust.get("market_structure_warning_count", 0),
+            "market_structure_risk_score": trust.get("market_structure_risk_score"),
         },
         "rows": _packet_rows(report.get("rows"), [
             "provider", "category", "status", "latency_ms", "rows",
-            "history_source", "history_quality", "last_close", "note",
+            "history_source", "history_quality", "last_close", "risk_flag_name", "risk_score", "note",
         ], limit=6),
         "warnings": report.get("warnings") or [],
         "notes": [
@@ -9370,6 +11810,80 @@ def _health_status(checks: list[dict[str, str]]) -> str:
     return {0: "ok", 1: "warn", 2: "bad"}[worst]
 
 
+def _validation_guardrail(validation: Any) -> dict[str, Any]:
+    if not isinstance(validation, dict):
+        return {
+            "level": "warn",
+            "label": "Validation missing",
+            "detail": "Run python run.py --validation-report before reviewing new entries.",
+            "warnings": ["validation_summary.json missing"],
+        }
+    overall = validation.get("overall") if isinstance(validation.get("overall"), dict) else validation
+    top_level_closed = (
+        validation.get("closed_positions")
+        if isinstance(validation, dict) and validation.get("closed_positions") is not None
+        else None
+    )
+    closed = int(_float_value(
+        top_level_closed,
+        default=_float_value(
+            overall.get("closed_positions"),
+            default=_float_value(overall.get("n"), default=0.0),
+        ),
+    ))
+    win_rate = _float_value(overall.get("win_rate"), default=math.nan)
+    max_dd = _float_value(overall.get("max_drawdown"), default=math.nan)
+    profit_factor = _float_value(overall.get("profit_factor"), default=math.nan)
+    raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+    warnings = [str(item) for item in raw_warnings if str(item).strip()]
+    blocker_reasons: list[str] = []
+    review_reasons: list[str] = []
+
+    if closed < 50:
+        review_reasons.append(f"Only {closed} closed signal(s); sample is still early.")
+    if math.isfinite(max_dd) and max_dd <= -0.20:
+        blocker_reasons.append(f"Max drawdown is {max_dd * 100:.1f}%.")
+    if math.isfinite(win_rate) and win_rate < 0.20:
+        blocker_reasons.append(f"Win rate is {win_rate * 100:.1f}%.")
+    elif math.isfinite(win_rate) and win_rate < 0.35:
+        review_reasons.append(f"Win rate is {win_rate * 100:.1f}%.")
+    if math.isfinite(profit_factor) and profit_factor < 0.85:
+        blocker_reasons.append(f"Profit factor is {profit_factor:.2f}.")
+    elif math.isfinite(profit_factor) and profit_factor < 1.10:
+        review_reasons.append(f"Profit factor is {profit_factor:.2f}.")
+    for warning in warnings[:4]:
+        text = warning.lower()
+        if "max drawdown" in text or "win rate" in text:
+            if warning not in blocker_reasons and warning not in review_reasons:
+                review_reasons.append(warning)
+        elif "sample size" in text and warning not in review_reasons:
+            review_reasons.append(warning)
+
+    if blocker_reasons:
+        level = "bad"
+        label = "Validation guardrail blocking entries"
+        detail = " ".join(blocker_reasons[:2])
+    elif review_reasons:
+        level = "warn"
+        label = "Validation guardrail needs review"
+        detail = " ".join(review_reasons[:2])
+    else:
+        level = "ok"
+        label = "Validation guardrail clean"
+        detail = f"{closed} closed signal(s); validation has no severe local guardrail warning."
+
+    return {
+        "level": level,
+        "label": label,
+        "detail": detail,
+        "closed_positions": closed,
+        "win_rate": _clean_value(win_rate if math.isfinite(win_rate) else None),
+        "max_drawdown": _clean_value(max_dd if math.isfinite(max_dd) else None),
+        "profit_factor": _clean_value(profit_factor if math.isfinite(profit_factor) else None),
+        "warnings": (blocker_reasons + review_reasons + warnings)[:8],
+    }
+
+
 def _count_duplicate_open_positions(data_dir: Path) -> tuple[int, int]:
     raw_count = 0
     deduped_count = 0
@@ -9381,6 +11895,30 @@ def _count_duplicate_open_positions(data_dir: Path) -> tuple[int, int]:
         raw_count += len(dict_rows)
         deduped_count += len(_dedupe_position_rows(dict_rows))
     return raw_count, deduped_count
+
+
+def _expired_local_option_position_summary(data_dir: Path) -> dict[str, Any]:
+    rows = _read_json(data_dir / "open_positions.json")
+    open_rows = rows if isinstance(rows, list) else []
+    asof = datetime.now(timezone.utc)
+    expired: list[dict[str, Any]] = []
+    for row in open_rows:
+        if not isinstance(row, dict):
+            continue
+        if not _option_is_expired_for_hygiene(row, asof):
+            continue
+        record = _agentic_local_option_record(row, "optedge")
+        expired.append({
+            "contract": record.get("contract"),
+            "symbol": record.get("symbol"),
+            "expiry": record.get("expiry"),
+            "dte": record.get("dte"),
+        })
+    return {
+        "count": len(expired),
+        "examples": [row.get("contract") for row in expired[:5] if row.get("contract")],
+        "rows": expired,
+    }
 
 
 def _missing_required_columns(df: pd.DataFrame, required: list[str]) -> list[str]:
@@ -9529,7 +12067,14 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
                     "warn", f"{asset_name} open count mismatch",
                     f"Validation shows {reported_count}; current {count_key} state shows {direct_count}.",
                 ))
+        validation_guard = _validation_guardrail(validation)
+        checks.append(_health_check(
+            str(validation_guard.get("level") or "warn"),
+            str(validation_guard.get("label") or "Validation guardrail"),
+            str(validation_guard.get("detail") or "Review validation before considering new entries."),
+        ))
     else:
+        validation_guard = _validation_guardrail(validation)
         checks.append(_health_check(
             "warn", "Validation summary missing",
             "Run python run.py --validation-report to refresh validation_summary.json.",
@@ -9561,6 +12106,21 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         checks.append(_health_check(
             "ok", "Duplicate open positions",
             f"No duplicate open rows detected across {raw_open} current position row(s).",
+        ))
+
+    expired_local_options = _expired_local_option_position_summary(data_dir)
+    expired_count = int(_float_value(expired_local_options.get("count"), default=0.0))
+    if expired_count:
+        examples = ", ".join(str(item) for item in expired_local_options.get("examples", [])[:3])
+        suffix = f" Example: {examples}." if examples else ""
+        checks.append(_health_check(
+            "bad", "Expired local option records",
+            f"{expired_count} expired option record(s) are still in open_positions.json.{suffix}",
+        ))
+    else:
+        checks.append(_health_check(
+            "ok", "Expired local option records",
+            "No expired options are currently sitting in open_positions.json.",
         ))
 
     equity_curve = artifact_path("equity-curve", data_dir)
@@ -9663,7 +12223,10 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "open_counts": open_counts,
         "total_open": total_open,
         "duplicate_open_rows": duplicate_count,
+        "expired_local_option_rows": expired_count,
+        "expired_local_option_examples": expired_local_options.get("examples", []),
         "checks": checks,
+        "validation_guardrail": validation_guard,
         "artifacts": {
             "dashboard": dashboard_meta,
             "validation_summary": validation_meta,
@@ -9759,7 +12322,7 @@ header { display:flex; justify-content:space-between; gap:16px; align-items:flex
 h1 { margin:0; font-size:28px; font-weight:650; }
 .muted { color:var(--muted); }
 .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 0; }
-.tile, .panel { border:1px solid var(--border); background:var(--panel); border-radius:8px; padding:14px; box-shadow:var(--shadow); }
+.tile, .panel { min-width:0; border:1px solid var(--border); background:var(--panel); border-radius:8px; padding:14px; box-shadow:var(--shadow); }
 .tile { min-height:96px; border-left:3px solid var(--border); }
 .tile:nth-child(1) { border-left-color:var(--accent); }
 .tile:nth-child(2) { border-left-color:var(--good); }
@@ -9771,9 +12334,11 @@ h1 { margin:0; font-size:28px; font-weight:650; }
 a, button { color:var(--text); }
 .btn { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--border); background:var(--panel2); border-radius:8px; padding:8px 12px; text-decoration:none; font-size:13px; cursor:pointer; transition:border-color .16s ease, background .16s ease, transform .16s ease; }
 .btn:hover { border-color:var(--accent); background:#1d2321; }
+.btn.danger { border-color:rgba(239,68,68,.42); background:rgba(239,68,68,.09); }
+.btn.danger:hover { border-color:var(--bad); background:rgba(239,68,68,.16); }
 .btn:active { transform:translateY(1px); }
-.view-nav { position:sticky; top:0; z-index:20; display:flex; gap:8px; overflow:auto; padding:10px 0 12px; margin:0 0 8px; background:rgba(9,10,10,.94); backdrop-filter:blur(12px); border-bottom:1px solid rgba(44,51,48,.72); }
-.view-tab { white-space:nowrap; border:1px solid var(--border); background:var(--panel3); color:var(--muted); border-radius:8px; padding:9px 13px; font-size:13px; cursor:pointer; transition:border-color .16s ease, background .16s ease, color .16s ease; }
+.view-nav { position:sticky; top:0; z-index:20; display:flex; gap:8px; overflow:auto; max-width:100%; padding:10px 0 12px; margin:0 0 8px; background:rgba(9,10,10,.94); backdrop-filter:blur(12px); border-bottom:1px solid rgba(44,51,48,.72); }
+.view-tab { flex:0 0 auto; white-space:nowrap; border:1px solid var(--border); background:var(--panel3); color:var(--muted); border-radius:8px; padding:9px 13px; font-size:13px; cursor:pointer; transition:border-color .16s ease, background .16s ease, color .16s ease; }
 .view-tab.active { color:var(--text); border-color:var(--accent); background:rgba(32,201,151,.13); }
 body:not(.view-all) .panel[data-view] { display:none; }
 body.view-overview .panel[data-view="overview"],
@@ -9793,20 +12358,20 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .search-actions { display:flex; gap:8px; flex-wrap:wrap; }
 .status { margin-top:8px; font-size:12px; color:var(--muted); min-height:18px; }
 .sections { display:grid; grid-template-columns:1fr; gap:12px; margin-top:14px; }
-.section { border:1px solid var(--border); border-radius:8px; background:var(--panel3); overflow:hidden; }
+.section { min-width:0; border:1px solid var(--border); border-radius:8px; background:var(--panel3); overflow:hidden; }
 .section h3 { margin:0; padding:12px 14px; font-size:14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
 .brief-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
 .brief-tile { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; }
 .brief-tile span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
 .brief-tile strong { display:block; margin-top:5px; font-size:14px; }
-.setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; margin-top:12px; }
+.setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr)); gap:10px; margin-top:12px; }
 .setup-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:10px; min-height:176px; }
 .setup-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .setup-card h3 { border:0; padding:0; margin:0; font-size:16px; line-height:1.25; display:block; }
 .setup-card small { color:var(--muted); display:block; margin-top:3px; }
 .setup-card .row { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; }
 .setup-card .row b { color:var(--text); font-weight:600; text-align:right; }
-.compact-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:8px; }
+.compact-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr)); gap:8px; }
 .mini-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; display:grid; gap:6px; min-width:0; }
 .mini-card strong { font-size:15px; line-height:1.2; }
 .mini-card small { color:var(--soft); line-height:1.35; overflow-wrap:anywhere; }
@@ -9819,6 +12384,8 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .pill { display:inline-flex; align-items:center; white-space:nowrap; border:1px solid var(--border); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:11px; background:var(--panel2); }
 .pill.ready { border-color:rgba(16,185,129,.7); color:#bbf7d0; background:rgba(16,185,129,.12); }
 .pill.review { border-color:rgba(245,158,11,.7); color:#fde68a; background:rgba(245,158,11,.12); }
+.pill.quote_check { border-color:rgba(56,189,248,.7); color:#bae6fd; background:rgba(56,189,248,.12); }
+.pill.avoid { border-color:rgba(239,68,68,.72); color:#fecaca; background:rgba(239,68,68,.12); }
 .pill.wait { border-color:rgba(239,68,68,.7); color:#fecaca; background:rgba(239,68,68,.12); }
 .pill.pass { border-color:rgba(16,185,129,.75); color:#bbf7d0; background:rgba(16,185,129,.14); }
 .pill.hold { border-color:rgba(245,158,11,.75); color:#fde68a; background:rgba(245,158,11,.14); }
@@ -9835,7 +12402,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .decision-side ul { margin:0; padding-left:18px; color:var(--soft); font-size:12px; line-height:1.45; }
 .decision-alt { display:flex; flex-wrap:wrap; gap:6px; }
 .decision-alt .pill { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
-.review-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:10px; margin-top:12px; }
+.review-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr)); gap:10px; margin-top:12px; }
 .review-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:12px; display:grid; gap:10px; min-height:168px; }
 .review-card.setup { border-left:4px solid var(--accent); }
 .review-card.saved_contract { border-left:4px solid var(--good); }
@@ -9867,7 +12434,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .command-card.good { border-color:rgba(16,185,129,.45); }
 .command-card.warn { border-color:rgba(245,158,11,.55); }
 .command-card.bad { border-color:rgba(239,68,68,.55); }
-.trust-ribbon { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; }
+.trust-ribbon { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr)); gap:8px; }
 .trust-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; min-height:94px; }
 .trust-card span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
 .trust-card strong { display:block; margin-top:5px; font-size:15px; }
@@ -9881,11 +12448,16 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .priority-badge.cool { border-color:rgba(32,201,151,.65); color:#a7f3d0; background:rgba(32,201,151,.10); }
 .review-card .btn { justify-content:center; width:100%; align-self:end; }
 .chain-preset.active { border-color:var(--accent); background:rgba(32,201,151,.13); color:var(--text); }
-.brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-top:10px; }
-.brief-list { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; }
+.brief-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr)); gap:10px; margin-top:10px; }
+.brief-cols > * { min-width:0; }
+.brief-list { min-width:0; border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; }
 .brief-list h4 { margin:0 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
 .brief-list ul { margin:0; padding-left:18px; color:var(--soft); font-size:12px; }
-.table-wrap { overflow:auto; }
+.action-list { display:grid; gap:8px; }
+.action-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; border:1px solid var(--border); background:rgba(255,255,255,.02); border-radius:8px; padding:8px; }
+.action-row strong { display:block; font-size:13px; }
+.action-row small { display:block; margin-top:3px; color:var(--muted); line-height:1.35; }
+.table-wrap { min-width:0; max-width:100%; overflow:auto; }
 table { width:100%; border-collapse:collapse; font-size:12px; }
 th, td { padding:8px 10px; border-bottom:1px solid var(--border-soft); text-align:left; vertical-align:top; }
 th { color:var(--muted); text-transform:uppercase; font-size:10px; letter-spacing:.4px; }
@@ -9942,6 +12514,10 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/swing-packet-md" target="_blank">Swing packet MD</a>
     <a class="btn" href="/artifact/robinhood-agentic-queue" target="_blank">Agentic queue</a>
     <a class="btn" href="/artifact/robinhood-agentic-prompt" target="_blank">Agent prompt</a>
+    <a class="btn" href="/artifact/robinhood-agentic-cycle" target="_blank">Cycle packet</a>
+    <a class="btn" href="/artifact/robinhood-agentic-cycle-prompt" target="_blank">Cycle prompt</a>
+    <a class="btn" href="/artifact/robinhood-live-order-tickets" target="_blank">Live tickets</a>
+    <a class="btn" href="/artifact/agentic-paper-positions" target="_blank">Agentic paper</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
   <section class="global-command" aria-label="Quick research command">
@@ -9973,7 +12549,7 @@ tr.clickable-row:hover { background:#18201d; }
   </nav>
   <section class="panel" data-view="overview">
     <h2 style="margin:0 0 8px;font-size:18px">Command center</h2>
-    <div class="muted">Fast first read: market posture, data trust, open risk, free-source coverage, and the next review action.</div>
+    <div class="muted">Fast first read: market posture, Review window, data trust, open risk, free-source coverage, and the next review action.</div>
     <div class="status" id="command-center-status-text"></div>
     <div id="command-center-results"></div>
   </section>
@@ -10099,6 +12675,23 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="section" style="margin-top:12px"><div id="exit-review-results"></div></div>
   </section>
   <section class="panel" data-view="positions">
+    <h2 style="margin:0 0 8px;font-size:18px">Position hygiene</h2>
+    <div class="muted">Review stale local state, expired option records, and broker/local mismatches without deleting or placing anything.</div>
+    <div class="scan-controls">
+      <button class="btn" type="button" id="hygiene-load">Refresh hygiene</button>
+      <button class="btn" type="button" id="hygiene-write">Write plan file</button>
+      <button class="btn" type="button" id="hygiene-apply-preview">Preview expired cleanup</button>
+      <button class="btn danger" type="button" id="hygiene-apply-run">Apply expired cleanup</button>
+      <a class="btn" href="/artifact/position-hygiene-plan" target="_blank">Open plan</a>
+    </div>
+    <div class="status" id="hygiene-status-text"></div>
+    <div class="status" id="hygiene-apply-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="hygiene-summary"></div>
+    <div class="brief-grid" style="margin-top:12px" id="hygiene-apply-summary"></div>
+    <div class="section" style="margin-top:12px"><div id="hygiene-apply-results" class="table-wrap"></div></div>
+    <div class="section" style="margin-top:12px"><div id="hygiene-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel" data-view="positions">
     <h2 style="margin:0 0 8px;font-size:18px">Open position monitor</h2>
     <div class="muted">Review current lifecycle positions across options, shares, and futures. Click a row to look it up.</div>
     <div class="scan-controls">
@@ -10173,22 +12766,77 @@ tr.clickable-row:hover { background:#18201d; }
   </section>
   <section class="panel" data-view="paper">
     <h2 style="margin:0 0 8px;font-size:18px">Agentic options queue</h2>
-    <div class="muted">Build a long-dated options shortlist for Codex/Robinhood agent review. This creates queue and prompt files only; it does not place trades.</div>
+    <div class="muted">Build a 90d+ options shortlist for Codex/Robinhood review. Use the long-dated preset when you want 6m+ contracts. This creates queue and prompt files only; it does not place trades.</div>
     <div class="scan-controls">
       <input id="rh-budget" type="number" min="1" step="25" value="500" aria-label="Robinhood budget">
       <input id="rh-max-candidates" type="number" min="1" max="20" step="1" value="5" aria-label="Max candidates">
       <input id="rh-max-orders" type="number" min="1" max="10" step="1" value="2" aria-label="Max orders">
-      <input id="rh-min-dte" type="number" min="0" max="1200" step="1" value="180" aria-label="Minimum DTE">
+      <input id="rh-min-dte" type="number" min="0" max="1200" step="1" value="90" aria-label="Minimum DTE">
       <input id="rh-min-confidence" type="number" min="0" max="100" step="1" value="55" aria-label="Minimum confidence">
       <input id="rh-query" placeholder="Filter ticker/contract">
+      <label class="check"><input id="rh-refresh-chain" type="checkbox"> refresh chain</label>
+      <select id="rh-chain-preset" aria-label="Chain refresh preset">
+        <option value="auto">Auto chain preset</option>
+        <option value="swing">3m+ swing</option>
+        <option value="leaps">6m+ long dated</option>
+        <option value="liquid">Liquid 90d+</option>
+      </select>
       <button class="btn" type="button" id="rh-preview">Preview queue</button>
       <button class="btn" type="button" id="rh-write">Write queue files</button>
     </div>
     <div class="status" id="rh-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="rh-summary"></div>
+    <div class="brief-list" style="margin-top:12px">
+      <h4>Autopilot status</h4>
+      <div class="muted">One clean view of entry gate, staged live ticket, local paper entries, and local decision log.</div>
+      <div class="scan-controls">
+        <button class="btn" type="button" id="autopilot-refresh">Refresh autopilot</button>
+        <button class="btn" type="button" id="autopilot-packet-refresh">Refresh packet</button>
+        <a class="btn" href="/artifact/robinhood-live-order-tickets" target="_blank">Open live tickets</a>
+        <a class="btn" href="/artifact/agentic-paper-positions" target="_blank">Open paper book</a>
+      </div>
+      <div class="status" id="autopilot-status-text"></div>
+      <div class="brief-grid" style="margin-top:12px" id="autopilot-summary"></div>
+      <div class="brief-cols">
+        <div class="brief-list"><h4>Next moves</h4><div id="autopilot-actions"></div></div>
+        <div class="brief-list"><h4>State notes</h4><div id="autopilot-notes"></div></div>
+      </div>
+      <div class="brief-list" style="margin-top:12px"><h4>Ticket preflight</h4><div id="autopilot-preflight" class="table-wrap"></div></div>
+      <div class="brief-cols">
+        <div class="brief-list"><h4>Live-ready tickets</h4><div id="autopilot-tickets" class="table-wrap"></div></div>
+        <div class="brief-list"><h4>Local paper book</h4><div id="autopilot-paper" class="table-wrap"></div></div>
+      </div>
+      <div class="brief-list" style="margin-top:12px">
+        <h4>Broker / local reconciliation</h4>
+        <div class="muted">Optional offline snapshot check from <code>data/robinhood_broker_snapshot.json</code>. No broker action is taken. Direct API: <code>/api/broker-reconciliation</code>.</div>
+        <div id="autopilot-broker" class="table-wrap"></div>
+      </div>
+    </div>
     <div class="brief-cols">
       <div class="brief-list"><h4>Candidate orders</h4><div id="rh-results" class="table-wrap"></div></div>
       <div class="brief-list"><h4>Rejected</h4><div id="rh-rejected" class="table-wrap"></div></div>
+    </div>
+    <div class="brief-list" style="margin-top:12px">
+      <h4>Local decision journal</h4>
+      <div class="muted">Record reviewed/skipped/held/submitted/closed decisions locally. This is not broker confirmation.</div>
+      <div class="scan-controls">
+        <select id="decision-action" aria-label="Decision action">
+          <option value="reviewed">Reviewed</option>
+          <option value="skipped">Skipped</option>
+          <option value="held">Held</option>
+          <option value="submitted">Submitted elsewhere</option>
+          <option value="closed">Closed elsewhere</option>
+          <option value="updated_stop">Updated stop elsewhere</option>
+        </select>
+        <input id="decision-symbol" placeholder="Ticker or symbol">
+        <input id="decision-contract" placeholder="Optional contract">
+        <input id="decision-reason" placeholder="Reason / notes">
+        <button class="btn" type="button" id="decision-add">Log decision</button>
+        <button class="btn" type="button" id="decision-refresh">Refresh journal</button>
+      </div>
+      <div class="status" id="decision-status-text"></div>
+      <div class="brief-grid" style="margin-top:12px" id="decision-summary"></div>
+      <div id="decision-results" class="table-wrap"></div>
     </div>
   </section>
   <section class="panel" data-view="chains">
@@ -10218,6 +12866,20 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="status" id="chain-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="chain-summary"></div>
     <div class="section" style="margin-top:12px"><div id="chain-results" class="table-wrap"></div></div>
+    <div class="section" style="margin-top:12px">
+      <h3><span>CBOE public activity</span><span>No-key context</span></h3>
+      <div class="muted" style="padding:0 12px 10px">Public CBOE venue activity for active 3m+ contracts. This is not consolidated OPRA or an execution quote.</div>
+      <div class="scan-controls" style="padding:0 12px 12px">
+        <input id="cboe-activity-query" placeholder="Ticker or company, e.g. AAPL, SPY, Nvidia">
+        <input id="cboe-activity-min-dte" type="number" min="0" max="1200" step="1" value="90" aria-label="CBOE activity minimum DTE">
+        <input id="cboe-activity-max-dte" type="number" min="1" max="1600" step="1" value="900" aria-label="CBOE activity maximum DTE">
+        <input id="cboe-activity-min-volume" type="number" min="0" max="1000000" step="1" value="1" aria-label="CBOE activity minimum volume">
+        <button class="btn" type="button" id="cboe-activity-load">Check activity</button>
+      </div>
+      <div class="status" id="cboe-activity-status-text"></div>
+      <div class="brief-grid" style="margin-top:12px" id="cboe-activity-summary"></div>
+      <div id="cboe-activity-results" class="table-wrap"></div>
+    </div>
     <div class="section" style="margin-top:12px">
       <h3><span>Shortlist chain sweep</span><span>Free/delayed</span></h3>
       <div class="muted" style="padding:0 12px 10px">Scan a small ticker list, or leave blank to use the latest Optedge option/share/value setups. This keeps free chain sources lighter and cleaner.</div>
@@ -10454,6 +13116,8 @@ function bestSetupCard(row) {
   const action = row.action || row.asset || '';
   const status = row.trade_status || 'Review';
   const readiness = row.readiness_label || 'review';
+  const gate = row.setup_gate_label || row.setup_gate_status || readiness;
+  const gateReasons = Array.isArray(row.setup_gate_reasons) ? row.setup_gate_reasons.join(', ') : (row.setup_gate_reasons || '');
   const flags = Array.isArray(row.risk_flags) ? row.risk_flags.join(', ') : (row.risk_flags || '');
   const swingReasons = Array.isArray(row.swing_fit_reasons) ? row.swing_fit_reasons.join(', ') : (row.swing_fit_reasons || '');
   const swingWarnings = Array.isArray(row.swing_fit_warnings) ? row.swing_fit_warnings.join(', ') : (row.swing_fit_warnings || '');
@@ -10471,7 +13135,7 @@ function bestSetupCard(row) {
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(row.setup || symbol)}</h3><small>${cell(row.reason_selected || '')}</small></div>
-      <span class="pill ${escAttr(readiness)}">${cell(readiness)}</span>
+      <span class="pill ${escAttr(row.setup_gate_status || readiness)}">${cell(gate)}</span>
     </header>
     <div class="row"><span>Asset</span><b>${cell(row.asset)}</b></div>
     <div class="row"><span>Readiness</span><b>${cell(row.readiness_score)}</b></div>
@@ -10482,6 +13146,7 @@ function bestSetupCard(row) {
     <div class="row"><span>Stop / target</span><b>${cell(row.stop_price)} / ${cell(row.target_price)}</b></div>
     <div class="row"><span>Size</span><b>${cell(row.size)}</b></div>
     <div class="row"><span>Quality</span><b>${cell(row.quality)}</b></div>
+    <div class="row"><span>Gate</span><b>${cell(gate)}${gateReasons ? ' | ' + cell(gateReasons) : ''}</b></div>
     ${swingRows}
     <div class="row"><span>Flags</span><b>${cell(flags || 'clear')}</b></div>
     <div class="row"><span>Status</span><b>${cell(status)}</b></div>
@@ -10489,6 +13154,55 @@ function bestSetupCard(row) {
     ${scanBtn}
     ${chainBtn}
   </article>`;
+}
+function bestSetupsDecisionHtml(data) {
+  const rows = data.rows || [];
+  const top = data.decision_row || rows[0] || {};
+  if (!rows.length && !Object.keys(top).length) return '';
+  const symbol = top.ticker_or_symbol || '';
+  const flags = Array.isArray(top.risk_flags) ? top.risk_flags.join(', ') : (top.risk_flags || '');
+  const swingReasons = Array.isArray(top.swing_fit_reasons) ? top.swing_fit_reasons.join(', ') : (top.swing_fit_reasons || '');
+  const swingWarnings = Array.isArray(top.swing_fit_warnings) ? top.swing_fit_warnings.join(', ') : (top.swing_fit_warnings || '');
+  const setupLabel = top.setup || symbol || 'Top setup';
+  const actionLabel = top.action || top.asset || 'Review';
+  const gateLabel = top.setup_gate_label || top.setup_gate_status || top.readiness_label || 'review';
+  const gateReasons = Array.isArray(top.setup_gate_reasons) ? top.setup_gate_reasons.join(', ') : (top.setup_gate_reasons || '');
+  const riskText = flags || swingWarnings || 'No local risk flag on this row';
+  const whyText = gateReasons || swingReasons || top.reason_selected || top.quality || 'Highest local score after current filters';
+  const chainBtn = canScanOptionChainSymbol(symbol, top.asset)
+    ? `<button class="btn setup-chain-btn" type="button" data-symbol="${escAttr(symbol)}">Scan 3m+ chain</button>`
+    : '';
+  const scanBtn = symbol
+    ? `<button class="btn setup-scan-btn" type="button" data-symbol="${escAttr(symbol)}">Run focused scan</button>`
+    : '';
+  const lookupBtn = symbol
+    ? `<button class="btn setup-lookup-btn" type="button" data-symbol="${escAttr(symbol)}">Open research</button>`
+    : '';
+  return `<div class="decision-strip">
+    <div class="decision-main">
+      <div class="command-eyebrow">Best setup to review</div>
+      <h3>${cell(setupLabel)}</h3>
+      <p>${cell(whyText)}</p>
+      <div class="decision-metrics">
+        <div class="decision-metric"><span>Asset</span><strong>${cell(top.asset || '-')}</strong></div>
+        <div class="decision-metric"><span>Action</span><strong>${cell(actionLabel)}</strong></div>
+        <div class="decision-metric"><span>Score</span><strong>${cell(top.score ?? '-')}</strong></div>
+        <div class="decision-metric"><span>Gate</span><strong>${cell(gateLabel)}</strong></div>
+        <div class="decision-metric"><span>Readiness</span><strong>${cell(top.readiness_label || 'review')} ${cell(top.readiness_score ?? '')}</strong></div>
+        <div class="decision-metric"><span>Confidence</span><strong>${cell(top.confidence ?? '-')}</strong></div>
+        <div class="decision-metric"><span>Quality</span><strong>${cell(top.quality || '-')}</strong></div>
+      </div>
+    </div>
+    <div class="decision-side">
+      <ul>
+        <li><b>Risk:</b> ${cell(riskText)}</li>
+        <li><b>Next:</b> ${cell(top.setup_gate_next_step || 'Open research and verify current data.')}</li>
+        <li><b>Entry:</b> ${cell(top.entry_price)} | <b>Stop/target:</b> ${cell(top.stop_price)} / ${cell(top.target_price)}</li>
+        <li><b>Size:</b> ${cell(top.size || '-')} | <b>Status:</b> ${cell(top.trade_status || 'Review')}</li>
+      </ul>
+      <div class="decision-alt">${lookupBtn}${scanBtn}${chainBtn}</div>
+    </div>
+  </div>`;
 }
 function bestSetupsHtml(data) {
   const summaries = data.asset_summaries || [];
@@ -10505,6 +13219,7 @@ function bestSetupsHtml(data) {
     ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
     : '';
   return `<div style="padding:12px">
+    ${bestSetupsDecisionHtml(data)}
     <div class="brief-grid">${summaryTiles}</div>
     ${cards}
     ${notes}
@@ -10675,6 +13390,10 @@ function trustRibbonHtml(rows) {
 function commandCenterHtml(data) {
   if (!data) return '<div class="empty">No command-center data available.</div>';
   const action = data.next_action || {};
+  const manual = data.manual_review || {};
+  const session = data.session_plan || {};
+  const guard = data.validation_guardrail || {};
+  const triage = data.position_triage || [];
   const trustRibbon = trustRibbonHtml(data.trust_ribbon || []);
   const cards = (data.cards || []).map(card => `<article class="command-card ${escAttr(card.tone || '')}">
     <span>${cell(card.label)}</span>
@@ -10703,6 +13422,76 @@ function commandCenterHtml(data) {
   const notes = (data.notes || []).length
     ? `<div class="brief-list"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
     : '';
+  const guardBanner = guard.level && guard.level !== 'ok'
+    ? `<div class="brief-list"><h4>Validation guardrail</h4>
+        <div class="review-card ${escAttr(guard.level === 'bad' ? 'bad' : 'warn')}">
+          <header><span class="pill ${escAttr(guard.level)}">${cell(labelText(guard.level))}</span> <b>${cell(guard.label || 'Validation needs review')}</b></header>
+          <p>${cell(guard.detail || 'Review validation before considering new entries.')}</p>
+          <div class="review-meta">
+            <span>${cell(guard.closed_positions ?? '-')} closed</span>
+            <span>win ${pct(guard.win_rate)}</span>
+            <span>max DD ${pct(guard.max_drawdown)}</span>
+            <span>PF ${ratio(guard.profit_factor)}</span>
+          </div>
+        </div>
+      </div>`
+    : '';
+  const manualChecks = Array.isArray(manual.checks) ? manual.checks : [];
+  const manualReview = `<div class="brief-list">
+    <h4>Manual trade review</h4>
+    <div class="review-card ${escAttr(manual.tone || '')}">
+      <header>
+        <span class="priority-badge ${escAttr(manual.tone === 'good' ? 'cool' : manual.tone === 'bad' ? 'hot' : 'warm')}">${cell(manual.candidate_count ?? 0)}</span>
+        <b>${cell(manual.label || 'Manual queue')}</b>
+      </header>
+      <p>${cell(manual.detail || 'Open the queue before considering any manual order.')}</p>
+      <div class="review-meta">
+        <span class="pill">${cell(manual.status || 'unknown')}</span>
+        ${manual.entry_gate_label ? `<span class="pill">${cell(manual.entry_gate_label)}</span>` : ''}
+        <span>${cell(manual.min_dte || 90)}d+ DTE</span>
+        <span>${cell(manual.chain_refresh || 'not refreshed')}</span>
+        <span>${cell(manual.review_only_entry_candidate_count ?? 0)} review-only</span>
+      </div>
+      ${manualChecks.length ? `<ul>${manualChecks.slice(0, 5).map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : ''}
+      <button class="btn command-center-action-btn" type="button" data-action="${escAttr(manual.action || 'review_robinhood_queue')}" data-route="${escAttr(manual.route || 'robinhood')}" data-query="${escAttr(manual.query || '')}" data-symbol="${escAttr(manual.symbol || '')}">${escHtml(todayReviewActionLabel(manual.action || 'review_robinhood_queue', manual.route || 'robinhood'))}</button>
+    </div>
+  </div>`;
+  const sessionNotes = Array.isArray(session.notes) ? session.notes : [];
+  const sessionPlan = `<div class="brief-list">
+    <h4>Session plan</h4>
+    <div class="review-card ${escAttr(session.tone || '')}">
+      <header>
+        <span class="pill ${escAttr(session.tone || '')}">${cell(session.status || 'review')}</span>
+        <b>${cell(session.window || '7:30 AM-1:00 PM PT')}</b>
+      </header>
+      <p>${cell(session.next_step || '')}</p>
+      <div class="review-meta">
+        <span>${cell(session.now_pt || '-')}</span>
+        <span>${cell(session.cadence || '30 min')}</span>
+        <span>${cell(session.min_option_dte || 90)}d+ options</span>
+        <span>max ${cell(session.max_orders || 1)} new order</span>
+      </div>
+      <code>${escHtml(session.recommended_command || '')}</code>
+      ${sessionNotes.length ? `<ul>${sessionNotes.slice(0, 4).map(x => `<li>${escHtml(x)}</li>`).join('')}</ul>` : ''}
+    </div>
+  </div>`;
+  const positionTriage = triage.length
+    ? `<div class="brief-list"><h4>Position triage</h4>
+      <div class="review-grid">${triage.slice(0, 4).map(r => `<article class="review-card ${escAttr(r.tone || '')}">
+        <header>
+          <span class="priority-badge ${escAttr(r.tone === 'bad' ? 'hot' : r.tone === 'warn' ? 'warm' : 'cool')}">${cell(r.exit_pressure ?? '-')}</span>
+          <b>${cell(r.label || r.symbol || 'Open position')}</b>
+        </header>
+        <p>${cell(r.detail || '')}</p>
+        <div class="review-meta">
+          <span class="pill">${cell(r.asset || 'position')}</span>
+          <span>${cell(r.symbol || '-')}</span>
+          <span>${cell(r.action_label || 'Review')}</span>
+        </div>
+        <button class="btn command-center-action-btn" type="button" data-action="${escAttr(r.action || 'open_position_monitor')}" data-route="${escAttr(r.route || 'positions')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">Review position</button>
+      </article>`).join('')}</div>
+    </div>`
+    : '<div class="brief-list"><h4>Position triage</h4><div class="empty">No open position needs first-screen triage.</div></div>';
   const title = `${cell(labelText(data.status || 'review'))} - ${cell(labelText(data.climate_label || 'unknown climate'))}`;
   return `<div class="command-shell">
     <div class="command-top">
@@ -10729,8 +13518,9 @@ function commandCenterHtml(data) {
       </aside>
     </div>
     ${trustRibbon}
+    ${guardBanner}
     <div class="command-card-grid">${cards}</div>
-    <div class="brief-cols">${queue}${swingRadar}${notes}</div>
+    <div class="brief-cols">${queue}${positionTriage}${sessionPlan}${manualReview}${swingRadar}${notes}</div>
   </div>`;
 }
 function swingPacketHtml(data) {
@@ -10907,6 +13697,7 @@ function todayReviewHtml(data) {
   if (!data) return '<div class="empty">No today-review data available.</div>';
   const rows = data.rows || [];
   const counts = data.category_counts || {};
+  const guard = data.validation_guardrail || {};
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Queue</span><strong>${cell(data.count || 0)}</strong></div>
     <div class="brief-tile"><span>Climate</span><strong>${cell(data.climate_label || '-')}</strong></div>
@@ -10918,13 +13709,27 @@ function todayReviewHtml(data) {
   const cards = rows.length
     ? `<div class="review-grid">${rows.slice(0, 6).map(todayReviewCard).join('')}</div>`
     : '<div class="empty">No urgent review items surfaced. Check the detailed panels or run a fresh scan.</div>';
+  const guardBanner = guard.level && guard.level !== 'ok'
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Validation gate</h4>
+        <div class="review-card ${escAttr(guard.level === 'bad' ? 'bad' : 'warn')}">
+          <header><span class="pill ${escAttr(guard.level)}">${cell(labelText(guard.level))}</span> <b>${cell(guard.label || 'Validation needs review')}</b></header>
+          <p>${cell(guard.detail || 'Review validation before considering new entries.')}</p>
+          <div class="review-meta">
+            <span>${cell(guard.closed_positions ?? '-')} closed</span>
+            <span>win ${pct(guard.win_rate)}</span>
+            <span>max DD ${pct(guard.max_drawdown)}</span>
+            <span>PF ${ratio(guard.profit_factor)}</span>
+          </div>
+        </div>
+      </div>`
+    : '';
   const tableRows = rows.length
     ? todayReviewTable(rows)
     : '<div class="empty">No today-review rows.</div>';
   const notes = (data.notes || []).length
     ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ul></div>`
     : '';
-  return `<div style="padding:12px">${tiles}${cards}<div class="brief-list" style="margin-top:10px"><h4>Full queue</h4>${tableRows}</div>${notes}</div>`;
+  return `<div style="padding:12px">${tiles}${guardBanner}${cards}<div class="brief-list" style="margin-top:10px"><h4>Full queue</h4>${tableRows}</div>${notes}</div>`;
 }
 function reviewPriorityClass(priority) {
   const p = Number(priority || 0);
@@ -10936,11 +13741,13 @@ function reviewCategoryClass(category) {
   return String(category || 'action_item').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 function todayReviewActionLabel(action, route) {
+  if (action === 'preview_position_hygiene_cleanup') return 'Preview cleanup';
   if (action === 'scan_swing_chain') return 'Scan 3m+ chain';
   if (action === 'refresh_saved_quote') return 'Refresh quote';
   if (action === 'run_refresh_scan') return 'Start refresh';
   if (action === 'open_position_monitor' || route === 'positions') return 'Review position';
   if (route === 'paper') return 'Open paper queue';
+  if (route === 'robinhood' || action === 'review_robinhood_queue') return 'Open Robinhood queue';
   if (route === 'data_health') return 'Check health';
   return 'Open research';
 }
@@ -10966,7 +13773,7 @@ function todayReviewTable(rows) {
   const body = rows.map(r => {
     const q = r.query || r.symbol || '';
     return `<tr>
-      <td><button class="btn today-review-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-route="${escAttr(r.route || '')}" data-query="${escAttr(q)}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td>
+      <td><button class="btn today-review-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-route="${escAttr(r.route || '')}" data-query="${escAttr(q)}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(todayReviewActionLabel(r.action, r.route))}</button></td>
       <td><strong>${cell(r.priority)}</strong></td>
       <td>${cell(r.category)}</td>
       <td>${cell(r.label)}</td>
@@ -10978,14 +13785,35 @@ function todayReviewTable(rows) {
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Type</th><th>Item</th><th>Why</th><th>Action</th><th>Symbol</th><th>Source</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
+function actionQueueActionLabel(action) {
+  const clean = String(action || '').trim();
+  if (clean === 'preview_position_hygiene_cleanup') return 'Preview cleanup';
+  if (clean === 'refresh_or_fix_artifact' || clean === 'review_data_health') return 'Check health';
+  if (clean === 'warm_symbol_caches' || clean === 'warm_sec_ticker_cache') return 'Warm cache';
+  if (clean === 'run_refresh_scan') return 'Start refresh';
+  if (clean === 'open_position_monitor') return 'Review position';
+  if (clean === 'preview_paper_candidate' || clean === 'review_paper_export') return 'Open paper queue';
+  if (clean === 'scan_swing_chain') return 'Scan 3m+ chain';
+  if (clean === 'review_sec_filings' || clean === 'review_sec_filing_risk') return 'Review filing';
+  if (clean === 'review_trading_halt') return 'Review halt';
+  if (clean === 'review_regsho_threshold') return 'Review Reg SHO';
+  if (clean === 'review_short_sale_circuit') return 'Review SSR';
+  if (clean === 'run_focused_scan' || clean === 'open_research') return 'Open research';
+  return 'Open';
+}
 function actionQueueTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
   const body = rows.map(r => {
     const sym = r.query || r.symbol || '';
     const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
-    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">Open</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td></tr>`;
+    const gateStatus = r.setup_gate_status || r.climate_gate_status || r.entry_gate_status || '';
+    const gateLabel = r.setup_gate_label || r.climate_gate_label || r.entry_gate_label || gateStatus || '-';
+    const gate = gateStatus
+      ? `<span class="pill ${escAttr(gateStatus)}">${cell(gateLabel)}</span>`
+      : cell(gateLabel);
+    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(actionQueueActionLabel(r.action))}</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${gate}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td><td>${cell(r.source || '-')}</td></tr>`;
   }).join('');
-  return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Detail</th><th>Action</th><th>Symbol</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Gate</th><th>Detail</th><th>Action</th><th>Symbol</th><th>Source</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function swingClimateHtml(data) {
   if (!data) return '<div class="empty">No swing climate available.</div>';
@@ -11217,6 +14045,9 @@ function providerSummaryHtml(data) {
     ['Chain source', trust.option_chain_source || '-'],
     ['Chain rows', trust.option_chain_rows ?? '-'],
     ['Chain providers', trust.option_chain_provider_summary || '-'],
+    ['Market structure', trust.market_structure_status || '-'],
+    ['Risk flags', (trust.market_structure_flags || []).join(', ') || '-'],
+    ['Risk score', trust.market_structure_risk_score ?? '-'],
     ['SEC facts', `${trust.sec_companyfacts_status || '-'} / ${trust.sec_companyfacts_rows || 0}`],
     ['Working', `${data.ok_count || 0}/${data.provider_count || 0}`],
     ['Warnings', (data.warnings || []).length]
@@ -11224,7 +14055,51 @@ function providerSummaryHtml(data) {
   const warning = trust.option_chain_warning
     ? `<div class="brief-list" style="margin-top:10px"><h4>Chain warning</h4><ul><li>${cell(trust.option_chain_warning)}</li></ul></div>`
     : '';
-  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('') + warning;
+  const marketWarnings = (trust.market_structure_warnings || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Market-structure warnings</h4><ul>${trust.market_structure_warnings.map(w => `<li>${cell(w)}</li>`).join('')}</ul></div>`
+    : '';
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('') + warning + marketWarnings;
+}
+function providerStatusDetail(row) {
+  const parts = [];
+  if (row.note) parts.push(row.note);
+  if (row.provider_attempt_summary) parts.push(`Provider trail: ${row.provider_attempt_summary}`);
+  if (row.history_source) parts.push(`History: ${row.history_source}`);
+  if (row.history_quality) parts.push(row.history_quality);
+  if (row.quote_quality) parts.push(`Quote: ${row.quote_quality}`);
+  if (row.data_delay) parts.push(`Delay: ${row.data_delay}`);
+  if (row.risk_flag_name) parts.push(`Flag: ${labelText(row.risk_flag_name)}`);
+  if (row.source && !parts.join(' ').includes(String(row.source))) parts.push(`Source: ${row.source}`);
+  return parts.filter(Boolean).slice(0, 4).join(' · ') || '-';
+}
+function providerStatusRole(row) {
+  const category = String(row.category || '');
+  if (category === 'history_stack') return 'Primary price path';
+  if (category === 'history') return 'Price fallback';
+  if (category === 'options') return 'Option-chain quote source';
+  if (category === 'fundamentals') return 'SEC fundamentals';
+  if (category === 'symbol_search') return 'Ticker search cache';
+  if (category === 'market_structure') return 'Official risk context';
+  return labelText(category);
+}
+function providerStatusTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No provider rows available.</div>';
+  const body = rows.map(row => {
+    const status = String(row.status || 'warn').toLowerCase();
+    const tone = status === 'ok' ? 'good' : 'warn';
+    const rowCount = row.rows === null || row.rows === undefined ? '-' : row.rows;
+    const latency = row.latency_ms === null || row.latency_ms === undefined ? '-' : `${row.latency_ms}ms`;
+    const risk = row.risk_flag || row.market_structure_flag ? ' risk-context' : '';
+    return `<tr class="${escAttr(tone + risk)}">
+      <td><strong class="${escAttr(tone)}">${cell(status)}</strong></td>
+      <td><strong>${cell(row.provider)}</strong></td>
+      <td>${cell(providerStatusRole(row))}</td>
+      <td>${cell(rowCount)}</td>
+      <td>${cell(latency)}</td>
+      <td>${cell(providerStatusDetail(row))}</td>
+    </tr>`;
+  }).join('');
+  return `<table><thead><tr><th>Status</th><th>Source</th><th>Role</th><th>Rows</th><th>Latency</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 function freeSourcesSummaryHtml(data) {
   const fields = [
@@ -11257,11 +14132,60 @@ function healthClass(level) {
   if (level === 'warn') return 'warn';
   return 'good';
 }
-function healthTable(health) {
+function healthToneLabel(level) {
+  const clean = String(level || 'ok').toLowerCase();
+  if (clean === 'bad') return 'Fix first';
+  if (clean === 'warn') return 'Review';
+  return 'Clean';
+}
+function healthIssueRows(health) {
   const checks = (health && health.checks) || [];
-  if (!checks.length) return '<div class="empty">No health checks available.</div>';
-  const body = checks.map(c => `<tr><td><strong class="${healthClass(c.level)}">${cell(c.level)}</strong></td><td>${cell(c.label)}</td><td>${cell(c.detail)}</td></tr>`).join('');
-  return `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>
+  const seen = new Set();
+  const rows = [];
+  checks.forEach(c => {
+    const level = String(c.level || 'ok').toLowerCase();
+    const label = String(c.label || 'Health check').trim();
+    const detail = String(c.detail || '').trim();
+    const key = `${level}|${label}|${detail}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({ level, label, detail });
+  });
+  const rank = { bad: 0, warn: 1, ok: 2 };
+  return rows.sort((a, b) => (rank[a.level] ?? 3) - (rank[b.level] ?? 3) || a.label.localeCompare(b.label));
+}
+function healthSummaryHtml(health, rows) {
+  const counts = rows.reduce((acc, row) => {
+    acc[row.level] = (acc[row.level] || 0) + 1;
+    return acc;
+  }, { ok: 0, warn: 0, bad: 0 });
+  const open = (health && health.open_counts) || {};
+  const guard = (health && health.validation_guardrail) || {};
+  const fixFirst = rows.find(row => row.level === 'bad') || rows.find(row => row.level === 'warn');
+  const fixCard = fixFirst
+    ? `<div class="brief-list" style="margin-top:10px"><h4>${escHtml(healthToneLabel(fixFirst.level))}</h4><ul><li><b>${cell(fixFirst.label)}</b>: ${cell(fixFirst.detail)}</li></ul></div>`
+    : '<div class="empty">No data-health blockers surfaced.</div>';
+  const tiles = `<div class="brief-grid">
+    <div class="brief-tile"><span>Status</span><strong class="${escAttr(healthClass(health && health.status))}">${cell(health && health.status)}</strong></div>
+    <div class="brief-tile"><span>Fix / review / clean</span><strong>${cell(counts.bad || 0)} / ${cell(counts.warn || 0)} / ${cell(counts.ok || 0)}</strong></div>
+    <div class="brief-tile"><span>Open state</span><strong>${cell((health && health.total_open) || 0)}</strong></div>
+    <div class="brief-tile"><span>Assets open</span><strong>O ${cell(open.options || 0)} / S ${cell(open.shares || 0)} / F ${cell(open.futures || 0)}</strong></div>
+    <div class="brief-tile"><span>Duplicate opens</span><strong>${cell((health && health.duplicate_open_rows) || 0)}</strong></div>
+    <div class="brief-tile"><span>Expired local</span><strong>${cell((health && health.expired_local_option_rows) || 0)}</strong></div>
+    <div class="brief-tile"><span>Validation</span><strong>${cell(guard.label || '-')}</strong></div>
+  </div>`;
+  return `${tiles}${fixCard}`;
+}
+function healthIssueTable(rows) {
+  if (!rows.length) return '<div class="empty">No health checks available.</div>';
+  const body = rows.map(c => `<tr class="${escAttr(c.level)}"><td><strong class="${healthClass(c.level)}">${cell(healthToneLabel(c.level))}</strong></td><td>${cell(c.label)}</td><td>${cell(c.detail)}</td></tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr><th>Priority</th><th>Check</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function healthTable(health) {
+  const rows = healthIssueRows(health);
+  if (!rows.length) return '<div class="empty">No health checks available.</div>';
+  return `${healthSummaryHtml(health, rows)}
+    <div class="brief-list" style="margin-top:10px"><h4>Health checks</h4>${healthIssueTable(rows)}</div>
     <div class="brief-list" style="margin-top:10px"><h4>Opportunity quality</h4>${opportunityQualityTable(health)}</div>`;
 }
 function suggestionHtml(rows) {
@@ -11534,6 +14458,74 @@ function wireSavedContractRows() {
     });
   });
 }
+const cockpitLoadedViews = new Set();
+
+function viewLoaders(view) {
+  return {
+    overview: [
+      ['command center', loadCommandCenter],
+      ['today review', loadTodayReview],
+      ['swing climate', loadSwingClimate],
+      ['best setups', loadBestSetups],
+      ['swing scout', loadSwingScout],
+      ['climate gates', loadClimateGatedSetups],
+      ['action queue', loadActionQueue],
+      ['market pulse', loadMarketPulse],
+      ['breadth pulse', loadBreadthPulse],
+      ['sector pulse', loadSectorPulse],
+      ['macro stress', loadMacroStress],
+      ['risk summary', loadRiskSummary],
+      ['performance summary', loadPerformanceSummary],
+    ],
+    positions: [
+      ['position hygiene', () => loadPositionHygiene(false)],
+      ['positions', loadPositions],
+      ['exit reviews', loadExitReviews],
+    ],
+    explore: [
+      ['opportunity explorer', loadExplorer],
+    ],
+    chains: [
+      ['CBOE activity', loadCboeActivity],
+      ['saved contracts', () => loadSavedContracts(false)],
+    ],
+    providers: [
+      ['free source map', loadFreeDataSources],
+      ['provider status', loadProviderStatus],
+    ],
+    paper: [
+      ['paper candidates', () => loadPaperCandidates(false)],
+      ['agentic queue', () => loadRobinhoodQueue(false)],
+      ['decision journal', loadDecisionJournal],
+      ['autopilot status', loadAgenticAutopilotStatus],
+    ],
+    research: [
+      ['watchlist', loadWatchlist],
+      ['SEC filings', loadWatchlistSecFilings],
+    ],
+  }[view] || [];
+}
+
+async function loadView(view, force=false) {
+  const target = view || 'overview';
+  if (target === 'all') {
+    await Promise.all(['overview', 'positions', 'explore', 'chains', 'providers', 'paper', 'research'].map(v => loadView(v, force)));
+    return;
+  }
+  if (!force && cockpitLoadedViews.has(target)) return;
+  cockpitLoadedViews.add(target);
+  const loaders = viewLoaders(target);
+  const runLoaders = (items) => Promise.all(items.map(([label, loader]) => (
+    loader().catch(err => { console.error(label + ' failed', err); })
+  )));
+  if (target === 'overview' && loaders.length > 1) {
+    await runLoaders(loaders.slice(0, 1));
+    window.setTimeout(() => { runLoaders(loaders.slice(1)); }, 80);
+    return;
+  }
+  await runLoaders(loaders);
+}
+
 function setView(view) {
   const target = view || 'overview';
   document.body.className = document.body.className
@@ -11544,6 +14536,7 @@ function setView(view) {
   document.querySelectorAll('.view-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.view === target);
   });
+  loadView(target).catch(err => console.error('view load failed', err));
 }
 function scrollToId(id) {
   const el = $(id);
@@ -11553,6 +14546,13 @@ function scrollToId(id) {
 }
 async function routeQueueAction(action, query, symbol) {
   const q = query || symbol || '';
+  if (action === 'preview_position_hygiene_cleanup') {
+    setView('positions');
+    await loadPositionHygiene(false);
+    await applyPositionHygiene(false);
+    scrollToId('hygiene-apply-results');
+    return;
+  }
   if (action === 'warm_sec_ticker_cache' || action === 'warm_symbol_caches') {
     $('queue-status-text').textContent = 'Warming free symbol search caches...';
     const res = await fetch('/api/warm-symbol-caches', {method: 'POST'});
@@ -11599,6 +14599,14 @@ async function routeQueueAction(action, query, symbol) {
     await loadPaperCandidates(false);
     if (q) $('symbol').value = q;
     scrollToId('paper-results');
+    return;
+  }
+  if (action === 'scan_swing_chain') {
+    setView('chains');
+    if (symbol || q) $('chain-query').value = symbol || q;
+    applyChainPreset('swing');
+    window.location.hash = 'chains';
+    await scanOptionChain();
     return;
   }
   if (action === 'run_focused_scan') {
@@ -11650,6 +14658,10 @@ async function routeQueueAction(action, query, symbol) {
 }
 async function routeTodayReviewAction(action, route, query, symbol) {
   const q = query || symbol || '';
+  if (action === 'preview_position_hygiene_cleanup') {
+    await routeQueueAction(action, query, symbol);
+    return;
+  }
   if (action === 'run_refresh_scan') {
     await routeQueueAction(action, query, symbol);
     return;
@@ -11679,6 +14691,14 @@ async function routeTodayReviewAction(action, route, query, symbol) {
     $('paper-query').value = q;
     await loadPaperCandidates(false);
     scrollToId('paper-results');
+    return;
+  }
+  if (route === 'robinhood' || action === 'review_robinhood_queue') {
+    setView('paper');
+    $('rh-query').value = q;
+    if (!$('rh-min-dte').value || Number($('rh-min-dte').value) > 90) $('rh-min-dte').value = 90;
+    await loadRobinhoodQueue(false);
+    scrollToId('rh-results');
     return;
   }
   if (route === 'data_health') {
@@ -12087,7 +15107,7 @@ async function loadProviderStatus() {
   const warningText = (data.warnings || []).length ? ` ${data.warnings.length} warning(s).` : '';
   $('provider-status-text').textContent = `${data.ok_count || 0}/${data.provider_count || 0} provider checks usable.${warningText}`;
   $('provider-summary').innerHTML = providerSummaryHtml(data);
-  $('provider-results').innerHTML = table(data.rows || []);
+  $('provider-results').innerHTML = providerStatusTable(data.rows || []);
   $('provider-results').dataset.loaded = '1';
 }
 async function loadFreeDataSources() {
@@ -12229,20 +15249,159 @@ function paperCandidateSummary(data) {
 }
 function robinhoodQueueSummary(data) {
   const readiness = data.readiness || {};
+  const diagnostics = data.diagnostics || {};
+  const chainRefresh = data.chain_refresh || {};
+  const nearMisses = diagnostics.near_misses || [];
+  const budgetLadder = diagnostics.budget_ladder || {};
+  const remediation = diagnostics.remediation || [];
   const fields = [
     ['Status', data.status || '-'],
     ['Readiness', readiness.label || data.status || '-'],
+    ['Diagnosis', diagnostics.label || '-'],
     ['Candidates', data.candidate_count || 0],
+    ['Near misses', nearMisses.length || 0],
+    ['Next cap', budgetLadder.next_unlock_cap ? '$' + budgetLadder.next_unlock_cap : '-'],
     ['Rejected', data.rejected_count || 0],
     ['Submit cap', readiness.ready_to_submit_count ?? data.max_orders_to_submit ?? 0],
     ['Max orders', data.max_orders_to_submit || 0],
     ['Min DTE', data.min_dte || 0],
+    ['Chain refresh', chainRefresh.attempted ? (chainRefresh.ok ? 'ok' : 'failed') : 'off'],
     ['Budget', '$' + (data.account_budget || 0)],
     ['Max premium', '$' + (data.max_total_premium || 0)],
     ['Premium left', '$' + (readiness.premium_cap_remaining ?? '-')],
+    ['Next fix', remediation[0] || '-'],
     ['Top rejects', countMapText(data.rejection_reason_counts || readiness.rejection_reason_counts || {})]
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function autopilotSummary(data) {
+  const paper = data.paper_book_summary || {};
+  const paperPnl = (Number(paper.priced_count || 0) > 0)
+    ? moneyShort(paper.unrealized_pnl_dollars)
+    : ((data.paper_open_count || 0) > 0 ? 'quote needed' : '-');
+  const fields = [
+    ['State', data.label || data.status || '-'],
+    ['Entry gate', data.entry_gate_label || data.entry_gate_status || '-'],
+    ['Fresh entries', data.fresh_entries_allowed ? 'allowed' : 'blocked'],
+    ['Live tickets', data.live_ticket_count || 0],
+    ['Paper open', data.paper_open_count || 0],
+    ['Paper priced', `${paper.priced_count || 0}/${paper.open_count || data.paper_open_count || 0}`],
+    ['Paper P&L', paperPnl],
+    ['Paper review', paper.review_count || 0],
+    ['Broker sync', data.broker_reconciliation_label || data.broker_reconciliation_status || '-'],
+    ['Broker matched', `${data.broker_matched_count || 0}/${data.broker_option_count || 0}`],
+    ['Broker-only', data.broker_only_count || 0],
+    ['Local-only', data.local_only_count || 0],
+    ['Expired local', data.local_expired_count || 0],
+    ['Broker age', data.broker_snapshot_age || 'missing'],
+    ['Agentic options', data.agentic_option_ready ? 'ready' : 'not ready'],
+    ['Queue candidates', data.candidate_count || 0],
+    ['Review-only', data.review_only_entry_candidate_count || 0],
+    ['Preflight blocks', data.ticket_preflight_block_count || 0],
+    ['Preflight warnings', data.ticket_preflight_warn_count || 0],
+    ['Cycle age', `${data.cycle_age || 'missing'} / ${data.cycle_freshness || '-'}`],
+    ['Ticket age', `${data.ticket_packet_age || 'missing'} / ${data.ticket_packet_freshness || '-'}`],
+    ['Decision rows', data.decision_recent_count || 0],
+    ['Decision log', data.decision_log_needed ? 'needed' : 'current'],
+    ['Kill switch', data.kill_switch ? 'present' : 'absent'],
+    ['Auto-submit', data.auto_submit_allowed ? 'allowed' : 'off'],
+    ['Top blocker', (data.blockers || [])[0] || '-']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function autopilotActionsHtml(data) {
+  const actions = data.next_actions || [];
+  if (!actions.length) return '<div class="empty">No next action surfaced.</div>';
+  return `<div class="action-list">${actions.map(action => `
+    <div class="action-row">
+      <div><strong>${cell(action.label || action.action || 'Review')}</strong><small>${cell(action.detail || '')}</small></div>
+      <button class="btn autopilot-action-btn" type="button" data-action="${escAttr(action.action || '')}">${cell(autopilotActionLabel(action.action))}</button>
+    </div>`).join('')}</div>`;
+}
+function autopilotNotesHtml(data) {
+  const rows = [
+    ...(data.blockers || []).slice(0, 4).map(x => ({kind: 'Blocker', note: x})),
+    ...(data.warnings || []).slice(0, 3).map(x => ({kind: 'Warning', note: x})),
+    ...(data.decision_debt_reasons || []).slice(0, 3).map(x => ({kind: 'Decision log', note: x})),
+    ...(data.notes || []).slice(0, 3).map(x => ({kind: 'Note', note: x}))
+  ];
+  if (!rows.length) return '<div class="empty">No current notes.</div>';
+  return `<ul>${rows.map(row => `<li><strong>${cell(row.kind)}:</strong> ${cell(row.note)}</li>`).join('')}</ul>`;
+}
+function autopilotActionLabel(action) {
+  if (action === 'refresh_autopilot_packet') return 'Refresh';
+  if (action === 'build_autopilot_packet') return 'Build';
+  if (action === 'review_validation') return 'Review';
+  if (action === 'review_ticket') return 'Ticket';
+  if (action === 'review_paper_book') return 'Paper';
+  if (action === 'review_broker_sync') return 'Sync';
+  if (action === 'log_decision') return 'Log';
+  if (action === 'review_kill_switch') return 'Check';
+  return 'Open';
+}
+async function routeAutopilotAction(action) {
+  if (action === 'refresh_autopilot_packet' || action === 'build_autopilot_packet') {
+    $('autopilot-status-text').textContent = 'Refreshing agentic packet...';
+    $('rh-min-dte').value = Math.max(parseInt($('rh-min-dte').value || '90', 10) || 90, 90);
+    $('rh-refresh-chain').checked = true;
+    $('rh-chain-preset').value = 'swing';
+    await loadRobinhoodQueue(true);
+    await loadAgenticAutopilotStatus();
+    return;
+  }
+  if (action === 'review_validation') {
+    setView('overview');
+    await loadSummary();
+    await loadCommandCenter();
+    scrollToId('health-results');
+    return;
+  }
+  if (action === 'review_ticket') {
+    scrollToId('autopilot-tickets');
+    return;
+  }
+  if (action === 'review_paper_book') {
+    scrollToId('autopilot-paper');
+    return;
+  }
+  if (action === 'review_broker_sync') {
+    scrollToId('autopilot-broker');
+    return;
+  }
+  if (action === 'log_decision') {
+    scrollToId('decision-results');
+    return;
+  }
+  $('autopilot-status-text').textContent = 'Review the listed item before changing local state.';
+}
+function wireAutopilotActions() {
+  document.querySelectorAll('.autopilot-action-btn').forEach(btn => {
+    btn.addEventListener('click', () => routeAutopilotAction(btn.dataset.action || ''));
+  });
+}
+async function loadAgenticAutopilotStatus() {
+  if (!$('autopilot-status-text')) return;
+  $('autopilot-status-text').textContent = 'Loading autopilot state...';
+  const res = await fetch('/api/agentic-autopilot-status');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('autopilot-status-text').textContent = 'Autopilot status failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const blockers = Array.isArray(data.blockers) && data.blockers.length ? ` Blocker: ${data.blockers[0]}` : '';
+  $('autopilot-status-text').textContent = `${data.label || data.status || 'Autopilot'}: ${data.detail || ''}${blockers}`;
+  $('autopilot-summary').innerHTML = autopilotSummary(data);
+  $('autopilot-actions').innerHTML = autopilotActionsHtml(data);
+  $('autopilot-notes').innerHTML = autopilotNotesHtml(data);
+  $('autopilot-preflight').innerHTML = table(data.ticket_preflight || [], true);
+  $('autopilot-tickets').innerHTML = table(data.tickets || [], true);
+  $('autopilot-paper').innerHTML = table(data.paper_positions || [], true);
+  $('autopilot-broker').innerHTML = table(data.broker_reconciliation_rows || [], true);
+  wireAutopilotActions();
+  wireClickableRows($('autopilot-preflight'));
+  wireClickableRows($('autopilot-tickets'));
+  wireClickableRows($('autopilot-paper'));
+  wireClickableRows($('autopilot-broker'));
 }
 async function loadRobinhoodQueue(write=false) {
   $('rh-status-text').textContent = write ? 'Writing agentic queue files...' : 'Building agentic options queue...';
@@ -12250,9 +15409,11 @@ async function loadRobinhoodQueue(write=false) {
     account_budget: $('rh-budget').value || 500,
     max_candidates: $('rh-max-candidates').value || 5,
     max_orders: $('rh-max-orders').value || 2,
-    min_dte: $('rh-min-dte').value || 180,
+    min_dte: $('rh-min-dte').value || 90,
     min_confidence: $('rh-min-confidence').value || 55,
-    query: $('rh-query').value.trim()
+    query: $('rh-query').value.trim(),
+    refresh_chain: $('rh-refresh-chain').checked,
+    chain_preset: $('rh-chain-preset').value || 'auto'
   };
   const res = write
     ? await fetch('/api/build-robinhood-queue', {
@@ -12273,6 +15434,62 @@ async function loadRobinhoodQueue(write=false) {
   $('rh-rejected').innerHTML = table(data.rejected || [], true);
   wireClickableRows($('rh-results'));
   wireClickableRows($('rh-rejected'));
+  await loadDecisionJournal();
+  await loadAgenticAutopilotStatus();
+}
+function decisionJournalSummary(data) {
+  const counts = data.action_counts || {};
+  const fields = [
+    ['Recent decisions', data.recent_count || 0],
+    ['Submitted', counts.submitted || 0],
+    ['Skipped', counts.skipped || 0],
+    ['Held', counts.held || 0],
+    ['Closed', counts.closed || 0],
+    ['Journal exists', data.exists ? 'yes' : 'no']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+async function loadDecisionJournal() {
+  $('decision-status-text').textContent = 'Loading decision journal...';
+  const res = await fetch('/api/agentic-decision-journal?limit=25');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('decision-status-text').textContent = 'Decision journal failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('decision-status-text').textContent = `${data.recent_count || 0} local decision row(s).`;
+  $('decision-summary').innerHTML = decisionJournalSummary(data);
+  $('decision-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('decision-results'));
+}
+async function addDecisionJournalRow() {
+  const symbol = $('decision-symbol').value.trim() || $('rh-query').value.trim() || $('symbol').value.trim();
+  const payload = {
+    decision: $('decision-action').value,
+    symbol: symbol,
+    contract: $('decision-contract').value.trim(),
+    reason: $('decision-reason').value.trim()
+  };
+  if (!payload.symbol && !payload.contract) {
+    $('decision-status-text').textContent = 'Add a ticker/symbol or contract first.';
+    return;
+  }
+  $('decision-status-text').textContent = 'Logging local decision...';
+  const res = await fetch('/api/agentic-decision', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false || data.error) {
+    $('decision-status-text').textContent = 'Decision log failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('decision-reason').value = '';
+  $('decision-status-text').textContent = data.message || 'Decision logged locally.';
+  $('decision-summary').innerHTML = decisionJournalSummary(data);
+  $('decision-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('decision-results'));
 }
 function applyChainPreset(preset) {
   const configs = {
@@ -12551,6 +15768,49 @@ function optionChainResultsHtml(data) {
     ${rejectedPanel}
   </div>`;
 }
+function cboeActivitySummary(data) {
+  const summary = data.summary || {};
+  const fields = [
+    ['Status', labelText(data.status || 'unknown')],
+    ['Symbol', data.symbol || '-'],
+    ['Shown contracts', data.count || 0],
+    ['Source rows', summary.source_rows || 0],
+    ['Total volume', summary.total_volume || 0],
+    ['Readiness', countMapText(summary.readiness_counts || {})],
+    ['Calls / puts', `${(summary.side_counts || {}).call || 0} / ${(summary.side_counts || {}).put || 0}`],
+    ['DTE window', `${summary.min_dte ?? '-'}-${summary.max_dte ?? '-'}`]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function cboeActivityResultsHtml(data) {
+  const rows = data.rows || [];
+  const notes = (data.notes || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Notes</h4><ul>${data.notes.map(n => `<li>${cell(n)}</li>`).join('')}</ul></div>`
+    : '';
+  if (!rows.length) {
+    return `<div class="empty">No public CBOE activity rows matched these filters.</div>${notes}`;
+  }
+  const tableRows = rows.map(row => ({
+    contract: row.contract || `${row.ticker} ${row.expiry} ${row.side} ${row.strike}`,
+    readiness: row.cboe_activity_readiness,
+    score: row.cboe_activity_score,
+    volume: row.cboe_activity_volume,
+    bid: row.cboe_activity_bid,
+    ask: row.cboe_activity_ask,
+    mid: row.cboe_activity_mid,
+    last: row.cboe_activity_last,
+    spread: row.cboe_activity_spread_pct,
+    premium: row.premium_dollars,
+    last_premium: row.last_premium_dollars,
+    dte: row.dte,
+    venues: row.cboe_activity_venues,
+    flags: Array.isArray(row.cboe_activity_flags) ? row.cboe_activity_flags.join(', ') : row.cboe_activity_flags,
+  }));
+  return `<div style="padding:12px">
+    <div class="brief-list"><h4>Active public CBOE contracts</h4>${table(tableRows, true)}</div>
+    ${notes}
+  </div>`;
+}
 function optionChainBatchSummary(data) {
   const fields = [
     ['Candidates', data.candidate_count || 0],
@@ -12651,6 +15911,7 @@ async function scanOptionChain() {
     return;
   }
   $('chain-query').value = query;
+  if (!$('cboe-activity-query').value.trim()) $('cboe-activity-query').value = query;
   $('chain-status-text').textContent = 'Fetching option chain...';
   $('chain-summary').innerHTML = '';
   $('chain-results').innerHTML = '';
@@ -12676,6 +15937,29 @@ async function scanOptionChain() {
   $('chain-results').innerHTML = optionChainResultsHtml(data);
   wireClickableRows($('chain-results'));
   wireOptionChainActions($('chain-results'));
+}
+async function loadCboeActivity() {
+  const query = $('cboe-activity-query').value.trim() || $('chain-query').value.trim() || $('symbol').value.trim() || 'AAPL';
+  $('cboe-activity-query').value = query;
+  $('cboe-activity-status-text').textContent = 'Checking public CBOE activity...';
+  $('cboe-activity-summary').innerHTML = '';
+  $('cboe-activity-results').innerHTML = '';
+  const params = new URLSearchParams({
+    query,
+    min_dte: $('cboe-activity-min-dte').value || '90',
+    max_dte: $('cboe-activity-max-dte').value || '900',
+    min_volume: $('cboe-activity-min-volume').value || '1',
+    limit: '80'
+  });
+  const res = await fetch('/api/cboe-option-activity?' + params.toString());
+  const data = await res.json();
+  if (!res.ok || data.status === 'warn') {
+    $('cboe-activity-status-text').textContent = 'CBOE activity check needs review: ' + ((data.summary || {}).error || data.status || 'unknown');
+  } else {
+    $('cboe-activity-status-text').textContent = `${data.count || 0} public CBOE activity row(s) for ${data.symbol || query}.`;
+  }
+  $('cboe-activity-summary').innerHTML = cboeActivitySummary(data);
+  $('cboe-activity-results').innerHTML = cboeActivityResultsHtml(data);
 }
 async function scanOptionChainBatch() {
   const query = $('chain-bulk-symbols').value.trim();
@@ -12726,8 +16010,76 @@ async function loadPositions() {
   $('positions-results').innerHTML = table(data.rows || [], true);
   wireClickableRows($('positions-results'));
 }
+function positionHygieneSummary(data) {
+  const fields = [
+    ['State', data.status || '-'],
+    ['Actions', data.action_count || 0],
+    ['Broker sync', data.broker_reconciliation_status || '-'],
+    ['Broker-only', data.broker_only_count || 0],
+    ['Local-only', data.local_only_count || 0],
+    ['Expired local', data.local_expired_count || 0],
+    ['Paper-only', data.paper_only_count || 0],
+    ['Open options', data.open_option_count || 0],
+    ['Plan file', data.wrote_file ? 'written' : 'preview']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+async function loadPositionHygiene(write=false) {
+  $('hygiene-status-text').textContent = write ? 'Writing position hygiene plan...' : 'Loading position hygiene...';
+  const res = write
+    ? await fetch('/api/write-position-hygiene-plan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    : await fetch('/api/position-hygiene?limit=120');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('hygiene-status-text').textContent = 'Position hygiene failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const fileNote = data.wrote_file ? ` Plan written: ${data.path || data.plan_path || ''}` : '';
+  $('hygiene-status-text').textContent = `${data.action_count || 0} hygiene action(s).${fileNote}`;
+  $('hygiene-summary').innerHTML = positionHygieneSummary(data);
+  $('hygiene-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('hygiene-results'));
+}
+function positionHygieneApplySummary(data) {
+  const fields = [
+    ['Mode', data.apply ? 'apply' : 'preview'],
+    ['State', data.status || '-'],
+    ['Expired found', data.expired_to_close_count || 0],
+    ['Open before', data.open_before || 0],
+    ['Open after', data.open_after || 0],
+    ['Closed before', data.closed_before || 0],
+    ['Closed after', data.closed_after || 0],
+    ['Backups', (data.backup_paths || []).length]
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+async function applyPositionHygiene(apply=false) {
+  if (apply) {
+    const ok = window.confirm('Move expired local option records out of open_positions.json after creating backups? This does not place broker orders.');
+    if (!ok) return;
+  }
+  $('hygiene-apply-status-text').textContent = apply ? 'Applying expired local cleanup...' : 'Previewing expired local cleanup...';
+  const res = await fetch('/api/apply-position-hygiene', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({apply, limit: 160})
+  });
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('hygiene-apply-status-text').textContent = 'Expired cleanup failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const backupNote = (data.backup_paths || []).length ? ` Backups: ${(data.backup_paths || []).length}.` : '';
+  $('hygiene-apply-status-text').textContent = `${data.expired_to_close_count || 0} expired local option record(s) ${apply ? 'moved' : 'found'}.${backupNote}`;
+  $('hygiene-apply-summary').innerHTML = positionHygieneApplySummary(data);
+  $('hygiene-apply-results').innerHTML = table(data.rows || [], true);
+  wireClickableRows($('hygiene-apply-results'));
+  if (apply) {
+    await Promise.all([loadSummary(), loadPositions(), loadPositionHygiene(false), loadRiskSummary(), loadCommandCenter()]);
+  }
+}
 async function reloadPositionWorkspace() {
-  await Promise.all([loadExitReviews(), loadPositions()]);
+  await Promise.all([loadExitReviews(), loadPositions(), loadPositionHygiene(false)]);
 }
 async function lookup() {
   const symbol = $('symbol').value.trim();
@@ -12777,12 +16129,16 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
 $('positions-load').addEventListener('click', reloadPositionWorkspace);
 $('positions-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') reloadPositionWorkspace(); });
+$('hygiene-load').addEventListener('click', () => loadPositionHygiene(false));
+$('hygiene-write').addEventListener('click', () => loadPositionHygiene(true));
+$('hygiene-apply-preview').addEventListener('click', () => applyPositionHygiene(false));
+$('hygiene-apply-run').addEventListener('click', () => applyPositionHygiene(true));
 $('explorer-load').addEventListener('click', loadExplorer);
 $('explorer-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadExplorer(); });
 $('swing-scout-load').addEventListener('click', loadSwingScout);
@@ -12794,6 +16150,13 @@ $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
+$('autopilot-refresh').addEventListener('click', loadAgenticAutopilotStatus);
+$('autopilot-packet-refresh').addEventListener('click', () => routeAutopilotAction('refresh_autopilot_packet'));
+$('decision-add').addEventListener('click', addDecisionJournalRow);
+$('decision-refresh').addEventListener('click', loadDecisionJournal);
+['decision-symbol', 'decision-contract', 'decision-reason'].forEach(id => {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') addDecisionJournalRow(); });
+});
 document.querySelectorAll('.chain-preset').forEach(btn => {
   btn.addEventListener('click', () => applyChainPreset(btn.dataset.preset || 'custom'));
 });
@@ -12804,6 +16167,8 @@ document.querySelectorAll('.chain-preset').forEach(btn => {
 });
 $('chain-scan').addEventListener('click', scanOptionChain);
 $('chain-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChain(); });
+$('cboe-activity-load').addEventListener('click', loadCboeActivity);
+$('cboe-activity-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadCboeActivity(); });
 $('chain-bulk-scan').addEventListener('click', scanOptionChainBatch);
 $('chain-bulk-symbols').addEventListener('keydown', (e) => { if (e.key === 'Enter') scanOptionChainBatch(); });
 $('saved-contracts-refresh').addEventListener('click', () => loadSavedContracts(false));
@@ -12815,18 +16180,6 @@ document.querySelectorAll('.view-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     const view = btn.dataset.view || 'overview';
     setView(view);
-    if (view === 'providers' && !$('provider-results').dataset.loaded) {
-      loadProviderStatus().catch(err => {
-        $('provider-status-text').textContent = 'Provider check failed';
-        console.error(err);
-      });
-    }
-    if (view === 'research' && !$('sec-filings-results').dataset.loaded) {
-      loadWatchlistSecFilings().catch(err => {
-        $('sec-filings-status-text').textContent = 'SEC filings monitor failed';
-        console.error(err);
-      });
-    }
   });
 });
 $('watchlist-add').addEventListener('click', addWatchlist);
@@ -12835,28 +16188,8 @@ $('sec-filings-refresh').addEventListener('click', loadWatchlistSecFilings);
 $('watchlist-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addWatchlist(); });
 $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchlist-query', 'watchlist-suggestions', false));
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
-loadCommandCenter().catch(err => { $('command-center-status-text').textContent = 'Command center failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
-loadPositions().catch(err => { $('positions-status-text').textContent = 'Position monitor failed'; console.error(err); });
-loadExitReviews().catch(err => { $('exit-review-status-text').textContent = 'Exit review cockpit failed'; console.error(err); });
-loadTodayReview().catch(err => { $('today-review-status-text').textContent = 'Today review failed'; console.error(err); });
-loadSwingClimate().catch(err => { $('swing-climate-status-text').textContent = 'Swing climate failed'; console.error(err); });
-loadBestSetups().catch(err => { $('best-setups-status-text').textContent = 'Best setups failed'; console.error(err); });
-loadSwingScout().catch(err => { $('swing-scout-status-text').textContent = 'Swing scout failed'; console.error(err); });
-loadClimateGatedSetups().catch(err => { $('climate-gated-status-text').textContent = 'Climate-gated setups failed'; console.error(err); });
-loadActionQueue().catch(err => { $('queue-status-text').textContent = 'Action queue failed'; console.error(err); });
-loadMarketPulse().catch(err => { $('market-pulse-status-text').textContent = 'Market pulse failed'; console.error(err); });
-loadBreadthPulse().catch(err => { $('breadth-pulse-status-text').textContent = 'Breadth pulse failed'; console.error(err); });
-loadSectorPulse().catch(err => { $('sector-pulse-status-text').textContent = 'Sector pulse failed'; console.error(err); });
-loadMacroStress().catch(err => { $('macro-stress-status-text').textContent = 'Macro stress failed'; console.error(err); });
-loadRiskSummary().catch(err => { $('risk-status-text').textContent = 'Risk summary failed'; console.error(err); });
-loadPerformanceSummary().catch(err => { $('performance-status-text').textContent = 'Performance summary failed'; console.error(err); });
-loadFreeDataSources().catch(err => { $('free-sources-status-text').textContent = 'Free source map failed'; console.error(err); });
-loadExplorer().catch(err => { $('explorer-status-text').textContent = 'Explorer failed'; console.error(err); });
-loadPaperCandidates(false).catch(err => { $('paper-status-text').textContent = 'Paper candidate preview failed'; console.error(err); });
-loadRobinhoodQueue(false).catch(err => { $('rh-status-text').textContent = 'Agentic queue preview failed'; console.error(err); });
-loadWatchlist().catch(err => { $('watchlist-status-text').textContent = 'Watchlist failed'; console.error(err); });
-loadSavedContracts().catch(err => { $('saved-contracts-status-text').textContent = 'Saved contracts failed'; console.error(err); });
+loadView('overview').catch(err => { $('command-center-status-text').textContent = 'Overview failed'; console.error(err); });
 setInterval(() => { loadJobs().catch(() => {}); }, 5000);
 </script>
 </body>
@@ -12950,6 +16283,27 @@ class CockpitHandler(BaseHTTPRequestHandler):
             include_chain = _bool_param(params.get("include_chain", ["true"])[0], True)
             self._send_json(build_provider_status(
                 self.data_dir, query=query, include_chain=include_chain,
+            ))
+            return
+        if parsed.path == "/api/cboe-option-activity":
+            params = parse_qs(parsed.query)
+            query = params.get("query", ["AAPL"])[0]
+            min_dte = _int_param(
+                params.get("min_dte", [str(MIN_SWING_OPTION_DTE)])[0],
+                MIN_SWING_OPTION_DTE,
+                0,
+                1200,
+            )
+            max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
+            min_volume = _int_param(params.get("min_volume", ["1"])[0], 1, 0, 1_000_000)
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
+            self._send_json(build_cboe_option_activity(
+                self.data_dir,
+                query=query,
+                min_dte=min_dte,
+                max_dte=max_dte,
+                min_volume=min_volume,
+                limit=limit,
             ))
             return
         if parsed.path == "/api/lookup":
@@ -13102,9 +16456,16 @@ class CockpitHandler(BaseHTTPRequestHandler):
             account_budget = _float_param(params.get("account_budget", ["500"])[0], 500.0, 1.0, 1_000_000.0)
             max_candidates = _int_param(params.get("max_candidates", ["5"])[0], 5, 1, 20)
             max_orders = _int_param(params.get("max_orders", ["2"])[0], 2, 1, 10)
-            min_dte = _int_param(params.get("min_dte", ["180"])[0], 180, 0, 1200)
+            min_dte = _int_param(
+                params.get("min_dte", [str(MIN_SWING_OPTION_DTE)])[0],
+                MIN_SWING_OPTION_DTE,
+                0,
+                1200,
+            )
             min_conf = _float_param(params.get("min_confidence", ["55"])[0], 55.0, 0.0, 100.0)
             query = params.get("query", [""])[0]
+            refresh_chain = _bool_param(params.get("refresh_chain", ["false"])[0])
+            chain_preset = params.get("chain_preset", ["auto"])[0]
             self._send_json(build_robinhood_agentic_queue_report(
                 self.data_dir,
                 account_budget=account_budget,
@@ -13113,8 +16474,28 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 min_dte=min_dte,
                 min_confidence=min_conf,
                 query=query,
+                refresh_chain=refresh_chain,
+                chain_preset=chain_preset,
                 write=False,
             ))
+            return
+        if parsed.path == "/api/agentic-decision-journal":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["25"])[0], 25, 1, 200)
+            self._send_json(build_agentic_decision_journal(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/agentic-autopilot-status":
+            self._send_json(build_agentic_autopilot_status(self.data_dir))
+            return
+        if parsed.path == "/api/broker-reconciliation":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
+            self._send_json(build_broker_reconciliation(self.data_dir, limit=limit))
+            return
+        if parsed.path == "/api/position-hygiene":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["120"])[0], 120, 1, 500)
+            self._send_json(build_position_hygiene(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/option-chain-scan":
             params = parse_qs(parsed.query)
@@ -13228,6 +16609,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
             "/api/export-chain-shortlist", "/api/build-swing-packet",
+            "/api/agentic-decision",
+            "/api/write-position-hygiene-plan", "/api/apply-position-hygiene",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache", "/api/warm-symbol-caches", "/api/run-refresh-scan",
         }:
@@ -13245,6 +16628,18 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/api/warm-sec-cache", "/api/warm-symbol-caches"}:
             result = warm_symbol_caches(self.data_dir)
             self._send_json(result, status=200 if result.get("ok") else 502)
+            return
+        if parsed.path == "/api/write-position-hygiene-plan":
+            result = write_position_hygiene_plan(self.data_dir)
+            self._send_json(result)
+            return
+        if parsed.path == "/api/apply-position-hygiene":
+            result = apply_position_hygiene(
+                self.data_dir,
+                apply=_bool_param(body.get("apply"), False),
+                limit=_int_param(str(body.get("limit") or "120"), 120, 1, 500),
+            )
+            self._send_json(result)
             return
         if parsed.path == "/api/watchlist-add":
             context = body.get("context") if isinstance(body.get("context"), dict) else None
@@ -13328,12 +16723,22 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 account_budget=_float_param(str(body.get("account_budget") or "500"), 500.0, 1.0, 1_000_000.0),
                 max_candidates=_int_param(str(body.get("max_candidates") or "5"), 5, 1, 20),
                 max_orders=_int_param(str(body.get("max_orders") or "2"), 2, 1, 10),
-                min_dte=_int_param(str(body.get("min_dte") or "180"), 180, 0, 1200),
+                min_dte=_int_param(
+                    str(body.get("min_dte") or str(MIN_SWING_OPTION_DTE)),
+                    MIN_SWING_OPTION_DTE,
+                    0,
+                    1200,
+                ),
                 min_confidence=_float_param(str(body.get("min_confidence") or "55"), 55.0, 0.0, 100.0),
                 query=str(body.get("query") or ""),
+                refresh_chain=_bool_param(body.get("refresh_chain"), False),
+                chain_preset=str(body.get("chain_preset") or "auto"),
                 write=True,
             )
             self._send_json(report)
+            return
+        if parsed.path == "/api/agentic-decision":
+            self._send_json(record_agentic_decision(body, self.data_dir))
             return
         query = str(body.get("query") or "").strip()
         if not query:

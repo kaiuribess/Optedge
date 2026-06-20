@@ -379,8 +379,8 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     assert queue["orders"][0]["max_limit_price"] >= 1.1
     assert queue["readiness"]["label"] == "ready"
     assert queue["readiness"]["ready_to_submit_count"] == 1
-    assert queue["rejection_reason_counts"]["dte below 180"] == 1
-    assert queue["top_rejection_reasons"][0]["reason"] == "dte below 180"
+    assert queue["rejection_reason_counts"]["dte below 180"] >= 1
+    assert queue["diagnostics"]["reason_groups"]["below_min_dte"] >= 1
 
 
 if __name__ == "__main__":

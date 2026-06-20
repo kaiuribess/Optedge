@@ -30,6 +30,7 @@ from __future__ import annotations
 import io
 import logging
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -46,6 +47,14 @@ import data_provider
 
 log = logging.getLogger("optedge.short_interest")
 
+FINRA_SHORT_INTEREST_PAGE = (
+    "https://www.finra.org/finra-data/browse-catalog/equity-short-interest/files"
+)
+FINRA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; Optedge/1.0; research)",
+    "Accept": "text/html,text/plain,*/*",
+}
+
 
 # ---------------------------------------------------------------------------
 # Score
@@ -55,10 +64,16 @@ def _score(spof: Optional[float], shares_short: Optional[float],
            short_ratio: Optional[float],
            finra_ratio: Optional[float] = None) -> float:
     """Map short interest stats -> directional score."""
-    if not spof and not finra_ratio:
+    if not spof and not finra_ratio and not short_ratio and not shares_short:
         return 0.0
     # Base from SI % of float (5% = +0.5, 15% = +1.5, 30% = +3.0)
     score = min(3.0, (spof or 0) * 10)
+    # FINRA's official short-interest file does not include float, so when it
+    # is our only source we keep a conservative days-to-cover signal alive.
+    if score <= 0 and short_ratio:
+        score = min(2.5, max(0.0, short_ratio) / 2.5)
+    if score <= 0 and shares_short:
+        score = 0.25
     # Days-to-cover amplifier — more squeeze fuel when slow to cover
     if short_ratio and short_ratio > 3:
         score *= 1 + min(0.5, (short_ratio - 3) / 10)
@@ -131,39 +146,137 @@ def _parse_finra(text: str) -> Dict[str, float]:
                 continue
             ratios[sym] = sv / tv
         except (ValueError, TypeError):
-            continue
+                continue
     return ratios
+
+
+def _parse_finra_short_interest(text: str) -> Dict[str, Dict[str, Any]]:
+    """Parse FINRA's official twice-monthly short-interest file by symbol."""
+    try:
+        df = pd.read_csv(io.StringIO(text), sep="|")
+    except Exception:
+        return {}
+    required = {"symbolCode", "currentShortPositionQuantity", "settlementDate"}
+    if not required.issubset(df.columns):
+        return {}
+    number_cols = {
+        "currentShortPositionQuantity": "finra_short_interest_shares",
+        "previousShortPositionQuantity": "finra_short_interest_prior_shares",
+        "averageDailyVolumeQuantity": "finra_short_interest_avg_daily_volume",
+        "daysToCoverQuantity": "finra_short_interest_days_to_cover",
+        "changePercent": "finra_short_interest_change_pct",
+        "changePreviousNumber": "finra_short_interest_change_shares",
+    }
+    out: Dict[str, Dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        symbol = str(row.get("symbolCode") or "").strip().upper()
+        if not symbol:
+            continue
+        record: Dict[str, Any] = {
+            "finra_short_interest_source": "finra_equity_short_interest_file",
+            "finra_short_interest_settlement_date": str(row.get("settlementDate") or "").strip(),
+            "finra_short_interest_issue_name": str(row.get("issueName") or "").strip(),
+            "finra_short_interest_exchange_code": str(
+                row.get("issuerServicesGroupExchangeCode") or ""
+            ).strip(),
+            "finra_short_interest_market_class": str(row.get("marketClassCode") or "").strip(),
+        }
+        for src, dst in number_cols.items():
+            val = pd.to_numeric(row.get(src), errors="coerce")
+            record[dst] = None if pd.isna(val) else float(val)
+        out[symbol] = record
+    return out
+
+
+def _fetch_finra_short_interest(max_age_sec: int = 7 * 24 * 3600) -> Dict[str, Dict[str, Any]]:
+    """Fetch the latest official FINRA short-interest CSV index/file."""
+    cache_key = "finra_equity_short_interest_latest:v1"
+    cached = data_provider.cache_get(cache_key, max_age_sec=max_age_sec)
+    if cached is not None:
+        return cached
+    sess = data_provider.get_session()
+    try:
+        page = sess.get(FINRA_SHORT_INTEREST_PAGE, timeout=25)
+        page_text = page.text or ""
+        if page.status_code != 200 or "Just a moment" in page_text[:1000]:
+            import requests
+            page_text = requests.get(
+                FINRA_SHORT_INTEREST_PAGE,
+                headers=FINRA_HEADERS,
+                timeout=25,
+            ).text
+        urls = re.findall(
+            r"https://cdn\.finra\.org/equity/otcmarket/biweekly/shrt\d{8}\.csv",
+            page_text or "",
+        )
+        urls = list(dict.fromkeys(urls))
+    except Exception as e:
+        log.debug("finra short-interest page: %s", e)
+        return {}
+    for url in urls[:3]:
+        try:
+            r = sess.get(url, timeout=45)
+            text = r.text or ""
+            if r.status_code != 200 or "symbolCode" not in text[:300]:
+                import requests
+                text = requests.get(url, headers=FINRA_HEADERS, timeout=45).text
+            if "symbolCode" not in text[:300]:
+                continue
+            parsed = _parse_finra_short_interest(text)
+            if parsed:
+                data_provider.cache_put(cache_key, parsed)
+                log.info(
+                    "finra short-interest: %d symbols from %s",
+                    len(parsed),
+                    url.rsplit("/", 1)[-1],
+                )
+                return parsed
+        except Exception as e:
+            log.debug("finra short-interest file %s: %s", url, e)
+            continue
+    return {}
 
 
 # ---------------------------------------------------------------------------
 # Per-ticker processing
 # ---------------------------------------------------------------------------
-def _process_ticker(t: str, finra_ratios: Dict[str, float]) -> Optional[Dict[str, Any]]:
+def _process_ticker(
+    t: str,
+    finra_ratios: Dict[str, float],
+    finra_short_interest: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     info = data_provider.get_short_info(t)
+    official = finra_short_interest.get(t.upper()) or {}
     spof = info.get("shortPercentOfFloat")
-    short_ratio = info.get("shortRatio")
-    shares_short = info.get("sharesShort")
-    shares_short_prior = info.get("sharesShortPriorMonth")
-    date_short = info.get("dateShortInterest")
+    short_ratio = info.get("shortRatio") or official.get("finra_short_interest_days_to_cover")
+    shares_short = info.get("sharesShort") or official.get("finra_short_interest_shares")
+    shares_short_prior = (
+        info.get("sharesShortPriorMonth")
+        or official.get("finra_short_interest_prior_shares")
+    )
+    date_short = info.get("dateShortInterest") or official.get("finra_short_interest_settlement_date")
     finra_ratio = finra_ratios.get(t.upper())
     # If we have NEITHER yfinance short info NOR a FINRA ratio, no row
     if spof is None and shares_short is None and finra_ratio is None:
         return None
     score = _score(spof, shares_short, shares_short_prior, short_ratio, finra_ratio)
+    if shares_short and shares_short_prior and shares_short_prior > 0:
+        change_pct = (shares_short - shares_short_prior) / shares_short_prior
+    elif official.get("finra_short_interest_change_pct") is not None:
+        change_pct = official.get("finra_short_interest_change_pct") / 100.0
+    else:
+        change_pct = None
     return {
         "ticker": t,
         "short_pct_of_float": spof,
         "short_ratio_days_to_cover": short_ratio,
         "shares_short": shares_short,
         "shares_short_prior_month": shares_short_prior,
-        "short_int_change_pct": (
-            (shares_short - shares_short_prior) / shares_short_prior
-            if (shares_short and shares_short_prior and shares_short_prior > 0)
-            else None
-        ),
+        "short_int_change_pct": change_pct,
         "date_short_interest": date_short,
         "finra_short_vol_ratio": finra_ratio,
         "short_int_score": score,
+        **official,
     }
 
 
@@ -172,10 +285,11 @@ def run(universe: List[str], max_workers: int = 12) -> pd.DataFrame:
     log.info("short_interest: %d tickers", len(universe))
     # Pull FINRA once for the whole universe (single HTTP call)
     finra_ratios = _fetch_finra_short_volume()
+    finra_short_interest = _fetch_finra_short_interest()
     rows = []
     completed = 0
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(_process_ticker, t, finra_ratios): t
+        futs = {ex.submit(_process_ticker, t, finra_ratios, finra_short_interest): t
                 for t in dict.fromkeys(universe)}
         for fut in as_completed(futs):
             try:
@@ -194,4 +308,7 @@ def run(universe: List[str], max_workers: int = 12) -> pd.DataFrame:
                  "finra coverage=%d",
                  len(df), len(squeeze_setups),
                  df["finra_short_vol_ratio"].notna().sum() if "finra_short_vol_ratio" in df.columns else 0)
+        if "finra_short_interest_source" in df.columns:
+            log.info("short_interest: official FINRA SI coverage=%d",
+                     df["finra_short_interest_source"].notna().sum())
     return df

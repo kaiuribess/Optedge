@@ -181,6 +181,52 @@ def test_total_signals_preserves_existing_count_when_parquet_unreadable():
             validation_report.LOGS_DIR = old_logs
 
 
+def test_max_drawdown_includes_starting_equity():
+    dd = validation_report._max_drawdown(pd.Series([-0.10, 0.05]))
+    assert round(dd, 6) == -0.10
+
+
+def test_validation_drawdown_uses_normalized_signal_allocation():
+    closed = pd.DataFrame({
+        "pnl_pct": [-1.0, 1.0],
+        "pnl_pct_after_slippage": [-1.0, 1.0],
+        "kelly_pct": [0.0, 0.0],
+    })
+    stats = validation_report._stats(closed, "pnl_pct")
+    equity_returns = validation_report._equity_return_series(closed, "pnl_pct")
+
+    assert equity_returns.tolist() == [-0.01, 0.01]
+    assert round(stats["max_drawdown"], 6) == -0.01
+    assert stats["max_drawdown_mode"] == "normalized_signal_allocation"
+    assert stats["worst"] == -1.0
+
+
+def test_summary_exposes_equity_curve_assumption():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            _write_json(
+                validation_report.DATA_DIR / "closed_positions.json",
+                [{
+                    "ticker": "AAA",
+                    "entry_time": "2026-01-01T00:00:00+00:00",
+                    "exit_time": "2026-01-02T00:00:00+00:00",
+                    "pnl_pct": -1.0,
+                }],
+            )
+            summary = validation_report.build_summary(scope="all_time")
+            assert summary["equity_curve"]["mode"] == "normalized_signal_allocation"
+            assert summary["equity_curve"]["default_allocation_pct"] == 0.01
+            assert round(summary["overall"]["max_drawdown"], 6) == -0.01
+            assert summary["overall"]["worst"] == -1.0
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
 def _assert_valid_png(path: Path):
     data = path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
@@ -227,6 +273,9 @@ if __name__ == "__main__":
     test_current_model_does_not_hide_active_signal_logs()
     test_current_model_uses_latest_archive_reset_before_model_mtime()
     test_total_signals_preserves_existing_count_when_parquet_unreadable()
+    test_max_drawdown_includes_starting_equity()
+    test_validation_drawdown_uses_normalized_signal_allocation()
+    test_summary_exposes_equity_curve_assumption()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("8/8 validation report tests passed")
+    print("11/11 validation report tests passed")

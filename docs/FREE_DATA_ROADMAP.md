@@ -48,6 +48,42 @@ Notes:
 - SEC filings do not replace a fresh Optedge scan; if SEC filings are the only hit, lookup still recommends a focused scan.
 - SEC companyfacts are standardized XBRL facts, so some metrics can be missing or use company-specific reporting choices.
 
+### SEC fails-to-deliver data
+
+Status: implemented in `engines/sec_ftd.py` and used as a small non-option context factor for shares and futures ETF proxies.
+
+Source:
+- https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data
+
+Why it helps:
+- Adds official no-key settlement-fail context for small-cap and high-short-pressure swing candidates.
+- Captures ticker, settlement date, aggregate fail quantity, issuer description, and prior closing price from the SEC pipe-delimited files.
+- Helps separate ordinary short-volume noise from names with delayed settlement pressure.
+- Keeps the factor conservative and contextual; it is not a standalone entry trigger.
+
+Notes:
+- SEC publishes these files with a delay: first-half monthly data near month-end and second-half data around the middle of the next month.
+- SEC explicitly notes FTD values are aggregate balances as of a settlement date, not daily fails.
+- Fails-to-deliver can happen for multiple reasons and are not proof of abusive short selling or naked shorting.
+
+### FINRA official equity short interest
+
+Status: implemented in `engines/short_interest.py` as an official no-key fallback and amplifier for short/squeeze context.
+
+Source:
+- https://www.finra.org/finra-data/browse-catalog/equity-short-interest/files
+- https://cdn.finra.org/equity/otcmarket/biweekly/shrtYYYYMMDD.csv
+
+Why it helps:
+- Adds official twice-monthly current short position, prior short position, average daily volume, days-to-cover, and settlement date.
+- Improves small-cap and squeeze-candidate coverage when yfinance-style short-float fields are missing.
+- Keeps short interest separate from daily short volume, which is noisier and not the same thing as open short interest.
+- Uses delayed regulatory context as a risk/pressure factor, not as a standalone entry trigger.
+
+Notes:
+- FINRA files are delayed and published around short-interest settlement/dissemination cycles.
+- The file does not include shares-float, so Optedge uses days-to-cover conservatively when float percentage is unavailable.
+
 ### Cboe put/call market statistics
 
 Status: implemented in `scripts/local_cockpit.py` and surfaced in Market Pulse as options sentiment context.
@@ -62,6 +98,27 @@ Why it helps:
 - Adds market-wide total, equity, and index put/call context without an API key.
 - Helps identify defensive hedging, call-demand/complacency, and balanced options sentiment.
 - Uses Cboe market statistics as delayed/informational context, not as an execution quote.
+
+### Cboe option symbol activity
+
+Status: implemented in `engines/cboe_symbol_data.py` and surfaced in the Robinhood agentic queue as public activity context for candidate options.
+
+Source:
+- https://www.cboe.com/us/options/market_statistics/symbol_data/
+- https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt=cone
+- https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt=opt
+- https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt=ctwo
+- https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt=exo
+
+Why it helps:
+- Adds no-key public contract activity from Cboe, BZX Options, C2 Options, and EDGX Options.
+- Gives the Robinhood/Codex review packet a quick "public activity seen / not seen" sanity check before any option is considered.
+- Aggregates exact-contract volume, matched/routed activity, and top-of-book context where available.
+- Keeps the check conservative: no activity match is not an automatic rejection, and a match is not approval to trade.
+
+Notes:
+- This is Cboe venue activity, not consolidated OPRA and not a live execution quote.
+- Robinhood must still verify the exact contract, current bid/ask, liquidity, buying power, and news before any order.
 
 ### Nasdaq public stock screener
 
@@ -123,6 +180,7 @@ Why it helps:
 ## Safe Free Sources Already In The Project
 
 - SEC EDGAR Form 4 insider activity and 13F filings.
+- SEC fails-to-deliver settlement-fail context.
 - Keyless FRED CSV macro/rates/credit series.
 - Official Treasury XML yield-curve feed.
 - Cboe market-wide put/call market statistics.
