@@ -346,6 +346,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Research brief" in html
     assert "Research action" in html
     assert "Requested match" in html
+    assert "Exact contract exposure" in html
     assert "Paper readiness" in html
     assert "Recent SEC filings" in html
     assert "SEC cash/debt" in html
@@ -6029,9 +6030,10 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
         assert nvda["local_hits"] >= 2
         assert nvda["best_idea"] == "NVDA C 200.0 2026-06-18"
         assert nvda["best_status"] == "Trade"
-        assert nvda["paper_readiness_status"] == "ready"
-        assert nvda["paper_readiness_score"] >= 75
+        assert nvda["paper_readiness_status"] == "caution"
+        assert nvda["paper_readiness_score"] < 75
         assert nvda["paper_readiness_bad_count"] == 0
+        assert nvda["paper_readiness_warn_count"] >= 1
         assert nvda["open_count"] == 1
         assert nvda["avg_unrealized_pct"] == 0.5
 

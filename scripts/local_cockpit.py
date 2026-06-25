@@ -13140,6 +13140,7 @@ function briefHtml(brief) {
   const requested = brief.requested_option || {};
   const readiness = brief.paper_readiness || {};
   const open = brief.open_positions || {};
+  const contractExposure = brief.contract_exposure || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
   const sec = brief.recent_sec_filings || {};
@@ -13170,6 +13171,8 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Net edge</span><strong>${pct(idea.net_edge_pct)}</strong></div>
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
+        <div class="brief-tile"><span>Exact contract exposure</span><strong>${cell(contractExposure.exact_total || 0)}</strong></div>
+        <div class="brief-tile"><span>Same ticker options</span><strong>${cell(contractExposure.same_ticker_total || 0)}</strong></div>
         <div class="brief-tile"><span>Recent SEC filings</span><strong>${cell(sec.count || 0)}</strong></div>
         <div class="brief-tile"><span>SEC cash</span><strong>${moneyShort(secFund.cash)}</strong></div>
         <div class="brief-tile"><span>SEC cash/debt</span><strong>${ratio(secFund.cash_to_debt)}</strong></div>

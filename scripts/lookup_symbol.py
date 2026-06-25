@@ -9,6 +9,7 @@ import argparse
 import html
 import json
 import math
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,7 +91,8 @@ DISPLAY_COLUMNS = {
     ],
     "broker_positions": [
         "account_mask", "account_label", "asset", "symbol", "contract",
-        "quantity", "average_price", "current_price", "unrealized_pct",
+        "option_side", "strike", "expiry", "quantity", "average_price",
+        "current_price", "unrealized_pct",
         "market_value", "bid_price", "ask_price", "quote_updated_at",
         "agentic_allowed", "option_level", "snapshot_age_min",
         "snapshot_freshness", "status",
@@ -239,6 +241,15 @@ def _match(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
     return df[values == q].copy()
 
 
+def _all_frame_records(df: pd.DataFrame | None, limit: int = 1000) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    rows: list[dict[str, Any]] = []
+    for _, row in df.head(limit).iterrows():
+        rows.append({str(k): _clean_value(v) for k, v in row.to_dict().items()})
+    return rows
+
+
 def _score_row(row: pd.Series) -> float:
     for col in ("rank_score", "fused_score", "futures_score", "value_score", "confidence"):
         value = _float_value(row.get(col))
@@ -385,12 +396,14 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
             )
             option_type = str(pos.get("option_type") or pos.get("type") or "").lower()
             side = "C" if option_type.startswith("call") else "P" if option_type.startswith("put") else option_type.upper()
+            expiry = str(pos.get("expiration_date") or "")
+            strike = pos.get("strike_price")
             contract = " ".join(
                 part for part in [
                     sym,
-                    str(pos.get("expiration_date") or ""),
+                    expiry,
                     side,
-                    str(pos.get("strike_price") or ""),
+                    str(strike or ""),
                 ] if part
             )
             rows.append({
@@ -399,6 +412,10 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
                 "asset": "option",
                 "symbol": sym,
                 "contract": contract,
+                "option_side": side,
+                "side": "call" if side == "C" else "put" if side == "P" else side,
+                "strike": _clean_value(strike),
+                "expiry": expiry,
                 "quantity": quantity,
                 "average_price": average_price,
                 "current_price": current_price,
@@ -442,6 +459,124 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
                 "status": "broker_snapshot",
             })
     return rows
+
+
+def _side_code(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"c", "call", "calls"}:
+        return "C"
+    if raw in {"p", "put", "puts"}:
+        return "P"
+    return raw.upper()[:1]
+
+
+def _expiry_key(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = pd.to_datetime(value, errors="coerce")
+        if not pd.isna(ts):
+            return ts.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else text
+
+
+def _strike_key(value: Any) -> str:
+    try:
+        return f"{float(value):g}"
+    except Exception:
+        return str(value or "").strip()
+
+
+def _option_contract_key(symbol: Any, side: Any, expiry: Any, strike: Any) -> str:
+    return "|".join([
+        str(symbol or "").strip().upper(),
+        _side_code(side),
+        _expiry_key(expiry),
+        _strike_key(strike),
+    ])
+
+
+def _row_contract_key(row: dict[str, Any]) -> str:
+    contract = str(row.get("contract") or "").strip()
+    symbol = row.get("ticker") or row.get("symbol")
+    side = row.get("side") or row.get("option_side") or row.get("right")
+    expiry = row.get("expiry") or row.get("expiration_date")
+    strike = row.get("strike") or row.get("strike_price")
+    if contract and (not side or not expiry or strike in (None, "")):
+        parts = contract.replace("_", " ").split()
+        for part in parts:
+            if not symbol and part.isalpha():
+                symbol = part
+            if not expiry and re.match(r"^\d{4}-\d{2}-\d{2}$", part):
+                expiry = part
+            if not side and part.upper() in {"C", "P", "CALL", "PUT"}:
+                side = part
+        if strike in (None, "") and side:
+            side_index = next(
+                (idx for idx, part in enumerate(parts) if part.upper() in {"C", "P", "CALL", "PUT"}),
+                None,
+            )
+            if side_index is not None and side_index + 1 < len(parts):
+                strike = parts[side_index + 1]
+    return _option_contract_key(symbol, side, expiry, strike)
+
+
+def _request_contract_key(request: dict[str, Any] | None) -> str:
+    if not request or request.get("asset") != "option":
+        return ""
+    return _option_contract_key(
+        request.get("ticker"), request.get("side"), request.get("expiry"), request.get("strike")
+    )
+
+
+def _contract_exposure_summary(
+    request: dict[str, Any] | None,
+    open_option_rows: list[dict[str, Any]],
+    broker_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    key = _request_contract_key(request)
+    if not key:
+        return None
+    ticker = str((request or {}).get("ticker") or "").upper().strip()
+    exact_open = [row for row in open_option_rows if _row_contract_key(row) == key]
+    broker_options = [row for row in broker_rows if row.get("asset") == "option"]
+    exact_broker = [row for row in broker_options if _row_contract_key(row) == key]
+    same_ticker_open = [
+        row for row in open_option_rows
+        if str(row.get("ticker") or row.get("symbol") or "").upper().strip() == ticker
+    ]
+    same_ticker_broker = [
+        row for row in broker_options
+        if str(row.get("ticker") or row.get("symbol") or "").upper().strip() == ticker
+    ]
+    exact_count = len(exact_open) + len(exact_broker)
+    same_ticker_count = len(same_ticker_open) + len(same_ticker_broker)
+    status = (
+        "exact_exposure" if exact_count
+        else "same_ticker_exposure" if same_ticker_count
+        else "clear"
+    )
+    return {
+        "requested_contract_key": key,
+        "status": status,
+        "exact_open_positions": len(exact_open),
+        "exact_broker_positions": len(exact_broker),
+        "exact_total": exact_count,
+        "same_ticker_open_options": len(same_ticker_open),
+        "same_ticker_broker_options": len(same_ticker_broker),
+        "same_ticker_total": same_ticker_count,
+        "matched_open_labels": [
+            str(row.get("position_id") or row.get("contract") or row.get("ticker") or "")
+            for row in exact_open[:5]
+        ],
+        "matched_broker_labels": [
+            str(row.get("contract") or row.get("symbol") or "")
+            for row in exact_broker[:5]
+        ],
+    }
 
 
 def _broker_position_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -559,6 +694,7 @@ def _research_action(
     best_idea: dict[str, Any] | None,
     open_summary: dict[str, Any],
     broker_summary: dict[str, Any],
+    contract_exposure: dict[str, Any] | None,
     warnings: list[str],
     total_hits: int,
 ) -> dict[str, Any]:
@@ -589,12 +725,19 @@ def _research_action(
     max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
     avg_unreal = _float_value(open_summary.get("avg_unrealized_pct"))
     broker_count = int(broker_summary.get("count") or 0)
+    exact_contract_count = int((contract_exposure or {}).get("exact_total") or 0)
     status = _status_text((best_idea or {}).get("trade_status"))
 
     if open_count > 0:
         reasons.append(f"{open_count} open lifecycle position(s) already exist for {symbol}.")
     if broker_count > 0:
         reasons.append(f"{broker_count} broker snapshot position(s) already exist for {symbol}.")
+    if exact_contract_count > 0:
+        action = "review_existing_contract"
+        label = "Review existing contract"
+        risk_level = "medium"
+        reasons.append(f"The requested exact option contract already has {exact_contract_count} open exposure row(s).")
+        next_steps.append("Review or manage the existing exact contract before considering any new entry.")
     if max_pressure >= 80:
         action = "review_exit_now"
         label = "Review exit now"
@@ -643,13 +786,13 @@ def _research_action(
             label = "Watch only"
             risk_level = "medium" if status == "watch" else "high"
             next_steps.append("Keep this on the research watchlist unless a fresh scan upgrades it.")
-    else:
+    elif action == "review":
         action = "watchlist_or_rescan"
         label = "Watchlist or rescan"
         reasons.append("No ranked current idea was found, only position or historical context.")
         next_steps.append("Add it to the watchlist or run a focused scan for a current ranked view.")
 
-    if broker_count > 0 and action not in {"review_exit_now", "blocked_by_guardrails"}:
+    if broker_count > 0 and action not in {"review_exit_now", "blocked_by_guardrails", "review_existing_contract"}:
         action = "review_broker_position"
         label = "Review broker position"
         risk_level = "medium" if risk_level == "low" else risk_level
@@ -679,6 +822,7 @@ def _paper_readiness(
     requested_option: dict[str, Any] | None,
     open_summary: dict[str, Any],
     broker_summary: dict[str, Any],
+    contract_exposure: dict[str, Any] | None,
     warnings: list[str],
     action: dict[str, Any],
     total_hits: int,
@@ -729,6 +873,23 @@ def _paper_readiness(
             add("warn", "Requested option match", "Only ticker-level option rows matched.", 35)
         else:
             add("bad", "Requested option match", "Requested option was not found.", 45)
+
+    exact_contract_count = int((contract_exposure or {}).get("exact_total") or 0)
+    same_ticker_count = int((contract_exposure or {}).get("same_ticker_total") or 0)
+    if exact_contract_count > 0:
+        add(
+            "warn",
+            "Exact contract exposure",
+            f"{exact_contract_count} open local/broker row(s) already match this exact contract.",
+            30,
+        )
+    elif same_ticker_count > 0:
+        add(
+            "warn",
+            "Same ticker option exposure",
+            f"{same_ticker_count} open option row(s) already exist for this ticker.",
+            15,
+        )
 
     max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
     if max_pressure >= 80:
@@ -807,6 +968,7 @@ def _research_brief(
         + sections.get("open_shares", [])
         + sections.get("open_futures", [])
     )
+    open_option_rows = _all_frame_records(raw_matches.get("open_options"))
     broker_rows = sections.get("broker_positions", [])
     sec_rows = sections.get("recent_sec_filings", [])
     sec_facts = sections.get("sec_companyfacts", [])
@@ -827,6 +989,9 @@ def _research_brief(
         resolution.get("request"),
         sections.get("requested_option_matches", []),
     )
+    contract_exposure = _contract_exposure_summary(
+        resolution.get("request"), open_option_rows, broker_rows
+    )
     if requested_option:
         quality = str(requested_option.get("match_quality") or "missing").lower()
         if quality == "missing":
@@ -835,6 +1000,10 @@ def _research_brief(
             warnings.append(
                 f"Requested option {requested_option.get('label')} matched as {quality}; verify before using it."
             )
+    if contract_exposure and int(contract_exposure.get("exact_total") or 0) > 0:
+        warnings.append(
+            f"Requested option already has {contract_exposure.get('exact_total')} exact local/broker exposure row(s)."
+        )
     if best_idea:
         snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
         if snapshot_age is not None and snapshot_age > STALE_SNAPSHOT_MINUTES:
@@ -851,11 +1020,12 @@ def _research_brief(
         warnings.append("Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting.")
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     research_action = _research_action(
-        symbol, best_idea, open_summary, broker_summary, deduped_warnings, local_hit_count
+        symbol, best_idea, open_summary, broker_summary, contract_exposure,
+        deduped_warnings, local_hit_count
     )
     paper_readiness = _paper_readiness(
-        best_idea, requested_option, open_summary, broker_summary, deduped_warnings,
-        research_action, local_hit_count,
+        best_idea, requested_option, open_summary, broker_summary, contract_exposure,
+        deduped_warnings, research_action, local_hit_count,
     )
     brief = {
         "symbol": symbol,
@@ -864,6 +1034,7 @@ def _research_brief(
         "request": resolution.get("request"),
         "requested_option": requested_option,
         "best_idea": best_idea,
+        "contract_exposure": contract_exposure,
         "open_positions": open_summary,
         "broker_positions": broker_summary,
         "recent_sec_filings": {
@@ -1041,7 +1212,9 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
     for section, (filename, column) in OPEN_FILES.items():
         path = data_dir / filename
         sources[section] = filename if path.exists() else None
-        sections[section] = _frame_records(_match(_read_json_rows(path), column, q), section)
+        matched = _match(_read_json_rows(path), column, q)
+        raw_matches[section] = matched
+        sections[section] = _frame_records(matched, section)
 
     broker_snapshot_path = data_dir / "robinhood_broker_snapshot.json"
     broker_rows = _broker_snapshot_positions(q, data_dir)
@@ -1147,6 +1320,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     readiness = brief.get("paper_readiness") or {}
     open_pos = brief.get("open_positions") or {}
     broker_pos = brief.get("broker_positions") or {}
+    contract_exposure = brief.get("contract_exposure") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -1194,6 +1368,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>
     <div><span class="muted">Net edge</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
+    <div><span class="muted">Exact contract exposure</span><strong>{int(contract_exposure.get('exact_total') or 0)}</strong></div>
+    <div><span class="muted">Same ticker options</span><strong>{int(contract_exposure.get('same_ticker_total') or 0)}</strong></div>
     <div><span class="muted">Broker positions</span><strong>{int(broker_pos.get('count') or 0)}</strong></div>
     <div><span class="muted">Broker value</span><strong>{_fmt_brief_money(broker_pos.get('market_value'))}</strong></div>
     <div><span class="muted">Broker snapshot</span><strong>{html.escape(str(broker_pos.get('snapshot_freshness') or '-'))}</strong></div>

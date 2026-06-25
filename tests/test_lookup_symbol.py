@@ -499,6 +499,79 @@ def test_lookup_action_prioritizes_open_exit_pressure():
         assert action["can_export_paper_candidate"] is False
 
 
+def test_lookup_exact_option_request_flags_existing_contract_exposure():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-12-18",
+            "mid": 4.5,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+            "suggested_contracts": 1,
+            "stop_price": 2.2,
+            "target_price": 9.0,
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+        }]).to_parquet(data_dir / "top_options_20260624_120000.parquet")
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {
+                "position_id": "local-aapl-call",
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2026-12-18",
+                "entry_price": 4.0,
+                "current_mid": 4.8,
+                "unrealized_pct": 0.20,
+            },
+            {
+                "position_id": "other-aapl-put",
+                "ticker": "AAPL",
+                "side": "put",
+                "strike": 180.0,
+                "expiry": "2026-12-18",
+            },
+        ]), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "accounts": [{
+                "account_mask": "****1497",
+                "label": "Default individual margin",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+                "option_positions": [{
+                    "chain_symbol": "AAPL",
+                    "option_type": "call",
+                    "strike_price": "200.0000",
+                    "expiration_date": "2026-12-18",
+                    "quantity": "1.0000",
+                    "average_price": 4.0,
+                    "current_price": 4.8,
+                }],
+            }],
+        }), encoding="utf-8")
+
+        report = lookup_symbol("AAPL 20261218 C 200", data_dir)
+        exposure = report["brief"]["contract_exposure"]
+        assert exposure["status"] == "exact_exposure"
+        assert exposure["exact_open_positions"] == 1
+        assert exposure["exact_broker_positions"] == 1
+        assert exposure["exact_total"] == 2
+        assert exposure["same_ticker_total"] == 3
+        assert "AAPL 2026-12-18 C 200.0000" in exposure["matched_broker_labels"]
+        assert report["brief"]["research_action"]["action"] == "review_existing_contract"
+        assert report["brief"]["research_action"]["can_export_paper_candidate"] is False
+        assert report["brief"]["paper_readiness"]["status"] in {"caution", "blocked"}
+        assert any("already has 2 exact" in warning for warning in report["brief"]["risk_warnings"])
+        assert report["sections"]["broker_positions"][0]["option_side"] == "C"
+        html = render_html(report)
+        assert "Exact contract exposure" in html
+
+
 def test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -571,5 +644,6 @@ if __name__ == "__main__":
     test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
+    test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("15/15 lookup tests passed")
+    print("16/16 lookup tests passed")
