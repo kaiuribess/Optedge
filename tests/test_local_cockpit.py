@@ -606,10 +606,10 @@ def test_action_queue_prioritizes_health_and_exit_risk_over_paper_candidates():
         (data_dir / "open_futures_positions.json").write_text("[]", encoding="utf-8")
         pd.DataFrame([{
             "ticker": "NVDA",
-            "contract": "NVDA 2026-09-18 C 200",
+            "contract": "NVDA 2026-12-18 C 200",
             "side": "call",
             "strike": 200,
-            "expiry": "2026-09-18",
+            "expiry": "2026-12-18",
             "mid": 2.5,
             "suggested_contracts": 1,
             "actual_dollars": 250,
@@ -2416,6 +2416,24 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             json.dumps([{"symbol": "NG=F", "direction": "long", "contract": "/MNG"}]),
             encoding="utf-8",
         )
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "accounts": [{
+                "account_mask": "****1497",
+                "label": "Default individual margin",
+                "option_positions": [{
+                    "chain_symbol": "ROBN",
+                    "option_type": "call",
+                    "strike_price": "35.0000",
+                    "expiration_date": "2026-12-18",
+                    "quantity": "2.0000",
+                }],
+                "equity_positions": [{
+                    "symbol": "HOOD",
+                    "quantity": "5.0000",
+                }],
+            }],
+        }), encoding="utf-8")
 
         try:
             nvda = build_symbol_suggestions(data_dir, query="nvda")
@@ -2429,6 +2447,13 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
 
             gas = build_symbol_suggestions(data_dir, query="NG")
             assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
+
+            robn = build_symbol_suggestions(data_dir, query="ROBN")
+            assert any(row["symbol"] == "ROBN" and row["kind"] == "broker_option" for row in robn["rows"])
+            assert any("broker snapshots" in note for note in robn["notes"])
+
+            hood = build_symbol_suggestions(data_dir, query="HOOD")
+            assert any(row["symbol"] == "HOOD" and row["kind"] == "broker_equity" for row in hood["rows"])
 
             observed_fetch_modes = []
 
@@ -3447,14 +3472,15 @@ def test_market_pulse_uses_free_history_context_and_regime_labels():
 def test_options_sentiment_uses_cboe_put_call_snapshots():
     old_fetch = cockpit_module._fetch_cboe_put_call_snapshot
     old_daily = cockpit_module._fetch_cboe_daily_put_call_ratios
+    today = str(pd.Timestamp.now(tz="UTC").date())
     snapshots = {
         "total": {
             "key": "total", "label": "Total options", "status": "ok",
-            "signal": "balanced", "pc_ratio": 0.86, "latest_date": "2026-06-10",
+            "signal": "balanced", "pc_ratio": 0.86, "latest_date": today,
         },
         "equity": {
             "key": "equity", "label": "Equity options", "status": "ok",
-            "signal": "call_demand_high", "pc_ratio": 0.52, "latest_date": "2026-06-10",
+            "signal": "call_demand_high", "pc_ratio": 0.52, "latest_date": today,
         },
         "index": {
             "key": "index", "label": "Index options", "status": "ok",
@@ -3810,10 +3836,10 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         pd.DataFrame([
             {
                 "ticker": "AAPL",
-                "contract": "AAPL 2026-09-18 C 200",
+                "contract": "AAPL 2026-12-18 C 200",
                 "side": "call",
                 "strike": 200,
-                "expiry": "2026-09-18",
+                "expiry": "2026-12-18",
                 "mid": 2.5,
                 "suggested_contracts": 1,
                 "actual_dollars": 250,
@@ -3827,10 +3853,10 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
             },
             {
                 "ticker": "MSFT",
-                "contract": "MSFT 2026-09-18 C 500",
+                "contract": "MSFT 2026-12-18 C 500",
                 "side": "call",
                 "strike": 500,
-                "expiry": "2026-09-18",
+                "expiry": "2026-12-18",
                 "mid": 1.0,
                 "suggested_contracts": 0,
                 "stop_price": 0.5,
@@ -3863,8 +3889,8 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
         symbols = {row["ticker_or_symbol"] for row in preview["rows"]}
         assert symbols == {"AAPL", "NVDA"}
 
-        filtered = build_paper_candidates(data_dir, max_new=5, query="AAPL 20260918 C 200")
-        assert filtered["query"] == "AAPL 20260918 C 200"
+        filtered = build_paper_candidates(data_dir, max_new=5, query="AAPL 20261218 C 200")
+        assert filtered["query"] == "AAPL 20261218 C 200"
         assert filtered["selected_count"] == 1
         assert filtered["rows"][0]["ticker_or_symbol"] == "AAPL"
 

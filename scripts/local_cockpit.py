@@ -4860,6 +4860,65 @@ def _option_query_from_row(row: pd.Series) -> str:
     return f"{ticker} {expiry} {side} {strike_text}"
 
 
+def _add_broker_snapshot_suggestions(
+    rows: list[dict[str, Any]],
+    seen: set[tuple[str, str, str]],
+    data_dir: Path,
+) -> None:
+    snapshot = _read_json(data_dir / "robinhood_broker_snapshot.json")
+    if not isinstance(snapshot, dict):
+        return
+    accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
+    direct_options = snapshot.get("option_positions") if isinstance(snapshot.get("option_positions"), list) else []
+    direct_equities = snapshot.get("equity_positions") if isinstance(snapshot.get("equity_positions"), list) else []
+
+    def add_option(raw: dict[str, Any], account_label: Any = None) -> None:
+        symbol = str(raw.get("chain_symbol") or raw.get("symbol") or raw.get("ticker") or "").strip().upper()
+        if not symbol:
+            return
+        side_raw = str(raw.get("option_type") or raw.get("side") or raw.get("right") or "").strip().lower()
+        side = "C" if side_raw.startswith("call") or side_raw == "c" else "P" if side_raw.startswith("put") or side_raw == "p" else side_raw.upper()
+        expiry = str(raw.get("expiration_date") or raw.get("expiry") or "").strip()
+        strike = str(raw.get("strike_price") or raw.get("strike") or "").strip()
+        qty = _float_value(raw.get("quantity") or raw.get("contracts"), default=None)
+        qty_text = f"{qty:g}x " if qty is not None else ""
+        contract = " ".join(part for part in [symbol, expiry, side, strike] if part)
+        label = f"{symbol} broker {qty_text}{contract}".strip()
+        _add_suggestion(
+            rows, seen, symbol, label, "broker_option", "Robinhood broker snapshot",
+            query=symbol, name=account_label, score=1.2, trade_status="broker_open",
+        )
+
+    def add_equity(raw: dict[str, Any], account_label: Any = None) -> None:
+        symbol = str(raw.get("symbol") or raw.get("ticker") or "").strip().upper()
+        if not symbol:
+            return
+        qty = _float_value(raw.get("quantity") or raw.get("shares"), default=None)
+        qty_text = f"{qty:g} shares" if qty is not None else "shares"
+        _add_suggestion(
+            rows, seen, symbol, f"{symbol} broker {qty_text}", "broker_equity",
+            "Robinhood broker snapshot", query=symbol, name=account_label,
+            score=1.15, trade_status="broker_open",
+        )
+
+    for raw in direct_options:
+        if isinstance(raw, dict):
+            add_option(raw)
+    for raw in direct_equities:
+        if isinstance(raw, dict):
+            add_equity(raw)
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        account_label = account.get("nickname") or account.get("label") or account.get("account_mask")
+        for raw in account.get("option_positions") or []:
+            if isinstance(raw, dict):
+                add_option(raw, account_label)
+        for raw in account.get("equity_positions") or []:
+            if isinstance(raw, dict):
+                add_equity(raw, account_label)
+
+
 def build_symbol_suggestions(
     data_dir: Path = DATA_DIR,
     query: str = "",
@@ -4930,9 +4989,11 @@ def build_symbol_suggestions(
             label = normalized.get("position_label") or str(symbol or "")
             _add_suggestion(
                 rows, seen, symbol, label, f"open_{asset_name}",
-                "open positions", query=str(symbol or ""), score=0.5,
+            "open positions", query=str(symbol or ""), score=0.5,
                 trade_status=normalized.get("trade_status"),
             )
+
+    _add_broker_snapshot_suggestions(rows, seen, data_dir)
 
     for item in load_watchlist(data_dir).get("entries", []):
         _add_suggestion(
@@ -4975,7 +5036,7 @@ def build_symbol_suggestions(
         "count": len(rows),
         "rows": rows,
         "notes": [
-            "Suggestions are built from local scan snapshots, open positions, watchlist entries, built-in aliases, SEC tickers, and Nasdaq Trader's free symbol directory.",
+            "Suggestions are built from local scan snapshots, open positions, broker snapshots, watchlist entries, built-in aliases, SEC tickers, and Nasdaq Trader's free symbol directory.",
             "Selecting a suggestion only fills or runs local research; it does not place trades.",
         ],
     }
