@@ -445,6 +445,63 @@ def test_lookup_action_prioritizes_open_exit_pressure():
         assert action["can_export_paper_candidate"] is False
 
 
+def test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "ROBN",
+            "side": "call",
+            "strike": 35.0,
+            "expiry": "2026-12-18",
+            "mid": 11.8,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+            "chain_source": "tradier",
+            "quote_quality": "live_or_broker",
+            "suggested_contracts": 1,
+            "stop_price": 7.0,
+            "target_price": 18.0,
+        }]).to_parquet(data_dir / "top_options_20260624_120000.parquet")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "accounts": [{
+                "account_mask": "****1497",
+                "label": "Default individual margin",
+                "agentic_allowed": False,
+                "option_level": "option_level_2",
+                "option_positions": [{
+                    "chain_symbol": "ROBN",
+                    "symbol": "ROBN",
+                    "option_type": "call",
+                    "strike_price": "35.0000",
+                    "expiration_date": "2026-12-18",
+                    "quantity": "2.0000",
+                    "average_price": 6.45,
+                    "current_price": 11.8,
+                    "bid_price": 10.7,
+                    "ask_price": 12.9,
+                    "quote_updated_at": "2026-06-24T19:00:00Z",
+                }],
+            }],
+        }), encoding="utf-8")
+
+        report = lookup_symbol("ROBN", data_dir)
+        broker_rows = report["sections"]["broker_positions"]
+        assert broker_rows[0]["symbol"] == "ROBN"
+        assert broker_rows[0]["contract"] == "ROBN 2026-12-18 C 35.0000"
+        assert broker_rows[0]["unrealized_pct"] > 0.80
+        brief = report["brief"]
+        assert brief["broker_positions"]["count"] == 1
+        assert brief["broker_positions"]["option_count"] == 1
+        assert brief["research_action"]["action"] == "review_broker_position"
+        assert brief["research_action"]["can_export_paper_candidate"] is False
+        assert any("Broker snapshot has 1 position" in warning for warning in brief["risk_warnings"])
+        html = render_html(report)
+        assert "Broker positions" in html
+        assert "Broker snapshot" in html
+
+
 if __name__ == "__main__":
     test_resolver_prefers_local_aliases_for_common_company_names_and_futures()
     test_lookup_reads_open_option_positions()
@@ -459,4 +516,5 @@ if __name__ == "__main__":
     test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
-    print("13/13 lookup tests passed")
+    test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
+    print("14/14 lookup tests passed")

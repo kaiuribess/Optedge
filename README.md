@@ -7,7 +7,7 @@
 
 Optedge is a local research cockpit for options, shares, futures, and value ideas. It combines options-chain analytics, market data, retail attention, news, fundamentals, filings, macro context, sizing rules, lifecycle tracking, validation reports, and guardrails into one local dashboard.
 
-Optedge is built for research and decision support. It does not place trades, store broker credentials, or promise future returns. Broker connectivity, when enabled, is read-only market data.
+Optedge is built for research and decision support. The local app does not place trades, store broker credentials, or promise future returns. When a Codex/Robinhood MCP connector is available, broker checks and any order workflow stay outside the local repo and remain approval-gated.
 
 ## What Optedge Is
 

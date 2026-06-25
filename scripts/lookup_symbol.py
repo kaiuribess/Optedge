@@ -79,6 +79,13 @@ DISPLAY_COLUMNS = {
         "pnl_pct", "pnl_dollars", "trade_status", "stop_price", "target_price",
         "latest_exit_pressure", "latest_exit_action",
     ],
+    "broker_positions": [
+        "account_mask", "account_label", "asset", "symbol", "contract",
+        "quantity", "average_price", "current_price", "unrealized_pct",
+        "market_value", "bid_price", "ask_price", "quote_updated_at",
+        "agentic_allowed", "option_level", "snapshot_age_min",
+        "snapshot_freshness", "status",
+    ],
     "requested_option_matches": [
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
@@ -297,6 +304,130 @@ def _open_position_summary(open_rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _broker_snapshot_age_minutes(snapshot: dict[str, Any]) -> float | None:
+    try:
+        generated_at = pd.to_datetime(snapshot.get("generated_at"), errors="coerce", utc=True)
+        if pd.isna(generated_at):
+            return None
+        return max(0.0, (pd.Timestamp(datetime.now(timezone.utc)) - generated_at).total_seconds() / 60.0)
+    except Exception:
+        return None
+
+
+def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, Any]]:
+    snapshot = _load_json_obj(data_dir / "robinhood_broker_snapshot.json")
+    if not snapshot:
+        return []
+    q = str(symbol or "").upper().strip()
+    age = _broker_snapshot_age_minutes(snapshot)
+    freshness = _snapshot_freshness(age)
+    rows: list[dict[str, Any]] = []
+    for account in snapshot.get("accounts") or []:
+        account_mask = account.get("account_mask")
+        account_label = account.get("label") or account.get("nickname")
+        for pos in account.get("option_positions") or []:
+            sym = str(pos.get("chain_symbol") or pos.get("symbol") or "").upper().strip()
+            if sym != q:
+                continue
+            quantity = _float_value(pos.get("quantity"), 0.0) or 0.0
+            average_price = _float_value(pos.get("average_price"))
+            current_price = _float_value(pos.get("current_price") or pos.get("mark_price"))
+            multiplier = _float_value(pos.get("trade_value_multiplier"), 100.0) or 100.0
+            market_value = (
+                current_price * quantity * multiplier
+                if current_price is not None else None
+            )
+            unrealized = (
+                (current_price - average_price) / average_price
+                if current_price is not None and average_price not in {None, 0}
+                else None
+            )
+            option_type = str(pos.get("option_type") or pos.get("type") or "").lower()
+            side = "C" if option_type.startswith("call") else "P" if option_type.startswith("put") else option_type.upper()
+            contract = " ".join(
+                part for part in [
+                    sym,
+                    str(pos.get("expiration_date") or ""),
+                    side,
+                    str(pos.get("strike_price") or ""),
+                ] if part
+            )
+            rows.append({
+                "account_mask": account_mask,
+                "account_label": account_label,
+                "asset": "option",
+                "symbol": sym,
+                "contract": contract,
+                "quantity": quantity,
+                "average_price": average_price,
+                "current_price": current_price,
+                "unrealized_pct": unrealized,
+                "market_value": market_value,
+                "bid_price": _clean_value(pos.get("bid_price")),
+                "ask_price": _clean_value(pos.get("ask_price")),
+                "quote_updated_at": _clean_value(pos.get("quote_updated_at")),
+                "agentic_allowed": bool(account.get("agentic_allowed")),
+                "option_level": _clean_value(account.get("option_level")),
+                "snapshot_age_min": None if age is None else round(age, 1),
+                "snapshot_freshness": freshness,
+                "status": "broker_snapshot",
+            })
+        for pos in account.get("equity_positions") or []:
+            sym = str(pos.get("symbol") or pos.get("ticker") or "").upper().strip()
+            if sym != q:
+                continue
+            quantity = _float_value(pos.get("quantity"), 0.0) or 0.0
+            average_price = _float_value(pos.get("average_buy_price") or pos.get("average_price"))
+            current_price = _float_value(pos.get("current_price") or pos.get("mark_price"))
+            rows.append({
+                "account_mask": account_mask,
+                "account_label": account_label,
+                "asset": "equity",
+                "symbol": sym,
+                "contract": sym,
+                "quantity": quantity,
+                "average_price": average_price,
+                "current_price": current_price,
+                "unrealized_pct": (
+                    (current_price - average_price) / average_price
+                    if current_price is not None and average_price not in {None, 0}
+                    else None
+                ),
+                "market_value": current_price * quantity if current_price is not None else None,
+                "agentic_allowed": bool(account.get("agentic_allowed")),
+                "option_level": _clean_value(account.get("option_level")),
+                "snapshot_age_min": None if age is None else round(age, 1),
+                "snapshot_freshness": freshness,
+                "status": "broker_snapshot",
+            })
+    return rows
+
+
+def _broker_position_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pnls = [
+        _float_value(row.get("unrealized_pct"))
+        for row in rows
+        if _float_value(row.get("unrealized_pct")) is not None
+    ]
+    market_values = [
+        _float_value(row.get("market_value"))
+        for row in rows
+        if _float_value(row.get("market_value")) is not None
+    ]
+    stale = any(str(row.get("snapshot_freshness") or "").lower() == "stale" for row in rows)
+    return {
+        "count": len(rows),
+        "option_count": sum(1 for row in rows if row.get("asset") == "option"),
+        "equity_count": sum(1 for row in rows if row.get("asset") == "equity"),
+        "market_value": sum(market_values) if market_values else None,
+        "avg_unrealized_pct": (sum(pnls) / len(pnls)) if pnls else None,
+        "snapshot_freshness": "stale" if stale else (rows[0].get("snapshot_freshness") if rows else None),
+        "max_snapshot_age_min": max(
+            (_float_value(row.get("snapshot_age_min"), 0.0) or 0.0) for row in rows
+        ) if rows else None,
+    }
+
+
 def _requested_option_summary(
     request: dict[str, Any] | None,
     matches: list[dict[str, Any]],
@@ -381,6 +512,7 @@ def _research_action(
     symbol: str,
     best_idea: dict[str, Any] | None,
     open_summary: dict[str, Any],
+    broker_summary: dict[str, Any],
     warnings: list[str],
     total_hits: int,
 ) -> dict[str, Any]:
@@ -410,10 +542,13 @@ def _research_action(
     open_count = int(open_summary.get("count") or 0)
     max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
     avg_unreal = _float_value(open_summary.get("avg_unrealized_pct"))
+    broker_count = int(broker_summary.get("count") or 0)
     status = _status_text((best_idea or {}).get("trade_status"))
 
     if open_count > 0:
         reasons.append(f"{open_count} open lifecycle position(s) already exist for {symbol}.")
+    if broker_count > 0:
+        reasons.append(f"{broker_count} broker snapshot position(s) already exist for {symbol}.")
     if max_pressure >= 80:
         action = "review_exit_now"
         label = "Review exit now"
@@ -468,13 +603,21 @@ def _research_action(
         reasons.append("No ranked current idea was found, only position or historical context.")
         next_steps.append("Add it to the watchlist or run a focused scan for a current ranked view.")
 
+    if broker_count > 0 and action not in {"review_exit_now", "blocked_by_guardrails"}:
+        action = "review_broker_position"
+        label = "Review broker position"
+        risk_level = "medium" if risk_level == "low" else risk_level
+        next_steps.insert(0, "Reconcile Robinhood broker snapshot against local Optedge open positions before adding exposure.")
+        if open_count <= 0:
+            reasons.append("Broker exposure exists but no matching local open position was found in this lookup.")
+
     if avg_unreal is not None and open_count > 0:
         reasons.append(f"Average open unrealized P&L is {avg_unreal * 100:+.1f}%.")
 
     if not next_steps:
         next_steps.append("Read the factor drivers and open exposure before making any manual decision.")
 
-    can_export = action == "paper_candidate_review" and risk_level != "high"
+    can_export = action == "paper_candidate_review" and risk_level != "high" and broker_count <= 0
     return {
         "action": action,
         "label": label,
@@ -489,6 +632,7 @@ def _paper_readiness(
     best_idea: dict[str, Any] | None,
     requested_option: dict[str, Any] | None,
     open_summary: dict[str, Any],
+    broker_summary: dict[str, Any],
     warnings: list[str],
     action: dict[str, Any],
     total_hits: int,
@@ -547,6 +691,13 @@ def _paper_readiness(
         add("warn", "Open exposure", f"Existing position exit pressure is elevated ({max_pressure:.0f}/100).", 20)
     else:
         add("ok", "Open exposure", "No high exit-pressure open position conflict surfaced.")
+
+    broker_count = int(broker_summary.get("count") or 0)
+    if broker_count > 0:
+        if int(open_summary.get("count") or 0) <= 0:
+            add("warn", "Broker exposure", "Robinhood snapshot has exposure that is not matched by local open positions.", 30)
+        else:
+            add("warn", "Broker exposure", "Robinhood snapshot already has exposure for this symbol.", 20)
 
     warning_text = " ".join(str(w).lower() for w in warnings)
     if "blocked" in warning_text or "do not trust" in warning_text:
@@ -610,6 +761,7 @@ def _research_brief(
         + sections.get("open_shares", [])
         + sections.get("open_futures", [])
     )
+    broker_rows = sections.get("broker_positions", [])
     sec_rows = sections.get("recent_sec_filings", [])
     sec_facts = sections.get("sec_companyfacts", [])
     sec_fact_report = sections.get("_sec_companyfacts_report", [])
@@ -643,13 +795,20 @@ def _research_brief(
             warnings.append(
                 f"Best idea snapshot is stale ({snapshot_age:.0f} minutes old); run a fresh focused scan."
             )
-    deduped_warnings = list(dict.fromkeys(warnings))[:5]
     open_summary = _open_position_summary(open_rows)
+    broker_summary = _broker_position_summary(broker_rows)
+    if broker_summary.get("count") and not open_summary.get("count"):
+        warnings.append(
+            f"Broker snapshot has {broker_summary.get('count')} position(s) for {symbol}, but no matching local open position was found."
+        )
+    if broker_summary.get("snapshot_freshness") == "stale":
+        warnings.append("Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting.")
+    deduped_warnings = list(dict.fromkeys(warnings))[:5]
     research_action = _research_action(
-        symbol, best_idea, open_summary, deduped_warnings, local_hit_count
+        symbol, best_idea, open_summary, broker_summary, deduped_warnings, local_hit_count
     )
     paper_readiness = _paper_readiness(
-        best_idea, requested_option, open_summary, deduped_warnings,
+        best_idea, requested_option, open_summary, broker_summary, deduped_warnings,
         research_action, local_hit_count,
     )
     brief = {
@@ -660,6 +819,7 @@ def _research_brief(
         "requested_option": requested_option,
         "best_idea": best_idea,
         "open_positions": open_summary,
+        "broker_positions": broker_summary,
         "recent_sec_filings": {
             "count": len(sec_rows),
             "latest_forms": [row.get("form") for row in sec_rows[:5]],
@@ -821,6 +981,11 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         sources[section] = filename if path.exists() else None
         sections[section] = _frame_records(_match(_read_json_rows(path), column, q), section)
 
+    broker_snapshot_path = data_dir / "robinhood_broker_snapshot.json"
+    broker_rows = _broker_snapshot_positions(q, data_dir)
+    sources["broker_positions"] = broker_snapshot_path.name if broker_snapshot_path.exists() else None
+    sections["broker_positions"] = _frame_records(pd.DataFrame(broker_rows), "broker_positions")
+
     if include_sec and not q.endswith("=F") and not q.startswith("^"):
         try:
             sec_report = recent_filings_for_symbol(q, limit=8)
@@ -916,6 +1081,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     requested = brief.get("requested_option") or {}
     readiness = brief.get("paper_readiness") or {}
     open_pos = brief.get("open_positions") or {}
+    broker_pos = brief.get("broker_positions") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -963,6 +1129,9 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>
     <div><span class="muted">Net edge</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
+    <div><span class="muted">Broker positions</span><strong>{int(broker_pos.get('count') or 0)}</strong></div>
+    <div><span class="muted">Broker value</span><strong>{_fmt_brief_money(broker_pos.get('market_value'))}</strong></div>
+    <div><span class="muted">Broker snapshot</span><strong>{html.escape(str(broker_pos.get('snapshot_freshness') or '-'))}</strong></div>
     <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get('count') or 0)}</strong></div>
     <div><span class="muted">SEC watch signals</span><strong>{html.escape(sec_signals)}</strong></div>
     <div><span class="muted">SEC cash</span><strong>{_fmt_brief_money(sec_fund.get('cash'))}</strong></div>

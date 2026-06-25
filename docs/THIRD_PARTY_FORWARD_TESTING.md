@@ -75,7 +75,17 @@ Outputs:
 - `data/robinhood_agentic_cycle.json`
 - `data/robinhood_agentic_cycle_prompt.md`
 
-This queue is options-only and loss-capped. It does not connect to Robinhood, store credentials, or place trades. It prepares a strict candidate file that a Codex/Robinhood MCP agent can double-check before submitting any order.
+This queue is options-only and loss-capped. The local script does not connect to Robinhood, store credentials, or place trades. It prepares a strict candidate file that a Codex/Robinhood MCP session can double-check with live broker/account context before any approval-gated order workflow.
+
+Current Robinhood MCP capabilities can include:
+
+- Account, portfolio, buying-power, equity-position, option-position, equity-order, and option-order reads.
+- Real-time equity quotes, option quotes, option chains, option instruments, index lookup, equity fundamentals, and tradability checks.
+- Saved scanners/screeners, live scanner runs, scanner creation/editing, and scanner sort updates.
+- Watchlist reads plus approval-gated watchlist and option-watchlist writes.
+- Equity and single-leg option order review, placement, and cancellation when the selected account is `agentic_allowed=true` and has the required approvals.
+
+The local queue remains a research handoff. A broker-side order is only real after Robinhood confirms it.
 
 Default safety caps:
 
@@ -153,7 +163,7 @@ Optedge also exposes a local decision journal path in the cycle packet:
 
 Use it to append one row for each reviewed entry or exit with a decision such as `submitted`, `skipped`, `held`, `closed`, `updated_stop`, or `reviewed`. This local journal is useful for auditability and debugging the review loop, but it is not broker confirmation and is not third-party verification by itself.
 
-Default mode should be `approval_required`. Do not allow automatic submission until the Robinhood MCP connection, account scope, data quality, and Optedge validation are all behaving correctly. If the kill-switch file exists at `data/agentic_trading_disabled.flag`, the agent should skip all entries.
+Default mode should be `approval_required`. Do not allow automatic submission until the Robinhood MCP connection, account scope, options approval, buying power, data quality, and Optedge validation are all behaving correctly. If the kill-switch file exists at `data/agentic_trading_disabled.flag`, the agent should skip all entries.
 
 ### Codex App Heartbeat
 
@@ -163,7 +173,7 @@ A local Codex heartbeat can review this packet every 30 minutes in the current t
 - Report whether the entry gate is open or blocked.
 - Summarize fresh candidates, open-position exit reviews, and hard-pause triggers.
 - Keep order actions approval-gated.
-- Use Robinhood MCP tools only for read/check actions unless the user explicitly approves an order action in the thread.
+- Use Robinhood MCP tools only for read/check actions unless the user explicitly approves the exact order action in the thread.
 
 Pair the heartbeat with the normal Optedge scan loop:
 
@@ -217,7 +227,7 @@ Options, shares, and futures have different risk, fill, slippage, and lifecycle 
 
 Optedge does not make trades externally verified by creating these files. Public legitimacy comes only after the filtered candidates are entered into a paper or live broker account and that account is connected to a third-party journal or verification service.
 
-This project does not add broker execution, broker credentials, or automated order routing. The export is only a clean handoff file for manual paper tracking.
+This project does not add broker credentials or direct broker execution inside the local codebase. The export is a clean handoff file for paper tracking or a separate approval-gated Codex/Robinhood MCP review session.
 
 ## Recommended Workflow
 
