@@ -348,6 +348,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Requested match" in html
     assert "Exact contract exposure" in html
     assert "Price trend" in html
+    assert "Market structure" in html
     assert "Paper readiness" in html
     assert "Recent SEC filings" in html
     assert "SEC cash/debt" in html

@@ -13142,6 +13142,7 @@ function briefHtml(brief) {
   const open = brief.open_positions || {};
   const contractExposure = brief.contract_exposure || {};
   const price = brief.price_snapshot || {};
+  const marketStructure = brief.market_structure || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
   const sec = brief.recent_sec_filings || {};
@@ -13164,6 +13165,8 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Price trend</span><strong>${escHtml(price.trend_label || '-')}</strong></div>
         <div class="brief-tile"><span>20d return</span><strong>${pct(price.ret_20d)}</strong></div>
         <div class="brief-tile"><span>6m range pos</span><strong>${pct(price.range_6mo_pos)}</strong></div>
+        <div class="brief-tile"><span>Market structure</span><strong>${escHtml(marketStructure.status || '-')}</strong></div>
+        <div class="brief-tile"><span>Market risk score</span><strong>${cell(marketStructure.risk_score || 0)}</strong></div>
         <div class="brief-tile"><span>Paper readiness</span><strong>${escHtml(readiness.label || '-')}</strong></div>
         <div class="brief-tile"><span>Readiness score</span><strong>${cell(readiness.score)}</strong></div>
         <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
@@ -16427,7 +16430,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if not symbol.strip():
                 self._send_json({"error": "symbol is required"}, status=400)
                 return
-            self._send_json(lookup_symbol(symbol, self.data_dir, include_price=True))
+            self._send_json(lookup_symbol(
+                symbol,
+                self.data_dir,
+                include_price=True,
+                include_market_structure=True,
+            ))
             return
         if parsed.path == "/api/suggestions":
             params = parse_qs(parsed.query)

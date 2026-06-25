@@ -127,6 +127,58 @@ def test_lookup_can_include_free_price_snapshot():
     assert "strong_uptrend" in html
 
 
+def test_lookup_can_include_market_structure_risk_snapshot():
+    old_halts = lookup_module.halt_rows_for_symbols
+    old_thresholds = lookup_module.threshold_rows_for_symbols
+    old_circuits = lookup_module.circuit_rows_for_symbols
+    try:
+        lookup_module.halt_rows_for_symbols = lambda symbols, cache_age=60: pd.DataFrame([{
+            "symbol": "RISK",
+            "active_halt": True,
+            "reason_code": "T1",
+            "halt_risk_score": 98,
+            "source": "nasdaq_trader_trade_halts",
+            "source_url": "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+        }])
+        lookup_module.threshold_rows_for_symbols = lambda symbols, cache_age=21600: pd.DataFrame([{
+            "symbol": "RISK",
+            "is_threshold": True,
+            "settlement_risk_score": 86,
+            "source": "nasdaq_trader_regsho_threshold",
+            "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=regshothreshold",
+        }])
+        lookup_module.circuit_rows_for_symbols = lambda symbols, cache_age=1800: pd.DataFrame([{
+            "symbol": "RISK",
+            "trigger_time": "06/24/2026 10:00:00 AM",
+            "ssr_risk_score": 82,
+            "source": "nasdaq_trader_short_sale_circuit_breaker",
+            "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=shortsalecircuitbreaker",
+        }])
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            report = lookup_symbol("RISK", data_dir, include_sec=False, include_market_structure=True)
+    finally:
+        lookup_module.halt_rows_for_symbols = old_halts
+        lookup_module.threshold_rows_for_symbols = old_thresholds
+        lookup_module.circuit_rows_for_symbols = old_circuits
+
+    market = report["brief"]["market_structure"]
+    assert market["status"] == "blocked"
+    assert market["risk_score"] == 98
+    assert set(market["flags"]) == {
+        "active_trading_halt",
+        "regsho_threshold",
+        "short_sale_circuit_breaker",
+    }
+    assert report["brief"]["research_action"]["action"] == "blocked_by_guardrails"
+    assert any("active trading halt" in warning for warning in report["brief"]["risk_warnings"])
+    assert len(report["sections"]["market_structure"]) == 3
+    assert report["sections"]["market_structure"][0]["check"] == "trade_halt"
+    html = render_html(report)
+    assert "Market structure" in html
+    assert "active_trading_halt" in html
+
+
 def test_lookup_matches_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -677,6 +729,7 @@ if __name__ == "__main__":
     test_lookup_reads_open_futures_positions()
     test_lookup_saves_json_and_html()
     test_lookup_can_include_free_price_snapshot()
+    test_lookup_can_include_market_structure_risk_snapshot()
     test_lookup_matches_requested_option_contract()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
@@ -689,4 +742,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("17/17 lookup tests passed")
+    print("18/18 lookup tests passed")

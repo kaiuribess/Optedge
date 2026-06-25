@@ -22,6 +22,9 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 import data_provider
+from engines.regsho_threshold import threshold_rows_for_symbols
+from engines.short_sale_circuit import circuit_rows_for_symbols
+from engines.trading_halts import halt_rows_for_symbols
 from scripts.export_external_paper_track import _load_option_chain_shortlist
 from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
@@ -119,6 +122,10 @@ DISPLAY_COLUMNS = {
         "symbol", "last_price", "last_date", "ret_5d", "ret_20d", "ret_60d",
         "sma20", "sma50", "range_6mo_pos", "hv20", "trend_label",
         "history_source", "history_quality", "rows",
+    ],
+    "market_structure": [
+        "symbol", "check", "status", "flag", "risk_score", "detail",
+        "source", "source_url",
     ],
 }
 
@@ -391,6 +398,98 @@ def _price_snapshot(symbol: str) -> dict[str, Any] | None:
         "history_source": _clean_value(hist.attrs.get("history_source")),
         "history_quality": _clean_value(hist.attrs.get("history_quality")),
         "rows": int(len(out)),
+    }
+
+
+def _market_structure_row(symbol: str, check: str, status: str, flag: str, risk_score: Any, detail: str, row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "check": check,
+        "status": status,
+        "flag": flag,
+        "risk_score": _clean_value(risk_score),
+        "detail": detail,
+        "source": _clean_value(row.get("source")),
+        "source_url": _clean_value(row.get("source_url")),
+    }
+
+
+def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
+    """Official no-key market-structure context for one symbol."""
+    clean = str(symbol or "").strip().upper()
+    rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    flags: list[str] = []
+    max_risk = 0
+
+    def add_warning(flag: str, message: str, risk_score: Any) -> None:
+        nonlocal max_risk
+        flags.append(flag)
+        warnings.append(message)
+        risk = _float_value(risk_score, 0.0) or 0.0
+        max_risk = max(max_risk, int(risk))
+
+    if not clean or clean.startswith("^") or clean.endswith("=F"):
+        return {
+            "status": "not_applicable",
+            "risk_score": 0,
+            "flags": [],
+            "warning_count": 0,
+            "warnings": [],
+            "rows": [],
+        }
+
+    try:
+        halts = halt_rows_for_symbols([clean], cache_age=60)
+    except Exception:
+        halts = pd.DataFrame()
+    for raw in _all_frame_records(halts, limit=10):
+        active = bool(raw.get("active_halt"))
+        flag = "active_trading_halt" if active else "recent_trading_halt"
+        risk = raw.get("halt_risk_score")
+        detail = f"Nasdaq halt {raw.get('reason_code') or ''}".strip()
+        status = "blocked" if active else "risk_review"
+        rows.append(_market_structure_row(clean, "trade_halt", status, flag, risk, detail, raw))
+        if active:
+            add_warning(flag, f"Market structure blocked: active trading halt for {clean}.", risk)
+        else:
+            add_warning(flag, f"Market structure risk: recent trading halt for {clean}.", risk)
+
+    try:
+        thresholds = threshold_rows_for_symbols([clean], cache_age=6 * 3600)
+    except Exception:
+        thresholds = pd.DataFrame()
+    for raw in _all_frame_records(thresholds, limit=10):
+        flag = "regsho_threshold"
+        risk = raw.get("settlement_risk_score")
+        detail = "Reg SHO threshold security" if raw.get("is_threshold") else "Reg SHO monitor row"
+        rows.append(_market_structure_row(clean, "regsho_threshold", "risk_review", flag, risk, detail, raw))
+        add_warning(flag, f"Market structure risk: {clean} is on the Reg SHO threshold list.", risk)
+
+    try:
+        circuits = circuit_rows_for_symbols([clean], cache_age=30 * 60)
+    except Exception:
+        circuits = pd.DataFrame()
+    for raw in _all_frame_records(circuits, limit=10):
+        flag = "short_sale_circuit_breaker"
+        risk = raw.get("ssr_risk_score")
+        detail = f"Short-sale circuit breaker triggered {raw.get('trigger_time') or ''}".strip()
+        rows.append(_market_structure_row(clean, "short_sale_circuit", "risk_review", flag, risk, detail, raw))
+        add_warning(flag, f"Market structure risk: {clean} is under a short-sale circuit breaker.", risk)
+
+    clean_flags = list(dict.fromkeys(flags))
+    status = (
+        "blocked" if "active_trading_halt" in clean_flags
+        else "risk_review" if clean_flags
+        else "clear"
+    )
+    return {
+        "status": status,
+        "risk_score": max_risk,
+        "flags": clean_flags,
+        "warning_count": len(warnings),
+        "warnings": list(dict.fromkeys(warnings)),
+        "rows": rows,
     }
 
 
@@ -1067,6 +1166,7 @@ def _research_brief(
     sec_fact_report = sections.get("_sec_companyfacts_report", [])
     price_rows = sections.get("price_snapshot", [])
     price_snapshot = price_rows[0] if price_rows else None
+    market_structure = sections.get("_market_structure_report", [{}])[0] or {}
     sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
     sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
     validation = _load_json_obj(data_dir / "validation_summary.json")
@@ -1078,6 +1178,7 @@ def _research_brief(
         if isinstance(w, (dict, str))
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
+    warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:3])
     best_idea = _best_idea_dict(best_section, best)
     requested_option = _requested_option_summary(
         resolution.get("request"),
@@ -1130,6 +1231,13 @@ def _research_brief(
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
         "price_snapshot": price_snapshot,
+        "market_structure": {
+            "status": market_structure.get("status"),
+            "risk_score": market_structure.get("risk_score"),
+            "flags": market_structure.get("flags") or [],
+            "warning_count": market_structure.get("warning_count") or 0,
+            "warnings": (market_structure.get("warnings") or [])[:5],
+        },
         "open_positions": open_summary,
         "broker_positions": broker_summary,
         "recent_sec_filings": {
@@ -1286,6 +1394,7 @@ def lookup_symbol(
     data_dir: Path = DATA_DIR,
     include_sec: bool = True,
     include_price: bool = False,
+    include_market_structure: bool = False,
 ) -> dict[str, Any]:
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
@@ -1328,6 +1437,12 @@ def lookup_symbol(
             if price_snapshot else None
         )
         sections["price_snapshot"] = [price_snapshot] if price_snapshot else []
+
+    if include_market_structure:
+        market_structure = _market_structure_snapshot(q)
+        sections["_market_structure_report"] = [market_structure]
+        sections["market_structure"] = market_structure.get("rows") or []
+        sources["market_structure"] = "Nasdaq Trader trade halts / Reg SHO / short-sale circuit"
 
     if include_sec and not q.endswith("=F") and not q.startswith("^"):
         try:
@@ -1375,6 +1490,7 @@ def lookup_symbol(
         "notes": [
             "Lookup uses latest local Optedge snapshots, open state, broker snapshot, and saved option-chain shortlist.",
             "Optional price snapshots use the free cached history stack and are not live broker quotes.",
+            "Optional market-structure checks use official no-key Nasdaq Trader risk lists.",
             "Run a fresh scan with --universe TICKER if the ticker is missing or stale.",
             "This is research output only, not an order or financial advice.",
         ],
@@ -1431,6 +1547,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     broker_pos = brief.get("broker_positions") or {}
     contract_exposure = brief.get("contract_exposure") or {}
     price = brief.get("price_snapshot") or {}
+    market_structure = brief.get("market_structure") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -1470,6 +1587,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">60d return</span><strong>{_fmt_brief_pct(price.get('ret_60d'))}</strong></div>
     <div><span class="muted">6m range pos</span><strong>{_fmt_brief_pct(price.get('range_6mo_pos'))}</strong></div>
     <div><span class="muted">Price source</span><strong>{html.escape(str(price.get('history_source') or '-'))}</strong></div>
+    <div><span class="muted">Market structure</span><strong>{html.escape(str(market_structure.get('status') or '-'))}</strong></div>
+    <div><span class="muted">Market risk score</span><strong>{html.escape(str(market_structure.get('risk_score') if market_structure.get('risk_score') is not None else '-'))}</strong></div>
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
     <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
     <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
@@ -1573,10 +1692,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("symbol", help="Ticker or futures symbol to inspect, e.g. NVDA, TSLA, CL=F")
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--price", action="store_true", help="Include a free cached price/trend snapshot.")
+    ap.add_argument("--market-structure", action="store_true", help="Include official no-key market-structure risk checks.")
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args(argv)
 
-    report = lookup_symbol(args.symbol, Path(args.data_dir), include_price=args.price)
+    report = lookup_symbol(
+        args.symbol,
+        Path(args.data_dir),
+        include_price=args.price,
+        include_market_structure=args.market_structure,
+    )
     paths = save_lookup(report, Path(args.data_dir))
     print(json.dumps(report, indent=2, default=str) if args.json_only else f"Lookup report: {paths['html']}\nLookup JSON: {paths['json']}\nHits: {report['total_hits']}")
     return 0
