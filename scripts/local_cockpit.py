@@ -46,6 +46,7 @@ from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
 from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
+from scripts.normalize_robinhood_broker_snapshot import normalize_broker_snapshot
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
     build_external_orders,
@@ -5957,6 +5958,76 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
             "Use it to make sure live Robinhood positions match Optedge before reviewing new entries or exits.",
         ],
     }
+
+
+def normalize_robinhood_broker_snapshot_file(
+    data_dir: Path = DATA_DIR,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Normalize the local raw read-only Robinhood snapshot for cockpit use."""
+    data_dir = Path(data_dir)
+    raw_path = data_dir / "robinhood_mcp_snapshot_raw.json"
+    output_path = data_dir / "robinhood_broker_snapshot.json"
+    if not raw_path.exists():
+        return {
+            "ok": False,
+            "error": "raw snapshot missing",
+            "raw_path": str(raw_path),
+            "output_path": str(output_path),
+            "notes": [
+                "Save read-only Robinhood MCP account/position/order data to data/robinhood_mcp_snapshot_raw.json first.",
+                "This action does not connect to Robinhood or place broker orders.",
+            ],
+        }
+    raw = _read_json(raw_path)
+    if raw is None:
+        return {
+            "ok": False,
+            "error": "raw snapshot is not valid JSON",
+            "raw_path": str(raw_path),
+            "output_path": str(output_path),
+        }
+    try:
+        snapshot = normalize_broker_snapshot(raw)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"could not normalize snapshot: {exc}",
+            "raw_path": str(raw_path),
+            "output_path": str(output_path),
+        }
+    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    result = {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "raw_path": str(raw_path),
+        "output_path": str(output_path),
+        "counts": counts,
+        "summary": {
+            "accounts": counts.get("accounts", 0),
+            "option_positions": counts.get("option_positions", 0),
+            "equity_positions": counts.get("equity_positions", 0),
+            "option_orders": counts.get("option_orders", 0),
+            "equity_orders": counts.get("equity_orders", 0),
+        },
+        "does_not_place_orders": True,
+        "notes": [
+            "Normalized local read-only broker snapshot for cockpit reconciliation.",
+            "No broker connection or broker order action was performed.",
+        ],
+    }
+    if dry_run:
+        result["snapshot_preview"] = {
+            "schema": snapshot.get("schema"),
+            "generated_at": snapshot.get("generated_at"),
+            "counts": counts,
+        }
+        return result
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    result["broker_reconciliation"] = build_broker_reconciliation(data_dir)
+    return result
 
 
 def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
@@ -12944,6 +13015,10 @@ tr.clickable-row:hover { background:#18201d; }
       <div class="brief-list" style="margin-top:12px">
         <h4>Broker / local reconciliation</h4>
         <div class="muted">Optional offline snapshot check from <code>data/robinhood_broker_snapshot.json</code>. No broker action is taken. Direct API: <code>/api/broker-reconciliation</code>.</div>
+        <div class="scan-controls">
+          <button class="btn" type="button" id="broker-normalize">Normalize raw broker snapshot</button>
+          <a class="btn" href="/artifact/robinhood-broker-snapshot" target="_blank">Open broker snapshot</a>
+        </div>
         <div id="autopilot-broker" class="table-wrap"></div>
       </div>
     </div>
@@ -15549,6 +15624,23 @@ async function loadAgenticAutopilotStatus() {
   wireClickableRows($('autopilot-paper'));
   wireClickableRows($('autopilot-broker'));
 }
+async function normalizeBrokerSnapshot() {
+  if (!$('autopilot-status-text')) return;
+  $('autopilot-status-text').textContent = 'Normalizing local raw broker snapshot...';
+  const res = await fetch('/api/normalize-broker-snapshot', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({})
+  });
+  const data = await res.json();
+  if (!res.ok || data.error || data.ok === false) {
+    $('autopilot-status-text').textContent = 'Broker snapshot normalization failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  const counts = data.summary || data.counts || {};
+  $('autopilot-status-text').textContent = `Broker snapshot normalized: ${counts.option_positions || 0} option position(s), ${counts.equity_positions || 0} equity position(s).`;
+  await loadAgenticAutopilotStatus();
+}
 async function loadRobinhoodQueue(write=false) {
   $('rh-status-text').textContent = write ? 'Writing agentic queue files...' : 'Building agentic options queue...';
   const payload = {
@@ -16298,6 +16390,7 @@ $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
 $('autopilot-refresh').addEventListener('click', loadAgenticAutopilotStatus);
 $('autopilot-packet-refresh').addEventListener('click', () => routeAutopilotAction('refresh_autopilot_packet'));
+$('broker-normalize').addEventListener('click', normalizeBrokerSnapshot);
 $('decision-add').addEventListener('click', addDecisionJournalRow);
 $('decision-refresh').addEventListener('click', loadDecisionJournal);
 ['decision-symbol', 'decision-contract', 'decision-reason'].forEach(id => {
@@ -16760,7 +16853,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path not in {
             "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
             "/api/export-chain-shortlist", "/api/build-swing-packet",
-            "/api/agentic-decision",
+            "/api/agentic-decision", "/api/normalize-broker-snapshot",
             "/api/write-position-hygiene-plan", "/api/apply-position-hygiene",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache", "/api/warm-symbol-caches", "/api/run-refresh-scan",
@@ -16890,6 +16983,13 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/agentic-decision":
             self._send_json(record_agentic_decision(body, self.data_dir))
+            return
+        if parsed.path == "/api/normalize-broker-snapshot":
+            result = normalize_robinhood_broker_snapshot_file(
+                self.data_dir,
+                dry_run=_bool_param(body.get("dry_run"), False),
+            )
+            self._send_json(result, status=200 if result.get("ok") else 400)
             return
         query = str(body.get("query") or "").strip()
         if not query:

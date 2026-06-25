@@ -26,6 +26,7 @@ from scripts.local_cockpit import (
     build_swing_packet, build_watchlist_sec_filings,
     build_today_review, apply_position_hygiene,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
+    normalize_robinhood_broker_snapshot_file,
     record_agentic_decision, warm_sec_ticker_cache, write_option_chain_shortlist, write_position_hygiene_plan,
 )
 
@@ -240,6 +241,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Broker / local reconciliation" in html
     assert "autopilot-broker" in html
     assert "/api/broker-reconciliation" in html
+    assert "broker-normalize" in html
+    assert "/api/normalize-broker-snapshot" in html
     assert "Position hygiene" in html
     assert "hygiene-summary" in html
     assert "/api/position-hygiene" in html
@@ -4294,6 +4297,52 @@ def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
         assert "log_decision" in actions
 
 
+def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "robinhood_mcp_snapshot_raw.json").write_text(json.dumps({
+            "accounts": [{
+                "account_number": "FAKE123456",
+                "nickname": "Agentic",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+            }],
+            "option_positions": {
+                "results": [{
+                    "account_number": "FAKE123456",
+                    "chain_symbol": "AAPL",
+                    "option_type": "call",
+                    "strike_price": "200",
+                    "expiration_date": "2027-01-15",
+                    "quantity": "1",
+                    "average_price": "1.25",
+                    "mark_price": "1.55",
+                }],
+            },
+        }), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "quantity": 1,
+        }]), encoding="utf-8")
+
+        preview = normalize_robinhood_broker_snapshot_file(data_dir, dry_run=True)
+        assert preview["ok"] is True
+        assert preview["dry_run"] is True
+        assert not (data_dir / "robinhood_broker_snapshot.json").exists()
+
+        result = normalize_robinhood_broker_snapshot_file(data_dir)
+
+        assert result["ok"] is True
+        assert result["does_not_place_orders"] is True
+        assert result["summary"]["option_positions"] == 1
+        assert (data_dir / "robinhood_broker_snapshot.json").exists()
+        assert result["broker_reconciliation"]["broker_option_count"] == 1
+        assert result["broker_reconciliation"]["matched_count"] == 1
+
+
 def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -6108,6 +6157,7 @@ if __name__ == "__main__":
     test_agentic_autopilot_status_summarizes_gate_tickets_and_paper_book()
     test_agentic_autopilot_status_blocks_stale_packets_and_tickets()
     test_agentic_autopilot_preflight_passes_clean_confirmation_ticket()
+    test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation()
     test_broker_reconciliation_surfaces_broker_and_local_mismatches()
     test_agentic_autopilot_blocks_ticket_when_broker_reconciliation_mismatches()
     test_position_hygiene_builds_safe_cleanup_plan_without_mutating_positions()
@@ -6131,4 +6181,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("79/79 local cockpit tests passed")
+    print("80/80 local cockpit tests passed")

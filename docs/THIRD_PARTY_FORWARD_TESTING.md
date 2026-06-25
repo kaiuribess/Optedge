@@ -206,6 +206,8 @@ Normalize the raw bundle into the cockpit's expected snapshot shape:
 python scripts/normalize_robinhood_broker_snapshot.py
 ```
 
+You can also use the local cockpit's **Normalize raw broker snapshot** button in the Broker / local reconciliation panel.
+
 Outputs:
 
 - `data/robinhood_broker_snapshot.json`
