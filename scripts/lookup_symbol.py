@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
+from scripts.export_external_paper_track import _load_option_chain_shortlist
 from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
 
@@ -63,6 +64,14 @@ DISPLAY_COLUMNS = {
         "stop_price", "target_price", "risk_dollars", "reward_dollars",
         "snapshot_age_min", "snapshot_freshness",
     ],
+    "chain_shortlist": [
+        "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "bid",
+        "ask", "spread_pct", "premium_dollars", "actual_dollars", "confidence",
+        "rank_score", "trade_status", "suggested_contracts", "stop_price",
+        "target_price", "contract_grade", "review_lane", "readiness_score",
+        "swing_fit_label", "openInterest", "volume", "chain_source",
+        "quote_quality", "snapshot_age_min", "snapshot_freshness", "review_thesis",
+    ],
     "open_options": [
         "ticker", "side", "strike", "expiry", "entry_time", "entry_price",
         "current_mid", "unrealized_pct", "trade_status", "stop_price", "target_price",
@@ -92,7 +101,8 @@ DISPLAY_COLUMNS = {
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
         "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
         "match_quality", "strike_diff", "requested_side", "requested_expiry",
-        "requested_strike", "top_headline",
+        "requested_strike", "match_source", "contract_grade", "review_lane",
+        "readiness_score", "top_headline",
     ],
     "recent_sec_filings": [
         "ticker", "company_name", "form", "filing_date", "report_date",
@@ -152,6 +162,37 @@ def _read_json_rows(path: Path) -> pd.DataFrame:
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
+
+
+def _chain_shortlist_frame(data_dir: Path) -> pd.DataFrame:
+    """Read the saved deep option-chain shortlist with lookup freshness fields."""
+    try:
+        df = _load_option_chain_shortlist(data_dir)
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    if "ticker" in out.columns:
+        out["ticker"] = out["ticker"].astype(str).str.upper().str.strip()
+    if "premium_dollars" not in out.columns and "actual_dollars" in out.columns:
+        out["premium_dollars"] = out["actual_dollars"]
+
+    source_path = None
+    for name in ("option_chain_shortlist.json", "option_chain_shortlist.csv"):
+        candidate = data_dir / name
+        if candidate.exists():
+            source_path = candidate
+            break
+    if source_path is not None:
+        age = _snapshot_age_minutes(source_path)
+        out["_source_file"] = source_path.name
+        out["snapshot_age_min"] = round(age, 1)
+        out["snapshot_freshness"] = _snapshot_freshness(age)
+    elif "_source_file" not in out.columns:
+        out["_source_file"] = "option_chain_shortlist"
+    return out
 
 
 def _clean_value(value: Any) -> Any:
@@ -473,13 +514,15 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
     symbol = row.get("ticker", row.get("symbol"))
     side = row.get("side", row.get("direction", section))
     label = str(symbol or "-")
-    if section == "options":
+    asset = section.rstrip("s")
+    if section in {"options", "chain_shortlist"}:
+        asset = "option"
         label = f"{symbol} {str(side).upper()[:1]} {row.get('strike', '-')} {row.get('expiry', '-')}"
     elif section == "futures":
         label = f"{symbol} {str(side).upper()} {row.get('contract', '')}".strip()
     quote_source = _quote_source_info(row)
     return {
-        "asset": section.rstrip("s"),
+        "asset": asset,
         "label": label,
         "trade_status": _clean_value(row.get("trade_status")),
         "confidence": _clean_value(row.get("confidence")),
@@ -500,6 +543,9 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
         "source_file": _clean_value(row.get("_source_file")),
         "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
+        "contract_grade": _clean_value(row.get("contract_grade")),
+        "review_lane": _clean_value(row.get("review_lane")),
+        "readiness_score": _clean_value(row.get("readiness_score")),
         "headline": _clean_value(row.get("top_headline")),
     }
 
@@ -905,7 +951,16 @@ def match_option_request(
     if not request or request.get("asset") != "option":
         return []
     path = _latest_file(data_dir, "top_options_*.parquet")
-    df = _read_parquet(path)
+    top_df = _read_parquet(path)
+    if not top_df.empty:
+        top_df = top_df.copy()
+        top_df["match_source"] = "top_options"
+    chain_df = _chain_shortlist_frame(data_dir)
+    if not chain_df.empty:
+        chain_df = chain_df.copy()
+        chain_df["match_source"] = "option_chain_shortlist"
+    frames = [df for df in (top_df, chain_df) if df is not None and not df.empty]
+    df = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
     if df.empty or "ticker" not in df.columns:
         return []
 
@@ -976,6 +1031,13 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         raw_matches[section] = matched
         sections[section] = _frame_records(matched, section)
 
+    chain_df = _chain_shortlist_frame(data_dir)
+    chain_source = _clean_value(chain_df["_source_file"].iloc[0]) if not chain_df.empty and "_source_file" in chain_df.columns else None
+    sources["chain_shortlist"] = str(chain_source) if chain_source else None
+    chain_matched = _match(chain_df, "ticker", q)
+    raw_matches["chain_shortlist"] = chain_matched
+    sections["chain_shortlist"] = _frame_records(chain_matched, "chain_shortlist")
+
     for section, (filename, column) in OPEN_FILES.items():
         path = data_dir / filename
         sources[section] = filename if path.exists() else None
@@ -1008,7 +1070,10 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         sections["requested_option_matches"] = match_option_request(
             resolution.get("request"), data_dir
         )
-        sources["requested_option_matches"] = sources.get("options")
+        sources["requested_option_matches"] = ", ".join(
+            source for source in [sources.get("options"), sources.get("chain_shortlist")]
+            if source
+        ) or None
 
     public_sections = {name: rows for name, rows in sections.items() if not name.startswith("_")}
     local_hit_count = sum(
@@ -1027,7 +1092,7 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         "sources": sources,
         "sections": public_sections,
         "notes": [
-            "Lookup uses latest local Optedge snapshots only.",
+            "Lookup uses latest local Optedge snapshots, open state, broker snapshot, and saved option-chain shortlist.",
             "Run a fresh scan with --universe TICKER if the ticker is missing or stale.",
             "This is research output only, not an order or financial advice.",
         ],
