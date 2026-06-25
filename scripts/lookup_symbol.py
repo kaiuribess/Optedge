@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
+import data_provider
 from scripts.export_external_paper_track import _load_option_chain_shortlist
 from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
@@ -113,6 +114,11 @@ DISPLAY_COLUMNS = {
     "sec_companyfacts": [
         "ticker", "company_name", "metric", "label", "value", "unit",
         "period_end", "filed", "form", "concept",
+    ],
+    "price_snapshot": [
+        "symbol", "last_price", "last_date", "ret_5d", "ret_20d", "ret_60d",
+        "sma20", "sma50", "range_6mo_pos", "hv20", "trend_label",
+        "history_source", "history_quality", "rows",
     ],
 }
 
@@ -299,6 +305,92 @@ def _quote_source_info(row: pd.Series | dict[str, Any] | None) -> dict[str, Any]
         "label": label,
         "is_live_or_broker": is_live,
         "warning": warning,
+    }
+
+
+def _series_return(close: pd.Series, lookback: int) -> float | None:
+    if close is None or len(close) <= lookback:
+        return None
+    current = _float_value(close.iloc[-1])
+    previous = _float_value(close.iloc[-lookback - 1])
+    if current is None or previous in {None, 0}:
+        return None
+    return (current - previous) / previous
+
+
+def _price_trend_label(ret_20d: float | None, sma20: float | None, sma50: float | None, last: float | None) -> str:
+    if last is None:
+        return "unknown"
+    above20 = sma20 is not None and last >= sma20
+    above50 = sma50 is not None and last >= sma50
+    if ret_20d is not None and ret_20d >= 0.08 and above20:
+        return "strong_uptrend"
+    if ret_20d is not None and ret_20d > 0 and (above20 or above50):
+        return "uptrend"
+    if ret_20d is not None and ret_20d <= -0.08 and not above20:
+        return "strong_downtrend"
+    if ret_20d is not None and ret_20d < 0 and not above20:
+        return "downtrend"
+    return "rangebound"
+
+
+def _price_snapshot(symbol: str) -> dict[str, Any] | None:
+    clean = str(symbol or "").strip().upper()
+    if not clean:
+        return None
+    try:
+        hist = data_provider.get_history(clean, period="6mo", interval="1d", cache_age=1800)
+    except Exception:
+        return None
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return None
+
+    out = hist.copy()
+    out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
+    out = out.dropna(subset=["Close"])
+    if out.empty:
+        return None
+    close = out["Close"]
+    last = _float_value(close.iloc[-1])
+    high = pd.to_numeric(out.get("High", close), errors="coerce")
+    low = pd.to_numeric(out.get("Low", close), errors="coerce")
+    high_6mo = _float_value(high.max())
+    low_6mo = _float_value(low.min())
+    range_pos = (
+        (last - low_6mo) / (high_6mo - low_6mo)
+        if last is not None and high_6mo is not None and low_6mo is not None and high_6mo > low_6mo
+        else None
+    )
+    returns = close.pct_change().dropna()
+    hv20 = None
+    if len(returns) >= 5:
+        sample = returns.tail(20)
+        hv20 = _float_value(sample.std() * math.sqrt(252))
+    sma20 = _float_value(close.tail(20).mean()) if len(close) >= 5 else None
+    sma50 = _float_value(close.tail(50).mean()) if len(close) >= 20 else None
+    ret_20d = _series_return(close, 20)
+    try:
+        last_date = pd.to_datetime(out.index[-1], errors="coerce")
+        last_date_text = None if pd.isna(last_date) else last_date.strftime("%Y-%m-%d")
+    except Exception:
+        last_date_text = None
+    return {
+        "symbol": clean,
+        "last_price": _clean_value(last),
+        "last_date": last_date_text,
+        "ret_5d": _clean_value(_series_return(close, 5)),
+        "ret_20d": _clean_value(ret_20d),
+        "ret_60d": _clean_value(_series_return(close, 60)),
+        "sma20": _clean_value(sma20),
+        "sma50": _clean_value(sma50),
+        "high_6mo": _clean_value(high_6mo),
+        "low_6mo": _clean_value(low_6mo),
+        "range_6mo_pos": _clean_value(range_pos),
+        "hv20": _clean_value(hv20),
+        "trend_label": _price_trend_label(ret_20d, sma20, sma50, last),
+        "history_source": _clean_value(hist.attrs.get("history_source")),
+        "history_quality": _clean_value(hist.attrs.get("history_quality")),
+        "rows": int(len(out)),
     }
 
 
@@ -973,6 +1065,8 @@ def _research_brief(
     sec_rows = sections.get("recent_sec_filings", [])
     sec_facts = sections.get("sec_companyfacts", [])
     sec_fact_report = sections.get("_sec_companyfacts_report", [])
+    price_rows = sections.get("price_snapshot", [])
+    price_snapshot = price_rows[0] if price_rows else None
     sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
     sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
     validation = _load_json_obj(data_dir / "validation_summary.json")
@@ -1035,6 +1129,7 @@ def _research_brief(
         "requested_option": requested_option,
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
+        "price_snapshot": price_snapshot,
         "open_positions": open_summary,
         "broker_positions": broker_summary,
         "recent_sec_filings": {
@@ -1186,7 +1281,12 @@ def match_option_request(
     return _frame_records(exact, "requested_option_matches")
 
 
-def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = True) -> dict[str, Any]:
+def lookup_symbol(
+    query: str,
+    data_dir: Path = DATA_DIR,
+    include_sec: bool = True,
+    include_price: bool = False,
+) -> dict[str, Any]:
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
     q = str(resolution.get("symbol") or original_query).strip().upper()
@@ -1220,6 +1320,14 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
     broker_rows = _broker_snapshot_positions(q, data_dir)
     sources["broker_positions"] = broker_snapshot_path.name if broker_snapshot_path.exists() else None
     sections["broker_positions"] = _frame_records(pd.DataFrame(broker_rows), "broker_positions")
+
+    if include_price:
+        price_snapshot = _price_snapshot(q)
+        sources["price_snapshot"] = (
+            str(price_snapshot.get("history_source") or "data_provider.get_history")
+            if price_snapshot else None
+        )
+        sections["price_snapshot"] = [price_snapshot] if price_snapshot else []
 
     if include_sec and not q.endswith("=F") and not q.startswith("^"):
         try:
@@ -1266,6 +1374,7 @@ def lookup_symbol(query: str, data_dir: Path = DATA_DIR, include_sec: bool = Tru
         "sections": public_sections,
         "notes": [
             "Lookup uses latest local Optedge snapshots, open state, broker snapshot, and saved option-chain shortlist.",
+            "Optional price snapshots use the free cached history stack and are not live broker quotes.",
             "Run a fresh scan with --universe TICKER if the ticker is missing or stale.",
             "This is research output only, not an order or financial advice.",
         ],
@@ -1321,6 +1430,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     open_pos = brief.get("open_positions") or {}
     broker_pos = brief.get("broker_positions") or {}
     contract_exposure = brief.get("contract_exposure") or {}
+    price = brief.get("price_snapshot") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -1354,6 +1464,12 @@ def _render_brief(brief: dict[str, Any]) -> str:
   <div class="brief-grid">
     <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
+    <div><span class="muted">Last price</span><strong>{html.escape(str(price.get('last_price') if price.get('last_price') is not None else '-'))}</strong></div>
+    <div><span class="muted">Price trend</span><strong>{html.escape(str(price.get('trend_label') or '-'))}</strong></div>
+    <div><span class="muted">20d return</span><strong>{_fmt_brief_pct(price.get('ret_20d'))}</strong></div>
+    <div><span class="muted">60d return</span><strong>{_fmt_brief_pct(price.get('ret_60d'))}</strong></div>
+    <div><span class="muted">6m range pos</span><strong>{_fmt_brief_pct(price.get('range_6mo_pos'))}</strong></div>
+    <div><span class="muted">Price source</span><strong>{html.escape(str(price.get('history_source') or '-'))}</strong></div>
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
     <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
     <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
@@ -1456,10 +1572,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Look up one ticker/symbol in latest local Optedge outputs.")
     ap.add_argument("symbol", help="Ticker or futures symbol to inspect, e.g. NVDA, TSLA, CL=F")
     ap.add_argument("--data-dir", default=str(DATA_DIR))
+    ap.add_argument("--price", action="store_true", help="Include a free cached price/trend snapshot.")
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args(argv)
 
-    report = lookup_symbol(args.symbol, Path(args.data_dir))
+    report = lookup_symbol(args.symbol, Path(args.data_dir), include_price=args.price)
     paths = save_lookup(report, Path(args.data_dir))
     print(json.dumps(report, indent=2, default=str) if args.json_only else f"Lookup report: {paths['html']}\nLookup JSON: {paths['json']}\nHits: {report['total_hits']}")
     return 0

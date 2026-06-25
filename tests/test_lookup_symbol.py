@@ -85,6 +85,48 @@ def test_lookup_saves_json_and_html():
         assert report["brief"]["research_action"]["can_export_paper_candidate"] is False
 
 
+def test_lookup_can_include_free_price_snapshot():
+    old_history = lookup_module.data_provider.get_history
+    try:
+        def fake_history(ticker, period="6mo", interval="1d", cache_age=1800):
+            assert ticker == "AAPL"
+            assert period == "6mo"
+            assert interval == "1d"
+            assert cache_age == 1800
+            idx = pd.date_range("2026-01-01", periods=70, freq="D", tz="UTC")
+            closes = pd.Series([100 + i for i in range(70)], index=idx, dtype="float64")
+            df = pd.DataFrame({
+                "Open": closes - 0.5,
+                "High": closes + 1.0,
+                "Low": closes - 1.0,
+                "Close": closes,
+                "Volume": 1_000_000,
+            }, index=idx)
+            df.attrs["history_source"] = "unit_history"
+            df.attrs["history_quality"] = "cached"
+            return df
+
+        lookup_module.data_provider.get_history = fake_history
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            report = lookup_symbol("Apple", data_dir, include_sec=False, include_price=True)
+    finally:
+        lookup_module.data_provider.get_history = old_history
+
+    snapshot = report["brief"]["price_snapshot"]
+    assert snapshot["symbol"] == "AAPL"
+    assert snapshot["last_price"] == 169.0
+    assert snapshot["ret_20d"] > 0
+    assert snapshot["ret_60d"] > 0
+    assert snapshot["range_6mo_pos"] > 0.90
+    assert snapshot["trend_label"] == "strong_uptrend"
+    assert snapshot["history_source"] == "unit_history"
+    assert report["sections"]["price_snapshot"][0]["history_quality"] == "cached"
+    html = render_html(report)
+    assert "Price trend" in html
+    assert "strong_uptrend" in html
+
+
 def test_lookup_matches_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -634,6 +676,7 @@ if __name__ == "__main__":
     test_lookup_reads_open_option_positions()
     test_lookup_reads_open_futures_positions()
     test_lookup_saves_json_and_html()
+    test_lookup_can_include_free_price_snapshot()
     test_lookup_matches_requested_option_contract()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
@@ -646,4 +689,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("16/16 lookup tests passed")
+    print("17/17 lookup tests passed")
