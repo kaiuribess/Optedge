@@ -44,6 +44,8 @@ ARCHIVE_PATTERNS = [
     "data/agentic_paper_positions.json",
     "data/agentic_paper_orders.jsonl",
     "data/robinhood_live_order_tickets.json",
+    "data/robinhood_broker_snapshot.json",
+    "data/robinhood_mcp_snapshot_raw.json",
     "data/dashboard_*.html",
     "data/tradingview_watchlist_*.txt",
     "data/macro_*.json",

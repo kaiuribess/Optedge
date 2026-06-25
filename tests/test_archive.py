@@ -25,9 +25,11 @@ def test_archive_moves_data_and_logs():
         _write(root / "data" / "agentic_paper_positions.json")
         _write(root / "data" / "agentic_paper_orders.jsonl")
         _write(root / "data" / "robinhood_live_order_tickets.json")
+        _write(root / "data" / "robinhood_broker_snapshot.json")
+        _write(root / "data" / "robinhood_mcp_snapshot_raw.json")
         _write(root / "logs" / "example.log")
         archive_root, moved = archive.run_archive(root, dry_run=False, keep_learned=False)
-        assert len(moved) == 9
+        assert len(moved) == 11
         assert (archive_root / "data" / "validation_summary.json").exists()
         assert (archive_root / "data" / "forward_outcomes_options_call.parquet").exists()
         assert (archive_root / "data" / "robinhood_agentic_queue.json").exists()
@@ -36,6 +38,8 @@ def test_archive_moves_data_and_logs():
         assert (archive_root / "data" / "agentic_paper_positions.json").exists()
         assert (archive_root / "data" / "agentic_paper_orders.jsonl").exists()
         assert (archive_root / "data" / "robinhood_live_order_tickets.json").exists()
+        assert (archive_root / "data" / "robinhood_broker_snapshot.json").exists()
+        assert (archive_root / "data" / "robinhood_mcp_snapshot_raw.json").exists()
         assert (archive_root / "logs" / "example.log").exists()
         assert not (root / "data" / "validation_summary.json").exists()
 

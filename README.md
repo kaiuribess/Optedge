@@ -391,6 +391,7 @@ python tests/test_validation_report.py
 python tests/test_external_paper_track.py
 python tests/test_robinhood_agentic_queue.py
 python tests/test_auto_agentic_paper.py
+python tests/test_robinhood_broker_snapshot.py
 python tests/test_symbol_resolver.py
 python tests/test_research_jobs.py
 python tests/test_lookup_symbol.py

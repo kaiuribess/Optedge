@@ -183,6 +183,47 @@ python run.py --aggressive --bankroll 500 --loop 30 --turbo --no-open --robinhoo
 
 The heartbeat does not replace Optedge scans. It reviews the latest files Optedge generated and prepares the next human-approved action.
 
+### Read-Only Broker Snapshot Reconciliation
+
+The cockpit can compare local Optedge/paper positions against a read-only Robinhood Agentic/MCP snapshot. This keeps local lifecycle state honest without adding broker credentials or automatic order placement to the codebase.
+
+Save a raw JSON bundle of read-only MCP results to:
+
+- `data/robinhood_mcp_snapshot_raw.json`
+
+Useful raw sections are:
+
+- `accounts`
+- `portfolio`
+- `equity_positions`
+- `option_positions`
+- `equity_orders`
+- `option_orders`
+
+Normalize the raw bundle into the cockpit's expected snapshot shape:
+
+```bash
+python scripts/normalize_robinhood_broker_snapshot.py
+```
+
+Outputs:
+
+- `data/robinhood_broker_snapshot.json`
+
+Preview without writing:
+
+```bash
+python scripts/normalize_robinhood_broker_snapshot.py --dry-run
+```
+
+Then open the local cockpit or call:
+
+```bash
+python -c "from scripts.local_cockpit import build_broker_reconciliation; import json; print(json.dumps(build_broker_reconciliation(), indent=2))"
+```
+
+The reconciliation is still local and read-only. It can show matched positions, broker-only positions, local-only positions, stale snapshots, and whether an agentic account appears option-ready, but it does not submit, cancel, or replace broker orders.
+
 ### Local Auto Paper Autopilot
 
 Optedge can automatically take the latest Robinhood Agentic queue in a local paper book:

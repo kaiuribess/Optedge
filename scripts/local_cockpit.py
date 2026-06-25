@@ -5629,7 +5629,34 @@ def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[st
             row.setdefault("account_agentic_allowed", account.get("agentic_allowed"))
             row.setdefault("account_option_level", account.get("option_level"))
             rows.append(row)
-    return rows, accounts
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for raw in rows:
+        symbol = str(
+            raw.get("symbol")
+            or raw.get("chain_symbol")
+            or raw.get("ticker")
+            or raw.get("ticker_or_symbol")
+            or ""
+        ).strip().upper()
+        key = (
+            raw.get("account_label") or raw.get("account") or raw.get("account_mask"),
+            symbol,
+            _agentic_option_side(
+                raw.get("option_side")
+                or raw.get("option_type")
+                or raw.get("side")
+                or raw.get("right")
+            ),
+            _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date")),
+            _agentic_strike_key(raw.get("strike") or raw.get("strike_price")),
+            _clean_value(_float_value(raw.get("quantity") or raw.get("contracts"), default=0.0)),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(raw)
+    return deduped, accounts
 
 
 def _broker_option_record(raw: dict[str, Any]) -> dict[str, Any]:
