@@ -4977,6 +4977,34 @@ def build_symbol_suggestions(
                     query=str(symbol or ""), score=score, trade_status=status,
                 )
 
+    chain_df = _load_option_chain_shortlist(data_dir)
+    if not chain_df.empty:
+        for _, row in chain_df.head(800).iterrows():
+            symbol = row.get("ticker")
+            option_query = _option_query_from_row(row)
+            side = str(row.get("side") or "").upper()[:1]
+            grade = str(row.get("contract_grade") or "").strip().upper()
+            readiness = row.get("readiness_score")
+            label_bits = [
+                str(symbol or "").strip().upper(),
+                side,
+                str(row.get("strike", "-")),
+                str(row.get("expiry", "-")),
+            ]
+            label = " ".join(part for part in label_bits if part)
+            details = []
+            if grade:
+                details.append(f"grade {grade}")
+            if readiness not in (None, ""):
+                details.append(f"ready {readiness}")
+            if details:
+                label = f"{label} ({', '.join(details)})"
+            _add_suggestion(
+                rows, seen, symbol, label, "chain_option", "saved option-chain shortlist",
+                query=option_query, score=_opportunity_score(row),
+                trade_status=row.get("trade_status") or row.get("readiness_label"),
+            )
+
     for asset_name, filename in POSITION_FILES.items():
         raw = _read_json(data_dir / filename)
         if not isinstance(raw, list):
@@ -5036,7 +5064,7 @@ def build_symbol_suggestions(
         "count": len(rows),
         "rows": rows,
         "notes": [
-            "Suggestions are built from local scan snapshots, open positions, broker snapshots, watchlist entries, built-in aliases, SEC tickers, and Nasdaq Trader's free symbol directory.",
+            "Suggestions are built from local scan snapshots, saved chain shortlists, open positions, broker snapshots, watchlist entries, built-in aliases, SEC tickers, and Nasdaq Trader's free symbol directory.",
             "Selecting a suggestion only fills or runs local research; it does not place trades.",
         ],
     }

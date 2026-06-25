@@ -2434,10 +2434,39 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
                 }],
             }],
         }), encoding="utf-8")
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "rows": [{
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "strike": 220.0,
+                "expiry": "2027-01-15",
+                "mid": 5.0,
+                "premium_dollars": 500.0,
+                "spread_pct": 0.04,
+                "readiness_score": 92,
+                "readiness_label": "ready",
+                "contract_quality_score": 94,
+                "swing_fit_score": 96,
+                "contract_grade": "A",
+                "chain_source": "cboe_options_chain",
+                "quote_quality": "free_or_delayed",
+            }],
+        }), encoding="utf-8")
 
         try:
             nvda = build_symbol_suggestions(data_dir, query="nvda")
             assert any(row["query"] == "NVDA 2026-06-18 C 200" for row in nvda["rows"])
+
+            chain = build_symbol_suggestions(data_dir, query="2027")
+            assert any(
+                row["query"] == "AAPL 2027-01-15 C 220"
+                and row["kind"] == "chain_option"
+                and row["source"] == "saved option-chain shortlist"
+                for row in chain["rows"]
+            )
+            assert any("saved chain shortlists" in note for note in chain["notes"])
 
             oil = build_symbol_suggestions(data_dir, query="oil")
             assert any(row["symbol"] == "CL=F" for row in oil["rows"])
