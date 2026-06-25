@@ -4845,12 +4845,29 @@ def _add_suggestion(
     })
 
 
-def _option_query_from_row(row: pd.Series) -> str:
-    ticker = str(row.get("ticker") or "").strip().upper()
-    expiry = str(row.get("expiry") or "").strip()
-    side_raw = str(row.get("side") or "").strip().upper()
+def _option_query_from_row(row: pd.Series | dict[str, Any]) -> str:
+    ticker = str(
+        row.get("ticker")
+        or row.get("symbol")
+        or row.get("chain_symbol")
+        or row.get("ticker_or_symbol")
+        or ""
+    ).strip().upper()
+    expiry = str(
+        row.get("expiry")
+        or row.get("expiration_date")
+        or row.get("lastTradeDateOrContractMonth")
+        or ""
+    ).strip()
+    side_raw = str(
+        row.get("side")
+        or row.get("option_side")
+        or row.get("option_type")
+        or row.get("right")
+        or ""
+    ).strip().upper()
     side = "C" if side_raw.startswith("C") else "P" if side_raw.startswith("P") else side_raw[:1]
-    strike = row.get("strike")
+    strike = row.get("strike", row.get("strike_price"))
     if not ticker or not expiry or not side or strike in (None, ""):
         return ticker
     try:
@@ -4886,7 +4903,8 @@ def _add_broker_snapshot_suggestions(
         label = f"{symbol} broker {qty_text}{contract}".strip()
         _add_suggestion(
             rows, seen, symbol, label, "broker_option", "Robinhood broker snapshot",
-            query=symbol, name=account_label, score=1.2, trade_status="broker_open",
+            query=_option_query_from_row(raw) or symbol, name=account_label,
+            score=1.2, trade_status="broker_open",
         )
 
     def add_equity(raw: dict[str, Any], account_label: Any = None) -> None:
@@ -5015,9 +5033,10 @@ def build_symbol_suggestions(
             normalized = _normalize_position(item, asset_name)
             symbol = normalized.get("ticker_or_symbol")
             label = normalized.get("position_label") or str(symbol or "")
+            query = _option_query_from_row(item) if asset_name == "option" else str(symbol or "")
             _add_suggestion(
                 rows, seen, symbol, label, f"open_{asset_name}",
-            "open positions", query=str(symbol or ""), score=0.5,
+                "open positions", query=query or str(symbol or ""), score=0.5,
                 trade_status=normalized.get("trade_status"),
             )
 

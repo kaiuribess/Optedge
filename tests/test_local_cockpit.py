@@ -2412,6 +2412,16 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             "futures_score": 1.4,
             "trade_status": "Trade",
         }]).to_parquet(data_dir / "top_futures_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps([{
+                "ticker": "TSLA",
+                "side": "call",
+                "strike": 260.0,
+                "expiry": "2026-12-18",
+                "trade_status": "Open",
+            }]),
+            encoding="utf-8",
+        )
         (data_dir / "open_futures_positions.json").write_text(
             json.dumps([{"symbol": "NG=F", "direction": "long", "contract": "/MNG"}]),
             encoding="utf-8",
@@ -2477,8 +2487,17 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             gas = build_symbol_suggestions(data_dir, query="NG")
             assert any(row["symbol"] == "NG=F" and row["kind"] == "open_futures" for row in gas["rows"])
 
+            tsla = build_symbol_suggestions(data_dir, query="260")
+            assert any(
+                row["symbol"] == "TSLA"
+                and row["kind"] == "open_option"
+                and row["query"] == "TSLA 2026-12-18 C 260"
+                for row in tsla["rows"]
+            )
+
             robn = build_symbol_suggestions(data_dir, query="ROBN")
             assert any(row["symbol"] == "ROBN" and row["kind"] == "broker_option" for row in robn["rows"])
+            assert any(row["query"] == "ROBN 2026-12-18 C 35" for row in robn["rows"])
             assert any("broker snapshots" in note for note in robn["notes"])
 
             hood = build_symbol_suggestions(data_dir, query="HOOD")
