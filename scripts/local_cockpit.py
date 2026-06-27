@@ -13276,7 +13276,7 @@ function briefHtml(brief) {
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
   const actionButtons = action.action === 'scan_swing_chain'
-    ? `<button class="btn brief-chain-btn" type="button" data-symbol="${escAttr(brief.symbol || '')}" data-side="${escAttr(request.side || 'all')}">Run chain scan</button>`
+    ? `<button class="btn brief-chain-btn" type="button" data-symbol="${escAttr(action.chain_symbol || brief.symbol || '')}" data-side="${escAttr(action.chain_side || request.side || 'all')}" data-min-dte="${escAttr(action.chain_min_dte ?? '')}" data-max-dte="${escAttr(action.chain_max_dte ?? '')}">Run chain scan</button>`
     : action.action === 'run_focused_scan'
       ? `<button class="btn brief-scan-btn" type="button" data-query="${escAttr(brief.resolved_from || brief.symbol || '')}">Run focused scan</button>`
       : '';
@@ -13340,6 +13340,8 @@ function wireLookupBriefActions(root=document) {
       setView('chains');
       $('chain-query').value = btn.dataset.symbol || $('symbol').value.trim();
       $('chain-side').value = btn.dataset.side || 'all';
+      if (btn.dataset.minDte) $('chain-min-dte').value = btn.dataset.minDte;
+      if (btn.dataset.maxDte) $('chain-max-dte').value = btn.dataset.maxDte;
       await scanOptionChain();
       scrollToId('chain-results');
     });

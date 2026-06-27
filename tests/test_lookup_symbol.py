@@ -385,6 +385,13 @@ def test_lookup_brief_warns_when_requested_option_is_closest_only():
         assert report["brief"]["research_action"]["action"] == "scan_swing_chain"
         assert report["brief"]["research_action"]["route"] == "chains"
         assert report["brief"]["research_action"]["can_export_paper_candidate"] is False
+        assert report["brief"]["research_action"]["chain_symbol"] == "MSFT"
+        assert report["brief"]["research_action"]["chain_side"] == "call"
+        assert report["brief"]["research_action"]["chain_target_expiry"] == "2026-06-18"
+        assert (
+            report["brief"]["research_action"]["chain_min_dte"]
+            <= report["brief"]["research_action"]["chain_max_dte"]
+        )
         assert report["brief"]["paper_readiness"]["status"] in {"caution", "blocked"}
         assert any(
             row["label"] == "Requested option match"
@@ -407,6 +414,10 @@ def test_lookup_missing_option_request_routes_to_chain_scan():
         assert action["route"] == "chains"
         assert action["label"] == "Scan option chain"
         assert action["can_export_paper_candidate"] is False
+        assert action["chain_symbol"] == "MSFT"
+        assert action["chain_side"] == "call"
+        assert action["chain_target_expiry"] == "2026-06-18"
+        assert action["chain_min_dte"] <= action["chain_max_dte"]
         assert any("option-chain scanner" in step for step in action["next_steps"])
 
 

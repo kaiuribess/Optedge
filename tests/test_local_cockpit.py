@@ -75,6 +75,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "requested_chain_min_dte" in html
     assert "requested_match_status" in html
     assert "brief-chain-btn" in html
+    assert "chain_min_dte" in html
+    assert "data-min-dte" in html
+    assert "data-max-dte" in html
     assert "wireLookupBriefActions" in html
     assert "provider-query" in html
     assert "chain scan is staged" in html

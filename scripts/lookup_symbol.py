@@ -1127,11 +1127,48 @@ def _status_text(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _request_chain_scan_fields(symbol: str, request: dict[str, Any] | None) -> dict[str, Any]:
+    request = request or {}
+    chain_symbol = str(request.get("ticker") or symbol or "").strip().upper()
+    side = str(request.get("side") or "all").strip().lower()
+    if side.startswith("c"):
+        side = "call"
+    elif side.startswith("p"):
+        side = "put"
+    else:
+        side = "all"
+
+    expiry = str(request.get("expiry") or "").strip()[:10]
+    dte: int | None = None
+    if expiry:
+        try:
+            expiry_dt = datetime.fromisoformat(expiry).date()
+            dte = (expiry_dt - datetime.now(timezone.utc).date()).days
+        except ValueError:
+            dte = None
+
+    if dte is None:
+        min_dte = 90
+        max_dte = 900
+    else:
+        min_dte = max(0, int(dte) - 7)
+        max_dte = max(min_dte + 14, int(dte) + 7)
+
+    return {
+        "chain_symbol": chain_symbol,
+        "chain_side": side,
+        "chain_target_expiry": expiry or None,
+        "chain_min_dte": min_dte,
+        "chain_max_dte": min(max_dte, 1200),
+    }
+
+
 def _research_action(
     symbol: str,
     best_idea: dict[str, Any] | None,
     open_summary: dict[str, Any],
     broker_summary: dict[str, Any],
+    request: dict[str, Any] | None,
     requested_option: dict[str, Any] | None,
     contract_exposure: dict[str, Any] | None,
     warnings: list[str],
@@ -1145,6 +1182,7 @@ def _research_action(
     label = "Review local research"
     requested_quality = str((requested_option or {}).get("match_quality") or "").strip().lower()
     requested_label = str((requested_option or {}).get("label") or symbol).strip()
+    chain_fields = _request_chain_scan_fields(symbol, request)
 
     if total_hits <= 0:
         if requested_option:
@@ -1159,6 +1197,7 @@ def _research_action(
                     "Use only exact or clearly reviewed contracts; avoid treating a ticker-only result as a contract match.",
                 ],
                 "can_export_paper_candidate": False,
+                **chain_fields,
             }
         return {
             "action": "run_focused_scan",
@@ -1278,7 +1317,7 @@ def _research_action(
         next_steps.append("Read the factor drivers and open exposure before making any manual decision.")
 
     can_export = action == "paper_candidate_review" and risk_level != "high" and broker_count <= 0
-    return {
+    result = {
         "action": action,
         "route": "chains" if action == "scan_swing_chain" else "research",
         "label": label,
@@ -1287,6 +1326,9 @@ def _research_action(
         "next_steps": list(dict.fromkeys(next_steps))[:5],
         "can_export_paper_candidate": can_export,
     }
+    if action == "scan_swing_chain":
+        result.update(chain_fields)
+    return result
 
 
 def _paper_readiness(
@@ -1498,7 +1540,8 @@ def _research_brief(
         warnings.append("Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting.")
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     research_action = _research_action(
-        symbol, best_idea, open_summary, broker_summary, requested_option, contract_exposure,
+        symbol, best_idea, open_summary, broker_summary, resolution.get("request"),
+        requested_option, contract_exposure,
         deduped_warnings, local_hit_count
     )
     paper_readiness = _paper_readiness(
