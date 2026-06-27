@@ -15169,12 +15169,19 @@ function jobClass(status) {
   if (status === 'running') return 'warn';
   return '';
 }
+function jobMatchClass(status) {
+  if (status === 'exact') return 'good';
+  if (status === 'closest' || status === 'ticker_only') return 'warn';
+  if (status === 'missing') return 'bad';
+  return '';
+}
 function jobHtml(job) {
   const dash = job.dashboard_path ? `<a class="btn" href="/job-dashboard?id=${encodeURIComponent(job.job_id)}" target="_blank">Dashboard</a>` : '';
   const lookup = job.lookup_html_path ? `<a class="btn" href="/job-lookup?id=${encodeURIComponent(job.job_id)}" target="_blank">Lookup</a>` : '';
   const match = job.request ? `<button class="btn job-match-btn" type="button" data-query="${escAttr(job.query)}">Match</button>` : '';
   const req = job.request_label ? ` | ${job.request_label}` : job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
-  const matchText = job.requested_match_quality ? ` | ${job.requested_match_quality} match` : (job.request && job.status === 'completed' ? ` | ${cell(job.requested_match_count || 0)} matches` : '');
+  const matchLabel = job.requested_match_label || (job.requested_match_quality ? `${job.requested_match_quality} match` : (job.request && job.status === 'completed' ? `${cell(job.requested_match_count || 0)} matches` : ''));
+  const matchText = matchLabel ? ` | <span class="${jobMatchClass(job.requested_match_status)}">${cell(matchLabel)}</span>` : '';
   const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
   return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${matchText}${mode} ${job.updated_at || ''}</small></div><div>${dash}${lookup}${match}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }

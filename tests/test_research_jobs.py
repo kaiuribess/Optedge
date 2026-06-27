@@ -147,6 +147,8 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         stored = read_job(job["job_id"], data_dir)
         assert stored["status"] == "completed"
         assert stored["request_label"] == "AAPL 2026-06-18 C 200"
+        assert stored["requested_match_status"] == "exact"
+        assert stored["requested_match_label"] == "Exact contract found"
         assert stored["requested_match_count"] == 1
         assert stored["requested_match_quality"] == "exact"
         assert stored["requested_match_mid"] == 3.2
@@ -156,6 +158,35 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert job_lookup_path(job["job_id"], data_dir) == Path(stored["lookup_html_path"]).resolve()
         log = read_job_log(job["job_id"], data_dir, max_lines=10)
         assert any("Requested contract" in line for line in log["lines"])
+
+
+def test_run_job_marks_missing_requested_option_contract():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "MSFT",
+            "side": "call",
+            "strike": 450.0,
+            "expiry": "2026-06-18",
+            "mid": 2.1,
+            "confidence": 75,
+            "rank_score": 1.0,
+            "trade_status": "Trade",
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
+
+        old_run = jobs_module.subprocess.run
+        jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+        try:
+            assert run_job(job["job_id"], job["symbol"], data_dir) == 0
+        finally:
+            jobs_module.subprocess.run = old_run
+
+        stored = read_job(job["job_id"], data_dir)
+        assert stored["requested_match_status"] == "missing"
+        assert stored["requested_match_label"] == "Requested contract not found"
+        assert stored["requested_match_count"] == 0
+        assert stored["requested_match_quality"] is None
 
 
 def test_run_refresh_job_uses_full_market_command_without_ticker():
@@ -202,6 +233,7 @@ if __name__ == "__main__":
     test_create_job_returns_error_for_empty_query()
     test_create_job_preserves_option_request_and_reads_log_tail()
     test_run_job_writes_lookup_summary_for_requested_option()
+    test_run_job_marks_missing_requested_option_contract()
     test_run_refresh_job_uses_full_market_command_without_ticker()
     test_job_dashboard_path_allows_only_data_dashboard_file()
-    print("10/10 research job tests passed")
+    print("11/11 research job tests passed")

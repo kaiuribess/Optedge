@@ -168,6 +168,40 @@ def _request_label(request: dict[str, Any] | None) -> str | None:
     return " ".join(part for part in [ticker, expiry, side_code, strike_text] if part)
 
 
+def _requested_match_summary(
+    request: dict[str, Any] | None,
+    requested_matches: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not request:
+        return {}
+    best_match = requested_matches[0] if requested_matches else {}
+    quality = str(best_match.get("match_quality") or "").strip().lower()
+    count = len(requested_matches)
+    if quality == "exact":
+        status = "exact"
+        label = "Exact contract found"
+        detail = "The focused lookup found the requested expiration, side, and strike."
+    elif quality == "closest":
+        status = "closest"
+        label = "Closest contract only"
+        detail = "No exact contract matched; review the closest contract before acting."
+    elif quality == "ticker_only":
+        status = "ticker_only"
+        label = "Ticker-only match"
+        detail = "Only same-ticker option rows were found; the requested contract was not matched."
+    else:
+        status = "missing"
+        label = "Requested contract not found"
+        detail = "Run a chain scan or refresh the focused scan before using this option idea."
+    return {
+        "requested_match_status": status,
+        "requested_match_label": label,
+        "requested_match_detail": detail,
+        "requested_match_count": count,
+        "requested_match_quality": quality or None,
+    }
+
+
 def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
     query = str(job.get("query") or job.get("symbol") or "").strip()
     if not query:
@@ -178,18 +212,18 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
     sources = report.get("sources", {}) if isinstance(report, dict) else {}
     requested_matches = sections.get("requested_option_matches") or []
     best_match = requested_matches[0] if requested_matches else {}
+    request_summary = _requested_match_summary(job.get("request"), requested_matches)
     job.update({
         "lookup_query": query,
         "lookup_total_hits": int(report.get("total_hits") or 0),
         "lookup_html_path": str(paths["html"]),
         "lookup_json_path": str(paths["json"]),
-        "requested_match_count": len(requested_matches),
-        "requested_match_quality": best_match.get("match_quality"),
         "requested_match_mid": best_match.get("mid"),
         "requested_match_quote_quality": best_match.get("quote_quality"),
         "requested_match_chain_source": best_match.get("chain_source"),
         "requested_match_source_file": sources.get("requested_option_matches"),
     })
+    job.update(request_summary)
 
 
 def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
