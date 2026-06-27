@@ -179,6 +179,44 @@ def test_lookup_can_include_market_structure_risk_snapshot():
     assert "active_trading_halt" in html
 
 
+def test_lookup_reports_data_coverage_without_inflating_hits():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        pd.DataFrame([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "mid": 3.2,
+            "confidence": 80,
+            "rank_score": 2.0,
+        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(json.dumps([{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": "2026-06-18",
+            "entry_price": 2.0,
+        }]), encoding="utf-8")
+
+        report = lookup_symbol("AAPL", data_dir, include_sec=False)
+
+        assert report["total_hits"] == 2
+        coverage = report["brief"]["data_coverage"]
+        assert coverage["checked_layers"] >= 6
+        assert coverage["hit_count"] >= 2
+        assert coverage["warn_count"] >= 1
+        coverage_rows = report["sections"]["data_coverage"]
+        by_layer = {row["layer"]: row for row in coverage_rows}
+        assert by_layer["Ranked options"]["status"] == "hit"
+        assert by_layer["Open options"]["status"] == "hit"
+        assert by_layer["Free price snapshot"]["status"] == "not_requested"
+        assert by_layer["SEC filings/facts"]["status"] == "not_requested"
+        html = render_html(report)
+        assert "Data coverage" in html
+        assert "Coverage score" in html
+
+
 def test_lookup_matches_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -730,6 +768,7 @@ if __name__ == "__main__":
     test_lookup_saves_json_and_html()
     test_lookup_can_include_free_price_snapshot()
     test_lookup_can_include_market_structure_risk_snapshot()
+    test_lookup_reports_data_coverage_without_inflating_hits()
     test_lookup_matches_requested_option_contract()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
@@ -742,4 +781,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("18/18 lookup tests passed")
+    print("19/19 lookup tests passed")

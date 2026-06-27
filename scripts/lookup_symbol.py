@@ -127,6 +127,9 @@ DISPLAY_COLUMNS = {
         "symbol", "check", "status", "flag", "risk_score", "detail",
         "source", "source_url",
     ],
+    "data_coverage": [
+        "layer", "group", "status", "rows", "source", "freshness", "detail",
+    ],
 }
 
 
@@ -244,6 +247,219 @@ def _frame_records(df: pd.DataFrame, section: str) -> list[dict[str, Any]]:
     for _, row in df[cols].head(100).iterrows():
         records.append({str(k): _clean_value(v) for k, v in row.to_dict().items()})
     return records
+
+
+def _coverage_source_status(source: Any) -> str:
+    text = str(source or "").strip().lower()
+    if not text:
+        return ""
+    if "unavailable" in text or "failed" in text or "error" in text:
+        return "unavailable"
+    return "available"
+
+
+def _coverage_row(
+    layer: str,
+    group: str,
+    rows: int,
+    source: Any,
+    *,
+    status: str | None = None,
+    detail: str = "",
+    freshness: Any = None,
+) -> dict[str, Any]:
+    source_status = _coverage_source_status(source)
+    if status is None:
+        if rows > 0:
+            status = "hit"
+        elif source_status == "unavailable":
+            status = "unavailable"
+        elif source:
+            status = "checked_clear"
+        else:
+            status = "missing_snapshot"
+    if not detail:
+        if rows > 0:
+            detail = f"{rows} matching row(s) found."
+        elif status == "checked_clear":
+            detail = "Layer checked; no matching exposure or ticker row."
+        elif status == "missing_snapshot":
+            detail = "No local artifact was available for this layer."
+        elif status == "not_requested":
+            detail = "Layer was not requested for this lookup."
+        elif status == "not_applicable":
+            detail = "Layer is not applicable for this symbol."
+        else:
+            detail = status.replace("_", " ")
+    return {
+        "layer": layer,
+        "group": group,
+        "status": status,
+        "rows": int(rows or 0),
+        "source": _clean_value(source),
+        "freshness": _clean_value(freshness),
+        "detail": detail,
+    }
+
+
+def _section_freshness(rows: list[dict[str, Any]]) -> Any:
+    values = [
+        row.get("snapshot_freshness")
+        for row in rows
+        if isinstance(row, dict) and row.get("snapshot_freshness")
+    ]
+    if values:
+        rank = {"fresh": 0, "aging": 1, "stale": 2, "unknown": 3}
+        return max(values, key=lambda value: rank.get(str(value), 4))
+    return None
+
+
+def _build_data_coverage(
+    symbol: str,
+    sections: dict[str, list[dict[str, Any]]],
+    sources: dict[str, str | None],
+    *,
+    include_price: bool,
+    include_market_structure: bool,
+    include_sec: bool,
+    requested_option: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for section, group, label in [
+        ("options", "ranked_ideas", "Ranked options"),
+        ("shares", "ranked_ideas", "Ranked shares"),
+        ("value", "ranked_ideas", "Value ideas"),
+        ("futures", "ranked_ideas", "Futures ideas"),
+        ("chain_shortlist", "option_chain", "Saved chain shortlist"),
+    ]:
+        sec_rows = sections.get(section, [])
+        rows.append(_coverage_row(
+            label,
+            group,
+            len(sec_rows),
+            sources.get(section),
+            freshness=_section_freshness(sec_rows),
+        ))
+
+    for section, label in [
+        ("open_options", "Open options"),
+        ("open_shares", "Open shares"),
+        ("open_futures", "Open futures"),
+        ("broker_positions", "Broker snapshot positions"),
+    ]:
+        sec_rows = sections.get(section, [])
+        rows.append(_coverage_row(
+            label,
+            "position_state",
+            len(sec_rows),
+            sources.get(section),
+            freshness=_section_freshness(sec_rows),
+        ))
+
+    if requested_option:
+        sec_rows = sections.get("requested_option_matches", [])
+        rows.append(_coverage_row(
+            "Requested option match",
+            "option_request",
+            len(sec_rows),
+            sources.get("requested_option_matches"),
+            status=None if sec_rows else "missing_snapshot",
+            detail=(
+                "Requested option was matched to latest option/chain artifacts."
+                if sec_rows else "Requested option was not found in latest option/chain artifacts."
+            ),
+            freshness=_section_freshness(sec_rows),
+        ))
+
+    if include_price:
+        sec_rows = sections.get("price_snapshot", [])
+        rows.append(_coverage_row(
+            "Free price snapshot",
+            "price",
+            len(sec_rows),
+            sources.get("price_snapshot"),
+            status="hit" if sec_rows else "unavailable",
+            detail="Free history stack returned a trend snapshot." if sec_rows else "Free history stack did not return price data.",
+        ))
+    else:
+        rows.append(_coverage_row("Free price snapshot", "price", 0, None, status="not_requested"))
+
+    if include_market_structure:
+        report = sections.get("_market_structure_report", [{}])[0] if sections.get("_market_structure_report") else {}
+        market_status = str(report.get("status") or "clear")
+        market_rows = len(sections.get("market_structure", []))
+        rows.append(_coverage_row(
+            "Market-structure risk",
+            "official_risk",
+            market_rows,
+            sources.get("market_structure"),
+            status=market_status,
+            detail=(
+                "Official no-key risk lists checked; no symbol-specific flags."
+                if market_status == "clear" else "; ".join(str(x) for x in (report.get("flags") or [])[:4])
+            ),
+        ))
+    else:
+        rows.append(_coverage_row("Market-structure risk", "official_risk", 0, None, status="not_requested"))
+
+    if include_sec and not symbol.endswith("=F") and not symbol.startswith("^"):
+        for section, label in [
+            ("recent_sec_filings", "Recent SEC filings"),
+            ("sec_companyfacts", "SEC companyfacts"),
+        ]:
+            sec_rows = sections.get(section, [])
+            rows.append(_coverage_row(
+                label,
+                "official_filings",
+                len(sec_rows),
+                sources.get(section),
+                status=None if sources.get(section) else "unavailable",
+            ))
+    elif include_sec:
+        rows.append(_coverage_row(
+            "SEC filings/facts",
+            "official_filings",
+            0,
+            None,
+            status="not_applicable",
+        ))
+    else:
+        rows.append(_coverage_row("SEC filings/facts", "official_filings", 0, None, status="not_requested"))
+
+    bad_statuses = {"blocked", "unavailable"}
+    warn_statuses = {"risk_review", "missing_snapshot"}
+    scored = [row for row in rows if row["status"] not in {"not_requested", "not_applicable"}]
+    bad = [row for row in scored if row["status"] in bad_statuses]
+    warn = [row for row in scored if row["status"] in warn_statuses]
+    hits = [row for row in scored if row["status"] in {"hit", "checked_clear", "clear"}]
+    score = max(0, min(100, 100 - 22 * len(bad) - 7 * len(warn)))
+    if any(row["status"] == "blocked" for row in scored) or score < 45:
+        status = "blocked"
+        label = "Coverage blocked"
+    elif score < 75:
+        status = "caution"
+        label = "Coverage caution"
+    else:
+        status = "ready"
+        label = "Coverage ready"
+    warnings = []
+    if bad:
+        warnings.append(f"{len(bad)} lookup data layer(s) unavailable or blocked.")
+    if warn:
+        warnings.append(f"{len(warn)} lookup data layer(s) missing local artifacts or need review.")
+    if not any(row["group"] == "ranked_ideas" and row["status"] == "hit" for row in rows):
+        warnings.append("No ranked local option/share/value/futures idea matched this symbol.")
+    report = {
+        "score": score,
+        "status": status,
+        "label": label,
+        "hit_count": len(hits),
+        "warn_count": len(warn),
+        "bad_count": len(bad),
+        "checked_layers": len(scored),
+        "warnings": warnings[:4],
+    }
+    return rows, report
 
 
 def _match(df: pd.DataFrame, column: str, query: str) -> pd.DataFrame:
@@ -1167,6 +1383,7 @@ def _research_brief(
     price_rows = sections.get("price_snapshot", [])
     price_snapshot = price_rows[0] if price_rows else None
     market_structure = sections.get("_market_structure_report", [{}])[0] or {}
+    data_coverage = sections.get("_data_coverage_report", [{}])[0] or {}
     sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
     sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
     validation = _load_json_obj(data_dir / "validation_summary.json")
@@ -1179,6 +1396,7 @@ def _research_brief(
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:3])
+    warnings.extend(str(w) for w in (data_coverage.get("warnings") or [])[:2])
     best_idea = _best_idea_dict(best_section, best)
     requested_option = _requested_option_summary(
         resolution.get("request"),
@@ -1231,6 +1449,16 @@ def _research_brief(
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
         "price_snapshot": price_snapshot,
+        "data_coverage": {
+            "status": data_coverage.get("status"),
+            "label": data_coverage.get("label"),
+            "score": data_coverage.get("score"),
+            "hit_count": data_coverage.get("hit_count"),
+            "warn_count": data_coverage.get("warn_count"),
+            "bad_count": data_coverage.get("bad_count"),
+            "checked_layers": data_coverage.get("checked_layers"),
+            "warnings": (data_coverage.get("warnings") or [])[:4],
+        },
         "market_structure": {
             "status": market_structure.get("status"),
             "risk_score": market_structure.get("risk_score"),
@@ -1471,12 +1699,29 @@ def lookup_symbol(
             if source
         ) or None
 
+    coverage_rows, coverage_report = _build_data_coverage(
+        q,
+        sections,
+        sources,
+        include_price=include_price,
+        include_market_structure=include_market_structure,
+        include_sec=include_sec,
+        requested_option=bool(resolution.get("request")),
+    )
+    sections["_data_coverage_report"] = [coverage_report]
+    sections["data_coverage"] = coverage_rows
+    sources["data_coverage"] = "Optedge lookup coverage audit"
+
     public_sections = {name: rows for name, rows in sections.items() if not name.startswith("_")}
+    hit_sections = {
+        name: rows for name, rows in public_sections.items()
+        if name != "data_coverage"
+    }
     local_hit_count = sum(
-        len(rows) for name, rows in public_sections.items()
+        len(rows) for name, rows in hit_sections.items()
         if not name.startswith("sec_") and name != "recent_sec_filings"
     )
-    total_hits = sum(len(rows) for rows in public_sections.values())
+    total_hits = sum(len(rows) for rows in hit_sections.values())
     brief = _research_brief(q, resolution, raw_matches, sections, data_dir, local_hit_count)
     return {
         "generated_at": generated_at,
@@ -1547,6 +1792,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     broker_pos = brief.get("broker_positions") or {}
     contract_exposure = brief.get("contract_exposure") or {}
     price = brief.get("price_snapshot") or {}
+    coverage = brief.get("data_coverage") or {}
     market_structure = brief.get("market_structure") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
@@ -1587,6 +1833,9 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">60d return</span><strong>{_fmt_brief_pct(price.get('ret_60d'))}</strong></div>
     <div><span class="muted">6m range pos</span><strong>{_fmt_brief_pct(price.get('range_6mo_pos'))}</strong></div>
     <div><span class="muted">Price source</span><strong>{html.escape(str(price.get('history_source') or '-'))}</strong></div>
+    <div><span class="muted">Data coverage</span><strong>{html.escape(str(coverage.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Coverage score</span><strong>{html.escape(str(coverage.get('score') if coverage.get('score') is not None else '-'))}</strong></div>
+    <div><span class="muted">Coverage flags</span><strong>{int(coverage.get('bad_count') or 0)} bad / {int(coverage.get('warn_count') or 0)} warn</strong></div>
     <div><span class="muted">Market structure</span><strong>{html.escape(str(market_structure.get('status') or '-'))}</strong></div>
     <div><span class="muted">Market risk score</span><strong>{html.escape(str(market_structure.get('risk_score') if market_structure.get('risk_score') is not None else '-'))}</strong></div>
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>

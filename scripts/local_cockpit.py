@@ -13244,6 +13244,7 @@ function briefHtml(brief) {
   const open = brief.open_positions || {};
   const contractExposure = brief.contract_exposure || {};
   const price = brief.price_snapshot || {};
+  const coverage = brief.data_coverage || {};
   const marketStructure = brief.market_structure || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
@@ -13267,6 +13268,9 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Price trend</span><strong>${escHtml(price.trend_label || '-')}</strong></div>
         <div class="brief-tile"><span>20d return</span><strong>${pct(price.ret_20d)}</strong></div>
         <div class="brief-tile"><span>6m range pos</span><strong>${pct(price.range_6mo_pos)}</strong></div>
+        <div class="brief-tile"><span>Data coverage</span><strong>${escHtml(coverage.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Coverage score</span><strong>${cell(coverage.score)}</strong></div>
+        <div class="brief-tile"><span>Coverage flags</span><strong>${cell(coverage.bad_count || 0)} bad / ${cell(coverage.warn_count || 0)} warn</strong></div>
         <div class="brief-tile"><span>Market structure</span><strong>${escHtml(marketStructure.status || '-')}</strong></div>
         <div class="brief-tile"><span>Market risk score</span><strong>${cell(marketStructure.risk_score || 0)}</strong></div>
         <div class="brief-tile"><span>Paper readiness</span><strong>${escHtml(readiness.label || '-')}</strong></div>
