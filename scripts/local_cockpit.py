@@ -15179,11 +15179,14 @@ function jobHtml(job) {
   const dash = job.dashboard_path ? `<a class="btn" href="/job-dashboard?id=${encodeURIComponent(job.job_id)}" target="_blank">Dashboard</a>` : '';
   const lookup = job.lookup_html_path ? `<a class="btn" href="/job-lookup?id=${encodeURIComponent(job.job_id)}" target="_blank">Lookup</a>` : '';
   const match = job.request ? `<button class="btn job-match-btn" type="button" data-query="${escAttr(job.query)}">Match</button>` : '';
+  const chain = job.request && job.requested_match_status !== 'exact'
+    ? `<button class="btn job-chain-btn" type="button" data-symbol="${escAttr(job.requested_chain_symbol || job.symbol || job.query)}" data-side="${escAttr(job.requested_chain_side || 'all')}" data-min-dte="${escAttr(job.requested_chain_min_dte ?? '')}" data-max-dte="${escAttr(job.requested_chain_max_dte ?? '')}">Chain scan</button>`
+    : '';
   const req = job.request_label ? ` | ${job.request_label}` : job.request ? ` | ${job.request.side} ${job.request.expiry} ${job.request.strike}` : '';
   const matchLabel = job.requested_match_label || (job.requested_match_quality ? `${job.requested_match_quality} match` : (job.request && job.status === 'completed' ? `${cell(job.requested_match_count || 0)} matches` : ''));
   const matchText = matchLabel ? ` | <span class="${jobMatchClass(job.requested_match_status)}">${cell(matchLabel)}</span>` : '';
   const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
-  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${matchText}${mode} ${job.updated_at || ''}</small></div><div>${dash}${lookup}${match}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
+  return `<div class="job"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${matchText}${mode} ${job.updated_at || ''}</small></div><div>${dash}${lookup}${match}${chain}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }
 async function loadJobs() {
   const res = await fetch('/api/jobs');
@@ -15203,6 +15206,17 @@ async function loadJobs() {
       setView('research');
       $('symbol').value = btn.dataset.query || '';
       await lookup();
+    });
+  });
+  document.querySelectorAll('.job-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      setView('chains');
+      $('chain-query').value = btn.dataset.symbol || '';
+      $('chain-side').value = btn.dataset.side || 'all';
+      if (btn.dataset.minDte) $('chain-min-dte').value = btn.dataset.minDte;
+      if (btn.dataset.maxDte) $('chain-max-dte').value = btn.dataset.maxDte;
+      await scanOptionChain();
+      scrollToId('chain-results');
     });
   });
 }

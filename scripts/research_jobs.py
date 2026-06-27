@@ -168,6 +168,32 @@ def _request_label(request: dict[str, Any] | None) -> str | None:
     return " ".join(part for part in [ticker, expiry, side_code, strike_text] if part)
 
 
+def _request_chain_scan_fields(request: dict[str, Any] | None) -> dict[str, Any]:
+    if not request:
+        return {}
+    symbol = str(request.get("ticker") or "").strip().upper()
+    side = str(request.get("side") or "").strip().lower()
+    expiry = str(request.get("expiry") or "").strip()[:10]
+    try:
+        expiry_dt = datetime.fromisoformat(expiry).date()
+        dte = (expiry_dt - datetime.now(timezone.utc).date()).days
+    except Exception:
+        dte = None
+    if dte is None:
+        min_dte = 90
+        max_dte = 900
+    else:
+        min_dte = max(0, int(dte) - 7)
+        max_dte = max(min_dte + 14, int(dte) + 7)
+    return {
+        "requested_chain_symbol": symbol,
+        "requested_chain_side": side if side in {"call", "put"} else "all",
+        "requested_chain_target_expiry": expiry or None,
+        "requested_chain_min_dte": min_dte,
+        "requested_chain_max_dte": min(max_dte, 1200),
+    }
+
+
 def _requested_match_summary(
     request: dict[str, Any] | None,
     requested_matches: list[dict[str, Any]],
@@ -199,6 +225,8 @@ def _requested_match_summary(
         "requested_match_detail": detail,
         "requested_match_count": count,
         "requested_match_quality": quality or None,
+        "requested_match_next_action": "open_lookup" if status == "exact" else "scan_option_chain",
+        **_request_chain_scan_fields(request),
     }
 
 

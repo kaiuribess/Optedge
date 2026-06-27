@@ -149,8 +149,12 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert stored["request_label"] == "AAPL 2026-06-18 C 200"
         assert stored["requested_match_status"] == "exact"
         assert stored["requested_match_label"] == "Exact contract found"
+        assert stored["requested_match_next_action"] == "open_lookup"
         assert stored["requested_match_count"] == 1
         assert stored["requested_match_quality"] == "exact"
+        assert stored["requested_chain_symbol"] == "AAPL"
+        assert stored["requested_chain_side"] == "call"
+        assert stored["requested_chain_min_dte"] <= stored["requested_chain_max_dte"]
         assert stored["requested_match_mid"] == 3.2
         assert stored["requested_match_quote_quality"] == "live_or_broker"
         assert Path(stored["lookup_html_path"]).exists()
@@ -185,8 +189,12 @@ def test_run_job_marks_missing_requested_option_contract():
         stored = read_job(job["job_id"], data_dir)
         assert stored["requested_match_status"] == "missing"
         assert stored["requested_match_label"] == "Requested contract not found"
+        assert stored["requested_match_next_action"] == "scan_option_chain"
         assert stored["requested_match_count"] == 0
         assert stored["requested_match_quality"] is None
+        assert stored["requested_chain_symbol"] == "AAPL"
+        assert stored["requested_chain_side"] == "call"
+        assert stored["requested_chain_min_dte"] <= stored["requested_chain_max_dte"]
 
 
 def test_run_refresh_job_uses_full_market_command_without_ticker():
