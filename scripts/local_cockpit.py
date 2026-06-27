@@ -5455,6 +5455,19 @@ def _agentic_ticket_preflight(
     else:
         add("pass", "Execution mode", "Local script is not allowed to place broker orders.")
 
+    mcp_plan = ticket.get("robinhood_mcp_review_plan")
+    mcp_plan = mcp_plan if isinstance(mcp_plan, dict) else {}
+    if not mcp_plan:
+        add("warn", "MCP review plan", "Ticket is missing the structured Robinhood MCP review plan; rebuild tickets before live review.")
+    elif mcp_plan.get("review_tool") != "review_option_order":
+        add("block", "MCP review plan", "Ticket does not require review_option_order before broker placement.")
+    elif not mcp_plan.get("requires_explicit_user_confirmation_before_place"):
+        add("block", "MCP review plan", "Ticket MCP plan does not require explicit user confirmation before placement.")
+    elif mcp_plan.get("script_submits_live_orders"):
+        add("block", "MCP review plan", "Ticket MCP plan allows script-submitted live orders; keep workflow approval-gated.")
+    else:
+        add("pass", "MCP review plan", "Ticket includes review_option_order first, explicit confirmation, and approval-gated placement.")
+
     block_count = sum(1 for row in checks if row["level"] == "block")
     warn_count = sum(1 for row in checks if row["level"] == "warn")
     status = "blocked" if block_count else "warn" if warn_count else "pass"
@@ -6143,6 +6156,18 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             optedge_contract_keys=optedge_contract_keys,
             optedge_direction_keys=optedge_direction_keys,
         )
+        mcp_plan = ticket.get("robinhood_mcp_review_plan")
+        mcp_plan = mcp_plan if isinstance(mcp_plan, dict) else {}
+        contract_lookup = mcp_plan.get("contract_lookup") if isinstance(mcp_plan.get("contract_lookup"), dict) else {}
+        mcp_review_status = (
+            "ready"
+            if (
+                mcp_plan.get("review_tool") == "review_option_order"
+                and mcp_plan.get("requires_explicit_user_confirmation_before_place")
+                and not mcp_plan.get("script_submits_live_orders")
+            )
+            else "missing" if not mcp_plan else "review"
+        )
         for check in preflight["checks"]:
             preflight_rows.append({
                 "contract": _clean_value(ticket.get("contract")),
@@ -6172,6 +6197,12 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "swing_fit_label": _clean_value(ticket.get("swing_fit_label")),
             "confidence": _clean_value(ticket.get("confidence")),
             "rank_score": _clean_value(ticket.get("rank_score")),
+            "mcp_review_status": mcp_review_status,
+            "mcp_review_tool": _clean_value(mcp_plan.get("review_tool")),
+            "mcp_place_tool": _clean_value(mcp_plan.get("place_tool_after_explicit_confirmation")),
+            "mcp_lookup_symbol": _clean_value(contract_lookup.get("chain_symbol")),
+            "mcp_lookup_expiry": _clean_value(contract_lookup.get("expiration_date")),
+            "mcp_lookup_type": _clean_value(contract_lookup.get("type")),
         })
 
     if kill_switch:

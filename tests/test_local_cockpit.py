@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.local_cockpit as cockpit_module
+from scripts.export_robinhood_agentic_queue import robinhood_mcp_option_review_plan
 from scripts.local_cockpit import (
     add_watchlist_queries, add_watchlist_query, artifact_path, build_agentic_autopilot_status,
     build_agentic_decision_journal,
@@ -4253,6 +4254,7 @@ def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
             "confirmation_required": True,
             "live_submit_allowed_by_this_script": False,
         }
+        ticket["robinhood_mcp_review_plan"] = robinhood_mcp_option_review_plan(ticket)
         (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
             "status": "ready",
             "generated_at": now,
@@ -4298,13 +4300,78 @@ def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
         assert status["tickets"][0]["preflight_status"] == "pass"
         assert status["tickets"][0]["preflight_blocks"] == 0
         assert status["tickets"][0]["preflight_warnings"] == 0
+        assert status["tickets"][0]["mcp_review_status"] == "ready"
+        assert status["tickets"][0]["mcp_review_tool"] == "review_option_order"
+        assert status["tickets"][0]["mcp_place_tool"] == "place_option_order"
+        assert status["tickets"][0]["mcp_lookup_symbol"] == "AAPL"
         checks = {(row["check"], row["level"]) for row in status["ticket_preflight"]}
         assert ("Fresh packet", "pass") in checks
         assert ("Entry gate", "pass") in checks
         assert ("Confirmation", "pass") in checks
         assert ("Execution mode", "pass") in checks
+        assert ("MCP review plan", "pass") in checks
         actions = [row["action"] for row in status["next_actions"]]
         assert "log_decision" in actions
+
+
+def test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(timezone.utc).isoformat()
+        ticket = {
+            "symbol": "AAPL",
+            "contract": "AAPL 2027-01-15 C 200",
+            "option_side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "generated_at": now,
+            "quantity": 1,
+            "limit_price": 1.25,
+            "estimated_premium_dollars": 125.0,
+            "confirmation_required": True,
+            "live_submit_allowed_by_this_script": False,
+        }
+        (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+            "status": "ready",
+            "generated_at": now,
+            "orders": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            "generated_at": now,
+            "auto_submit_allowed": False,
+            "entry_gate": {
+                "status": "open",
+                "new_entries_allowed_after_live_checks": True,
+                "blockers": [],
+                "warnings": [],
+            },
+            "entry_candidates": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+            "generated_at": now,
+            "tickets": [ticket],
+        }), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+            "generated_at": now,
+            "accounts": [{
+                "nickname": "Agentic",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+                "option_positions": [],
+            }],
+        }), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+
+        status = build_agentic_autopilot_status(data_dir)
+
+        assert status["tickets"][0]["mcp_review_status"] == "missing"
+        assert status["tickets"][0]["preflight_status"] == "warn"
+        assert status["ticket_preflight_warn_count"] >= 1
+        assert any(
+            row["check"] == "MCP review plan" and row["level"] == "warn"
+            for row in status["ticket_preflight"]
+        )
 
 
 def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
@@ -6169,6 +6236,7 @@ if __name__ == "__main__":
     test_agentic_autopilot_status_summarizes_gate_tickets_and_paper_book()
     test_agentic_autopilot_status_blocks_stale_packets_and_tickets()
     test_agentic_autopilot_preflight_passes_clean_confirmation_ticket()
+    test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan()
     test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation()
     test_broker_reconciliation_surfaces_broker_and_local_mismatches()
     test_agentic_autopilot_blocks_ticket_when_broker_reconciliation_mismatches()
@@ -6194,4 +6262,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("83/83 local cockpit tests passed")
+    print("84/84 local cockpit tests passed")
