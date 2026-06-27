@@ -131,6 +131,7 @@ def test_lookup_can_include_market_structure_risk_snapshot():
     old_halts = lookup_module.halt_rows_for_symbols
     old_thresholds = lookup_module.threshold_rows_for_symbols
     old_circuits = lookup_module.circuit_rows_for_symbols
+    old_ftd = lookup_module.sec_ftd_engine.run
     try:
         lookup_module.halt_rows_for_symbols = lambda symbols, cache_age=60: pd.DataFrame([{
             "symbol": "RISK",
@@ -154,6 +155,15 @@ def test_lookup_can_include_market_structure_risk_snapshot():
             "source": "nasdaq_trader_short_sale_circuit_breaker",
             "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=shortsalecircuitbreaker",
         }])
+        lookup_module.sec_ftd_engine.run = lambda symbols, max_files=1: pd.DataFrame([{
+            "ticker": "RISK",
+            "sec_ftd_score": 1.8,
+            "sec_ftd_latest_date": "2026-06-12",
+            "sec_ftd_fails": 750000,
+            "sec_ftd_dollars": 1800000.0,
+            "sec_ftd_active_days": 3,
+            "sec_ftd_source": "sec_fails_to_deliver",
+        }])
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
             report = lookup_symbol("RISK", data_dir, include_sec=False, include_market_structure=True)
@@ -161,6 +171,7 @@ def test_lookup_can_include_market_structure_risk_snapshot():
         lookup_module.halt_rows_for_symbols = old_halts
         lookup_module.threshold_rows_for_symbols = old_thresholds
         lookup_module.circuit_rows_for_symbols = old_circuits
+        lookup_module.sec_ftd_engine.run = old_ftd
 
     market = report["brief"]["market_structure"]
     assert market["status"] == "blocked"
@@ -169,14 +180,18 @@ def test_lookup_can_include_market_structure_risk_snapshot():
         "active_trading_halt",
         "regsho_threshold",
         "short_sale_circuit_breaker",
+        "sec_ftd_pressure",
     }
     assert report["brief"]["research_action"]["action"] == "blocked_by_guardrails"
     assert any("active trading halt" in warning for warning in report["brief"]["risk_warnings"])
-    assert len(report["sections"]["market_structure"]) == 3
+    assert any("fails-to-deliver" in warning for warning in report["brief"]["risk_warnings"])
+    assert len(report["sections"]["market_structure"]) == 4
     assert report["sections"]["market_structure"][0]["check"] == "trade_halt"
+    assert report["sections"]["market_structure"][-1]["check"] == "sec_fails_to_deliver"
     html = render_html(report)
     assert "Market structure" in html
     assert "active_trading_halt" in html
+    assert "sec_ftd_pressure" in html
 
 
 def test_lookup_reports_data_coverage_without_inflating_hits():

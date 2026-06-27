@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 import data_provider
+from engines import sec_ftd as sec_ftd_engine
 from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
@@ -723,6 +724,43 @@ def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
         detail = f"Short-sale circuit breaker triggered {raw.get('trigger_time') or ''}".strip()
         rows.append(_market_structure_row(clean, "short_sale_circuit", "risk_review", flag, risk, detail, raw))
         add_warning(flag, f"Market structure risk: {clean} is under a short-sale circuit breaker.", risk)
+
+    try:
+        ftd = sec_ftd_engine.run([clean], max_files=1)
+    except Exception:
+        ftd = pd.DataFrame()
+    for raw in _all_frame_records(ftd, limit=3):
+        ftd_score = _float_value(raw.get("sec_ftd_score"), 0.0) or 0.0
+        fails = int(_float_value(raw.get("sec_ftd_fails"), 0.0) or 0)
+        dollars = _float_value(raw.get("sec_ftd_dollars"), 0.0) or 0.0
+        active_days = int(_float_value(raw.get("sec_ftd_active_days"), 0.0) or 0)
+        elevated = bool(ftd_score >= 1.25 or fails >= 500_000 or dollars >= 1_000_000)
+        flag = "sec_ftd_pressure" if elevated else "sec_ftd_context"
+        risk = int(max(0, min(88, 45 + ftd_score * 18)))
+        detail = (
+            f"Delayed SEC FTD: {fails:,} fails, ${dollars:,.0f}, "
+            f"{active_days} active day(s); not proof of abusive shorting"
+        )
+        source_row = {
+            **raw,
+            "source": raw.get("sec_ftd_source") or "sec_fails_to_deliver",
+            "source_url": "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data",
+        }
+        rows.append(_market_structure_row(
+            clean,
+            "sec_fails_to_deliver",
+            "risk_review" if elevated else "clear",
+            flag,
+            risk,
+            detail,
+            source_row,
+        ))
+        if elevated:
+            add_warning(
+                flag,
+                f"Market structure risk: {clean} has elevated delayed SEC fails-to-deliver context.",
+                risk,
+            )
 
     clean_flags = list(dict.fromkeys(flags))
     status = (
@@ -1502,7 +1540,7 @@ def _research_brief(
         if isinstance(w, (dict, str))
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
-    warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:3])
+    warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:5])
     warnings.extend(str(w) for w in (data_coverage.get("warnings") or [])[:2])
     best_idea = _best_idea_dict(best_section, best)
     requested_option = _requested_option_summary(
@@ -1778,7 +1816,7 @@ def lookup_symbol(
         market_structure = _market_structure_snapshot(q)
         sections["_market_structure_report"] = [market_structure]
         sections["market_structure"] = market_structure.get("rows") or []
-        sources["market_structure"] = "Nasdaq Trader trade halts / Reg SHO / short-sale circuit"
+        sources["market_structure"] = "Nasdaq Trader halts / Reg SHO / short-sale circuit; SEC FTD"
 
     if include_sec and not q.endswith("=F") and not q.startswith("^"):
         try:
