@@ -9594,6 +9594,98 @@ def _best_setup_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     return item
 
 
+def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    query = row.get("query") or row.get("symbol")
+    symbol = row.get("symbol")
+    local_hits = int(_float_value(row.get("local_hits"), 0.0))
+    if local_hits == 0:
+        return _queue_item(
+            45,
+            "watchlist",
+            "Run focused watchlist scan",
+            f"{query} has no current local scan rows.",
+            "run_focused_scan",
+            symbol=symbol,
+            query=query,
+        )
+
+    decision = str(row.get("swing_verdict_decision") or "").strip().lower()
+    swing_score = _float_value(row.get("swing_verdict_score"), 0.0)
+    swing_label = str(row.get("swing_verdict_label") or decision or "Watchlist setup").strip()
+    playbook = str(row.get("swing_verdict_playbook") or "").strip()
+    readiness = str(row.get("paper_readiness_status") or "").lower()
+    readiness_score = _float_value(row.get("paper_readiness_score"), 0.0)
+    bias = str(row.get("swing_verdict_bias") or "").strip()
+    rr = _float_value(row.get("swing_verdict_risk_reward"))
+
+    if decision == "paper_review":
+        priority = max(62, min(79, 58 + int(swing_score / 4.0)))
+        label = "Review swing-verdict candidate"
+        action = "preview_paper_candidate"
+    elif decision == "scan_chain":
+        priority = max(58, min(74, 54 + int(swing_score / 5.0)))
+        label = "Scan watchlist option chain"
+        action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, "option") else "run_focused_scan"
+    elif decision == "manage_existing":
+        priority = max(60, min(78, 55 + int(swing_score / 5.0)))
+        label = "Manage watchlist exposure"
+        action = "open_position_monitor"
+    elif decision in {"blocked", "watch", "fresh_scan"}:
+        priority = 58 if decision == "blocked" else 46
+        label = "Watchlist setup blocked" if decision == "blocked" else "Recheck watchlist idea"
+        action = "run_focused_scan"
+    elif decision == "selective_review":
+        priority = max(52, min(68, 50 + int(swing_score / 7.0)))
+        label = "Review selective swing setup"
+        action = "open_research"
+    elif readiness == "ready":
+        priority = 62
+        label = "Review ready watchlist idea"
+        action = "preview_paper_candidate"
+        swing_label = f"Paper readiness {readiness_score:.0f}/100"
+    elif readiness in {"caution", "blocked"}:
+        priority = 48 if readiness == "caution" else 58
+        label = "Recheck watchlist idea"
+        action = "run_focused_scan"
+        swing_label = f"Readiness is {readiness}"
+    else:
+        return None
+
+    detail_parts = [
+        f"{query} swing verdict: {swing_label}",
+        f"score {swing_score:.0f}/100" if swing_score else "",
+        f"bias {bias}" if bias else "",
+        f"R/R {rr:.2f}x" if rr is not None else "",
+        playbook,
+    ]
+    item = _queue_item(
+        priority,
+        "watchlist",
+        label,
+        ". ".join(part for part in detail_parts if part).strip() + ".",
+        action,
+        symbol=symbol,
+        query=query,
+    )
+    item.update({
+        "source": "watchlist_swing_verdict",
+        "swing_verdict_score": _clean_value(swing_score),
+        "swing_verdict_decision": _clean_value(decision),
+        "swing_verdict_label": _clean_value(swing_label),
+        "paper_readiness_score": _clean_value(readiness_score),
+        "paper_readiness_status": _clean_value(readiness),
+    })
+    if action == "scan_swing_chain":
+        item["route"] = "chains"
+    elif action == "preview_paper_candidate":
+        item["route"] = "paper"
+    elif action == "open_position_monitor":
+        item["route"] = "positions"
+    return item
+
+
 def _cached_watchlist_sec_filings(data_dir: Path) -> dict[str, Any]:
     path = data_dir / WATCHLIST_SEC_FILINGS_FILENAME
     payload = _read_json(path)
@@ -10018,30 +10110,9 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
     try:
         watchlist = load_watchlist(data_dir, enrich=True).get("entries", [])
         for row in watchlist:
-            local_hits = int(_float_value(row.get("local_hits"), 0.0))
-            if local_hits == 0:
-                items.append(_queue_item(
-                    45, "watchlist", "Run focused watchlist scan",
-                    f"{row.get('query') or row.get('symbol')} has no current local scan rows.",
-                    "run_focused_scan", symbol=row.get("symbol"), query=row.get("query") or row.get("symbol"),
-                ))
-                continue
-            readiness = str(row.get("paper_readiness_status") or "").lower()
-            score = _float_value(row.get("paper_readiness_score"), 0.0)
-            query = row.get("query") or row.get("symbol")
-            if readiness == "ready":
-                items.append(_queue_item(
-                    62, "watchlist", "Review ready watchlist idea",
-                    f"{query} has paper-readiness score {score:.0f}/100.",
-                    "preview_paper_candidate", symbol=row.get("symbol"), query=query,
-                ))
-            elif readiness in {"caution", "blocked"}:
-                items.append(_queue_item(
-                    48 if readiness == "caution" else 58,
-                    "watchlist", "Recheck watchlist idea",
-                    f"{query} readiness is {readiness} at {score:.0f}/100.",
-                    "run_focused_scan", symbol=row.get("symbol"), query=query,
-                ))
+            item = _watchlist_queue_item(row)
+            if item is not None:
+                items.append(item)
     except Exception as exc:
         items.append(_queue_item(
             40, "watchlist", "Watchlist enrichment failed",

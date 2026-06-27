@@ -1018,11 +1018,14 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         queue = build_action_queue(data_dir)
         ready = [
             row for row in queue["rows"]
-            if row["category"] == "watchlist" and row["label"] == "Review ready watchlist idea"
+            if row["category"] == "watchlist" and row["label"] == "Review swing-verdict candidate"
         ]
         assert ready
         assert ready[0]["symbol"] == "AAPL"
         assert ready[0]["action"] == "preview_paper_candidate"
+        assert ready[0]["source"] == "watchlist_swing_verdict"
+        assert ready[0]["swing_verdict_decision"] == "paper_review"
+        assert ready[0]["swing_verdict_score"] >= 70
 
 
 def test_action_queue_promotes_reviewable_swing_scout_rows():
