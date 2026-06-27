@@ -1,5 +1,7 @@
 import sys
 import tempfile
+from datetime import datetime as real_datetime
+from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +39,29 @@ def test_list_jobs_returns_recent_jobs():
         assert {j["symbol"] for j in jobs} == {"AAPL", "MSFT"}
 
 
+def test_create_job_does_not_overwrite_same_second_symbol_jobs():
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or timezone.utc)
+
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_datetime = jobs_module.datetime
+        jobs_module.datetime = FrozenDateTime
+        try:
+            first = create_job("AAPL", data_dir, launch=False)
+            second = create_job("Apple 20261218 C 200", data_dir, launch=False)
+        finally:
+            jobs_module.datetime = old_datetime
+
+        assert first["job_id"] == "20260627_120000_AAPL"
+        assert second["job_id"] == "20260627_120000_AAPL_01"
+        assert len(list_jobs(data_dir)) == 2
+        assert read_job(first["job_id"], data_dir)["query"] == "AAPL"
+        assert read_job(second["job_id"], data_dir)["request_label"] == "AAPL 2026-12-18 C 200"
+
+
 def test_create_refresh_job_without_launching():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -53,6 +78,27 @@ def test_create_refresh_job_without_launching():
         stored = read_job(job["job_id"], data_dir)
         assert stored is not None
         assert stored["status"] == "queued"
+
+
+def test_create_refresh_job_does_not_overwrite_same_second_jobs():
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or timezone.utc)
+
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        old_datetime = jobs_module.datetime
+        jobs_module.datetime = FrozenDateTime
+        try:
+            first = create_refresh_job(data_dir, launch=False)
+            second = create_refresh_job(data_dir, launch=False)
+        finally:
+            jobs_module.datetime = old_datetime
+
+        assert first["job_id"] == "20260627_120000_MARKET_REFRESH"
+        assert second["job_id"] == "20260627_120000_MARKET_REFRESH_01"
+        assert len(list_jobs(data_dir)) == 2
 
 
 def test_create_job_returns_error_for_empty_query():
@@ -150,10 +196,12 @@ def test_job_dashboard_path_allows_only_data_dashboard_file():
 if __name__ == "__main__":
     test_create_job_resolves_ticker_without_launching()
     test_list_jobs_returns_recent_jobs()
+    test_create_job_does_not_overwrite_same_second_symbol_jobs()
     test_create_refresh_job_without_launching()
+    test_create_refresh_job_does_not_overwrite_same_second_jobs()
     test_create_job_returns_error_for_empty_query()
     test_create_job_preserves_option_request_and_reads_log_tail()
     test_run_job_writes_lookup_summary_for_requested_option()
     test_run_refresh_job_uses_full_market_command_without_ticker()
     test_job_dashboard_path_allows_only_data_dashboard_file()
-    print("8/8 research job tests passed")
+    print("10/10 research job tests passed")

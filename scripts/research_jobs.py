@@ -117,6 +117,19 @@ def write_job(job: dict[str, Any], data_dir: Path = DATA_DIR) -> None:
     tmp.replace(path)
 
 
+def _unique_job_id(base_id: str, data_dir: Path = DATA_DIR) -> str:
+    """Return a job id that will not overwrite an existing cockpit job file."""
+    clean = "".join(ch for ch in str(base_id) if ch.isalnum() or ch in {"_", "-"})[:70]
+    clean = clean or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    if not job_path(clean, data_dir).exists():
+        return clean
+    for idx in range(1, 100):
+        candidate = f"{clean}_{idx:02d}"
+        if not job_path(candidate, data_dir).exists():
+            return candidate
+    return f"{clean}_{datetime.now(timezone.utc).strftime('%f')}"
+
+
 def list_jobs(data_dir: Path = DATA_DIR, limit: int = 20) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted(jobs_dir(data_dir).glob("*.json"), key=lambda p: p.stat().st_mtime,
@@ -191,7 +204,7 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
         }
     symbol = str(resolution["symbol"]).upper()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    job_id = f"{stamp}_{symbol}"
+    job_id = _unique_job_id(f"{stamp}_{symbol}", data_dir)
     job = {
         "ok": True,
         "job_id": job_id,
@@ -239,7 +252,7 @@ def create_refresh_job(data_dir: Path = DATA_DIR, *, launch: bool = True,
                        extra_scan_args: list[str] | None = None,
                        scan_mode: str = "full") -> dict[str, Any]:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    job_id = f"{stamp}_MARKET_REFRESH"
+    job_id = _unique_job_id(f"{stamp}_MARKET_REFRESH", data_dir)
     job = {
         "ok": True,
         "job_id": job_id,
