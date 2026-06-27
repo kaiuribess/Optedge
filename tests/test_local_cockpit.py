@@ -6166,6 +6166,9 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
         assert nvda["paper_readiness_score"] < 75
         assert nvda["paper_readiness_bad_count"] == 0
         assert nvda["paper_readiness_warn_count"] >= 1
+        assert nvda["swing_verdict_decision"] == "manage_existing"
+        assert nvda["swing_verdict_score"] is not None
+        assert nvda["swing_verdict_label"] == "Manage existing exposure"
         assert nvda["open_count"] == 1
         assert nvda["avg_unrealized_pct"] == 0.5
 

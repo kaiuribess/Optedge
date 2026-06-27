@@ -1029,6 +1029,7 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
         best = brief.get("best_idea") or {}
         open_pos = brief.get("open_positions") or {}
         readiness = brief.get("paper_readiness") or {}
+        swing = brief.get("swing_verdict") or {}
         readiness_checks = readiness.get("checks") if isinstance(readiness.get("checks"), list) else []
         out.update({
             "local_hits": _clean_value(report.get("total_hits")),
@@ -1041,6 +1042,14 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
             "paper_readiness_score": _clean_value(readiness.get("score")),
             "paper_readiness_bad_count": sum(1 for row in readiness_checks if row.get("level") == "bad"),
             "paper_readiness_warn_count": sum(1 for row in readiness_checks if row.get("level") == "warn"),
+            "swing_verdict_label": _clean_value(swing.get("label")),
+            "swing_verdict_score": _clean_value(swing.get("score")),
+            "swing_verdict_decision": _clean_value(swing.get("decision")),
+            "swing_verdict_bias": _clean_value(swing.get("bias")),
+            "swing_verdict_risk_reward": _clean_value(swing.get("risk_reward")),
+            "swing_verdict_playbook": _clean_value(swing.get("playbook")),
+            "swing_verdict_blockers": _clean_value(swing.get("blockers")),
+            "swing_verdict_reasons": _clean_value(swing.get("reasons")),
             "open_count": _clean_value(open_pos.get("count")),
             "avg_unrealized_pct": _clean_value(open_pos.get("avg_unrealized_pct")),
             "max_exit_pressure": _clean_value(open_pos.get("max_exit_pressure")),
@@ -1061,6 +1070,7 @@ def _watchlist_sort_key(row: dict[str, Any]) -> tuple[int, float, float, float, 
     return (
         status_rank,
         _float_value(row.get("paper_readiness_score"), 0.0),
+        _float_value(row.get("swing_verdict_score"), 0.0),
         _float_value(row.get("max_exit_pressure"), 0.0),
         _float_value(row.get("best_score"), 0.0),
         str(row.get("updated_at") or row.get("added_at") or ""),
@@ -1570,6 +1580,11 @@ def build_saved_option_contracts(
             "status": _saved_contract_status(dte, entry.get("paper_readiness_status")),
             "paper_readiness": _clean_value(entry.get("paper_readiness_label") or entry.get("paper_readiness_status")),
             "paper_readiness_score": _clean_value(entry.get("paper_readiness_score")),
+            "swing_verdict": _clean_value(entry.get("swing_verdict_label") or entry.get("swing_verdict_decision")),
+            "swing_verdict_score": _clean_value(entry.get("swing_verdict_score")),
+            "swing_verdict_decision": _clean_value(entry.get("swing_verdict_decision")),
+            "swing_verdict_bias": _clean_value(entry.get("swing_verdict_bias")),
+            "swing_verdict_risk_reward": _clean_value(entry.get("swing_verdict_risk_reward")),
             "best_idea": _clean_value(entry.get("best_idea")),
             "best_status": _clean_value(entry.get("best_status")),
             "best_confidence": _clean_value(entry.get("best_confidence")),
@@ -1611,6 +1626,7 @@ def build_saved_option_contracts(
         key=lambda row: (
             _float_value(row.get("triage_score"), default=0.0),
             _saved_grade_rank(row.get("saved_contract_grade")),
+            _float_value(row.get("swing_verdict_score"), default=0.0),
             _float_value(row.get("dte"), default=-9999.0) >= MIN_SWING_OPTION_DTE,
             _float_value(row.get("paper_readiness_score"), default=0.0),
             _float_value(row.get("dte"), default=-9999.0),
@@ -14545,6 +14561,9 @@ function watchlistTable(rows) {
       <td>${cell(r.best_idea || '-')}</td>
       <td>${cell(r.best_status || '-')}</td>
       <td>${cell(r.best_confidence || '-')}</td>
+      <td>${cell(r.swing_verdict_label || '-')}</td>
+      <td>${cell(r.swing_verdict_score)}</td>
+      <td>${cell(r.swing_verdict_decision || '-')}</td>
       <td>${cell(r.paper_readiness_label || '-')}</td>
       <td>${cell(r.paper_readiness_score)}</td>
       <td>${cell(r.open_count || 0)}</td>
@@ -14555,7 +14574,7 @@ function watchlistTable(rows) {
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Readiness</th><th>Score</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
+    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Swing verdict</th><th>Swing score</th><th>Swing decision</th><th>Readiness</th><th>Score</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function secFilingsSummaryHtml(data) {
@@ -14658,6 +14677,9 @@ function savedContractsTable(rows) {
     <td>${moneyShort(r.current_premium_dollars)}</td>
     <td>${cell(r.quote_readiness_label || '-')}</td>
     <td>${cell(r.quote_readiness_score)}</td>
+    <td>${cell(r.swing_verdict || '-')}</td>
+    <td>${cell(r.swing_verdict_score)}</td>
+    <td>${cell(r.swing_verdict_decision || '-')}</td>
     <td>${cell(r.paper_readiness || '-')}</td>
     <td>${cell(r.paper_readiness_score)}</td>
     <td>${cell(r.best_idea || '-')}</td>
@@ -14666,7 +14688,7 @@ function savedContractsTable(rows) {
     <td>${cell(r.query)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Saved grade</th><th>Saved thesis</th><th>Action</th><th>Review score</th><th>Reasons</th><th>Status</th><th>Quote</th><th>Saved mid/spread</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
+    <th></th><th>Symbol</th><th>Side/strike</th><th>Expiry</th><th>DTE</th><th>Saved grade</th><th>Saved thesis</th><th>Action</th><th>Review score</th><th>Reasons</th><th>Status</th><th>Quote</th><th>Saved mid/spread</th><th>Mid</th><th>Spread</th><th>Premium</th><th>Quote ready</th><th>Quote score</th><th>Swing verdict</th><th>Swing score</th><th>Swing decision</th><th>Readiness</th><th>Score</th><th>Best local idea</th><th>Open</th><th>Warnings</th><th>Query</th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function wireClickableRows(root=document) {
