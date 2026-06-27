@@ -93,6 +93,15 @@ def test_allow_blocked_paper_opens_review_only_candidate_and_live_ticket():
         tickets = json.loads((data_dir / LIVE_ORDER_TICKETS_JSON).read_text(encoding="utf-8"))
         assert tickets["tickets"][0]["confirmation_required"] is True
         assert tickets["tickets"][0]["live_submit_allowed_by_this_script"] is False
+        assert tickets["broker_mcp_review_supported"] is True
+        plan = tickets["tickets"][0]["robinhood_mcp_review_plan"]
+        assert plan["review_tool"] == "review_option_order"
+        assert plan["place_tool_after_explicit_confirmation"] == "place_option_order"
+        assert plan["requires_explicit_user_confirmation_before_place"] is True
+        assert plan["contract_lookup"]["chain_symbol"] == "AAPL"
+        assert plan["contract_lookup"]["expiration_date"] == "2027-01-15"
+        assert plan["review_arguments_template"]["price"] == "0.81"
+        assert plan["review_arguments_template"]["legs"][0]["side"] == "buy"
 
 
 def test_duplicate_contract_is_skipped():

@@ -27,6 +27,7 @@ from scripts.export_robinhood_agentic_queue import (  # noqa: E402
     KILL_SWITCH,
     QUEUE_JSON,
     append_agent_decision,
+    robinhood_mcp_option_review_plan,
 )
 
 DATA_DIR = ROOT / "data"
@@ -161,7 +162,7 @@ def _ticket_from_order(
 ) -> dict[str, Any]:
     limit_price = _float(order.get("max_limit_price") or order.get("reference_entry_price"))
     quantity = _int(order.get("quantity"), 0)
-    return {
+    ticket = {
         "generated_at": generated_at,
         "schema": "optedge_robinhood_live_order_ticket_v1",
         "status": "requires_explicit_confirmation",
@@ -190,12 +191,21 @@ def _ticket_from_order(
         "entry_gate_status": gate_status,
         "candidate_source": source,
         "live_submit_allowed_by_this_script": False,
+        "broker_mcp_review_supported": True,
+        "broker_mcp_place_supported_after_explicit_confirmation": True,
         "confirmation_required": True,
         "notes": [
             "This is a live-ready ticket only; this script does not submit broker orders.",
+            "Use robinhood_mcp_review_plan to review the exact single-leg limit order before any live place call.",
             "Before live submission, verify Robinhood buying power, exact contract, bid/ask/mid, spread, and current news.",
         ],
     }
+    ticket["robinhood_mcp_review_plan"] = (
+        order.get("robinhood_mcp_review_plan")
+        if isinstance(order.get("robinhood_mcp_review_plan"), dict)
+        else robinhood_mcp_option_review_plan(ticket)
+    )
+    return ticket
 
 
 def _paper_position_from_order(
@@ -355,7 +365,8 @@ def process_agentic_paper(
         "allow_blocked_paper": allow_blocked_paper,
         "live_broker_orders_submitted": 0,
         "live_submit_supported": False,
-        "live_submit_note": "This script does not submit real broker orders. It writes live-ready tickets that require explicit confirmation.",
+        "broker_mcp_review_supported": True,
+        "live_submit_note": "This script does not submit real broker orders. It writes live-ready tickets that can be reviewed with Robinhood MCP and still require explicit confirmation.",
         "candidate_count": len(candidates),
         "ticket_count": len(tickets),
         "opened_paper_count": len(opened),
@@ -380,6 +391,7 @@ def process_agentic_paper(
             "generated_at": generated_at,
             "schema": "optedge_robinhood_live_order_tickets_v1",
             "live_submit_supported": False,
+            "broker_mcp_review_supported": True,
             "confirmation_required": True,
             "tickets": tickets,
         })

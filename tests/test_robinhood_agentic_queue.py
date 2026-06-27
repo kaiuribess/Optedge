@@ -226,12 +226,20 @@ def test_queue_can_give_agent_more_candidates_than_order_cap():
 
 def test_queue_prompt_requires_codex_double_check_and_limit_orders():
     queue = _queue([_candidate()])
+    plan = queue["orders"][0]["robinhood_mcp_review_plan"]
+    assert plan["review_tool"] == "review_option_order"
+    assert plan["place_tool_after_explicit_confirmation"] == "place_option_order"
+    assert plan["requires_explicit_user_confirmation_before_place"] is True
+    assert plan["review_arguments_template"]["type"] == "limit"
+    assert plan["review_arguments_template"]["price"] == "0.81"
+    assert plan["review_arguments_template"]["legs"][0]["position_effect"] == "open"
     prompt = render_agent_prompt(queue)
     assert "Double-check current Robinhood quotes" in prompt
     assert "BUY_TO_OPEN limit DAY orders only" in prompt
     assert "Do not exceed any max_limit_price" in prompt
     assert "Long-dated options only" in prompt
     assert "current news" in prompt
+    assert "review_option_order" in prompt
 
 
 def test_queue_includes_recurring_cycle_and_management_rules():

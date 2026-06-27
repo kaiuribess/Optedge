@@ -149,6 +149,79 @@ def _candidate_symbol(row: dict[str, Any]) -> str:
     return ""
 
 
+def robinhood_mcp_option_review_plan(order: dict[str, Any]) -> dict[str, Any]:
+    """Structured single-leg option review instructions for the Robinhood MCP tools.
+
+    Optedge cannot know Robinhood's option instrument UUID from local files, so the
+    plan is intentionally split into contract lookup, review, then explicit confirm.
+    """
+    symbol = _candidate_symbol(order)
+    option_side = _text(order.get("option_side") or order.get("side")).lower()
+    if option_side.startswith("c"):
+        option_side = "call"
+    elif option_side.startswith("p"):
+        option_side = "put"
+    action = _text(order.get("action") or "BUY_TO_OPEN").upper()
+    side = "sell" if action.startswith("SELL") else "buy"
+    position_effect = "close" if action.endswith("CLOSE") else "open"
+    quantity = max(1, _int(order.get("quantity"), 1))
+    price = _round_option_price(
+        _float(order.get("max_limit_price") or order.get("limit_price") or order.get("reference_entry_price"))
+    )
+    expiry = _text(order.get("expiry"))
+    strike = _text(order.get("strike"))
+    return {
+        "schema": "optedge_robinhood_mcp_option_review_plan_v1",
+        "broker": "robinhood",
+        "asset": "option",
+        "capability": "single_leg_option_limit_order",
+        "status": "review_required_before_any_place_order",
+        "requires_agentic_allowed_account": True,
+        "requires_option_level_2_or_higher": True,
+        "requires_explicit_user_confirmation_before_place": True,
+        "script_submits_live_orders": False,
+        "contract_lookup": {
+            "chain_symbol": symbol,
+            "expiration_date": expiry,
+            "strike_price": strike,
+            "type": option_side,
+            "expected_contract_label": _text(order.get("contract")),
+            "lookup_sequence": [
+                "get_accounts",
+                "get_option_chains",
+                "get_option_instruments",
+            ],
+            "note": "Use Robinhood option instruments to resolve option_id; never infer option_id from local text.",
+        },
+        "review_tool": "review_option_order",
+        "place_tool_after_explicit_confirmation": "place_option_order",
+        "review_arguments_template": {
+            "account_number": "<explicit_user_confirmed_account_number>",
+            "chain_symbol": symbol,
+            "underlying_type": "equity",
+            "legs": [
+                {
+                    "option_id": "<option_id_from_get_option_instruments>",
+                    "side": side,
+                    "position_effect": position_effect,
+                    "ratio_quantity": 1,
+                }
+            ],
+            "quantity": str(quantity),
+            "type": "limit",
+            "price": f"{price:.2f}",
+            "time_in_force": "gfd",
+            "market_hours": "regular_hours",
+        },
+        "hard_rules": [
+            "Call review_option_order first and present alerts, fees, collateral, and quote.",
+            "Do not call place_option_order unless the user confirms this exact reviewed order.",
+            "Do not use market orders.",
+            "Skip if the live bid/ask spread, buying power, or option contract does not match the ticket.",
+        ],
+    }
+
+
 def _rejection(
     row: dict[str, Any],
     reasons: list[str],
@@ -948,7 +1021,7 @@ def _order_from_row(
     premium = round(entry * quantity * 100.0, 2)
     dte_value = _dte(row.get("expiry"), row.get("generated_at"))
     symbol = _candidate_symbol(row)
-    return {
+    order = {
         "asset": "option",
         "symbol": symbol,
         "ticker_or_symbol": symbol,
@@ -994,6 +1067,8 @@ def _order_from_row(
             "buying power, no duplicate exposure, and no breaking news invalidating the setup."
         ),
     }
+    order["robinhood_mcp_review_plan"] = robinhood_mcp_option_review_plan(order)
+    return order
 
 
 def build_queue_from_candidates(
@@ -1259,6 +1334,7 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
         "- Skip everything if the queue status is not ready.",
         "- Skip everything if the kill-switch file exists locally.",
         "- Double-check current Robinhood quotes and current news before submitting.",
+        "- Use the robinhood_mcp_review_plan on each order to resolve option_id and run review_option_order first.",
         "- If any check is unclear, skip the order and record the reason.",
         "",
         "## Queue Summary",
@@ -1413,6 +1489,7 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
             f"- Swing warnings: {order.get('swing_fit_warnings') or '-'}",
             f"- Public Cboe activity: volume {order.get('cboe_activity_volume') or 0}; "
             f"{order.get('cboe_activity_note') or 'verify live Robinhood quote'}",
+            "- MCP review plan: resolve option_id from Robinhood instruments, call review_option_order, then ask for confirmation.",
             f"- Stop reference: {order.get('stop_price_reference')}",
             f"- Target reference: {order.get('target_price_reference')}",
             "",
