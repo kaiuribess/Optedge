@@ -74,6 +74,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "job-chain-btn" in html
     assert "requested_chain_min_dte" in html
     assert "requested_match_status" in html
+    assert "brief-chain-btn" in html
+    assert "wireLookupBriefActions" in html
     assert "provider-query" in html
     assert "chain scan is staged" in html
     assert "global-suggestions" in html

@@ -382,6 +382,9 @@ def test_lookup_brief_warns_when_requested_option_is_closest_only():
         assert requested["label"] == "MSFT 2026-06-18 C 420"
         assert requested["match_quality"] == "closest"
         assert requested["strike_diff"] == 10.0
+        assert report["brief"]["research_action"]["action"] == "scan_swing_chain"
+        assert report["brief"]["research_action"]["route"] == "chains"
+        assert report["brief"]["research_action"]["can_export_paper_candidate"] is False
         assert report["brief"]["paper_readiness"]["status"] in {"caution", "blocked"}
         assert any(
             row["label"] == "Requested option match"
@@ -390,6 +393,21 @@ def test_lookup_brief_warns_when_requested_option_is_closest_only():
         )
         assert any("matched as closest" in warning for warning in report["brief"]["risk_warnings"])
         assert "Requested match" in render_html(report)
+
+
+def test_lookup_missing_option_request_routes_to_chain_scan():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        report = lookup_symbol("MSFT 20260618 C 420", data_dir)
+
+        requested = report["brief"]["requested_option"]
+        action = report["brief"]["research_action"]
+        assert requested["match_quality"] == "missing"
+        assert action["action"] == "scan_swing_chain"
+        assert action["route"] == "chains"
+        assert action["label"] == "Scan option chain"
+        assert action["can_export_paper_candidate"] is False
+        assert any("option-chain scanner" in step for step in action["next_steps"])
 
 
 def test_lookup_builds_research_brief_from_local_factors_and_open_state():
@@ -804,6 +822,7 @@ if __name__ == "__main__":
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_brief_warns_when_requested_option_is_closest_only()
+    test_lookup_missing_option_request_routes_to_chain_scan()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
     test_lookup_flags_stale_snapshot_age()
     test_lookup_preserves_row_level_stale_snapshot_metadata()
@@ -812,4 +831,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("20/20 lookup tests passed")
+    print("21/21 lookup tests passed")

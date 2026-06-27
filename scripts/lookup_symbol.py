@@ -1132,6 +1132,7 @@ def _research_action(
     best_idea: dict[str, Any] | None,
     open_summary: dict[str, Any],
     broker_summary: dict[str, Any],
+    requested_option: dict[str, Any] | None,
     contract_exposure: dict[str, Any] | None,
     warnings: list[str],
     total_hits: int,
@@ -1142,10 +1143,26 @@ def _research_action(
     risk_level = "low"
     action = "review"
     label = "Review local research"
+    requested_quality = str((requested_option or {}).get("match_quality") or "").strip().lower()
+    requested_label = str((requested_option or {}).get("label") or symbol).strip()
 
     if total_hits <= 0:
+        if requested_option:
+            return {
+                "action": "scan_swing_chain",
+                "route": "chains",
+                "label": "Scan option chain",
+                "risk_level": "unknown",
+                "reasons": [f"No current local rows matched requested option {requested_label}."],
+                "next_steps": [
+                    "Run the option-chain scanner for the requested ticker, side, and expiration window.",
+                    "Use only exact or clearly reviewed contracts; avoid treating a ticker-only result as a contract match.",
+                ],
+                "can_export_paper_candidate": False,
+            }
         return {
             "action": "run_focused_scan",
+            "route": "research",
             "label": "Run focused scan",
             "risk_level": "unknown",
             "reasons": [f"No current local rows were found for {symbol}."],
@@ -1200,6 +1217,22 @@ def _research_action(
         reasons.append("Validation sample-size warning is active.")
         next_steps.append("Treat any signal as early research until more closed outcomes exist.")
 
+    if (
+        requested_option
+        and requested_quality in {"missing", "closest", "ticker_only"}
+        and action not in {"blocked_by_guardrails", "review_existing_contract", "review_exit_now"}
+    ):
+        action = "scan_swing_chain"
+        label = "Scan option chain"
+        risk_level = "medium" if risk_level == "low" else risk_level
+        if requested_quality == "missing":
+            reasons.append(f"Requested option {requested_label} was not found in current local rows.")
+        elif requested_quality == "closest":
+            reasons.append(f"Requested option {requested_label} only has a closest-contract match.")
+        else:
+            reasons.append(f"Requested option {requested_label} only has same-ticker option context.")
+        next_steps.insert(0, "Run the option-chain scanner around the requested contract before judging the setup.")
+
     if best_idea:
         reasons.append(f"Best local idea status is {best_idea.get('trade_status') or 'unknown'}.")
         snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
@@ -1247,6 +1280,7 @@ def _research_action(
     can_export = action == "paper_candidate_review" and risk_level != "high" and broker_count <= 0
     return {
         "action": action,
+        "route": "chains" if action == "scan_swing_chain" else "research",
         "label": label,
         "risk_level": risk_level,
         "reasons": list(dict.fromkeys(reasons))[:6],
@@ -1464,7 +1498,7 @@ def _research_brief(
         warnings.append("Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting.")
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     research_action = _research_action(
-        symbol, best_idea, open_summary, broker_summary, contract_exposure,
+        symbol, best_idea, open_summary, broker_summary, requested_option, contract_exposure,
         deduped_warnings, local_hit_count
     )
     paper_readiness = _paper_readiness(

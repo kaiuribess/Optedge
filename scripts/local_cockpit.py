@@ -13261,6 +13261,7 @@ function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
   const requested = brief.requested_option || {};
+  const request = brief.request || {};
   const readiness = brief.paper_readiness || {};
   const open = brief.open_positions || {};
   const contractExposure = brief.contract_exposure || {};
@@ -13274,6 +13275,11 @@ function briefHtml(brief) {
   const source = brief.resolution_source || '-';
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
+  const actionButtons = action.action === 'scan_swing_chain'
+    ? `<button class="btn brief-chain-btn" type="button" data-symbol="${escAttr(brief.symbol || '')}" data-side="${escAttr(request.side || 'all')}">Run chain scan</button>`
+    : action.action === 'run_focused_scan'
+      ? `<button class="btn brief-scan-btn" type="button" data-query="${escAttr(brief.resolved_from || brief.symbol || '')}">Run focused scan</button>`
+      : '';
   const list = (rows) => (rows && rows.length ? rows.slice(0, 5).map(x => `<li>${escHtml(x.factor)} <b>${cell(x.value)}</b></li>`).join('') : '<li>None surfaced</li>');
   const warnings = (brief.risk_warnings && brief.risk_warnings.length)
     ? brief.risk_warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')
@@ -13324,8 +13330,26 @@ function briefHtml(brief) {
         <div class="brief-list"><h4>Next steps</h4><ul>${(action.next_steps && action.next_steps.length) ? action.next_steps.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>Review local factors and exposure.</li>'}</ul></div>
         <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
       </div>
+      ${actionButtons ? `<div class="scan-controls" style="padding:12px 0 0">${actionButtons}</div>` : ''}
     </div>
   </div>`;
+}
+function wireLookupBriefActions(root=document) {
+  root.querySelectorAll('.brief-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      setView('chains');
+      $('chain-query').value = btn.dataset.symbol || $('symbol').value.trim();
+      $('chain-side').value = btn.dataset.side || 'all';
+      await scanOptionChain();
+      scrollToId('chain-results');
+    });
+  });
+  root.querySelectorAll('.brief-scan-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      $('symbol').value = btn.dataset.query || $('symbol').value.trim();
+      await runSymbol();
+    });
+  });
 }
 function table(rows, clickRows=false) {
   if (!rows || rows.length === 0) return '<div class="empty">No matching rows.</div>';
@@ -16379,6 +16403,7 @@ async function lookup() {
     return `<div class="section"><h3><span>${name.replaceAll('_', ' ')}</span><span>${rows.length}</span></h3>${table(rows)}</div>`;
   }).join('');
   $('lookup-results').innerHTML = brief + sections;
+  wireLookupBriefActions($('lookup-results'));
 }
 async function runSymbol() {
   const query = $('symbol').value.trim();
