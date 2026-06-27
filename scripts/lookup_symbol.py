@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 
 import data_provider
+from engines import cboe_symbol_data as cboe_symbol_data_engine
 from engines import sec_ftd as sec_ftd_engine
 from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
@@ -110,6 +111,13 @@ DISPLAY_COLUMNS = {
         "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "match_source", "contract_grade", "review_lane",
         "readiness_score", "top_headline",
+    ],
+    "cboe_option_activity": [
+        "ticker", "option_side", "strike", "expiry", "cboe_activity_volume",
+        "cboe_activity_matched", "cboe_activity_routed", "cboe_activity_bid",
+        "cboe_activity_ask", "cboe_activity_mid", "cboe_activity_spread_pct",
+        "cboe_activity_last", "cboe_activity_contract", "cboe_activity_venues",
+        "cboe_activity_source", "match_quality", "strike_diff",
     ],
     "recent_sec_filings": [
         "ticker", "company_name", "form", "filing_date", "report_date",
@@ -1528,6 +1536,7 @@ def _research_brief(
     price_rows = sections.get("price_snapshot", [])
     price_snapshot = price_rows[0] if price_rows else None
     market_structure = sections.get("_market_structure_report", [{}])[0] or {}
+    cboe_activity = sections.get("_cboe_activity_report", [{}])[0] or {}
     data_coverage = sections.get("_data_coverage_report", [{}])[0] or {}
     sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
     sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
@@ -1541,6 +1550,8 @@ def _research_brief(
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:5])
+    if cboe_activity and cboe_activity.get("status") == "no_exact_match":
+        warnings.append(str(cboe_activity.get("note") or "No exact public Cboe activity matched the requested option."))
     warnings.extend(str(w) for w in (data_coverage.get("warnings") or [])[:2])
     best_idea = _best_idea_dict(best_section, best)
     requested_option = _requested_option_summary(
@@ -1611,6 +1622,22 @@ def _research_brief(
             "flags": market_structure.get("flags") or [],
             "warning_count": market_structure.get("warning_count") or 0,
             "warnings": (market_structure.get("warnings") or [])[:5],
+        },
+        "cboe_option_activity": {
+            "status": cboe_activity.get("status"),
+            "label": cboe_activity.get("label"),
+            "source": cboe_activity.get("source"),
+            "source_row_count": cboe_activity.get("source_row_count"),
+            "exact_match_count": cboe_activity.get("exact_match_count"),
+            "total_volume": cboe_activity.get("total_volume"),
+            "matched_contract": cboe_activity.get("matched_contract"),
+            "bid": cboe_activity.get("bid"),
+            "ask": cboe_activity.get("ask"),
+            "mid": cboe_activity.get("mid"),
+            "spread_pct": cboe_activity.get("spread_pct"),
+            "last": cboe_activity.get("last"),
+            "venues": cboe_activity.get("venues"),
+            "note": cboe_activity.get("note"),
         },
         "open_positions": open_summary,
         "broker_positions": broker_summary,
@@ -1763,12 +1790,107 @@ def match_option_request(
     return _frame_records(exact, "requested_option_matches")
 
 
+def _requested_cboe_option_activity(
+    request: dict[str, Any] | None,
+    limit: int = 5,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not request or request.get("asset") != "option":
+        return [], {"status": "not_requested", "label": "Not requested"}
+
+    ticker = str(request.get("ticker") or "").strip().upper()
+    side = _norm_side(request.get("side"))
+    expiry = _norm_expiry(request.get("expiry"))
+    try:
+        strike = float(request.get("strike"))
+    except Exception:
+        strike = math.nan
+    if not ticker or not side or not expiry or not math.isfinite(strike):
+        return [], {
+            "status": "invalid_request",
+            "label": "Cboe activity unavailable",
+            "note": "Requested option is missing ticker, side, expiry, or strike.",
+        }
+
+    try:
+        activity = cboe_symbol_data_engine.run([ticker], min_volume=1)
+    except Exception as exc:
+        return [], {
+            "status": "unavailable",
+            "label": "Cboe activity unavailable",
+            "note": f"Public Cboe symbol activity lookup failed: {str(exc)[:120]}",
+        }
+    if activity is None or activity.empty:
+        return [], {
+            "status": "no_symbol_activity",
+            "label": "No Cboe activity match",
+            "source_row_count": 0,
+            "exact_match_count": 0,
+            "total_volume": 0,
+            "note": "No public Cboe symbol activity rows were available for this ticker.",
+        }
+
+    work = activity.copy()
+    ticker_col = work["ticker"] if "ticker" in work.columns else pd.Series("", index=work.index)
+    side_col = work["option_side"] if "option_side" in work.columns else pd.Series("", index=work.index)
+    expiry_col = work["expiry"] if "expiry" in work.columns else pd.Series("", index=work.index)
+    strike_col = work["strike"] if "strike" in work.columns else pd.Series(math.nan, index=work.index)
+    work["_side_norm"] = side_col.map(_norm_side)
+    work["_expiry_norm"] = expiry_col.map(_norm_expiry)
+    work["strike_diff"] = (pd.to_numeric(strike_col, errors="coerce") - strike).abs()
+    exact = work[
+        (ticker_col.astype(str).str.upper().str.strip() == ticker)
+        & (work["_side_norm"] == side)
+        & (work["_expiry_norm"] == expiry)
+        & (pd.to_numeric(work["strike_diff"], errors="coerce").fillna(math.inf) <= 0.0001)
+    ].copy()
+    if exact.empty:
+        return [], {
+            "status": "no_exact_match",
+            "label": "No exact Cboe activity match",
+            "source_row_count": int(len(work)),
+            "exact_match_count": 0,
+            "total_volume": 0,
+            "note": "No exact public Cboe activity matched this contract; this is not consolidated OPRA volume.",
+        }
+
+    for idx, row in exact.iterrows():
+        bid = _float_value(row.get("cboe_activity_bid"))
+        ask = _float_value(row.get("cboe_activity_ask"))
+        if bid is not None and ask is not None and ask >= bid and (bid + ask) > 0:
+            mid = (bid + ask) / 2.0
+            exact.loc[idx, "cboe_activity_mid"] = round(mid, 4)
+            exact.loc[idx, "cboe_activity_spread_pct"] = round((ask - bid) / mid, 4)
+        exact.loc[idx, "match_quality"] = "exact"
+
+    exact = exact.sort_values("cboe_activity_volume", ascending=False).head(limit).copy()
+    total_volume = int(pd.to_numeric(exact["cboe_activity_volume"], errors="coerce").fillna(0).sum())
+    best = exact.iloc[0]
+    summary = {
+        "status": "matched",
+        "label": "Exact Cboe activity match",
+        "source": "cboe_symbol_data",
+        "source_row_count": int(len(work)),
+        "exact_match_count": int(len(exact)),
+        "total_volume": total_volume,
+        "matched_contract": _clean_value(best.get("cboe_activity_contract")),
+        "bid": _clean_value(best.get("cboe_activity_bid")),
+        "ask": _clean_value(best.get("cboe_activity_ask")),
+        "mid": _clean_value(best.get("cboe_activity_mid")),
+        "spread_pct": _clean_value(best.get("cboe_activity_spread_pct")),
+        "last": _clean_value(best.get("cboe_activity_last")),
+        "venues": _clean_value(best.get("cboe_activity_venues")),
+        "note": "Public Cboe venue activity matched the requested contract; not consolidated OPRA and not an execution quote.",
+    }
+    return _frame_records(exact, "cboe_option_activity"), summary
+
+
 def lookup_symbol(
     query: str,
     data_dir: Path = DATA_DIR,
     include_sec: bool = True,
     include_price: bool = False,
     include_market_structure: bool = False,
+    include_cboe_activity: bool = False,
 ) -> dict[str, Any]:
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
@@ -1844,6 +1966,11 @@ def lookup_symbol(
             source for source in [sources.get("options"), sources.get("chain_shortlist")]
             if source
         ) or None
+        if include_cboe_activity:
+            cboe_rows, cboe_report = _requested_cboe_option_activity(resolution.get("request"))
+            sections["cboe_option_activity"] = cboe_rows
+            sections["_cboe_activity_report"] = [cboe_report]
+            sources["cboe_option_activity"] = "Cboe public option symbol activity"
 
     coverage_rows, coverage_report = _build_data_coverage(
         q,
@@ -1940,6 +2067,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     price = brief.get("price_snapshot") or {}
     coverage = brief.get("data_coverage") or {}
     market_structure = brief.get("market_structure") or {}
+    cboe_activity = brief.get("cboe_option_activity") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -1984,6 +2112,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Coverage flags</span><strong>{int(coverage.get('bad_count') or 0)} bad / {int(coverage.get('warn_count') or 0)} warn</strong></div>
     <div><span class="muted">Market structure</span><strong>{html.escape(str(market_structure.get('status') or '-'))}</strong></div>
     <div><span class="muted">Market risk score</span><strong>{html.escape(str(market_structure.get('risk_score') if market_structure.get('risk_score') is not None else '-'))}</strong></div>
+    <div><span class="muted">Cboe contract activity</span><strong>{html.escape(str(cboe_activity.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Cboe volume</span><strong>{html.escape(str(cboe_activity.get('total_volume') if cboe_activity.get('total_volume') is not None else '-'))}</strong></div>
+    <div><span class="muted">Cboe spread</span><strong>{_fmt_brief_pct(cboe_activity.get('spread_pct'))}</strong></div>
+    <div><span class="muted">Cboe venues</span><strong>{html.escape(str(cboe_activity.get('venues') or '-'))}</strong></div>
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
     <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
     <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
@@ -2088,6 +2220,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--data-dir", default=str(DATA_DIR))
     ap.add_argument("--price", action="store_true", help="Include a free cached price/trend snapshot.")
     ap.add_argument("--market-structure", action="store_true", help="Include official no-key market-structure risk checks.")
+    ap.add_argument("--cboe-activity", action="store_true", help="Include public Cboe option activity for option-style queries.")
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args(argv)
 
@@ -2096,6 +2229,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.data_dir),
         include_price=args.price,
         include_market_structure=args.market_structure,
+        include_cboe_activity=args.cboe_activity,
     )
     paths = save_lookup(report, Path(args.data_dir))
     print(json.dumps(report, indent=2, default=str) if args.json_only else f"Lookup report: {paths['html']}\nLookup JSON: {paths['json']}\nHits: {report['total_hits']}")

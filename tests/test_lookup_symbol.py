@@ -287,6 +287,52 @@ def test_lookup_matches_requested_option_contract():
         assert "Readiness checklist" in html
 
 
+def test_lookup_can_attach_public_cboe_activity_for_requested_option():
+    old_cboe = lookup_module.cboe_symbol_data_engine.run
+    try:
+        lookup_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame([{
+            "ticker": "AAPL",
+            "option_side": "call",
+            "strike": 200.0,
+            "expiry": "2026-06-18",
+            "cboe_activity_volume": 321,
+            "cboe_activity_matched": 300,
+            "cboe_activity_routed": 21,
+            "cboe_activity_bid": 3.10,
+            "cboe_activity_ask": 3.30,
+            "cboe_activity_last": 3.2,
+            "cboe_activity_contract": "AAPL Jun 18 200.0 Call",
+            "cboe_activity_venues": "BZX Options,Cboe Options",
+            "cboe_activity_source": "cboe_symbol_data",
+        }])
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            pd.DataFrame([{
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2026-06-18",
+                "mid": 3.2,
+                "confidence": 80,
+                "rank_score": 2.0,
+                "trade_status": "Trade",
+            }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+            report = lookup_symbol("AAPL 20260618 C 200", data_dir, include_cboe_activity=True)
+    finally:
+        lookup_module.cboe_symbol_data_engine.run = old_cboe
+
+    activity = report["brief"]["cboe_option_activity"]
+    assert activity["status"] == "matched"
+    assert activity["total_volume"] == 321
+    assert activity["matched_contract"] == "AAPL Jun 18 200.0 Call"
+    assert activity["spread_pct"] > 0
+    assert report["sections"]["cboe_option_activity"][0]["match_quality"] == "exact"
+    html = render_html(report)
+    assert "Cboe contract activity" in html
+    assert "Exact Cboe activity match" in html
+    assert "Cboe Option Activity" in html
+
+
 def test_lookup_resolves_company_name_option_request_to_ticker():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -844,6 +890,7 @@ if __name__ == "__main__":
     test_lookup_can_include_market_structure_risk_snapshot()
     test_lookup_reports_data_coverage_without_inflating_hits()
     test_lookup_matches_requested_option_contract()
+    test_lookup_can_attach_public_cboe_activity_for_requested_option()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
     test_option_request_falls_back_to_closest_strike()
@@ -857,4 +904,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("21/21 lookup tests passed")
+    print("22/22 lookup tests passed")

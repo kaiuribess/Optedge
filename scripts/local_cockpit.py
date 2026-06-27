@@ -13299,6 +13299,7 @@ function briefHtml(brief) {
   const price = brief.price_snapshot || {};
   const coverage = brief.data_coverage || {};
   const marketStructure = brief.market_structure || {};
+  const cboeActivity = brief.cboe_option_activity || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
   const sec = brief.recent_sec_filings || {};
@@ -13331,6 +13332,10 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Coverage flags</span><strong>${cell(coverage.bad_count || 0)} bad / ${cell(coverage.warn_count || 0)} warn</strong></div>
         <div class="brief-tile"><span>Market structure</span><strong>${escHtml(marketStructure.status || '-')}</strong></div>
         <div class="brief-tile"><span>Market risk score</span><strong>${cell(marketStructure.risk_score || 0)}</strong></div>
+        <div class="brief-tile"><span>Cboe contract activity</span><strong>${escHtml(cboeActivity.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Cboe volume</span><strong>${cell(cboeActivity.total_volume)}</strong></div>
+        <div class="brief-tile"><span>Cboe spread</span><strong>${pct(cboeActivity.spread_pct)}</strong></div>
+        <div class="brief-tile"><span>Cboe venues</span><strong>${escHtml(cboeActivity.venues || '-')}</strong></div>
         <div class="brief-tile"><span>Paper readiness</span><strong>${escHtml(readiness.label || '-')}</strong></div>
         <div class="brief-tile"><span>Readiness score</span><strong>${cell(readiness.score)}</strong></div>
         <div class="brief-tile"><span>Quote source</span><strong>${escHtml(idea.quote_source_label || '-')}</strong></div>
@@ -16659,6 +16664,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self.data_dir,
                 include_price=True,
                 include_market_structure=True,
+                include_cboe_activity=True,
             ))
             return
         if parsed.path == "/api/suggestions":
