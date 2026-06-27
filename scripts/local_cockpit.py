@@ -45,7 +45,7 @@ from engines.nasdaq_screener import small_cap_movers
 from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
-from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html
+from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html, rich_lookup_kwargs
 from scripts.normalize_robinhood_broker_snapshot import normalize_broker_snapshot
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
@@ -16763,9 +16763,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(lookup_symbol(
                 symbol,
                 self.data_dir,
-                include_price=True,
-                include_market_structure=True,
-                include_cboe_activity=True,
+                **rich_lookup_kwargs(),
             ))
             return
         if parsed.path == "/api/suggestions":
@@ -17029,7 +17027,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if not symbol.strip():
                 self._send(400, b"symbol is required", "text/plain; charset=utf-8")
                 return
-            self._send(200, render_html(lookup_symbol(symbol, self.data_dir)).encode("utf-8"),
+            self._send(200, render_html(lookup_symbol(
+                symbol, self.data_dir, **rich_lookup_kwargs(),
+            )).encode("utf-8"),
                        "text/html; charset=utf-8")
             return
         if parsed.path == "/job-dashboard":

@@ -138,11 +138,26 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
 
         old_run = jobs_module.subprocess.run
+        old_lookup = jobs_module.lookup_symbol
+        captured_lookup_kwargs = {}
+
+        def safe_lookup(query, data_dir_arg, **kwargs):
+            captured_lookup_kwargs.update(kwargs)
+            safe_kwargs = dict(kwargs)
+            safe_kwargs.update({
+                "include_price": False,
+                "include_market_structure": False,
+                "include_cboe_activity": False,
+            })
+            return old_lookup(query, data_dir_arg, **safe_kwargs)
+
         jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+        jobs_module.lookup_symbol = safe_lookup
         try:
             assert run_job(job["job_id"], job["symbol"], data_dir) == 0
         finally:
             jobs_module.subprocess.run = old_run
+            jobs_module.lookup_symbol = old_lookup
 
         stored = read_job(job["job_id"], data_dir)
         assert stored["status"] == "completed"
@@ -157,6 +172,11 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert stored["requested_chain_min_dte"] <= stored["requested_chain_max_dte"]
         assert stored["requested_match_mid"] == 3.2
         assert stored["requested_match_quote_quality"] == "live_or_broker"
+        assert captured_lookup_kwargs["include_sec"] is False
+        assert captured_lookup_kwargs["include_price"] is True
+        assert captured_lookup_kwargs["include_market_structure"] is True
+        assert captured_lookup_kwargs["include_cboe_activity"] is True
+        assert "lookup_swing_verdict_decision" in stored
         assert Path(stored["lookup_html_path"]).exists()
         assert Path(stored["lookup_json_path"]).exists()
         assert job_lookup_path(job["job_id"], data_dir) == Path(stored["lookup_html_path"]).resolve()
@@ -180,11 +200,24 @@ def test_run_job_marks_missing_requested_option_contract():
         job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
 
         old_run = jobs_module.subprocess.run
+        old_lookup = jobs_module.lookup_symbol
+
+        def safe_lookup(query, data_dir_arg, **kwargs):
+            safe_kwargs = dict(kwargs)
+            safe_kwargs.update({
+                "include_price": False,
+                "include_market_structure": False,
+                "include_cboe_activity": False,
+            })
+            return old_lookup(query, data_dir_arg, **safe_kwargs)
+
         jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+        jobs_module.lookup_symbol = safe_lookup
         try:
             assert run_job(job["job_id"], job["symbol"], data_dir) == 0
         finally:
             jobs_module.subprocess.run = old_run
+            jobs_module.lookup_symbol = old_lookup
 
         stored = read_job(job["job_id"], data_dir)
         assert stored["requested_match_status"] == "missing"

@@ -35,6 +35,15 @@ DATA_DIR = ROOT / "data"
 FRESH_SNAPSHOT_MINUTES = 90.0
 STALE_SNAPSHOT_MINUTES = 360.0
 
+
+def rich_lookup_kwargs() -> dict[str, bool]:
+    """Default free context layers for interactive/saved lookup reports."""
+    return {
+        "include_price": True,
+        "include_market_structure": True,
+        "include_cboe_activity": True,
+    }
+
 SNAPSHOTS = {
     "options": ("top_options_*.parquet", "ticker"),
     "shares": ("top_shares_*.parquet", "ticker"),

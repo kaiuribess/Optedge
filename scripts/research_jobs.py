@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.lookup_symbol import DATA_DIR, lookup_symbol, save_lookup
+from scripts.lookup_symbol import DATA_DIR, lookup_symbol, rich_lookup_kwargs, save_lookup
 from scripts.symbol_resolver import resolve_symbol
 
 JOBS_DIRNAME = "cockpit_jobs"
@@ -234,10 +234,18 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
     query = str(job.get("query") or job.get("symbol") or "").strip()
     if not query:
         return
-    report = lookup_symbol(query, data_dir, include_sec=False)
+    report = lookup_symbol(query, data_dir, include_sec=False, **rich_lookup_kwargs())
     paths = save_lookup(report, data_dir)
     sections = report.get("sections", {}) if isinstance(report, dict) else {}
     sources = report.get("sources", {}) if isinstance(report, dict) else {}
+    brief = report.get("brief", {}) if isinstance(report.get("brief"), dict) else {}
+    swing = brief.get("swing_verdict", {}) if isinstance(brief.get("swing_verdict"), dict) else {}
+    price = brief.get("price_snapshot", {}) if isinstance(brief.get("price_snapshot"), dict) else {}
+    market = brief.get("market_structure", {}) if isinstance(brief.get("market_structure"), dict) else {}
+    cboe_activity = (
+        brief.get("cboe_option_activity", {})
+        if isinstance(brief.get("cboe_option_activity"), dict) else {}
+    )
     requested_matches = sections.get("requested_option_matches") or []
     best_match = requested_matches[0] if requested_matches else {}
     request_summary = _requested_match_summary(job.get("request"), requested_matches)
@@ -250,6 +258,13 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
         "requested_match_quote_quality": best_match.get("quote_quality"),
         "requested_match_chain_source": best_match.get("chain_source"),
         "requested_match_source_file": sources.get("requested_option_matches"),
+        "lookup_price_trend": price.get("trend_label"),
+        "lookup_market_structure_status": market.get("status"),
+        "lookup_market_risk_score": market.get("risk_score"),
+        "lookup_cboe_activity_status": cboe_activity.get("status"),
+        "lookup_swing_verdict": swing.get("label"),
+        "lookup_swing_verdict_score": swing.get("score"),
+        "lookup_swing_verdict_decision": swing.get("decision"),
     })
     job.update(request_summary)
 
