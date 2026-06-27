@@ -1501,6 +1501,241 @@ def _paper_readiness(
     }
 
 
+def _setup_bias(request: dict[str, Any] | None, best_idea: dict[str, Any] | None) -> str:
+    text = " ".join(
+        str(x or "").lower()
+        for x in [
+            (request or {}).get("side"),
+            (request or {}).get("asset"),
+            (best_idea or {}).get("asset"),
+            (best_idea or {}).get("label"),
+        ]
+    )
+    padded = f" {text.replace('-', ' ')} "
+    if " put" in padded or " p " in padded or " short" in padded:
+        return "bearish"
+    if " call" in padded or " c " in padded or " long" in padded or "share" in padded or "option" in padded:
+        return "bullish"
+    return "neutral"
+
+
+def _risk_reward(entry: Any, stop: Any, target: Any) -> float | None:
+    entry_v = _float_value(entry)
+    stop_v = _float_value(stop)
+    target_v = _float_value(target)
+    if entry_v is None or stop_v is None or target_v is None:
+        return None
+    risk = abs(entry_v - stop_v)
+    reward = abs(target_v - entry_v)
+    if risk <= 0:
+        return None
+    return reward / risk
+
+
+def _swing_verdict(
+    request: dict[str, Any] | None,
+    best_idea: dict[str, Any] | None,
+    requested_option: dict[str, Any] | None,
+    price_snapshot: dict[str, Any] | None,
+    open_summary: dict[str, Any],
+    broker_summary: dict[str, Any],
+    market_structure: dict[str, Any],
+    cboe_activity: dict[str, Any],
+    data_coverage: dict[str, Any],
+    readiness: dict[str, Any],
+    action: dict[str, Any],
+    warnings: list[str],
+) -> dict[str, Any]:
+    """Condense the lookup into a conservative swing-trade research verdict."""
+    score = 50
+    reasons: list[str] = []
+    blockers: list[str] = []
+
+    action_name = str(action.get("action") or "").lower()
+    action_risk = str(action.get("risk_level") or "").lower()
+    readiness_status = str(readiness.get("status") or "").lower()
+    coverage_score = _float_value(data_coverage.get("score"))
+    market_status = str(market_structure.get("status") or "").lower()
+    market_risk = _float_value(market_structure.get("risk_score"), 0.0) or 0.0
+    bias = _setup_bias(request, best_idea)
+
+    if best_idea:
+        status = _status_text(best_idea.get("trade_status"))
+        confidence = _float_value(best_idea.get("confidence"))
+        idea_score = _float_value(best_idea.get("score"))
+        if status in {"trade", "actionable", "buy", "long", "short"}:
+            score += 12
+            reasons.append(f"Best local idea is marked {best_idea.get('trade_status') or 'actionable'}.")
+        elif status in {"watch", "skip", "blocked"}:
+            score -= 18 if status == "watch" else 30
+            reasons.append(f"Best local idea is only {status}.")
+        if confidence is not None:
+            score += max(-10, min(15, (confidence - 55.0) / 3.0))
+            reasons.append(f"Local confidence is {confidence:.0f}/100.")
+        elif idea_score is not None:
+            score += max(-6, min(10, idea_score * 4.0))
+        if best_idea.get("quote_source_warning"):
+            score -= 8
+            reasons.append(str(best_idea.get("quote_source_warning")))
+        elif best_idea.get("quote_source_label"):
+            score += 4
+            reasons.append(f"Quote source: {best_idea.get('quote_source_label')}.")
+        spread = _float_value(best_idea.get("spread_pct"))
+        if spread is not None:
+            if spread <= 0.15:
+                score += 6
+                reasons.append(f"Spread is usable at {spread * 100:.1f}%.")
+            elif spread >= 0.35:
+                score -= 14
+                reasons.append(f"Spread is wide at {spread * 100:.1f}%.")
+        edge = _float_value(best_idea.get("net_edge_pct") or best_idea.get("ev_pct"))
+        if edge is not None:
+            score += max(-10, min(12, edge * 35.0))
+            reasons.append(f"Estimated edge is {edge * 100:+.1f}%.")
+    else:
+        score -= 28
+        blockers.append("No current ranked local idea is available for this symbol.")
+
+    if price_snapshot:
+        trend = str(price_snapshot.get("trend_label") or "unknown")
+        ret_20d = _float_value(price_snapshot.get("ret_20d"))
+        if bias == "bullish" and trend in {"uptrend", "strong_uptrend"}:
+            score += 8
+            reasons.append(f"Price trend supports bullish swing bias ({trend}).")
+        elif bias == "bearish" and trend in {"downtrend", "strong_downtrend"}:
+            score += 8
+            reasons.append(f"Price trend supports bearish swing bias ({trend}).")
+        elif bias in {"bullish", "bearish"} and trend not in {"unknown", "rangebound"}:
+            score -= 6
+            reasons.append(f"Price trend conflicts with {bias} bias ({trend}).")
+        if ret_20d is not None and abs(ret_20d) > 0.18:
+            score -= 4
+            reasons.append("20d move is extended; avoid chasing without a fresh trigger.")
+    else:
+        score -= 8
+        reasons.append("No free price snapshot is attached to this lookup.")
+
+    if requested_option:
+        quality = str(requested_option.get("match_quality") or "missing").lower()
+        if quality == "exact":
+            score += 8
+            reasons.append("Requested option contract matched exactly.")
+        elif quality == "closest":
+            score -= 10
+            reasons.append("Only a closest-contract option match was found.")
+        elif quality in {"ticker_only", "missing"}:
+            score -= 18
+            blockers.append("Requested option needs a focused chain scan before review.")
+
+    activity_status = str(cboe_activity.get("status") or "").lower()
+    if activity_status == "matched":
+        score += 5
+        reasons.append("Public Cboe activity matched the requested contract.")
+    elif requested_option and activity_status == "no_exact_match":
+        score -= 5
+        reasons.append("No exact public Cboe activity matched the requested contract.")
+
+    if market_status == "blocked":
+        score -= 45
+        blockers.append("Official market-structure check is blocked.")
+    elif market_risk >= 80:
+        score -= 20
+        blockers.append("Official market-structure risk is high.")
+    elif market_risk >= 40:
+        score -= 8
+        reasons.append("Market-structure risk needs review.")
+
+    if coverage_score is not None:
+        if coverage_score >= 80:
+            score += 5
+        elif coverage_score < 55:
+            score -= 12
+            reasons.append("Lookup data coverage is thin.")
+
+    if int(open_summary.get("count") or 0) > 0:
+        score -= 12
+        reasons.append("Local open exposure already exists for this symbol.")
+    if int(broker_summary.get("count") or 0) > 0:
+        score -= 18
+        reasons.append("Broker snapshot already has exposure for this symbol.")
+
+    max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
+    if max_pressure >= 80:
+        score -= 35
+        blockers.append("Existing open position has high exit pressure.")
+    elif max_pressure >= 60:
+        score -= 15
+        reasons.append("Existing open position has elevated exit pressure.")
+
+    if readiness_status == "ready":
+        score += 7
+    elif readiness_status == "blocked":
+        score -= 20
+        blockers.append("Paper-readiness checklist is blocked.")
+    elif readiness_status == "caution":
+        score -= 6
+
+    warning_text = " ".join(str(w).lower() for w in warnings)
+    if "sample size" in warning_text or "too small" in warning_text:
+        score -= 6
+        reasons.append("Validation sample-size warning is active.")
+    if action_risk == "high" or action_name in {"blocked_by_guardrails", "review_exit_now"}:
+        score -= 30
+        blockers.append(f"Research action is {action.get('label') or action_name}.")
+
+    score = int(max(0, min(100, round(score))))
+    if blockers:
+        decision = "blocked" if action_name != "scan_swing_chain" else "scan_chain"
+        label = "Blocked / needs review" if decision == "blocked" else "Scan chain first"
+    elif action_name == "scan_swing_chain":
+        decision = "scan_chain"
+        label = "Scan chain first"
+    elif action_name in {"review_existing_contract", "review_broker_position", "tighten_or_watch"}:
+        decision = "manage_existing"
+        label = "Manage existing exposure"
+    elif action_name == "paper_candidate_review" and readiness_status == "ready" and score >= 75:
+        decision = "paper_review"
+        label = "High-quality paper review"
+    elif score >= 65:
+        decision = "selective_review"
+        label = "Selective swing review"
+    elif score >= 45:
+        decision = "watch"
+        label = "Watchlist / wait"
+    else:
+        decision = "fresh_scan"
+        label = "Fresh scan needed"
+
+    rr = _risk_reward(
+        (best_idea or {}).get("entry_price"),
+        (best_idea or {}).get("stop_price"),
+        (best_idea or {}).get("target_price"),
+    )
+    playbook = {
+        "blocked": "Do not add exposure until blockers clear.",
+        "scan_chain": "Run the 3m+ option-chain scan before judging the contract.",
+        "manage_existing": "Review existing local/broker exposure and exits first.",
+        "paper_review": "Eligible for manual paper review after quote/spread verification.",
+        "selective_review": "Review manually; size small unless fresh data improves.",
+        "watch": "Keep on watchlist and wait for a cleaner trigger.",
+        "fresh_scan": "Run a fresh focused scan before making a decision.",
+    }.get(decision, "Review manually.")
+
+    return {
+        "score": score,
+        "label": label,
+        "decision": decision,
+        "bias": bias,
+        "playbook": playbook,
+        "entry_price": (best_idea or {}).get("entry_price"),
+        "stop_price": (best_idea or {}).get("stop_price"),
+        "target_price": (best_idea or {}).get("target_price"),
+        "risk_reward": _clean_value(None if rr is None else round(rr, 2)),
+        "blockers": list(dict.fromkeys(blockers))[:5],
+        "reasons": list(dict.fromkeys(reasons))[:8],
+    }
+
+
 def _load_json_obj(path: Path) -> dict[str, Any]:
     try:
         obj = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -1597,6 +1832,11 @@ def _research_brief(
         best_idea, requested_option, open_summary, broker_summary, contract_exposure,
         deduped_warnings, research_action, local_hit_count,
     )
+    swing_verdict = _swing_verdict(
+        resolution.get("request"), best_idea, requested_option, price_snapshot,
+        open_summary, broker_summary, market_structure, cboe_activity, data_coverage,
+        paper_readiness, research_action, deduped_warnings,
+    )
     brief = {
         "symbol": symbol,
         "resolved_from": resolution.get("query"),
@@ -1666,6 +1906,7 @@ def _research_brief(
         "risk_warnings": deduped_warnings,
         "research_action": research_action,
         "paper_readiness": paper_readiness,
+        "swing_verdict": swing_verdict,
         "validation": {
             "scope": validation.get("validation_scope"),
             "closed_positions": validation.get("closed_positions"),
@@ -2068,6 +2309,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     coverage = brief.get("data_coverage") or {}
     market_structure = brief.get("market_structure") or {}
     cboe_activity = brief.get("cboe_option_activity") or {}
+    swing = brief.get("swing_verdict") or {}
     validation = brief.get("validation") or {}
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
@@ -2093,6 +2335,12 @@ def _render_brief(brief: dict[str, Any]) -> str:
         f"<li>{html.escape(str(row.get('label')))}: {html.escape(str(row.get('detail')))}</li>"
         for row in readiness.get("checks", [])[:6]
     ) or "<li>No readiness checks available.</li>"
+    swing_reasons = "".join(
+        f"<li>{html.escape(str(reason))}</li>" for reason in swing.get("reasons", [])[:6]
+    ) or "<li>No swing-specific reasons surfaced.</li>"
+    swing_blockers = "".join(
+        f"<li>{html.escape(str(blocker))}</li>" for blocker in swing.get("blockers", [])[:5]
+    ) or "<li>No swing blockers surfaced.</li>"
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
     return f"""
@@ -2101,6 +2349,11 @@ def _render_brief(brief: dict[str, Any]) -> str:
   <div class="brief-grid">
     <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
     <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
+    <div><span class="muted">Swing verdict</span><strong>{html.escape(str(swing.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Swing score</span><strong>{html.escape(str(swing.get('score') if swing.get('score') is not None else '-'))}</strong></div>
+    <div><span class="muted">Swing bias</span><strong>{html.escape(str(swing.get('bias') or '-'))}</strong></div>
+    <div><span class="muted">Swing decision</span><strong>{html.escape(str(swing.get('decision') or '-'))}</strong></div>
+    <div><span class="muted">Swing R/R</span><strong>{html.escape(str(swing.get('risk_reward') if swing.get('risk_reward') is not None else '-'))}</strong></div>
     <div><span class="muted">Last price</span><strong>{html.escape(str(price.get('last_price') if price.get('last_price') is not None else '-'))}</strong></div>
     <div><span class="muted">Price trend</span><strong>{html.escape(str(price.get('trend_label') or '-'))}</strong></div>
     <div><span class="muted">20d return</span><strong>{_fmt_brief_pct(price.get('ret_20d'))}</strong></div>
@@ -2153,6 +2406,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
   <div class="two-col">
     <div><h3>Action reasons</h3><ul>{action_reasons}</ul></div>
     <div><h3>Next steps</h3><ul>{next_steps}</ul></div>
+  </div>
+  <div class="two-col">
+    <div><h3>Swing verdict reasons</h3><ul>{swing_reasons}</ul></div>
+    <div><h3>Swing blockers</h3><ul>{swing_blockers}</ul></div>
   </div>
   <h3>Readiness checklist</h3><ul>{readiness_checks}</ul>
   <h3>Warnings</h3><ul>{warnings}</ul>

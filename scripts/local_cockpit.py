@@ -13300,6 +13300,7 @@ function briefHtml(brief) {
   const coverage = brief.data_coverage || {};
   const marketStructure = brief.market_structure || {};
   const cboeActivity = brief.cboe_option_activity || {};
+  const swing = brief.swing_verdict || {};
   const val = brief.validation || {};
   const action = brief.research_action || {};
   const sec = brief.recent_sec_filings || {};
@@ -13320,6 +13321,11 @@ function briefHtml(brief) {
     <div style="padding:12px">
       <div class="brief-grid">
         <div class="brief-tile"><span>Best local idea</span><strong>${escHtml(idea.label || 'None')}</strong></div>
+        <div class="brief-tile"><span>Swing verdict</span><strong>${escHtml(swing.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Swing score</span><strong>${cell(swing.score)}</strong></div>
+        <div class="brief-tile"><span>Swing bias</span><strong>${escHtml(swing.bias || '-')}</strong></div>
+        <div class="brief-tile"><span>Swing decision</span><strong>${escHtml(swing.decision || '-')}</strong></div>
+        <div class="brief-tile"><span>Swing R/R</span><strong>${cell(swing.risk_reward)}</strong></div>
         <div class="brief-tile"><span>Requested option</span><strong>${escHtml(requested.label || '-')}</strong></div>
         <div class="brief-tile"><span>Requested match</span><strong>${escHtml(requested.match_quality || '-')}</strong></div>
         <div class="brief-tile"><span>Matched contract</span><strong>${escHtml(requested.matched_contract || '-')}</strong></div>
@@ -13363,6 +13369,8 @@ function briefHtml(brief) {
         <div class="brief-list"><h4>Positive factors</h4><ul>${list(brief.top_positive_factors)}</ul></div>
         <div class="brief-list"><h4>Negative factors</h4><ul>${list(brief.top_negative_factors)}</ul></div>
         <div class="brief-list"><h4>Readiness checklist</h4><ul>${(readiness.checks && readiness.checks.length) ? readiness.checks.slice(0, 6).map(c => `<li>${escHtml(c.label)}: ${escHtml(c.detail)}</li>`).join('') : '<li>No readiness checks available.</li>'}</ul></div>
+        <div class="brief-list"><h4>Swing verdict</h4><ul>${(swing.reasons && swing.reasons.length) ? swing.reasons.slice(0, 6).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>No swing-specific reasons surfaced.</li>'}</ul></div>
+        <div class="brief-list"><h4>Swing blockers</h4><ul>${(swing.blockers && swing.blockers.length) ? swing.blockers.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>No swing blockers surfaced.</li>'}</ul></div>
         <div class="brief-list"><h4>Next steps</h4><ul>${(action.next_steps && action.next_steps.length) ? action.next_steps.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>Review local factors and exposure.</li>'}</ul></div>
         <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
       </div>

@@ -368,6 +368,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "SEC cash/debt" in html
     assert "Cboe contract activity" in html
     assert "Cboe volume" in html
+    assert "Swing verdict" in html
+    assert "Swing score" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "/api/suggestions" in html

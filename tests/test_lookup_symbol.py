@@ -333,6 +333,66 @@ def test_lookup_can_attach_public_cboe_activity_for_requested_option():
     assert "Cboe Option Activity" in html
 
 
+def test_lookup_builds_clean_swing_verdict_for_exact_option_review():
+    old_history = lookup_module.data_provider.get_history
+    try:
+        def fake_history(ticker, period="6mo", interval="1d", cache_age=1800):
+            assert ticker == "AAPL"
+            idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
+            closes = pd.Series([100 + i * 1.25 for i in range(80)], index=idx, dtype="float64")
+            df = pd.DataFrame({
+                "Open": closes - 0.5,
+                "High": closes + 1.0,
+                "Low": closes - 1.0,
+                "Close": closes,
+                "Volume": 1_000_000,
+            }, index=idx)
+            df.attrs["history_source"] = "unit_history"
+            df.attrs["history_quality"] = "cached"
+            return df
+
+        lookup_module.data_provider.get_history = fake_history
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            pd.DataFrame([{
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2026-12-18",
+                "mid": 4.0,
+                "confidence": 88,
+                "rank_score": 2.8,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "stop_price": 2.0,
+                "target_price": 8.0,
+                "spread_pct": 0.08,
+                "net_edge_pct": 0.30,
+                "chain_source": "tradier",
+                "quote_quality": "live_or_broker",
+            }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+            report = lookup_symbol(
+                "AAPL 20261218 C 200",
+                data_dir,
+                include_price=True,
+            )
+    finally:
+        lookup_module.data_provider.get_history = old_history
+
+    verdict = report["brief"]["swing_verdict"]
+    assert verdict["decision"] == "paper_review"
+    assert verdict["label"] == "High-quality paper review"
+    assert verdict["bias"] == "bullish"
+    assert verdict["score"] >= 80
+    assert verdict["risk_reward"] == 2.0
+    assert not verdict["blockers"]
+    assert any("Price trend supports bullish" in reason for reason in verdict["reasons"])
+    html = render_html(report)
+    assert "Swing verdict" in html
+    assert "High-quality paper review" in html
+    assert "Swing R/R" in html
+
+
 def test_lookup_resolves_company_name_option_request_to_ticker():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -891,6 +951,7 @@ if __name__ == "__main__":
     test_lookup_reports_data_coverage_without_inflating_hits()
     test_lookup_matches_requested_option_contract()
     test_lookup_can_attach_public_cboe_activity_for_requested_option()
+    test_lookup_builds_clean_swing_verdict_for_exact_option_review()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
     test_option_request_falls_back_to_closest_strike()
@@ -904,4 +965,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("22/22 lookup tests passed")
+    print("23/23 lookup tests passed")
