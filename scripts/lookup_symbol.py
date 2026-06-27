@@ -155,6 +155,17 @@ def _snapshot_freshness(age_minutes: float | None) -> str:
     return "stale"
 
 
+def _worst_snapshot_freshness(left: Any, right: Any) -> str:
+    severity = {"unknown": 0, "fresh": 1, "aging": 2, "stale": 3}
+    left_norm = str(left or "unknown").strip().lower()
+    right_norm = str(right or "unknown").strip().lower()
+    if left_norm not in severity:
+        left_norm = "unknown"
+    if right_norm not in severity:
+        right_norm = "unknown"
+    return left_norm if severity[left_norm] >= severity[right_norm] else right_norm
+
+
 def _read_parquet(path: Path | None) -> pd.DataFrame:
     if path is None:
         return pd.DataFrame()
@@ -166,9 +177,19 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
         return pd.DataFrame()
     out = df.copy()
     age = _snapshot_age_minutes(path)
+    file_freshness = _snapshot_freshness(age)
     out["_source_file"] = path.name
-    out["snapshot_age_min"] = round(age, 1)
-    out["snapshot_freshness"] = _snapshot_freshness(age)
+    if "snapshot_age_min" in out.columns:
+        row_age = pd.to_numeric(out["snapshot_age_min"], errors="coerce")
+        out["snapshot_age_min"] = row_age.fillna(age).clip(lower=age).round(1)
+    else:
+        out["snapshot_age_min"] = round(age, 1)
+    if "snapshot_freshness" in out.columns:
+        out["snapshot_freshness"] = out["snapshot_freshness"].apply(
+            lambda value: _worst_snapshot_freshness(value, file_freshness)
+        )
+    else:
+        out["snapshot_freshness"] = file_freshness
     return out
 
 
@@ -205,9 +226,19 @@ def _chain_shortlist_frame(data_dir: Path) -> pd.DataFrame:
             break
     if source_path is not None:
         age = _snapshot_age_minutes(source_path)
+        file_freshness = _snapshot_freshness(age)
         out["_source_file"] = source_path.name
-        out["snapshot_age_min"] = round(age, 1)
-        out["snapshot_freshness"] = _snapshot_freshness(age)
+        if "snapshot_age_min" in out.columns:
+            row_age = pd.to_numeric(out["snapshot_age_min"], errors="coerce")
+            out["snapshot_age_min"] = row_age.fillna(age).clip(lower=age).round(1)
+        else:
+            out["snapshot_age_min"] = round(age, 1)
+        if "snapshot_freshness" in out.columns:
+            out["snapshot_freshness"] = out["snapshot_freshness"].apply(
+                lambda value: _worst_snapshot_freshness(value, file_freshness)
+            )
+        else:
+            out["snapshot_freshness"] = file_freshness
     elif "_source_file" not in out.columns:
         out["_source_file"] = "option_chain_shortlist"
     return out

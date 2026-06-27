@@ -487,6 +487,36 @@ def test_lookup_flags_stale_snapshot_age():
         assert "stale" in html
 
 
+def test_lookup_preserves_row_level_stale_snapshot_metadata():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        path = data_dir / "top_options_20260603_120000.parquet"
+        pd.DataFrame([{
+            "ticker": "NVDA",
+            "side": "call",
+            "strike": 200.0,
+            "expiry": "2026-12-18",
+            "mid": 4.2,
+            "confidence": 82,
+            "rank_score": 2.5,
+            "trade_status": "Trade",
+            "snapshot_age_min": 480,
+            "snapshot_freshness": "stale",
+        }]).to_parquet(path)
+
+        report = lookup_symbol("NVDA", data_dir)
+
+        option_row = report["sections"]["options"][0]
+        brief = report["brief"]
+        assert option_row["snapshot_freshness"] == "stale"
+        assert option_row["snapshot_age_min"] >= 480
+        assert brief["best_idea"]["snapshot_freshness"] == "stale"
+        assert any(
+            "stale snapshot" in str(reason).lower()
+            for reason in brief["research_action"]["reasons"]
+        )
+
+
 def test_lookup_includes_recent_sec_filings_when_available():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -776,9 +806,10 @@ if __name__ == "__main__":
     test_lookup_brief_warns_when_requested_option_is_closest_only()
     test_lookup_builds_research_brief_from_local_factors_and_open_state()
     test_lookup_flags_stale_snapshot_age()
+    test_lookup_preserves_row_level_stale_snapshot_metadata()
     test_lookup_includes_recent_sec_filings_when_available()
     test_lookup_includes_sec_companyfacts_when_available()
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("19/19 lookup tests passed")
+    print("20/20 lookup tests passed")
