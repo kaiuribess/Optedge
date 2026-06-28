@@ -11466,6 +11466,21 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "report": _clean_value(row.get("report")),
         }
 
+    def leaderboard_row(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "symbol": _clean_value(row.get("lookup_symbol") or row.get("query")),
+            "query": _clean_value(row.get("query")),
+            "thesis_return": _clean_value(row.get("follow_return_pct")),
+            "underlying_return": _clean_value(row.get("follow_underlying_return_pct")),
+            "status": _clean_value(row.get("follow_status")),
+            "direction": _clean_value(row.get("follow_direction")),
+            "swing_score": _clean_value(row.get("swing_score")),
+            "action": _clean_value(row.get("action") or row.get("research_action")),
+            "risk": _clean_value(row.get("risk")),
+            "chain": _clean_value(row.get("chain_symbol")),
+            "report": _clean_value(row.get("report")),
+        }
+
     priced_count = len(priced_rows)
     avg_return = (sum(returns) / len(returns)) if returns else None
 
@@ -11524,6 +11539,38 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ),
         )[:12]
 
+    best_rows = sorted(
+        priced_rows,
+        key=lambda row: (
+            _float_value(row.get("follow_return_pct"), default=-math.inf),
+            _float_value(row.get("swing_score"), default=-math.inf),
+        ),
+        reverse=True,
+    )[:6]
+    worst_rows = sorted(
+        priced_rows,
+        key=lambda row: (
+            _float_value(row.get("follow_return_pct"), default=math.inf),
+            -_float_value(row.get("swing_score"), default=0.0),
+        ),
+    )[:6]
+    paper_ready_rows = sorted(
+        [row for row in rows if bool(row.get("can_export_paper_candidate"))],
+        key=lambda row: (
+            _float_value(row.get("swing_score"), default=-math.inf),
+            _float_value(row.get("follow_return_pct"), default=-math.inf),
+        ),
+        reverse=True,
+    )[:6]
+    chain_ready_rows = sorted(
+        [row for row in rows if str(row.get("chain_symbol") or "").strip()],
+        key=lambda row: (
+            _float_value(row.get("swing_score"), default=-math.inf),
+            _float_value(row.get("follow_return_pct"), default=-math.inf),
+        ),
+        reverse=True,
+    )[:6]
+
     return {
         "total_saved": total,
         "priced_count": priced_count,
@@ -11542,6 +11589,10 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "by_direction": group_stats("follow_direction"),
         "by_action": group_stats("research_action", "action"),
         "by_route": group_stats("research_route"),
+        "leaderboard_best": [leaderboard_row(row) for row in best_rows],
+        "leaderboard_worst": [leaderboard_row(row) for row in worst_rows],
+        "leaderboard_paper_ready": [leaderboard_row(row) for row in paper_ready_rows],
+        "leaderboard_chain_ready": [leaderboard_row(row) for row in chain_ready_rows],
         "best": pick(best),
         "worst": pick(worst),
         "sample_warning": (
@@ -13962,6 +14013,7 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="status" id="lookup-history-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="lookup-history-summary"></div>
     <div class="brief-cols" style="margin-top:12px" id="lookup-history-breakdown"></div>
+    <div class="brief-cols" style="margin-top:12px" id="lookup-history-leaderboard"></div>
     <div class="section" style="margin-top:12px"><div id="lookup-history-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="research">
@@ -17383,6 +17435,26 @@ function lookupHistoryBreakdown(summary) {
       ${table(summary.by_route || [], true)}
     </div>`;
 }
+function lookupHistoryLeaderboard(summary) {
+  summary = summary || {};
+  return `
+    <div class="brief-list">
+      <h4>Best follow-through</h4>
+      ${table(summary.leaderboard_best || [], true)}
+    </div>
+    <div class="brief-list">
+      <h4>Worst follow-through</h4>
+      ${table(summary.leaderboard_worst || [], true)}
+    </div>
+    <div class="brief-list">
+      <h4>Paper-ready shortlist</h4>
+      ${table(summary.leaderboard_paper_ready || [], true)}
+    </div>
+    <div class="brief-list">
+      <h4>Chain-ready shortlist</h4>
+      ${table(summary.leaderboard_chain_ready || [], true)}
+    </div>`;
+}
 function wireLookupHistoryActions() {
   document.querySelectorAll('.lookup-history-repeat-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -17456,6 +17528,7 @@ async function loadLookupHistory() {
   window.latestLookupHistoryTotal = data.count || 0;
   $('lookup-history-summary').innerHTML = lookupHistorySummary(data.summary || {});
   $('lookup-history-breakdown').innerHTML = lookupHistoryBreakdown(data.summary || {});
+  $('lookup-history-leaderboard').innerHTML = lookupHistoryLeaderboard(data.summary || {});
   renderLookupHistoryRows();
 }
 async function lookup() {

@@ -163,6 +163,9 @@ def test_lookup_history_computes_followup_return_from_free_history():
     assert summary["by_direction"][0]["avg_thesis_return"] == 0.1
     assert summary["by_action"][0]["group"] == "Paper candidate review"
     assert summary["by_action"][0]["green_rate"] == 1.0
+    assert summary["leaderboard_best"][0]["symbol"] == "AAPL"
+    assert summary["leaderboard_best"][0]["thesis_return"] == 0.1
+    assert summary["leaderboard_worst"][0]["symbol"] == "AAPL"
 
 
 def test_lookup_history_scores_puts_by_bearish_thesis():
@@ -546,13 +549,19 @@ def test_cockpit_html_contains_lookup_controls():
     assert "lookup-history-chain-only" in html
     assert "lookup-history-summary" in html
     assert "lookup-history-breakdown" in html
+    assert "lookup-history-leaderboard" in html
     assert "lookupHistoryFilteredRows" in html
     assert "lookupHistorySortedRows" in html
     assert "renderLookupHistoryRows" in html
     assert "lookupHistorySummary" in html
     assert "lookupHistoryBreakdown" in html
+    assert "lookupHistoryLeaderboard" in html
     assert "By thesis direction" in html
     assert "By research action" in html
+    assert "Best follow-through" in html
+    assert "Worst follow-through" in html
+    assert "Paper-ready shortlist" in html
+    assert "Chain-ready shortlist" in html
     assert "lookupHistoryTable" in html
     assert "Thesis return" in html
     assert "lookup-history-watch-btn" in html
