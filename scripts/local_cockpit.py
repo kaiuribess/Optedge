@@ -11478,6 +11478,11 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "action": _clean_value(row.get("action") or row.get("research_action")),
             "risk": _clean_value(row.get("risk")),
             "chain": _clean_value(row.get("chain_symbol")),
+            "chain_symbol": _clean_value(row.get("chain_symbol")),
+            "chain_side": _clean_value(row.get("chain_side")),
+            "chain_min_dte": _clean_value(row.get("chain_min_dte")),
+            "chain_max_dte": _clean_value(row.get("chain_max_dte")),
+            "can_export_paper_candidate": bool(row.get("can_export_paper_candidate")),
             "report": _clean_value(row.get("report")),
         }
 
@@ -17435,24 +17440,58 @@ function lookupHistoryBreakdown(summary) {
       ${table(summary.by_route || [], true)}
     </div>`;
 }
+function lookupHistoryActionButtons(row) {
+  const query = row.query || row.symbol || '';
+  const report = row.report || '';
+  const open = report ? `<a class="btn" href="${escAttr(report)}" target="_blank">Open</a>` : '';
+  const again = query ? `<button class="btn lookup-history-repeat-btn" type="button" data-query="${escAttr(query)}">Lookup</button>` : '';
+  const watch = query ? `<button class="btn lookup-history-watch-btn" type="button" data-query="${escAttr(query)}">Watch</button>` : '';
+  const paper = query && row.can_export_paper_candidate
+    ? `<button class="btn lookup-history-paper-btn" type="button" data-query="${escAttr(query)}">Paper</button>`
+    : '';
+  const chainSymbol = row.chain_symbol || row.chain || row.symbol || '';
+  const chain = chainSymbol
+    ? `<button class="btn lookup-history-chain-btn" type="button"
+        data-symbol="${escAttr(chainSymbol)}"
+        data-side="${escAttr(row.chain_side || 'all')}"
+        data-min-dte="${escAttr(row.chain_min_dte || '')}"
+        data-max-dte="${escAttr(row.chain_max_dte || '')}">Chain</button>`
+    : '';
+  return `${open} ${again} ${watch} ${paper} ${chain}` || '-';
+}
+function lookupHistoryLeaderboardTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No rows yet.</div>';
+  return `<div class="table-wrap"><table><thead><tr>
+    <th>Symbol</th><th>Thesis</th><th>Status</th><th>Direction</th><th>Score</th><th>Action</th><th>Risk</th><th>Moves</th>
+  </tr></thead><tbody>${rows.map(row => `<tr>
+    <td>${cell(row.symbol)}</td>
+    <td>${pct(row.thesis_return)} <small>raw ${pct(row.underlying_return)}</small></td>
+    <td>${cell(row.status)}</td>
+    <td>${cell(row.direction)}</td>
+    <td>${cell(row.swing_score)}</td>
+    <td>${cell(row.action)}</td>
+    <td>${cell(row.risk)}</td>
+    <td>${lookupHistoryActionButtons(row)}</td>
+  </tr>`).join('')}</tbody></table></div>`;
+}
 function lookupHistoryLeaderboard(summary) {
   summary = summary || {};
   return `
     <div class="brief-list">
       <h4>Best follow-through</h4>
-      ${table(summary.leaderboard_best || [], true)}
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_best || [])}
     </div>
     <div class="brief-list">
       <h4>Worst follow-through</h4>
-      ${table(summary.leaderboard_worst || [], true)}
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_worst || [])}
     </div>
     <div class="brief-list">
       <h4>Paper-ready shortlist</h4>
-      ${table(summary.leaderboard_paper_ready || [], true)}
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_paper_ready || [])}
     </div>
     <div class="brief-list">
       <h4>Chain-ready shortlist</h4>
-      ${table(summary.leaderboard_chain_ready || [], true)}
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_chain_ready || [])}
     </div>`;
 }
 function wireLookupHistoryActions() {

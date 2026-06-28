@@ -165,6 +165,7 @@ def test_lookup_history_computes_followup_return_from_free_history():
     assert summary["by_action"][0]["green_rate"] == 1.0
     assert summary["leaderboard_best"][0]["symbol"] == "AAPL"
     assert summary["leaderboard_best"][0]["thesis_return"] == 0.1
+    assert summary["leaderboard_best"][0]["can_export_paper_candidate"] is False
     assert summary["leaderboard_worst"][0]["symbol"] == "AAPL"
 
 
@@ -556,6 +557,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "lookupHistorySummary" in html
     assert "lookupHistoryBreakdown" in html
     assert "lookupHistoryLeaderboard" in html
+    assert "lookupHistoryLeaderboardTable" in html
+    assert "lookupHistoryActionButtons" in html
     assert "By thesis direction" in html
     assert "By research action" in html
     assert "Best follow-through" in html
