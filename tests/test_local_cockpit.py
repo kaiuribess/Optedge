@@ -345,6 +345,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "autopilot-preflight" in html
     assert "Agentic account readiness" in html
     assert "autopilot-account-readiness" in html
+    assert "Robinhood MCP capability map" in html
+    assert "autopilot-mcp-capabilities" in html
     assert "Broker / local reconciliation" in html
     assert "autopilot-broker" in html
     assert "/api/broker-reconciliation" in html
@@ -4666,6 +4668,15 @@ def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
         assert report["local_expired_count"] == 1
         assert report["paper_only_count"] == 1
         assert report["agentic_option_ready"] is False
+        capabilities = report["robinhood_mcp_capabilities"]
+        assert any(row["capability"] == "Option chains / contracts / quotes" for row in capabilities)
+        option_write = next(
+            row for row in capabilities
+            if row["capability"] == "Single-leg option review / placement"
+        )
+        assert option_write["tool_support"] == "write supported"
+        assert option_write["local_policy"] == "explicit approval required"
+        assert option_write["account_status"] == "Split account permissions"
         assert any("options-approved account exists" in warning for warning in report["warnings"])
         statuses = {row["contract"]: row["status"] for row in report["rows"]}
         assert statuses["AAPL 2027-01-15 CALL 200"] == "matched"

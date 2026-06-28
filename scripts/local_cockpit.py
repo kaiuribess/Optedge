@@ -5885,6 +5885,95 @@ def _broker_account_readiness(accounts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Summarize Robinhood MCP capabilities separately from local execution policy."""
+    readiness = account_readiness if isinstance(account_readiness, dict) else {}
+    rows = readiness.get("rows") if isinstance(readiness.get("rows"), list) else []
+    has_snapshot_accounts = bool(rows)
+    has_agentic = bool(readiness.get("agentic_account_count"))
+    has_funded_agentic_options = bool(readiness.get("funded_agentic_option_count"))
+    funded_agentic_equity = any(
+        bool(row.get("agentic_allowed")) and bool(row.get("funded"))
+        for row in rows
+        if isinstance(row, dict)
+    )
+    readiness_label = str(readiness.get("label") or readiness.get("status") or "Unknown")
+
+    def row(
+        capability: str,
+        tool_support: str,
+        account_status: str,
+        local_policy: str,
+        note: str,
+    ) -> dict[str, Any]:
+        return {
+            "capability": capability,
+            "tool_support": tool_support,
+            "account_status": account_status,
+            "local_policy": local_policy,
+            "note": note,
+        }
+
+    if not has_snapshot_accounts:
+        unknown = "unknown until a fresh read-only broker snapshot is normalized"
+        return [
+            row("Accounts / buying power", "read supported", unknown, "read-only", "Refresh the raw MCP snapshot before trusting readiness."),
+            row("Positions / orders / realized P&L", "read supported", unknown, "read-only", "Useful for reconciliation and lifecycle audits."),
+            row("Option chains / contracts / quotes", "read supported", unknown, "read-only", "Useful for exact contract verification before a paper/live review."),
+            row("Equity order review / placement", "write supported", unknown, "confirmation required", "Optedge does not auto-submit broker orders."),
+            row("Single-leg option review / placement", "write supported", unknown, "confirmation required", "Requires one account with agentic access, options approval, and funding."),
+        ]
+
+    equity_status = "ready for review if funded" if funded_agentic_equity else (
+        "agentic account exists but buying power is not positive" if has_agentic else "no agentic-accessible account"
+    )
+    option_status = "ready for review if user approves" if has_funded_agentic_options else readiness_label
+    return [
+        row(
+            "Accounts / buying power",
+            "read supported",
+            "available from snapshot",
+            "read-only",
+            "Use this to verify which account is agentic-accessible and funded.",
+        ),
+        row(
+            "Positions / orders / realized P&L",
+            "read supported",
+            "available from snapshot or live MCP reads",
+            "read-only",
+            "Best used to reconcile Robinhood positions against Optedge local lifecycle state.",
+        ),
+        row(
+            "Option chains / contracts / quotes",
+            "read supported",
+            "available through Robinhood MCP",
+            "read-only",
+            "Useful for confirming exact option IDs, strikes, expiries, bid/ask, and tradability.",
+        ),
+        row(
+            "Equity order review / placement",
+            "write supported",
+            equity_status,
+            "explicit approval required",
+            "Review is allowed only on agentic-accessible accounts; live placement still needs confirmation.",
+        ),
+        row(
+            "Single-leg option review / placement",
+            "write supported",
+            option_status,
+            "explicit approval required",
+            "Robinhood supports single-leg options here, but the account must be agentic, options-approved, and funded.",
+        ),
+        row(
+            "Order cancellation / option exercise",
+            "write supported",
+            option_status,
+            "explicit approval required",
+            "Cancels and exercises are real broker actions; exercises are irreversible once accepted.",
+        ),
+    ]
+
+
 def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> dict[str, Any]:
     """Compare local Optedge/paper option state with an optional broker snapshot."""
     data_dir = Path(data_dir)
@@ -5913,6 +6002,7 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
     paper_keys = {str(row.get("contract_key")) for row in paper_rows if str(row.get("contract_key") or "").strip("|")}
 
     if not isinstance(snapshot, dict) or not snapshot:
+        empty_readiness = _broker_account_readiness([])
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "status": "missing_snapshot",
@@ -5929,6 +6019,15 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
             "local_only_count": len(local_rows),
             "paper_only_count": len(paper_rows),
             "missing_contract_fields_count": 0,
+            "agentic_account_count": 0,
+            "option_ready_account_count": 0,
+            "agentic_option_ready": False,
+            "agentic_readiness_status": empty_readiness.get("status"),
+            "agentic_readiness_label": empty_readiness.get("label"),
+            "agentic_readiness_detail": empty_readiness.get("detail"),
+            "funded_agentic_option_count": 0,
+            "account_readiness_rows": [],
+            "robinhood_mcp_capabilities": _robinhood_mcp_capability_rows(empty_readiness),
             "rows": [],
             "warnings": ["Add data/robinhood_broker_snapshot.json before trusting live Robinhood reconciliation."],
             "notes": [
@@ -6107,6 +6206,7 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         "agentic_readiness_detail": account_readiness.get("detail"),
         "funded_agentic_option_count": account_readiness.get("funded_agentic_option_count"),
         "account_readiness_rows": account_readiness.get("rows") or [],
+        "robinhood_mcp_capabilities": _robinhood_mcp_capability_rows(account_readiness),
         "warnings": warnings[:10],
         "rows": rows[: max(1, min(int(limit or 80), 250))],
         "notes": [
@@ -6514,6 +6614,7 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "broker_reconciliation": broker_reconciliation,
         "broker_reconciliation_rows": broker_reconciliation.get("rows") or [],
         "account_readiness_rows": broker_reconciliation.get("account_readiness_rows") or [],
+        "robinhood_mcp_capabilities": broker_reconciliation.get("robinhood_mcp_capabilities") or [],
         "recent_decisions": decision.get("rows") or [],
         "notes": [
             "Local paper entries can be automatic, but this cockpit does not submit broker orders.",
@@ -13495,6 +13596,11 @@ tr.clickable-row:hover { background:#18201d; }
         <div id="autopilot-account-readiness" class="table-wrap"></div>
       </div>
       <div class="brief-list" style="margin-top:12px">
+        <h4>Robinhood MCP capability map</h4>
+        <div class="muted">Separates what the connected Robinhood tools can do from what the current account setup and Optedge safety policy allow.</div>
+        <div id="autopilot-mcp-capabilities" class="table-wrap"></div>
+      </div>
+      <div class="brief-list" style="margin-top:12px">
         <h4>Broker / local reconciliation</h4>
         <div class="muted">Optional offline snapshot check from <code>data/robinhood_broker_snapshot.json</code>. No broker action is taken. Direct API: <code>/api/broker-reconciliation</code>.</div>
         <div class="scan-controls">
@@ -16257,12 +16363,14 @@ async function loadAgenticAutopilotStatus() {
   $('autopilot-tickets').innerHTML = table(data.tickets || [], true);
   $('autopilot-paper').innerHTML = table(data.paper_positions || [], true);
   $('autopilot-account-readiness').innerHTML = table(data.account_readiness_rows || [], true);
+  $('autopilot-mcp-capabilities').innerHTML = table(data.robinhood_mcp_capabilities || [], true);
   $('autopilot-broker').innerHTML = table(data.broker_reconciliation_rows || [], true);
   wireAutopilotActions();
   wireClickableRows($('autopilot-preflight'));
   wireClickableRows($('autopilot-tickets'));
   wireClickableRows($('autopilot-paper'));
   wireClickableRows($('autopilot-account-readiness'));
+  wireClickableRows($('autopilot-mcp-capabilities'));
   wireClickableRows($('autopilot-broker'));
 }
 async function normalizeBrokerSnapshot() {

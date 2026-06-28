@@ -82,8 +82,10 @@ Current Robinhood MCP capabilities can include:
 - Account, portfolio, buying-power, equity-position, option-position, equity-order, and option-order reads.
 - Real-time equity quotes, option quotes, option chains, option instruments, index lookup, equity fundamentals, and tradability checks.
 - Saved scanners/screeners, live scanner runs, scanner creation/editing, and scanner sort updates.
+- Aggregate realized P&L reads for post-trade review.
 - Watchlist reads plus approval-gated watchlist and option-watchlist writes.
 - Equity and single-leg option order review, placement, and cancellation when the selected account is `agentic_allowed=true` and has the required approvals.
+- Long-option exercise requests when the selected account is `agentic_allowed=true`, options-approved, and the user explicitly confirms the irreversible action.
 
 The local queue remains a research handoff. A broker-side order is only real after Robinhood confirms it.
 
@@ -187,6 +189,14 @@ The heartbeat does not replace Optedge scans. It reviews the latest files Optedg
 
 The cockpit can compare local Optedge/paper positions against a read-only Robinhood Agentic/MCP snapshot. This keeps local lifecycle state honest without adding broker credentials or automatic order placement to the codebase.
 
+Robinhood's MCP capability surface may include real order tools, but Optedge treats tool support and account readiness as separate checks:
+
+- `agentic_allowed=true` means this Codex/Robinhood connection can act on that account.
+- `option_level_2` or `option_level_3` is required for single-leg option orders.
+- Positive buying power is required before any candidate is actionable.
+- A split setup, where one account is agentic-accessible and another account is options-approved, is still blocked for agentic option orders.
+- The cockpit's **Robinhood MCP capability map** shows read support, write-tool support, current account status, and Optedge's local policy. Broker order actions remain confirmation-required.
+
 Save a raw JSON bundle of read-only MCP results to:
 
 - `data/robinhood_mcp_snapshot_raw.json`
@@ -199,6 +209,7 @@ Useful raw sections are:
 - `option_positions`
 - `equity_orders`
 - `option_orders`
+- `realized_pnl` if available
 
 Normalize the raw bundle into the cockpit's expected snapshot shape:
 
