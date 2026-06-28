@@ -376,6 +376,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Swing verdict" in html
     assert "Swing score" in html
     assert "Best alt" in html
+    assert "Contract pick" in html
     assert "watch-alt-lookup-btn" in html
     assert "Lookup alt" in html
     assert "Symbol lookup" in html
@@ -1018,6 +1019,8 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
             "rank_score": 2.0,
             "trade_status": "Trade",
             "suggested_contracts": 1,
+            "premium_dollars": 320.0,
+            "spread_pct": 0.24,
             "chain_source": "tradier",
             "quote_quality": "live_or_broker",
         }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
@@ -1051,6 +1054,7 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         enriched = load_watchlist(data_dir, enrich=True)
         assert enriched["entries"][0]["option_alt_best"] == "AAPL C 210.0 2026-06-18"
         assert enriched["entries"][0]["option_alt_readiness"] == 88
+        assert enriched["entries"][0]["contract_pick_winner"] == "alternative"
         queue = build_action_queue(data_dir)
         ready = [
             row for row in queue["rows"]
@@ -1063,7 +1067,9 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready[0]["swing_verdict_decision"] == "paper_review"
         assert ready[0]["swing_verdict_score"] >= 70
         assert ready[0]["option_alt_best"] == "AAPL C 210.0 2026-06-18"
+        assert ready[0]["contract_pick_winner"] == "alternative"
         assert "best nearby contract" in ready[0]["detail"]
+        assert "contract pick" in ready[0]["detail"]
 
 
 def test_action_queue_promotes_reviewable_swing_scout_rows():

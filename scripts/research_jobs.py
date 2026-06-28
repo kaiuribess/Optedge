@@ -250,6 +250,10 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
         brief.get("option_alternatives", {})
         if isinstance(brief.get("option_alternatives"), dict) else {}
     )
+    contract_comparison = (
+        brief.get("contract_comparison", {})
+        if isinstance(brief.get("contract_comparison"), dict) else {}
+    )
     requested_matches = sections.get("requested_option_matches") or []
     best_match = requested_matches[0] if requested_matches else {}
     request_summary = _requested_match_summary(job.get("request"), requested_matches)
@@ -273,6 +277,10 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
         "lookup_option_alt_readiness": option_alternatives.get("best_readiness_score"),
         "lookup_option_alt_swing_fit": option_alternatives.get("best_swing_fit_score"),
         "lookup_option_alt_spread_pct": option_alternatives.get("best_spread_pct"),
+        "lookup_contract_pick": contract_comparison.get("label"),
+        "lookup_contract_pick_winner": contract_comparison.get("winner"),
+        "lookup_contract_pick_score": contract_comparison.get("edge_score"),
+        "lookup_contract_pick_reasons": contract_comparison.get("reasons"),
         "lookup_swing_verdict": swing.get("label"),
         "lookup_swing_verdict_score": swing.get("score"),
         "lookup_swing_verdict_decision": swing.get("decision"),

@@ -1031,6 +1031,7 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
         readiness = brief.get("paper_readiness") or {}
         swing = brief.get("swing_verdict") or {}
         alternatives = brief.get("option_alternatives") or {}
+        comparison = brief.get("contract_comparison") or {}
         readiness_checks = readiness.get("checks") if isinstance(readiness.get("checks"), list) else []
         out.update({
             "local_hits": _clean_value(report.get("total_hits")),
@@ -1050,6 +1051,10 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
             "option_alt_readiness": _clean_value(alternatives.get("best_readiness_score")),
             "option_alt_swing_fit": _clean_value(alternatives.get("best_swing_fit_score")),
             "option_alt_spread_pct": _clean_value(alternatives.get("best_spread_pct")),
+            "contract_pick_label": _clean_value(comparison.get("label")),
+            "contract_pick_winner": _clean_value(comparison.get("winner")),
+            "contract_pick_score": _clean_value(comparison.get("edge_score")),
+            "contract_pick_reasons": _clean_value(comparison.get("reasons")),
             "swing_verdict_label": _clean_value(swing.get("label")),
             "swing_verdict_score": _clean_value(swing.get("score")),
             "swing_verdict_decision": _clean_value(swing.get("decision")),
@@ -9632,6 +9637,9 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     alt_best = str(row.get("option_alt_best") or "").strip()
     alt_reason = str(row.get("option_alt_reason") or "").strip()
     alt_score = _float_value(row.get("option_alt_score"), 0.0)
+    pick_label = str(row.get("contract_pick_label") or "").strip()
+    pick_winner = str(row.get("contract_pick_winner") or "").strip().lower()
+    pick_score = _float_value(row.get("contract_pick_score"), 0.0)
 
     if decision == "paper_review":
         priority = max(62, min(79, 58 + int(swing_score / 4.0)))
@@ -9666,7 +9674,9 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     else:
         return None
 
-    if alt_count and action in {"preview_paper_candidate", "scan_swing_chain", "open_research"}:
+    if pick_winner == "alternative" and action in {"preview_paper_candidate", "scan_swing_chain", "open_research"}:
+        priority = min(84, priority + 5)
+    elif alt_count and action in {"preview_paper_candidate", "scan_swing_chain", "open_research"}:
         priority = min(82, priority + 3)
 
     detail_parts = [
@@ -9674,6 +9684,7 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
         f"score {swing_score:.0f}/100" if swing_score else "",
         f"bias {bias}" if bias else "",
         f"R/R {rr:.2f}x" if rr is not None else "",
+        f"contract pick: {pick_label}" if pick_label else "",
         f"best nearby contract: {alt_best}" if alt_best else "",
         alt_reason if alt_reason else "",
         playbook,
@@ -9698,6 +9709,9 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
         "option_alt_best": _clean_value(alt_best),
         "option_alt_reason": _clean_value(alt_reason),
         "option_alt_score": _clean_value(alt_score),
+        "contract_pick_label": _clean_value(pick_label),
+        "contract_pick_winner": _clean_value(pick_winner),
+        "contract_pick_score": _clean_value(pick_score),
     })
     if action == "scan_swing_chain":
         item["route"] = "chains"
@@ -14664,6 +14678,9 @@ function watchlistTable(rows) {
     const alt = r.option_alt_best
       ? `${cell(r.option_alt_best)} <button class="btn watch-alt-lookup-btn" type="button" data-query="${escAttr(r.option_alt_best)}">Lookup alt</button>`
       : '-';
+    const pick = r.contract_pick_label
+      ? `${cell(r.contract_pick_label)}${r.contract_pick_winner ? `<br><small>${cell(r.contract_pick_winner)} / ${cell(r.contract_pick_score)}</small>` : ''}`
+      : '-';
     return `<tr>
       <td><button class="btn watch-lookup-btn" type="button" data-query="${escAttr(r.query || r.symbol || '')}">Lookup</button></td>
       <td><strong>${cell(r.symbol)}</strong></td>
@@ -14678,6 +14695,7 @@ function watchlistTable(rows) {
       <td>${cell(r.paper_readiness_score)}</td>
       <td>${alt}</td>
       <td>${cell(r.option_alt_readiness)}</td>
+      <td>${pick}</td>
       <td>${cell(r.open_count || 0)}</td>
       <td>${pct(r.avg_unrealized_pct)}</td>
       <td>${cell(r.warning_count || 0)}</td>
@@ -14686,7 +14704,7 @@ function watchlistTable(rows) {
     </tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Swing verdict</th><th>Swing score</th><th>Swing decision</th><th>Readiness</th><th>Score</th><th>Best alt</th><th>Alt ready</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
+    <th></th><th>Symbol</th><th>Query</th><th>Best local idea</th><th>Status</th><th>Conf</th><th>Swing verdict</th><th>Swing score</th><th>Swing decision</th><th>Readiness</th><th>Score</th><th>Best alt</th><th>Alt ready</th><th>Contract pick</th><th>Open</th><th>Avg open P&amp;L</th><th>Warnings</th><th>Request</th><th></th>
   </tr></thead><tbody>${body}</tbody></table></div>`;
 }
 function secFilingsSummaryHtml(data) {

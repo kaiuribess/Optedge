@@ -133,6 +133,8 @@ def test_run_job_writes_lookup_summary_for_requested_option():
             "confidence": 80,
             "rank_score": 2.0,
             "trade_status": "Trade",
+            "premium_dollars": 320.0,
+            "spread_pct": 0.24,
             "chain_source": "tradier",
             "quote_quality": "live_or_broker",
         }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
@@ -201,6 +203,9 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert stored["lookup_option_alt_count"] == 1
         assert stored["lookup_option_alt_best"] == "AAPL C 210.0 2026-06-18"
         assert stored["lookup_option_alt_readiness"] == 88
+        assert stored["lookup_contract_pick_winner"] == "alternative"
+        assert stored["lookup_contract_pick_score"] > 50
+        assert stored["lookup_contract_pick_reasons"]
         assert captured_lookup_kwargs["include_sec"] is False
         assert captured_lookup_kwargs["include_price"] is True
         assert captured_lookup_kwargs["include_market_structure"] is True
