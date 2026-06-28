@@ -74,6 +74,45 @@ def _raw_bundle():
     }
 
 
+def _split_permission_mcp_bundle():
+    return {
+        "get_accounts": {
+            "data": {
+                "accounts": [
+                    {
+                        "account_number": "OPT123456",
+                        "type": "margin",
+                        "brokerage_account_type": "individual",
+                        "is_default": True,
+                        "agentic_allowed": False,
+                        "option_level": "option_level_2",
+                    },
+                    {
+                        "account_number": "AGT654321",
+                        "type": "cash",
+                        "brokerage_account_type": "individual",
+                        "nickname": "Agentic",
+                        "agentic_allowed": True,
+                        "option_level": "",
+                    },
+                ]
+            },
+            "guide": "MCP account list response",
+        },
+        "get_portfolio": {
+            "account_number": "AGT654321",
+            "data": {
+                "total_value": "0",
+                "cash": "0",
+                "buying_power": {
+                    "buying_power": "0.0000",
+                    "display_currency": "USD",
+                },
+            },
+        },
+    }
+
+
 def test_normalizes_mcp_bundle_to_cockpit_snapshot():
     snapshot = normalize_broker_snapshot(_raw_bundle(), generated_at="2026-06-24T12:00:00+00:00")
 
@@ -138,6 +177,31 @@ def test_normalized_snapshot_feeds_broker_reconciliation():
         assert report["rows"][0]["status"] == "matched"
 
 
+def test_reconciliation_flags_split_agentic_and_options_permissions():
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        snapshot = normalize_broker_snapshot(
+            _split_permission_mcp_bundle(),
+            generated_at="2026-06-24T12:00:00+00:00",
+        )
+        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+
+        report = build_broker_reconciliation(data_dir)
+
+        assert snapshot["counts"]["accounts"] == 2
+        assert snapshot["accounts"][0]["option_level"] == "option_level_2"
+        assert snapshot["accounts"][1]["agentic_allowed"] is True
+        assert report["agentic_option_ready"] is False
+        assert report["agentic_readiness_status"] == "split_permissions"
+        assert report["agentic_readiness_label"] == "Split account permissions"
+        assert report["agentic_account_count"] == 1
+        assert report["option_ready_account_count"] == 1
+        assert len(report["account_readiness_rows"]) == 2
+        assert any("no single account has both" in warning for warning in report["warnings"])
+
+
 def test_cli_writes_snapshot_and_dry_run_does_not_write():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -158,5 +222,6 @@ def test_cli_writes_snapshot_and_dry_run_does_not_write():
 if __name__ == "__main__":
     test_normalizes_mcp_bundle_to_cockpit_snapshot()
     test_normalized_snapshot_feeds_broker_reconciliation()
+    test_reconciliation_flags_split_agentic_and_options_permissions()
     test_cli_writes_snapshot_and_dry_run_does_not_write()
-    print("3/3 robinhood broker snapshot tests passed")
+    print("4/4 robinhood broker snapshot tests passed")

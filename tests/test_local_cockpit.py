@@ -253,6 +253,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "autopilot-actions" in html
     assert "autopilot-notes" in html
     assert "autopilot-preflight" in html
+    assert "Agentic account readiness" in html
+    assert "autopilot-account-readiness" in html
     assert "Broker / local reconciliation" in html
     assert "autopilot-broker" in html
     assert "/api/broker-reconciliation" in html

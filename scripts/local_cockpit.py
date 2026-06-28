@@ -5795,6 +5795,96 @@ def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, 
     return {k: _clean_value(v) for k, v in row.items()}
 
 
+def _account_options_ready(option_level: Any) -> bool:
+    return str(option_level or "").strip().lower() in {"option_level_2", "option_level_3"}
+
+
+def _broker_account_readiness(accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        agentic_allowed = bool(account.get("agentic_allowed"))
+        option_level = str(account.get("option_level") or "").strip()
+        options_ready = _account_options_ready(option_level)
+        buying_power = _float_value(account.get("buying_power"), default=math.nan)
+        funded = math.isfinite(buying_power) and buying_power > 0
+        if agentic_allowed and options_ready and funded:
+            status = "ready"
+            detail = "Agentic-accessible, options-approved, and funded."
+        elif agentic_allowed and options_ready:
+            status = "needs_funding"
+            detail = "Agentic-accessible and options-approved, but buying power is not positive in the snapshot."
+        elif agentic_allowed:
+            status = "needs_options"
+            detail = "Agentic-accessible, but options approval is missing in the snapshot."
+        elif options_ready:
+            status = "needs_agentic_access"
+            detail = "Options-approved, but this account is not marked agentic-accessible."
+        else:
+            status = "not_ready"
+            detail = "Snapshot does not show agentic access or options approval."
+        rows.append({
+            "account": _clean_value(
+                account.get("label")
+                or account.get("nickname")
+                or account.get("account_mask")
+                or account.get("account_number")
+            ),
+            "account_mask": _clean_value(account.get("account_mask")),
+            "type": _clean_value(account.get("brokerage_account_type") or account.get("type")),
+            "agentic_allowed": agentic_allowed,
+            "option_level": _clean_value(option_level),
+            "options_ready": options_ready,
+            "buying_power": _clean_value(buying_power if math.isfinite(buying_power) else None),
+            "funded": funded,
+            "status": status,
+            "detail": detail,
+        })
+
+    agentic_count = sum(1 for row in rows if row.get("agentic_allowed"))
+    option_ready_count = sum(1 for row in rows if row.get("options_ready"))
+    agentic_option_rows = [
+        row for row in rows
+        if row.get("agentic_allowed") and row.get("options_ready")
+    ]
+    funded_agentic_option_rows = [row for row in agentic_option_rows if row.get("funded")]
+    if funded_agentic_option_rows:
+        status = "ready"
+        label = "Agentic options ready"
+        detail = "At least one agentic-accessible options account is funded."
+    elif agentic_option_rows:
+        status = "needs_funding"
+        label = "Fund agentic options account"
+        detail = "Agentic options access is available, but buying power is not positive in the snapshot."
+    elif agentic_count and option_ready_count:
+        status = "split_permissions"
+        label = "Split account permissions"
+        detail = "One account is agentic-accessible and another is options-approved; no single account has both."
+    elif agentic_count:
+        status = "agentic_needs_options"
+        label = "Agentic account needs options"
+        detail = "An agentic-accessible account exists, but it is not options-approved."
+    elif option_ready_count:
+        status = "options_needs_agentic"
+        label = "Options account needs agentic access"
+        detail = "An options-approved account exists, but it is not accessible to this agent."
+    else:
+        status = "missing_ready_account"
+        label = "No agentic options account"
+        detail = "Snapshot does not show any account with both agentic access and options approval."
+    return {
+        "status": status,
+        "label": label,
+        "detail": detail,
+        "rows": rows,
+        "agentic_account_count": agentic_count,
+        "option_ready_account_count": option_ready_count,
+        "agentic_option_ready": bool(agentic_option_rows),
+        "funded_agentic_option_count": len(funded_agentic_option_rows),
+    }
+
+
 def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> dict[str, Any]:
     """Compare local Optedge/paper option state with an optional broker snapshot."""
     data_dir = Path(data_dir)
@@ -5943,23 +6033,20 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
             "local_match": "-",
         })
 
+    account_readiness = _broker_account_readiness(accounts)
     option_ready_accounts = [
         row for row in accounts
-        if isinstance(row, dict) and str(row.get("option_level") or "").lower() in {"option_level_2", "option_level_3"}
+        if isinstance(row, dict) and _account_options_ready(row.get("option_level"))
     ]
-    agentic_accounts = [
-        row for row in accounts
-        if isinstance(row, dict) and bool(row.get("agentic_allowed"))
-    ]
-    agentic_option_ready = any(
-        str(row.get("option_level") or "").lower() in {"option_level_2", "option_level_3"}
-        for row in agentic_accounts
-    )
+    agentic_accounts = [row for row in accounts if isinstance(row, dict) and bool(row.get("agentic_allowed"))]
+    agentic_option_ready = bool(account_readiness.get("agentic_option_ready"))
     warnings: list[str] = []
     if agentic_accounts and not agentic_option_ready:
         warnings.append("Agentic account snapshot does not show options approval.")
     if option_ready_accounts and not agentic_option_ready:
         warnings.append("An options-approved account exists, but it is not marked agentic in the snapshot.")
+    if account_readiness.get("status") not in {"ready", "needs_funding"}:
+        warnings.append(str(account_readiness.get("detail") or account_readiness.get("label") or "Agentic options account is not ready."))
     if snapshot_age is None:
         warnings.append("Broker snapshot timestamp is missing.")
     elif snapshot_age > AGENTIC_STALE_MINUTES:
@@ -6015,6 +6102,11 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         "agentic_account_count": len(agentic_accounts),
         "option_ready_account_count": len(option_ready_accounts),
         "agentic_option_ready": agentic_option_ready,
+        "agentic_readiness_status": account_readiness.get("status"),
+        "agentic_readiness_label": account_readiness.get("label"),
+        "agentic_readiness_detail": account_readiness.get("detail"),
+        "funded_agentic_option_count": account_readiness.get("funded_agentic_option_count"),
+        "account_readiness_rows": account_readiness.get("rows") or [],
         "warnings": warnings[:10],
         "rows": rows[: max(1, min(int(limit or 80), 250))],
         "notes": [
@@ -6396,6 +6488,10 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "paper_expired_count": broker_reconciliation.get("paper_expired_count"),
         "broker_missing_contract_fields_count": broker_reconciliation.get("missing_contract_fields_count"),
         "agentic_option_ready": broker_reconciliation.get("agentic_option_ready"),
+        "agentic_readiness_status": broker_reconciliation.get("agentic_readiness_status"),
+        "agentic_readiness_label": broker_reconciliation.get("agentic_readiness_label"),
+        "agentic_readiness_detail": broker_reconciliation.get("agentic_readiness_detail"),
+        "funded_agentic_option_count": broker_reconciliation.get("funded_agentic_option_count"),
         "decision_recent_count": decision_recent_count,
         "decision_log_needed": decision_log_needed,
         "decision_debt_reasons": decision_debt_reasons[:6],
@@ -6417,6 +6513,7 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "paper_positions": paper_book_rows,
         "broker_reconciliation": broker_reconciliation,
         "broker_reconciliation_rows": broker_reconciliation.get("rows") or [],
+        "account_readiness_rows": broker_reconciliation.get("account_readiness_rows") or [],
         "recent_decisions": decision.get("rows") or [],
         "notes": [
             "Local paper entries can be automatic, but this cockpit does not submit broker orders.",
@@ -13193,6 +13290,11 @@ tr.clickable-row:hover { background:#18201d; }
         <div class="brief-list"><h4>Local paper book</h4><div id="autopilot-paper" class="table-wrap"></div></div>
       </div>
       <div class="brief-list" style="margin-top:12px">
+        <h4>Agentic account readiness</h4>
+        <div class="muted">Read-only account capability check from the local Robinhood snapshot: agentic access, options level, and buying power.</div>
+        <div id="autopilot-account-readiness" class="table-wrap"></div>
+      </div>
+      <div class="brief-list" style="margin-top:12px">
         <h4>Broker / local reconciliation</h4>
         <div class="muted">Optional offline snapshot check from <code>data/robinhood_broker_snapshot.json</code>. No broker action is taken. Direct API: <code>/api/broker-reconciliation</code>.</div>
         <div class="scan-controls">
@@ -15841,7 +15943,8 @@ function autopilotSummary(data) {
     ['Local-only', data.local_only_count || 0],
     ['Expired local', data.local_expired_count || 0],
     ['Broker age', data.broker_snapshot_age || 'missing'],
-    ['Agentic options', data.agentic_option_ready ? 'ready' : 'not ready'],
+    ['Agentic options', data.agentic_readiness_label || (data.agentic_option_ready ? 'ready' : 'not ready')],
+    ['Agentic funded', data.funded_agentic_option_count || 0],
     ['Queue candidates', data.candidate_count || 0],
     ['Review-only', data.review_only_entry_candidate_count || 0],
     ['Preflight blocks', data.ticket_preflight_block_count || 0],
@@ -15943,11 +16046,13 @@ async function loadAgenticAutopilotStatus() {
   $('autopilot-preflight').innerHTML = table(data.ticket_preflight || [], true);
   $('autopilot-tickets').innerHTML = table(data.tickets || [], true);
   $('autopilot-paper').innerHTML = table(data.paper_positions || [], true);
+  $('autopilot-account-readiness').innerHTML = table(data.account_readiness_rows || [], true);
   $('autopilot-broker').innerHTML = table(data.broker_reconciliation_rows || [], true);
   wireAutopilotActions();
   wireClickableRows($('autopilot-preflight'));
   wireClickableRows($('autopilot-tickets'));
   wireClickableRows($('autopilot-paper'));
+  wireClickableRows($('autopilot-account-readiness'));
   wireClickableRows($('autopilot-broker'));
 }
 async function normalizeBrokerSnapshot() {

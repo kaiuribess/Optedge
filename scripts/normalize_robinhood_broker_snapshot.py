@@ -22,6 +22,27 @@ DATA_DIR = ROOT / "data"
 DEFAULT_INPUT = DATA_DIR / "robinhood_mcp_snapshot_raw.json"
 DEFAULT_OUTPUT = DATA_DIR / "robinhood_broker_snapshot.json"
 SNAPSHOT_SCHEMA = "optedge_robinhood_broker_snapshot_v1"
+ROW_HINT_KEYS = {
+    "account_number",
+    "rhs_account_number",
+    "brokerage_account_number",
+    "agentic_allowed",
+    "option_level",
+    "symbol",
+    "chain_symbol",
+    "underlying_symbol",
+    "ticker",
+    "option_type",
+    "strike_price",
+    "expiration_date",
+    "quantity",
+    "average_buy_price",
+    "total_value",
+    "cash",
+    "buying_power",
+    "order_id",
+    "state",
+}
 
 
 def _now() -> str:
@@ -94,6 +115,28 @@ def _unwrap_rows(value: Any, preferred_keys: tuple[str, ...] = ()) -> list[dict[
             rows = value.get(key)
             if isinstance(rows, list):
                 return [row for row in rows if isinstance(row, dict)]
+        data_payload = value.get("data")
+        if isinstance(data_payload, dict):
+            nested_rows = _unwrap_rows(data_payload, preferred_keys=preferred_keys)
+            if nested_rows:
+                return [
+                    {
+                        **{
+                            k: value[k]
+                            for k in ("account_number", "rhs_account_number", "brokerage_account_number")
+                            if value.get(k)
+                        },
+                        **row,
+                    }
+                    for row in nested_rows
+                ]
+            payload_copy = dict(data_payload)
+            for k in ("account_number", "rhs_account_number", "brokerage_account_number"):
+                if value.get(k):
+                    payload_copy.setdefault(k, value.get(k))
+            return [payload_copy]
+        if any(key in value for key in ROW_HINT_KEYS):
+            return [value]
         rows: list[dict[str, Any]] = []
         for account_key, maybe_rows in value.items():
             if not isinstance(maybe_rows, (list, dict)):
@@ -256,9 +299,17 @@ def _pick_account(accounts: dict[str, dict[str, Any]], account_number: str, fall
 
 def _merge_portfolio(account: dict[str, Any], raw: dict[str, Any]) -> None:
     account["portfolio"] = raw
+    buying_power = raw.get("buying_power")
+    if isinstance(buying_power, dict):
+        buying_power = (
+            buying_power.get("buying_power")
+            or buying_power.get("unleveraged_buying_power")
+            or buying_power.get("amount")
+        )
     for key in ("buying_power", "cash", "cash_available_for_withdrawal"):
-        if account.get("buying_power") is None and raw.get(key) is not None:
-            account["buying_power"] = _float(raw.get(key))
+        raw_value = buying_power if key == "buying_power" else raw.get(key)
+        if account.get("buying_power") is None and raw_value is not None:
+            account["buying_power"] = _float(raw_value)
 
 
 def normalize_broker_snapshot(
