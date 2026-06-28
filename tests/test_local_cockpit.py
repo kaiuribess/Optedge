@@ -102,6 +102,11 @@ def test_lookup_history_reads_saved_reports():
         assert row["chain_side"] == "call"
         assert row["chain_min_dte"] == 180
         assert row["follow_status"] == "no_baseline"
+        assert history["summary"]["total_saved"] == 1
+        assert history["summary"]["priced_count"] == 0
+        assert history["summary"]["paper_eligible_count"] == 1
+        assert history["summary"]["chain_ready_count"] == 1
+        assert history["summary"]["no_baseline_count"] == 1
 
 
 def test_lookup_history_computes_followup_return_from_free_history():
@@ -144,6 +149,13 @@ def test_lookup_history_computes_followup_return_from_free_history():
     assert row["follow_return_pct"] == 0.1
     assert row["follow_price"] == 110.0
     assert row["follow_source"] == "unit_history"
+    summary = history["summary"]
+    assert summary["priced_count"] == 1
+    assert summary["green_count"] == 1
+    assert summary["green_rate"] == 1.0
+    assert summary["avg_follow_return_pct"] == 0.1
+    assert summary["best"]["symbol"] == "AAPL"
+    assert summary["worst"]["symbol"] == "AAPL"
 
 
 def test_cockpit_html_contains_lookup_controls():
@@ -480,6 +492,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/lookup" in html
     assert "Recent lookup history" in html
     assert "lookup-history-refresh" in html
+    assert "lookup-history-summary" in html
+    assert "lookupHistorySummary" in html
     assert "lookupHistoryTable" in html
     assert "Since lookup" in html
     assert "lookup-history-watch-btn" in html

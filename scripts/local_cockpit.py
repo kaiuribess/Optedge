@@ -11404,6 +11404,59 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     return row
 
 
+def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    priced_rows = [
+        row for row in rows
+        if math.isfinite(_float_value(row.get("follow_return_pct"), default=math.nan))
+    ]
+    returns = [_float_value(row.get("follow_return_pct"), default=math.nan) for row in priced_rows]
+    returns = [ret for ret in returns if math.isfinite(ret)]
+    green_statuses = {"green", "strong_green"}
+    red_statuses = {"red", "strong_red"}
+    green_rows = [row for row in priced_rows if str(row.get("follow_status") or "") in green_statuses]
+    red_rows = [row for row in priced_rows if str(row.get("follow_status") or "") in red_statuses]
+    flat_rows = [row for row in priced_rows if str(row.get("follow_status") or "") == "flat"]
+    best = max(priced_rows, key=lambda row: _float_value(row.get("follow_return_pct"), default=-math.inf), default={})
+    worst = min(priced_rows, key=lambda row: _float_value(row.get("follow_return_pct"), default=math.inf), default={})
+
+    def pick(row: dict[str, Any]) -> dict[str, Any] | None:
+        if not row:
+            return None
+        return {
+            "symbol": _clean_value(row.get("lookup_symbol") or row.get("query")),
+            "query": _clean_value(row.get("query")),
+            "follow_return_pct": _clean_value(row.get("follow_return_pct")),
+            "follow_age_days": _clean_value(row.get("follow_age_days")),
+            "report": _clean_value(row.get("report")),
+        }
+
+    priced_count = len(priced_rows)
+    avg_return = (sum(returns) / len(returns)) if returns else None
+    return {
+        "total_saved": total,
+        "priced_count": priced_count,
+        "unpriced_count": total - priced_count,
+        "green_count": len(green_rows),
+        "red_count": len(red_rows),
+        "flat_count": len(flat_rows),
+        "strong_green_count": sum(1 for row in priced_rows if row.get("follow_status") == "strong_green"),
+        "strong_red_count": sum(1 for row in priced_rows if row.get("follow_status") == "strong_red"),
+        "green_rate": _clean_value(round(len(green_rows) / priced_count, 4)) if priced_count else None,
+        "avg_follow_return_pct": _clean_value(round(avg_return, 4)) if avg_return is not None else None,
+        "paper_eligible_count": sum(1 for row in rows if bool(row.get("can_export_paper_candidate"))),
+        "chain_ready_count": sum(1 for row in rows if str(row.get("chain_symbol") or "").strip()),
+        "no_baseline_count": sum(1 for row in rows if row.get("follow_status") == "no_baseline"),
+        "price_unavailable_count": sum(1 for row in rows if row.get("follow_status") == "price_unavailable"),
+        "best": pick(best),
+        "worst": pick(worst),
+        "sample_warning": (
+            "Need more priced lookups before trusting this search feedback loop."
+            if priced_count < 10 else ""
+        ),
+    }
+
+
 def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str, Any]:
     data_dir = Path(data_dir)
     history_path = data_dir / "lookup_history.jsonl"
@@ -11473,6 +11526,7 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
         "history_path": str(history_path),
         "count": len(rows),
         "returned": len(trimmed),
+        "summary": _lookup_history_summary(rows),
         "rows": trimmed,
         "notes": [
             "Interactive lookups are saved as local JSON/HTML reports.",
@@ -13784,6 +13838,7 @@ tr.clickable-row:hover { background:#18201d; }
       <button class="btn" type="button" id="lookup-history-refresh">Refresh history</button>
     </div>
     <div class="status" id="lookup-history-status-text"></div>
+    <div class="brief-grid" style="margin-top:12px" id="lookup-history-summary"></div>
     <div class="section" style="margin-top:12px"><div id="lookup-history-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="research">
@@ -17106,6 +17161,26 @@ function lookupHistoryTable(rows) {
     </tr>`;
   }).join('')}</tbody></table></div>`;
 }
+function lookupHistorySummary(summary) {
+  summary = summary || {};
+  const best = summary.best || {};
+  const worst = summary.worst || {};
+  const fields = [
+    ['Saved lookups', summary.total_saved || 0],
+    ['Priced', `${summary.priced_count || 0}/${summary.total_saved || 0}`],
+    ['Avg follow-up', pct(summary.avg_follow_return_pct)],
+    ['Green rate', pct(summary.green_rate)],
+    ['Green / red', `${summary.green_count || 0} / ${summary.red_count || 0}`],
+    ['Paper-ready', summary.paper_eligible_count || 0],
+    ['Chain-ready', summary.chain_ready_count || 0],
+    ['Best', best.symbol ? `${best.symbol} ${pct(best.follow_return_pct)}` : '-'],
+    ['Worst', worst.symbol ? `${worst.symbol} ${pct(worst.follow_return_pct)}` : '-'],
+    ['Unpriced', summary.unpriced_count || 0],
+    ['No baseline', summary.no_baseline_count || 0],
+    ['Warning', summary.sample_warning || '-']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
 function wireLookupHistoryActions() {
   document.querySelectorAll('.lookup-history-repeat-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -17176,6 +17251,7 @@ async function loadLookupHistory() {
     return;
   }
   $('lookup-history-status-text').textContent = `${data.count || 0} saved lookup report(s).`;
+  $('lookup-history-summary').innerHTML = lookupHistorySummary(data.summary || {});
   $('lookup-history-results').innerHTML = lookupHistoryTable(data.rows || []);
   wireLookupHistoryActions();
 }
