@@ -471,6 +471,96 @@ def test_lookup_matches_requested_option_from_chain_shortlist_without_top_board(
         assert "option_chain_shortlist" in html
 
 
+def test_lookup_surfaces_nearby_option_alternatives_from_chain_shortlist():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "rows": [
+                {
+                    "symbol": "AAPL",
+                    "contract_query": "AAPL 2027-01-15 C 220",
+                    "side": "call",
+                    "strike": 220.0,
+                    "expiry": "2027-01-15",
+                    "dte": 205,
+                    "bid": 4.9,
+                    "ask": 5.1,
+                    "mid": 5.0,
+                    "premium_dollars": 500.0,
+                    "spread_pct": 0.04,
+                    "openInterest": 1200,
+                    "volume": 80,
+                    "readiness_score": 92,
+                    "contract_quality_score": 94,
+                    "swing_fit_score": 96,
+                    "swing_fit_label": "clean_swing",
+                    "contract_grade": "A",
+                    "review_lane": "primary_review",
+                    "chain_source": "cboe_options_chain",
+                },
+                {
+                    "symbol": "AAPL",
+                    "contract_query": "AAPL 2027-01-15 C 230",
+                    "side": "call",
+                    "strike": 230.0,
+                    "expiry": "2027-01-15",
+                    "dte": 205,
+                    "bid": 3.9,
+                    "ask": 4.1,
+                    "mid": 4.0,
+                    "premium_dollars": 400.0,
+                    "spread_pct": 0.05,
+                    "openInterest": 2600,
+                    "volume": 240,
+                    "readiness_score": 96,
+                    "contract_quality_score": 97,
+                    "swing_fit_score": 98,
+                    "swing_fit_label": "clean_swing",
+                    "contract_grade": "A",
+                    "review_lane": "primary_review",
+                    "chain_source": "cboe_options_chain",
+                },
+                {
+                    "symbol": "AAPL",
+                    "contract_query": "AAPL 2027-01-15 P 220",
+                    "side": "put",
+                    "strike": 220.0,
+                    "expiry": "2027-01-15",
+                    "mid": 8.0,
+                    "readiness_score": 99,
+                    "swing_fit_score": 99,
+                },
+                {
+                    "symbol": "MSFT",
+                    "contract_query": "MSFT 2027-01-15 C 230",
+                    "side": "call",
+                    "strike": 230.0,
+                    "expiry": "2027-01-15",
+                    "mid": 7.0,
+                    "readiness_score": 99,
+                    "swing_fit_score": 99,
+                },
+            ],
+        }), encoding="utf-8")
+
+        report = lookup_symbol("AAPL 20270115 C 220", data_dir)
+
+        alternatives = report["sections"]["option_alternatives"]
+        assert alternatives
+        assert alternatives[0]["ticker"] == "AAPL"
+        assert alternatives[0]["side"] == "call"
+        assert alternatives[0]["strike"] == 230.0
+        assert alternatives[0]["alternative_score"] > 0
+        assert "same expiry" in alternatives[0]["alternative_reason"]
+        assert all(row["side"] == "call" for row in alternatives)
+        assert all(row["strike"] != 220.0 for row in alternatives)
+        summary = report["brief"]["option_alternatives"]
+        assert summary["count"] == len(alternatives)
+        assert summary["best_label"] == "AAPL C 230.0 2027-01-15"
+        assert "Best alternative" in render_html(report)
+
+
 def test_option_request_falls_back_to_closest_strike():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -954,6 +1044,7 @@ if __name__ == "__main__":
     test_lookup_builds_clean_swing_verdict_for_exact_option_review()
     test_lookup_resolves_company_name_option_request_to_ticker()
     test_lookup_matches_requested_option_from_chain_shortlist_without_top_board()
+    test_lookup_surfaces_nearby_option_alternatives_from_chain_shortlist()
     test_option_request_falls_back_to_closest_strike()
     test_lookup_brief_warns_when_requested_option_is_closest_only()
     test_lookup_missing_option_request_routes_to_chain_scan()
@@ -965,4 +1056,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("23/23 lookup tests passed")
+    print("24/24 lookup tests passed")

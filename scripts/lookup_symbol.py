@@ -121,6 +121,15 @@ DISPLAY_COLUMNS = {
         "requested_strike", "match_source", "contract_grade", "review_lane",
         "readiness_score", "top_headline",
     ],
+    "option_alternatives": [
+        "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "bid",
+        "ask", "spread_pct", "premium_dollars", "actual_dollars", "confidence",
+        "rank_score", "trade_status", "suggested_contracts", "stop_price",
+        "target_price", "contract_grade", "review_lane", "readiness_score",
+        "swing_fit_score", "swing_fit_label", "openInterest", "volume",
+        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
+        "strike_diff", "dte_diff", "alternative_score", "alternative_reason",
+    ],
     "cboe_option_activity": [
         "ticker", "option_side", "strike", "expiry", "cboe_activity_volume",
         "cboe_activity_matched", "cboe_activity_routed", "cboe_activity_bid",
@@ -1802,6 +1811,8 @@ def _research_brief(
         resolution.get("request"),
         sections.get("requested_option_matches", []),
     )
+    option_alternatives = sections.get("option_alternatives", [])
+    best_alternative = option_alternatives[0] if option_alternatives else {}
     contract_exposure = _contract_exposure_summary(
         resolution.get("request"), open_option_rows, broker_rows
     )
@@ -1813,6 +1824,8 @@ def _research_brief(
             warnings.append(
                 f"Requested option {requested_option.get('label')} matched as {quality}; verify before using it."
             )
+        if quality != "exact" and best_alternative:
+            warnings.append("Nearby chain alternatives exist; compare them before acting on the requested contract.")
     if contract_exposure and int(contract_exposure.get("exact_total") or 0) > 0:
         warnings.append(
             f"Requested option already has {contract_exposure.get('exact_total')} exact local/broker exposure row(s)."
@@ -1852,6 +1865,19 @@ def _research_brief(
         "resolution_source": resolution.get("source"),
         "request": resolution.get("request"),
         "requested_option": requested_option,
+        "option_alternatives": {
+            "count": len(option_alternatives),
+            "best_label": (
+                f"{best_alternative.get('ticker')} {str(best_alternative.get('side') or '').upper()[:1]} "
+                f"{best_alternative.get('strike')} {best_alternative.get('expiry')}"
+                if best_alternative else None
+            ),
+            "best_reason": best_alternative.get("alternative_reason") if best_alternative else None,
+            "best_score": best_alternative.get("alternative_score") if best_alternative else None,
+            "best_readiness_score": best_alternative.get("readiness_score") if best_alternative else None,
+            "best_swing_fit_score": best_alternative.get("swing_fit_score") if best_alternative else None,
+            "best_spread_pct": best_alternative.get("spread_pct") if best_alternative else None,
+        },
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
         "price_snapshot": price_snapshot,
@@ -2040,6 +2066,137 @@ def match_option_request(
     return _frame_records(exact, "requested_option_matches")
 
 
+def _alternative_reason(row: pd.Series) -> str:
+    pieces: list[str] = []
+    if bool(row.get("_expiry_match")):
+        pieces.append("same expiry")
+    else:
+        dte_diff = _float_value(row.get("dte_diff"))
+        if dte_diff is not None:
+            pieces.append(f"{dte_diff:.0f}d expiry offset")
+        else:
+            pieces.append("nearby expiry")
+
+    strike_diff = _float_value(row.get("strike_diff"))
+    if strike_diff is not None:
+        pieces.append(f"{strike_diff:g} strike away")
+
+    readiness = _float_value(row.get("readiness_score"))
+    if readiness is not None and readiness >= 80:
+        pieces.append("high readiness")
+
+    swing_fit = _float_value(row.get("swing_fit_score"))
+    if swing_fit is not None and swing_fit >= 80:
+        pieces.append("clean swing fit")
+
+    spread = _float_value(row.get("spread_pct"))
+    if spread is not None and spread <= 0.12:
+        pieces.append("controlled spread")
+
+    return ", ".join(pieces[:5])
+
+
+def option_alternatives_for_request(
+    request: dict[str, Any] | None,
+    data_dir: Path = DATA_DIR,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Rank nearby saved chain-shortlist contracts for an option-style query."""
+    if not request or request.get("asset") != "option":
+        return []
+
+    chain_df = _chain_shortlist_frame(data_dir)
+    if chain_df.empty or "ticker" not in chain_df.columns:
+        return []
+
+    ticker = str(request.get("ticker") or "").upper().strip()
+    side = _norm_side(request.get("side"))
+    expiry = _norm_expiry(request.get("expiry"))
+    try:
+        strike = float(request.get("strike"))
+    except Exception:
+        strike = math.nan
+
+    out = _match(chain_df, "ticker", ticker)
+    if out.empty:
+        return []
+    out = out.copy()
+
+    if "side" in out.columns and side:
+        out["_side_norm"] = out["side"].map(_norm_side)
+        out = out[out["_side_norm"] == side].copy()
+    if out.empty:
+        return []
+
+    out["_expiry_norm"] = out["expiry"].map(_norm_expiry) if "expiry" in out.columns else ""
+    out["_expiry_match"] = out["_expiry_norm"] == expiry if expiry else False
+    if "strike" in out.columns and math.isfinite(strike):
+        out["strike_diff"] = (pd.to_numeric(out["strike"], errors="coerce") - strike).abs()
+    else:
+        out["strike_diff"] = math.nan
+
+    if expiry:
+        request_expiry = pd.to_datetime(expiry, errors="coerce")
+        row_expiry = pd.to_datetime(out["_expiry_norm"], errors="coerce")
+        if not pd.isna(request_expiry):
+            out["dte_diff"] = (row_expiry - request_expiry).dt.days.abs()
+        else:
+            out["dte_diff"] = math.nan
+    else:
+        out["dte_diff"] = math.nan
+
+    if math.isfinite(strike) and expiry:
+        exact = out["_expiry_match"] & (pd.to_numeric(out["strike_diff"], errors="coerce") <= 0.0001)
+        out = out[~exact].copy()
+    if out.empty:
+        return []
+
+    def num_col(name: str, default: float = 0.0) -> pd.Series:
+        if name not in out.columns:
+            return pd.Series(default, index=out.index, dtype=float)
+        return pd.to_numeric(out[name], errors="coerce").fillna(default)
+
+    def text_col(name: str) -> pd.Series:
+        if name not in out.columns:
+            return pd.Series("", index=out.index, dtype=str)
+        return out[name].astype(str)
+
+    readiness = num_col("readiness_score")
+    swing_fit = num_col("swing_fit_score")
+    confidence = num_col("confidence")
+    rank_score = num_col("rank_score")
+    spread = num_col("spread_pct", 0.50).clip(lower=0.0, upper=1.0)
+    oi = num_col("openInterest").clip(lower=0.0, upper=5000.0)
+    volume = num_col("volume").clip(lower=0.0, upper=1000.0)
+    strike_diff = pd.to_numeric(out["strike_diff"], errors="coerce").fillna(999.0).clip(lower=0.0, upper=100.0)
+    dte_diff = pd.to_numeric(out["dte_diff"], errors="coerce").fillna(365.0).clip(lower=0.0, upper=365.0)
+    trade_status = text_col("trade_status").str.lower()
+    freshness = text_col("snapshot_freshness").str.lower()
+
+    out["alternative_score"] = (
+        readiness * 0.28
+        + swing_fit * 0.24
+        + confidence * 0.16
+        + rank_score.clip(lower=0.0, upper=5.0) * 4.0
+        + (1.0 - spread) * 14.0
+        + (oi / 5000.0) * 8.0
+        + (volume / 1000.0) * 6.0
+        + out["_expiry_match"].astype(float) * 8.0
+        + (1.0 - (strike_diff / 100.0)) * 5.0
+        + (1.0 - (dte_diff / 365.0)) * 3.0
+        + trade_status.isin({"trade", "actionable", "review"}).astype(float) * 5.0
+        - freshness.eq("stale").astype(float) * 8.0
+    ).round(2)
+    out["alternative_reason"] = out.apply(_alternative_reason, axis=1)
+
+    out = out.sort_values(
+        ["alternative_score", "_expiry_match", "strike_diff", "dte_diff"],
+        ascending=[False, False, True, True],
+        kind="mergesort",
+    ).head(limit)
+    return _frame_records(out, "option_alternatives")
+
+
 def _requested_cboe_option_activity(
     request: dict[str, Any] | None,
     limit: int = 5,
@@ -2212,10 +2369,14 @@ def lookup_symbol(
         sections["requested_option_matches"] = match_option_request(
             resolution.get("request"), data_dir
         )
+        sections["option_alternatives"] = option_alternatives_for_request(
+            resolution.get("request"), data_dir
+        )
         sources["requested_option_matches"] = ", ".join(
             source for source in [sources.get("options"), sources.get("chain_shortlist")]
             if source
         ) or None
+        sources["option_alternatives"] = sources.get("chain_shortlist")
         if include_cboe_activity:
             cboe_rows, cboe_report = _requested_cboe_option_activity(resolution.get("request"))
             sections["cboe_option_activity"] = cboe_rows
@@ -2310,6 +2471,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
         return ""
     idea = brief.get("best_idea") or {}
     requested = brief.get("requested_option") or {}
+    alternatives = brief.get("option_alternatives") or {}
     readiness = brief.get("paper_readiness") or {}
     open_pos = brief.get("open_positions") or {}
     broker_pos = brief.get("broker_positions") or {}
@@ -2381,6 +2543,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
     <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
     <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
+    <div><span class="muted">Alt contracts</span><strong>{int(alternatives.get('count') or 0)}</strong></div>
+    <div><span class="muted">Best alternative</span><strong>{html.escape(str(alternatives.get('best_label') or '-'))}</strong></div>
+    <div><span class="muted">Alt readiness</span><strong>{html.escape(str(alternatives.get('best_readiness_score') if alternatives.get('best_readiness_score') is not None else '-'))}</strong></div>
+    <div><span class="muted">Alt reason</span><strong>{html.escape(str(alternatives.get('best_reason') or '-'))}</strong></div>
     <div><span class="muted">Paper readiness</span><strong>{html.escape(str(readiness.get('label') or '-'))}</strong></div>
     <div><span class="muted">Readiness score</span><strong>{html.escape(str(readiness.get('score') if readiness.get('score') is not None else '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>

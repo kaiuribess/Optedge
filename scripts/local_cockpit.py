@@ -13379,6 +13379,7 @@ function briefHtml(brief) {
   if (!brief) return '';
   const idea = brief.best_idea || {};
   const requested = brief.requested_option || {};
+  const alternatives = brief.option_alternatives || {};
   const request = brief.request || {};
   const readiness = brief.paper_readiness || {};
   const open = brief.open_positions || {};
@@ -13416,6 +13417,10 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Requested option</span><strong>${escHtml(requested.label || '-')}</strong></div>
         <div class="brief-tile"><span>Requested match</span><strong>${escHtml(requested.match_quality || '-')}</strong></div>
         <div class="brief-tile"><span>Matched contract</span><strong>${escHtml(requested.matched_contract || '-')}</strong></div>
+        <div class="brief-tile"><span>Alt contracts</span><strong>${cell(alternatives.count || 0)}</strong></div>
+        <div class="brief-tile"><span>Best alternative</span><strong>${escHtml(alternatives.best_label || '-')}</strong></div>
+        <div class="brief-tile"><span>Alt readiness</span><strong>${cell(alternatives.best_readiness_score)}</strong></div>
+        <div class="brief-tile"><span>Alt reason</span><strong>${escHtml(alternatives.best_reason || '-')}</strong></div>
         <div class="brief-tile"><span>Last price</span><strong>${cell(price.last_price)}</strong></div>
         <div class="brief-tile"><span>Price trend</span><strong>${escHtml(price.trend_label || '-')}</strong></div>
         <div class="brief-tile"><span>20d return</span><strong>${pct(price.ret_20d)}</strong></div>
