@@ -13438,11 +13438,19 @@ function briefHtml(brief) {
   const source = brief.resolution_source || '-';
   const resolvedFrom = brief.resolved_from || '';
   const resolvedText = source + (resolvedFrom ? ' from ' + resolvedFrom : '');
-  const actionButtons = action.action === 'scan_swing_chain'
+  const chainActionButton = action.action === 'scan_swing_chain'
     ? `<button class="btn brief-chain-btn" type="button" data-symbol="${escAttr(action.chain_symbol || brief.symbol || '')}" data-side="${escAttr(action.chain_side || request.side || 'all')}" data-min-dte="${escAttr(action.chain_min_dte ?? '')}" data-max-dte="${escAttr(action.chain_max_dte ?? '')}">Run chain scan</button>`
-    : action.action === 'run_focused_scan'
-      ? `<button class="btn brief-scan-btn" type="button" data-query="${escAttr(brief.resolved_from || brief.symbol || '')}">Run focused scan</button>`
-      : '';
+    : '';
+  const scanActionButton = action.action === 'run_focused_scan'
+    ? `<button class="btn brief-scan-btn" type="button" data-query="${escAttr(brief.resolved_from || brief.symbol || '')}">Run focused scan</button>`
+    : '';
+  const preferredContract = comparison.winner === 'alternative' && alternatives.best_label
+    ? alternatives.best_label
+    : '';
+  const savePreferredButton = preferredContract
+    ? `<button class="btn brief-save-preferred-btn" type="button" data-query="${escAttr(preferredContract)}" data-reason="${escAttr(comparison.label || 'Preferred alternative contract')}">Save preferred contract</button>`
+    : '';
+  const actionButtons = [chainActionButton, scanActionButton, savePreferredButton].filter(Boolean).join('');
   const list = (rows) => (rows && rows.length ? rows.slice(0, 5).map(x => `<li>${escHtml(x.factor)} <b>${cell(x.value)}</b></li>`).join('') : '<li>None surfaced</li>');
   const warnings = (brief.risk_warnings && brief.risk_warnings.length)
     ? brief.risk_warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')
@@ -13533,6 +13541,33 @@ function wireLookupBriefActions(root=document) {
     btn.addEventListener('click', async () => {
       $('symbol').value = btn.dataset.query || $('symbol').value.trim();
       await runSymbol();
+    });
+  });
+  root.querySelectorAll('.brief-save-preferred-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      btn.disabled = true;
+      $('lookup-status').textContent = `Saving ${query} to research watchlist...`;
+      const res = await fetch('/api/watchlist-add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          query,
+          context: {
+            source: 'lookup_contract_comparison',
+            reason: btn.dataset.reason || 'Preferred alternative contract'
+          }
+        })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      if (!res.ok || data.ok === false) {
+        $('lookup-status').textContent = 'Could not save preferred contract: ' + (data.error || 'unknown error');
+        return;
+      }
+      $('lookup-status').textContent = `${query} saved to research watchlist.`;
+      await loadWatchlist();
     });
   });
 }

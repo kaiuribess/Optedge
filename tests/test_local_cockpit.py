@@ -76,6 +76,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "requested_chain_min_dte" in html
     assert "requested_match_status" in html
     assert "brief-chain-btn" in html
+    assert "brief-save-preferred-btn" in html
+    assert "Save preferred contract" in html
     assert "chain_min_dte" in html
     assert "data-min-dte" in html
     assert "data-max-dte" in html
