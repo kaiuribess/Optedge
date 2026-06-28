@@ -364,6 +364,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Exact contract exposure" in html
     assert "Alt contracts" in html
     assert "Best alternative" in html
+    assert "Contract pick" in html
+    assert "Pick winner" in html
     assert "Price trend" in html
     assert "Market structure" in html
     assert "Paper readiness" in html

@@ -13402,6 +13402,7 @@ function briefHtml(brief) {
   const idea = brief.best_idea || {};
   const requested = brief.requested_option || {};
   const alternatives = brief.option_alternatives || {};
+  const comparison = brief.contract_comparison || {};
   const request = brief.request || {};
   const readiness = brief.paper_readiness || {};
   const open = brief.open_positions || {};
@@ -13443,6 +13444,10 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Best alternative</span><strong>${escHtml(alternatives.best_label || '-')}</strong></div>
         <div class="brief-tile"><span>Alt readiness</span><strong>${cell(alternatives.best_readiness_score)}</strong></div>
         <div class="brief-tile"><span>Alt reason</span><strong>${escHtml(alternatives.best_reason || '-')}</strong></div>
+        <div class="brief-tile"><span>Contract pick</span><strong>${escHtml(comparison.label || '-')}</strong></div>
+        <div class="brief-tile"><span>Pick winner</span><strong>${escHtml(comparison.winner || '-')}</strong></div>
+        <div class="brief-tile"><span>Pick score</span><strong>${cell(comparison.edge_score)}</strong></div>
+        <div class="brief-tile"><span>Premium delta</span><strong>${pct(comparison.premium_delta_pct)}</strong></div>
         <div class="brief-tile"><span>Last price</span><strong>${cell(price.last_price)}</strong></div>
         <div class="brief-tile"><span>Price trend</span><strong>${escHtml(price.trend_label || '-')}</strong></div>
         <div class="brief-tile"><span>20d return</span><strong>${pct(price.ret_20d)}</strong></div>
@@ -13485,6 +13490,7 @@ function briefHtml(brief) {
         <div class="brief-list"><h4>Readiness checklist</h4><ul>${(readiness.checks && readiness.checks.length) ? readiness.checks.slice(0, 6).map(c => `<li>${escHtml(c.label)}: ${escHtml(c.detail)}</li>`).join('') : '<li>No readiness checks available.</li>'}</ul></div>
         <div class="brief-list"><h4>Swing verdict</h4><ul>${(swing.reasons && swing.reasons.length) ? swing.reasons.slice(0, 6).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>No swing-specific reasons surfaced.</li>'}</ul></div>
         <div class="brief-list"><h4>Swing blockers</h4><ul>${(swing.blockers && swing.blockers.length) ? swing.blockers.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>No swing blockers surfaced.</li>'}</ul></div>
+        <div class="brief-list"><h4>Contract comparison</h4><ul>${(comparison.reasons && comparison.reasons.length) ? comparison.reasons.slice(0, 6).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>No contract comparison available.</li>'}</ul></div>
         <div class="brief-list"><h4>Next steps</h4><ul>${(action.next_steps && action.next_steps.length) ? action.next_steps.slice(0, 5).map(s => `<li>${escHtml(s)}</li>`).join('') : '<li>Review local factors and exposure.</li>'}</ul></div>
         <div class="brief-list"><h4>Warnings</h4><ul>${warnings}</ul></div>
       </div>

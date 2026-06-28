@@ -115,7 +115,8 @@ DISPLAY_COLUMNS = {
     "requested_option_matches": [
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
-        "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
+        "stop_price", "target_price", "spread_pct", "premium_dollars",
+        "actual_dollars", "ev_pct", "net_edge_pct",
         "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
         "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "match_source", "contract_grade", "review_lane",
@@ -1138,10 +1139,128 @@ def _requested_option_summary(
             if best else None
         ),
         "matched_mid": _clean_value(best.get("mid")),
+        "matched_premium_dollars": _clean_value(
+            best.get("premium_dollars", best.get("actual_dollars"))
+        ),
         "matched_spread_pct": _clean_value(best.get("spread_pct")),
         "matched_quote_quality": _clean_value(best.get("quote_quality")),
         "matched_chain_source": _clean_value(best.get("chain_source")),
+        "matched_confidence": _clean_value(best.get("confidence")),
+        "matched_readiness_score": _clean_value(best.get("readiness_score")),
+        "matched_swing_fit_score": _clean_value(best.get("swing_fit_score")),
         "strike_diff": _clean_value(best.get("strike_diff")),
+    }
+
+
+def _contract_comparison(
+    requested: dict[str, Any] | None,
+    alternatives: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compare the searched option against the best nearby chain alternative."""
+    if not requested:
+        return {
+            "status": "not_requested",
+            "label": "No option contract requested",
+            "winner": "none",
+            "edge_score": None,
+            "reasons": ["Search a specific option contract to compare alternatives."],
+        }
+    alternatives = alternatives or {}
+    if not alternatives.get("count") or not alternatives.get("best_label"):
+        return {
+            "status": "no_alternative",
+            "label": "No nearby alternative",
+            "winner": "requested",
+            "edge_score": None,
+            "requested_label": requested.get("label"),
+            "alternative_label": None,
+            "reasons": ["No saved chain-shortlist alternative matched the same ticker and side."],
+        }
+
+    quality = str(requested.get("match_quality") or "missing").lower()
+    req_readiness = _float_value(
+        requested.get("matched_readiness_score"),
+        _float_value(requested.get("matched_confidence"), 0.0),
+    ) or 0.0
+    req_swing = _float_value(requested.get("matched_swing_fit_score"), req_readiness) or 0.0
+    alt_readiness = _float_value(alternatives.get("best_readiness_score"), 0.0) or 0.0
+    alt_swing = _float_value(alternatives.get("best_swing_fit_score"), alt_readiness) or 0.0
+    req_spread = _float_value(requested.get("matched_spread_pct"))
+    alt_spread = _float_value(alternatives.get("best_spread_pct"))
+    req_premium = _float_value(requested.get("matched_premium_dollars"))
+    alt_premium = _float_value(alternatives.get("best_premium_dollars"))
+
+    edge = 0.0
+    reasons: list[str] = []
+    if quality != "exact":
+        edge += 35.0
+        reasons.append(f"Requested contract match is {quality}, not exact.")
+    else:
+        reasons.append("Requested contract exists in local data.")
+
+    readiness_delta = alt_readiness - req_readiness
+    if abs(readiness_delta) >= 5:
+        edge += readiness_delta * 0.45
+        side = "alternative" if readiness_delta > 0 else "requested"
+        reasons.append(f"{side.title()} readiness is {abs(readiness_delta):.0f} points better.")
+
+    swing_delta = alt_swing - req_swing
+    if abs(swing_delta) >= 5:
+        edge += swing_delta * 0.25
+        side = "alternative" if swing_delta > 0 else "requested"
+        reasons.append(f"{side.title()} swing fit is {abs(swing_delta):.0f} points better.")
+
+    spread_delta = None
+    if req_spread is not None and alt_spread is not None:
+        spread_delta = req_spread - alt_spread
+        if abs(spread_delta) >= 0.03:
+            edge += spread_delta * 140.0
+            side = "alternative" if spread_delta > 0 else "requested"
+            reasons.append(f"{side.title()} spread is {abs(spread_delta):.1%} tighter.")
+
+    premium_delta_pct = None
+    if req_premium and alt_premium is not None and req_premium > 0:
+        premium_delta_pct = (req_premium - alt_premium) / req_premium
+        if abs(premium_delta_pct) >= 0.10:
+            edge += premium_delta_pct * 18.0
+            side = "alternative" if premium_delta_pct > 0 else "requested"
+            reasons.append(f"{side.title()} premium is {abs(premium_delta_pct):.0%} cheaper.")
+
+    if edge >= 8.0:
+        winner = "alternative"
+        status = "alternative_preferred"
+        label = "Alternative looks cleaner"
+    elif edge <= -8.0:
+        winner = "requested"
+        status = "requested_preferred"
+        label = "Requested contract looks cleaner"
+    else:
+        winner = "inconclusive"
+        status = "mixed"
+        label = "Mixed contract evidence"
+        if len(reasons) == 1:
+            reasons.append("No nearby alternative was materially cleaner on readiness, spread, or premium.")
+
+    return {
+        "status": status,
+        "label": label,
+        "winner": winner,
+        "edge_score": round(max(0.0, min(100.0, 50.0 + edge)), 1),
+        "requested_label": requested.get("matched_contract") or requested.get("label"),
+        "alternative_label": alternatives.get("best_label"),
+        "requested_readiness_score": _clean_value(req_readiness),
+        "alternative_readiness_score": _clean_value(alt_readiness),
+        "requested_spread_pct": _clean_value(req_spread),
+        "alternative_spread_pct": _clean_value(alt_spread),
+        "requested_premium_dollars": _clean_value(req_premium),
+        "alternative_premium_dollars": _clean_value(alt_premium),
+        "readiness_delta": round(readiness_delta, 2),
+        "swing_fit_delta": round(swing_delta, 2),
+        "spread_delta": _clean_value(None if spread_delta is None else round(spread_delta, 4)),
+        "premium_delta_pct": _clean_value(
+            None if premium_delta_pct is None else round(premium_delta_pct, 4)
+        ),
+        "reasons": list(dict.fromkeys(reasons))[:6],
     }
 
 
@@ -1813,6 +1932,26 @@ def _research_brief(
     )
     option_alternatives = sections.get("option_alternatives", [])
     best_alternative = option_alternatives[0] if option_alternatives else {}
+    alternative_summary = {
+        "count": len(option_alternatives),
+        "best_label": (
+            f"{best_alternative.get('ticker')} {str(best_alternative.get('side') or '').upper()[:1]} "
+            f"{best_alternative.get('strike')} {best_alternative.get('expiry')}"
+            if best_alternative else None
+        ),
+        "best_reason": best_alternative.get("alternative_reason") if best_alternative else None,
+        "best_score": best_alternative.get("alternative_score") if best_alternative else None,
+        "best_readiness_score": best_alternative.get("readiness_score") if best_alternative else None,
+        "best_swing_fit_score": best_alternative.get("swing_fit_score") if best_alternative else None,
+        "best_spread_pct": best_alternative.get("spread_pct") if best_alternative else None,
+        "best_mid": best_alternative.get("mid") if best_alternative else None,
+        "best_premium_dollars": (
+            best_alternative.get("premium_dollars", best_alternative.get("actual_dollars"))
+            if best_alternative else None
+        ),
+        "best_quote_quality": best_alternative.get("quote_quality") if best_alternative else None,
+    }
+    contract_comparison = _contract_comparison(requested_option, alternative_summary)
     contract_exposure = _contract_exposure_summary(
         resolution.get("request"), open_option_rows, broker_rows
     )
@@ -1826,6 +1965,8 @@ def _research_brief(
             )
         if quality != "exact" and best_alternative:
             warnings.append("Nearby chain alternatives exist; compare them before acting on the requested contract.")
+    if contract_comparison.get("winner") == "alternative":
+        warnings.append("Best nearby contract looks cleaner than the requested contract on local comparison.")
     if contract_exposure and int(contract_exposure.get("exact_total") or 0) > 0:
         warnings.append(
             f"Requested option already has {contract_exposure.get('exact_total')} exact local/broker exposure row(s)."
@@ -1865,19 +2006,8 @@ def _research_brief(
         "resolution_source": resolution.get("source"),
         "request": resolution.get("request"),
         "requested_option": requested_option,
-        "option_alternatives": {
-            "count": len(option_alternatives),
-            "best_label": (
-                f"{best_alternative.get('ticker')} {str(best_alternative.get('side') or '').upper()[:1]} "
-                f"{best_alternative.get('strike')} {best_alternative.get('expiry')}"
-                if best_alternative else None
-            ),
-            "best_reason": best_alternative.get("alternative_reason") if best_alternative else None,
-            "best_score": best_alternative.get("alternative_score") if best_alternative else None,
-            "best_readiness_score": best_alternative.get("readiness_score") if best_alternative else None,
-            "best_swing_fit_score": best_alternative.get("swing_fit_score") if best_alternative else None,
-            "best_spread_pct": best_alternative.get("spread_pct") if best_alternative else None,
-        },
+        "option_alternatives": alternative_summary,
+        "contract_comparison": contract_comparison,
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
         "price_snapshot": price_snapshot,
@@ -2472,6 +2602,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     idea = brief.get("best_idea") or {}
     requested = brief.get("requested_option") or {}
     alternatives = brief.get("option_alternatives") or {}
+    comparison = brief.get("contract_comparison") or {}
     readiness = brief.get("paper_readiness") or {}
     open_pos = brief.get("open_positions") or {}
     broker_pos = brief.get("broker_positions") or {}
@@ -2512,6 +2643,9 @@ def _render_brief(brief: dict[str, Any]) -> str:
     swing_blockers = "".join(
         f"<li>{html.escape(str(blocker))}</li>" for blocker in swing.get("blockers", [])[:5]
     ) or "<li>No swing blockers surfaced.</li>"
+    comparison_reasons = "".join(
+        f"<li>{html.escape(str(reason))}</li>" for reason in comparison.get("reasons", [])[:6]
+    ) or "<li>No contract comparison available.</li>"
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
     return f"""
@@ -2547,6 +2681,10 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Best alternative</span><strong>{html.escape(str(alternatives.get('best_label') or '-'))}</strong></div>
     <div><span class="muted">Alt readiness</span><strong>{html.escape(str(alternatives.get('best_readiness_score') if alternatives.get('best_readiness_score') is not None else '-'))}</strong></div>
     <div><span class="muted">Alt reason</span><strong>{html.escape(str(alternatives.get('best_reason') or '-'))}</strong></div>
+    <div><span class="muted">Contract pick</span><strong>{html.escape(str(comparison.get('label') or '-'))}</strong></div>
+    <div><span class="muted">Pick winner</span><strong>{html.escape(str(comparison.get('winner') or '-'))}</strong></div>
+    <div><span class="muted">Pick score</span><strong>{html.escape(str(comparison.get('edge_score') if comparison.get('edge_score') is not None else '-'))}</strong></div>
+    <div><span class="muted">Premium delta</span><strong>{_fmt_brief_pct(comparison.get('premium_delta_pct'))}</strong></div>
     <div><span class="muted">Paper readiness</span><strong>{html.escape(str(readiness.get('label') or '-'))}</strong></div>
     <div><span class="muted">Readiness score</span><strong>{html.escape(str(readiness.get('score') if readiness.get('score') is not None else '-'))}</strong></div>
     <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
@@ -2586,6 +2724,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><h3>Swing verdict reasons</h3><ul>{swing_reasons}</ul></div>
     <div><h3>Swing blockers</h3><ul>{swing_blockers}</ul></div>
   </div>
+  <h3>Contract comparison</h3><ul>{comparison_reasons}</ul>
   <h3>Readiness checklist</h3><ul>{readiness_checks}</ul>
   <h3>Warnings</h3><ul>{warnings}</ul>
 </section>"""
