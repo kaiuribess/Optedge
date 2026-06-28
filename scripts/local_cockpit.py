@@ -13931,6 +13931,24 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="muted">Every interactive search is saved locally as JSON and HTML so you can reopen prior ticker or option research. Saved HTML opens through <code>/lookup-report</code>.</div>
     <div class="scan-controls">
       <button class="btn" type="button" id="lookup-history-refresh">Refresh history</button>
+      <input id="lookup-history-filter" placeholder="Filter ticker, query, action, risk">
+      <select id="lookup-history-direction" aria-label="Lookup thesis direction">
+        <option value="all">All directions</option>
+        <option value="bullish">Bullish</option>
+        <option value="bearish">Bearish</option>
+        <option value="raw">Raw / unknown</option>
+      </select>
+      <select id="lookup-history-status" aria-label="Lookup follow-up status">
+        <option value="all">All results</option>
+        <option value="green">Green</option>
+        <option value="red">Red</option>
+        <option value="flat">Flat</option>
+        <option value="strong_green">Strong green</option>
+        <option value="strong_red">Strong red</option>
+        <option value="unpriced">Unpriced</option>
+      </select>
+      <label class="check"><input id="lookup-history-paper-only" type="checkbox"> paper-ready</label>
+      <label class="check"><input id="lookup-history-chain-only" type="checkbox"> chain-ready</label>
     </div>
     <div class="status" id="lookup-history-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="lookup-history-summary"></div>
@@ -17219,6 +17237,39 @@ async function applyPositionHygiene(apply=false) {
 async function reloadPositionWorkspace() {
   await Promise.all([loadExitReviews(), loadPositions(), loadPositionHygiene(false)]);
 }
+function lookupHistoryFilteredRows(rows) {
+  rows = rows || [];
+  const textEl = $('lookup-history-filter');
+  const directionEl = $('lookup-history-direction');
+  const statusEl = $('lookup-history-status');
+  const paperEl = $('lookup-history-paper-only');
+  const chainEl = $('lookup-history-chain-only');
+  const q = (textEl ? textEl.value : '').trim().toLowerCase();
+  const direction = directionEl ? directionEl.value : 'all';
+  const status = statusEl ? statusEl.value : 'all';
+  const paperOnly = paperEl ? paperEl.checked : false;
+  const chainOnly = chainEl ? chainEl.checked : false;
+  return rows.filter(row => {
+    const haystack = [
+      row.query, row.lookup_symbol, row.swing, row.action, row.research_action,
+      row.research_route, row.risk, row.contract_pick, row.contract_winner,
+      row.best_idea, row.source_file
+    ].map(x => String(x || '').toLowerCase()).join(' ');
+    if (q && !haystack.includes(q)) return false;
+    const rowDirection = row.follow_direction || 'raw';
+    if (direction !== 'all' && rowDirection !== direction) return false;
+    const rowStatus = row.follow_status || '';
+    if (status === 'green' && !['green', 'strong_green'].includes(rowStatus)) return false;
+    if (status === 'red' && !['red', 'strong_red'].includes(rowStatus)) return false;
+    if (status === 'flat' && rowStatus !== 'flat') return false;
+    if (status === 'strong_green' && rowStatus !== 'strong_green') return false;
+    if (status === 'strong_red' && rowStatus !== 'strong_red') return false;
+    if (status === 'unpriced' && !['no_baseline', 'price_unavailable'].includes(rowStatus)) return false;
+    if (paperOnly && !row.can_export_paper_candidate) return false;
+    if (chainOnly && !row.chain_symbol) return false;
+    return true;
+  });
+}
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
@@ -17260,6 +17311,14 @@ function lookupHistoryTable(rows) {
       <td>${open} ${again} ${watch} ${workspace} ${scan} ${paper} ${chain}</td>
     </tr>`;
   }).join('')}</tbody></table></div>`;
+}
+function renderLookupHistoryRows() {
+  const rows = window.latestLookupHistoryRows || [];
+  const filtered = lookupHistoryFilteredRows(rows);
+  $('lookup-history-results').innerHTML = lookupHistoryTable(filtered);
+  const total = window.latestLookupHistoryTotal || rows.length || 0;
+  $('lookup-history-status-text').textContent = `${filtered.length}/${rows.length} loaded lookup row(s) shown; ${total} saved total.`;
+  wireLookupHistoryActions();
 }
 function lookupHistorySummary(summary) {
   summary = summary || {};
@@ -17360,17 +17419,17 @@ function wireLookupHistoryActions() {
 async function loadLookupHistory() {
   if (!$('lookup-history-status-text')) return;
   $('lookup-history-status-text').textContent = 'Loading saved lookup reports...';
-  const res = await fetch('/api/lookup-history?limit=25');
+  const res = await fetch('/api/lookup-history?limit=100');
   const data = await res.json();
   if (!res.ok || data.error) {
     $('lookup-history-status-text').textContent = 'Lookup history failed: ' + (data.error || 'unknown error');
     return;
   }
-  $('lookup-history-status-text').textContent = `${data.count || 0} saved lookup report(s).`;
+  window.latestLookupHistoryRows = data.rows || [];
+  window.latestLookupHistoryTotal = data.count || 0;
   $('lookup-history-summary').innerHTML = lookupHistorySummary(data.summary || {});
   $('lookup-history-breakdown').innerHTML = lookupHistoryBreakdown(data.summary || {});
-  $('lookup-history-results').innerHTML = lookupHistoryTable(data.rows || []);
-  wireLookupHistoryActions();
+  renderLookupHistoryRows();
 }
 async function lookup() {
   const symbol = $('symbol').value.trim();
@@ -17419,6 +17478,9 @@ $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
 $('lookup-history-refresh').addEventListener('click', loadLookupHistory);
+['lookup-history-filter', 'lookup-history-direction', 'lookup-history-status', 'lookup-history-paper-only', 'lookup-history-chain-only'].forEach(id => {
+  $(id).addEventListener(id === 'lookup-history-filter' ? 'input' : 'change', renderLookupHistoryRows);
+});
 $('global-lookup').addEventListener('click', globalLookup);
 $('global-workspace').addEventListener('click', globalReviewWorkspace);
 $('global-run').addEventListener('click', globalRunScan);
