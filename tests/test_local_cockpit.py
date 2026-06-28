@@ -22,7 +22,7 @@ from scripts.local_cockpit import (
     build_best_setups, build_breadth_pulse, build_climate_gated_setups, build_command_center, build_market_pulse,
     build_macro_stress_pulse, build_options_sentiment,
     build_exit_review_summary, build_free_data_sources, build_positions, build_provider_status, build_risk_summary,
-    build_robinhood_agentic_queue_report, build_position_hygiene,
+    build_robinhood_agentic_queue_report, build_position_hygiene, build_lookup_history,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_swing_scout, build_symbol_suggestions,
     build_swing_packet, build_watchlist_sec_filings,
     build_today_review, apply_position_hygiene,
@@ -54,6 +54,42 @@ def test_cockpit_artifact_path_finds_latest_dashboard():
         old.write_text("old")
         new.write_text("new")
         assert artifact_path("latest-dashboard", data_dir) == new
+
+
+def test_lookup_history_reads_saved_reports():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        report_dir = data_dir / "lookup_reports"
+        report_dir.mkdir(parents=True)
+        (report_dir / "lookup_AAPL_20260627_120000_000000.html").write_text(
+            "<html>AAPL</html>",
+            encoding="utf-8",
+        )
+        (data_dir / "lookup_history.jsonl").write_text(
+            json.dumps({
+                "generated_at": "2026-06-27T12:00:00+00:00",
+                "query": "AAPL 20270115 C 220",
+                "lookup_symbol": "AAPL",
+                "total_hits": 3,
+                "research_label": "Paper candidate review",
+                "risk_level": "medium",
+                "swing_label": "Selective swing review",
+                "swing_score": 72,
+                "contract_pick": "Alternative looks cleaner",
+                "contract_winner": "alternative",
+                "archive_html_path": "lookup_reports/lookup_AAPL_20260627_120000_000000.html",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        history = build_lookup_history(data_dir)
+
+        assert history["count"] == 1
+        row = history["rows"][0]
+        assert row["query"] == "AAPL 20270115 C 220"
+        assert row["lookup_symbol"] == "AAPL"
+        assert row["report"].startswith("/lookup-report?file=lookup_reports")
+        assert row["contract_winner"] == "alternative"
 
 
 def test_cockpit_html_contains_lookup_controls():
@@ -386,6 +422,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Lookup alt" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
+    assert "Recent lookup history" in html
+    assert "lookup-history-refresh" in html
+    assert "lookupHistoryTable" in html
+    assert "/api/lookup-history" in html
+    assert "/lookup-report" in html
     assert "/api/suggestions" in html
     assert "symbol-suggestions" in html
     assert "Run focused scan" in html
@@ -6241,6 +6282,7 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
+    test_lookup_history_reads_saved_reports()
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_data_health_reports_fresh_sec_ticker_cache()
@@ -6323,4 +6365,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("84/84 local cockpit tests passed")
+    print("85/85 local cockpit tests passed")

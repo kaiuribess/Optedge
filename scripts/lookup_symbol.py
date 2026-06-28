@@ -2780,9 +2780,62 @@ def save_lookup(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, 
     safe = "".join(ch for ch in report["query"] if ch.isalnum() or ch in {"_", "-", "="}) or "lookup"
     json_path = data_dir / f"lookup_{safe}.json"
     html_path = data_dir / f"lookup_{safe}.html"
+    generated_raw = str(report.get("generated_at") or "")
+    try:
+        generated_dt = datetime.fromisoformat(generated_raw.replace("Z", "+00:00"))
+    except Exception:
+        generated_dt = datetime.now(timezone.utc)
+    stamp = generated_dt.astimezone(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    archive_dir = data_dir / "lookup_reports"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_json_path = archive_dir / f"lookup_{safe}_{stamp}.json"
+    archive_html_path = archive_dir / f"lookup_{safe}_{stamp}.html"
+    for idx in range(1, 100):
+        if not archive_json_path.exists() and not archive_html_path.exists():
+            break
+        archive_json_path = archive_dir / f"lookup_{safe}_{stamp}_{idx:02d}.json"
+        archive_html_path = archive_dir / f"lookup_{safe}_{stamp}_{idx:02d}.html"
+
+    rendered = render_html(report)
     json_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    html_path.write_text(render_html(report), encoding="utf-8")
-    return {"json": json_path, "html": html_path}
+    html_path.write_text(rendered, encoding="utf-8")
+    archive_json_path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    archive_html_path.write_text(rendered, encoding="utf-8")
+
+    brief = report.get("brief") if isinstance(report.get("brief"), dict) else {}
+    action = brief.get("research_action") if isinstance(brief.get("research_action"), dict) else {}
+    swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
+    comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
+    idea = brief.get("best_idea") if isinstance(brief.get("best_idea"), dict) else {}
+    history_row = {
+        "generated_at": report.get("generated_at"),
+        "query": report.get("query"),
+        "lookup_symbol": report.get("lookup_symbol"),
+        "total_hits": report.get("total_hits"),
+        "research_action": action.get("action"),
+        "research_label": action.get("label"),
+        "risk_level": action.get("risk_level"),
+        "swing_decision": swing.get("decision"),
+        "swing_label": swing.get("label"),
+        "swing_score": swing.get("score"),
+        "contract_pick": comparison.get("label"),
+        "contract_winner": comparison.get("winner"),
+        "best_idea": idea.get("label"),
+        "archive_json_path": str(archive_json_path.relative_to(data_dir)),
+        "archive_html_path": str(archive_html_path.relative_to(data_dir)),
+        "latest_json_path": str(json_path.relative_to(data_dir)),
+        "latest_html_path": str(html_path.relative_to(data_dir)),
+    }
+    history_path = data_dir / "lookup_history.jsonl"
+    with history_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(history_row, default=str, sort_keys=True) + "\n")
+    return {
+        "json": json_path,
+        "html": html_path,
+        "archive_json": archive_json_path,
+        "archive_html": archive_html_path,
+        "history": history_path,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

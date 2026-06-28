@@ -80,6 +80,16 @@ def test_lookup_saves_json_and_html():
         paths = save_lookup(report, data_dir)
         assert paths["json"].exists()
         assert paths["html"].exists()
+        assert paths["archive_json"].exists()
+        assert paths["archive_html"].exists()
+        assert paths["history"].exists()
+        history_rows = [
+            json.loads(line)
+            for line in paths["history"].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert history_rows[-1]["query"] == "MISS"
+        assert history_rows[-1]["archive_html_path"].startswith("lookup_reports")
         assert "Optedge Lookup" in render_html(report)
         assert report["brief"]["research_action"]["action"] == "run_focused_scan"
         assert report["brief"]["research_action"]["can_export_paper_candidate"] is False

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 import pandas as pd
@@ -45,7 +45,7 @@ from engines.nasdaq_screener import small_cap_movers
 from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
-from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html, rich_lookup_kwargs
+from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, render_html, rich_lookup_kwargs, save_lookup
 from scripts.normalize_robinhood_broker_snapshot import normalize_broker_snapshot
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
@@ -11180,6 +11180,117 @@ def artifact_path(name: str, data_dir: Path = DATA_DIR) -> Path | None:
     return path if path.exists() and path.is_file() else None
 
 
+def _lookup_report_url(rel_path: Any) -> str:
+    rel = str(rel_path or "").replace("\\", "/").lstrip("/")
+    return f"/lookup-report?file={quote(rel)}" if rel else ""
+
+
+def _safe_lookup_report_path(raw_file: str, data_dir: Path = DATA_DIR) -> Path | None:
+    rel = str(raw_file or "").replace("\\", "/").lstrip("/")
+    if not rel:
+        return None
+    candidate = (Path(data_dir) / rel).resolve()
+    root = Path(data_dir).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if candidate.suffix.lower() != ".html":
+        return None
+    if candidate.parent != root and candidate.parent != (root / "lookup_reports").resolve():
+        return None
+    if not candidate.name.startswith("lookup_"):
+        return None
+    return candidate if candidate.exists() and candidate.is_file() else None
+
+
+def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    archive_html = str(raw.get("archive_html_path") or raw.get("html_path") or raw.get("latest_html_path") or "")
+    latest_html = str(raw.get("latest_html_path") or "")
+    html_rel = archive_html or latest_html
+    return {
+        "generated_at": _clean_value(raw.get("generated_at")),
+        "query": _clean_value(raw.get("query")),
+        "lookup_symbol": _clean_value(raw.get("lookup_symbol") or raw.get("symbol")),
+        "total_hits": _clean_value(raw.get("total_hits")),
+        "swing": _clean_value(raw.get("swing_label") or raw.get("swing_decision")),
+        "swing_score": _clean_value(raw.get("swing_score")),
+        "action": _clean_value(raw.get("research_label") or raw.get("research_action")),
+        "risk": _clean_value(raw.get("risk_level")),
+        "contract_pick": _clean_value(raw.get("contract_pick")),
+        "contract_winner": _clean_value(raw.get("contract_winner")),
+        "best_idea": _clean_value(raw.get("best_idea")),
+        "report": _lookup_report_url(html_rel),
+        "latest_report": _lookup_report_url(latest_html),
+        "source_file": _clean_value(html_rel),
+    }
+
+
+def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str, Any]:
+    data_dir = Path(data_dir)
+    history_path = data_dir / "lookup_history.jsonl"
+    rows: list[dict[str, Any]] = []
+    if history_path.exists():
+        for line in history_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(raw, dict):
+                rows.append(_lookup_history_row(raw, data_dir))
+
+    if not rows:
+        candidates = sorted(
+            list((data_dir / "lookup_reports").glob("lookup_*.json")) + list(data_dir.glob("lookup_*.json")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates[: max(1, int(limit or 25))]:
+            report = _read_json(path)
+            if not isinstance(report, dict):
+                continue
+            brief = report.get("brief") if isinstance(report.get("brief"), dict) else {}
+            action = brief.get("research_action") if isinstance(brief.get("research_action"), dict) else {}
+            swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
+            comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
+            html_path = path.with_suffix(".html")
+            try:
+                html_rel = str(html_path.relative_to(data_dir))
+            except Exception:
+                html_rel = ""
+            rows.append(_lookup_history_row({
+                "generated_at": report.get("generated_at"),
+                "query": report.get("query"),
+                "lookup_symbol": report.get("lookup_symbol"),
+                "total_hits": report.get("total_hits"),
+                "research_action": action.get("action"),
+                "research_label": action.get("label"),
+                "risk_level": action.get("risk_level"),
+                "swing_decision": swing.get("decision"),
+                "swing_label": swing.get("label"),
+                "swing_score": swing.get("score"),
+                "contract_pick": comparison.get("label"),
+                "contract_winner": comparison.get("winner"),
+                "archive_html_path": html_rel,
+            }, data_dir))
+
+    rows = list(reversed(rows)) if history_path.exists() else rows
+    trimmed = rows[: max(1, min(int(limit or 25), 100))]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "history_path": str(history_path),
+        "count": len(rows),
+        "returned": len(trimmed),
+        "rows": trimmed,
+        "notes": [
+            "Interactive lookups are saved as local JSON/HTML reports.",
+            "This is a research journal only; it does not place trades.",
+        ],
+    }
+
+
 def _packet_call(
     notes: list[str],
     label: str,
@@ -13472,6 +13583,15 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="sections" id="lookup-results"></div>
   </section>
   <section class="panel" data-view="research">
+    <h2 style="margin:0 0 8px;font-size:18px">Recent lookup history</h2>
+    <div class="muted">Every interactive search is saved locally as JSON and HTML so you can reopen prior ticker or option research. Saved HTML opens through <code>/lookup-report</code>.</div>
+    <div class="scan-controls">
+      <button class="btn" type="button" id="lookup-history-refresh">Refresh history</button>
+    </div>
+    <div class="status" id="lookup-history-status-text"></div>
+    <div class="section" style="margin-top:12px"><div id="lookup-history-results" class="table-wrap"></div></div>
+  </section>
+  <section class="panel" data-view="research">
     <h2 style="margin:0 0 8px;font-size:18px">Focused scan jobs</h2>
     <div class="muted">Runs started from this cockpit use <code>python run.py --universe SYMBOL --no-open</code> in the background.</div>
     <div class="job-list" id="jobs"></div>
@@ -15113,6 +15233,7 @@ function viewLoaders(view) {
     research: [
       ['watchlist', loadWatchlist],
       ['SEC filings', loadWatchlistSecFilings],
+      ['lookup history', loadLookupHistory],
     ],
   }[view] || [];
 }
@@ -16750,6 +16871,52 @@ async function applyPositionHygiene(apply=false) {
 async function reloadPositionWorkspace() {
   await Promise.all([loadExitReviews(), loadPositions(), loadPositionHygiene(false)]);
 }
+function lookupHistoryTable(rows) {
+  if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
+  return `<div class="table-wrap"><table><thead><tr>
+    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Action</th><th>Risk</th><th>Contract</th><th>Report</th>
+  </tr></thead><tbody>${rows.map(row => {
+    const query = row.query || row.lookup_symbol || '';
+    const report = row.report || '';
+    const open = report ? `<a class="btn" href="${escAttr(report)}" target="_blank">Open</a>` : '-';
+    const again = query ? `<button class="btn lookup-history-repeat-btn" type="button" data-query="${escAttr(query)}">Lookup</button>` : '';
+    return `<tr>
+      <td>${cell(row.generated_at)}</td>
+      <td>${cell(query)}</td>
+      <td>${cell(row.lookup_symbol)}</td>
+      <td>${cell(row.swing)}</td>
+      <td>${cell(row.swing_score)}</td>
+      <td>${cell(row.action)}</td>
+      <td>${cell(row.risk)}</td>
+      <td>${cell(row.contract_pick || row.contract_winner || '-')}</td>
+      <td>${open} ${again}</td>
+    </tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+function wireLookupHistoryActions() {
+  document.querySelectorAll('.lookup-history-repeat-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      $('symbol').value = query;
+      await lookup();
+      scrollToId('lookup-results');
+    });
+  });
+}
+async function loadLookupHistory() {
+  if (!$('lookup-history-status-text')) return;
+  $('lookup-history-status-text').textContent = 'Loading saved lookup reports...';
+  const res = await fetch('/api/lookup-history?limit=25');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('lookup-history-status-text').textContent = 'Lookup history failed: ' + (data.error || 'unknown error');
+    return;
+  }
+  $('lookup-history-status-text').textContent = `${data.count || 0} saved lookup report(s).`;
+  $('lookup-history-results').innerHTML = lookupHistoryTable(data.rows || []);
+  wireLookupHistoryActions();
+}
 async function lookup() {
   const symbol = $('symbol').value.trim();
   if (!symbol) return;
@@ -16758,13 +16925,17 @@ async function lookup() {
   const res = await fetch('/api/lookup?symbol=' + encodeURIComponent(symbol));
   const data = await res.json();
   const resolved = data.lookup_symbol && data.lookup_symbol !== data.query ? ` (${data.lookup_symbol})` : '';
-  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.`;
+  const saved = data.saved_lookup && data.saved_lookup.report_url
+    ? ` Saved report: ${data.saved_lookup.report_url}`
+    : (data.saved_lookup && data.saved_lookup.error ? ` ${data.saved_lookup.error}` : '');
+  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.${saved}`;
   const brief = briefHtml(data.brief);
   const sections = Object.entries(data.sections).map(([name, rows]) => {
     return `<div class="section"><h3><span>${name.replaceAll('_', ' ')}</span><span>${rows.length}</span></h3>${table(rows)}</div>`;
   }).join('');
   $('lookup-results').innerHTML = brief + sections;
   wireLookupBriefActions($('lookup-results'));
+  await loadLookupHistory();
 }
 async function runSymbol() {
   const query = $('symbol').value.trim();
@@ -16792,6 +16963,7 @@ $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
+$('lookup-history-refresh').addEventListener('click', loadLookupHistory);
 $('global-lookup').addEventListener('click', globalLookup);
 $('global-workspace').addEventListener('click', globalReviewWorkspace);
 $('global-run').addEventListener('click', globalRunScan);
@@ -16799,7 +16971,7 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadLookupHistory(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
@@ -16982,11 +17154,34 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if not symbol.strip():
                 self._send_json({"error": "symbol is required"}, status=400)
                 return
-            self._send_json(lookup_symbol(
+            report = lookup_symbol(
                 symbol,
                 self.data_dir,
                 **rich_lookup_kwargs(),
-            ))
+            )
+            try:
+                paths = save_lookup(report, self.data_dir)
+                archive_rel = str(paths["archive_html"].relative_to(self.data_dir))
+                latest_rel = str(paths["html"].relative_to(self.data_dir))
+                report["saved_lookup"] = {
+                    "html_path": str(paths["html"]),
+                    "json_path": str(paths["json"]),
+                    "archive_html_path": str(paths["archive_html"]),
+                    "archive_json_path": str(paths["archive_json"]),
+                    "history_path": str(paths["history"]),
+                    "report_url": _lookup_report_url(archive_rel),
+                    "latest_report_url": _lookup_report_url(latest_rel),
+                }
+            except Exception as exc:
+                report["saved_lookup"] = {
+                    "error": f"lookup result was not saved: {str(exc)[:160]}",
+                }
+            self._send_json(report)
+            return
+        if parsed.path == "/api/lookup-history":
+            params = parse_qs(parsed.query)
+            limit = _int_param(params.get("limit", ["25"])[0], 25, 1, 100)
+            self._send_json(build_lookup_history(self.data_dir, limit=limit))
             return
         if parsed.path == "/api/suggestions":
             params = parse_qs(parsed.query)
@@ -17253,6 +17448,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 symbol, self.data_dir, **rich_lookup_kwargs(),
             )).encode("utf-8"),
                        "text/html; charset=utf-8")
+            return
+        if parsed.path == "/lookup-report":
+            file_name = parse_qs(parsed.query).get("file", [""])[0]
+            path = _safe_lookup_report_path(file_name, self.data_dir)
+            if path is None:
+                self._send(404, b"Lookup report not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, path.read_bytes(), "text/html; charset=utf-8")
             return
         if parsed.path == "/job-dashboard":
             job_id = parse_qs(parsed.query).get("id", [""])[0]
