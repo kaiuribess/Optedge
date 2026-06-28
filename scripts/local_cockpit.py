@@ -11216,7 +11216,15 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "swing": _clean_value(raw.get("swing_label") or raw.get("swing_decision")),
         "swing_score": _clean_value(raw.get("swing_score")),
         "action": _clean_value(raw.get("research_label") or raw.get("research_action")),
+        "research_action": _clean_value(raw.get("research_action")),
+        "research_route": _clean_value(raw.get("research_route")),
         "risk": _clean_value(raw.get("risk_level")),
+        "can_export_paper_candidate": bool(raw.get("can_export_paper_candidate")),
+        "chain_symbol": _clean_value(raw.get("chain_symbol")),
+        "chain_side": _clean_value(raw.get("chain_side")),
+        "chain_target_expiry": _clean_value(raw.get("chain_target_expiry")),
+        "chain_min_dte": _clean_value(raw.get("chain_min_dte")),
+        "chain_max_dte": _clean_value(raw.get("chain_max_dte")),
         "contract_pick": _clean_value(raw.get("contract_pick")),
         "contract_winner": _clean_value(raw.get("contract_winner")),
         "best_idea": _clean_value(raw.get("best_idea")),
@@ -11267,7 +11275,14 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
                 "total_hits": report.get("total_hits"),
                 "research_action": action.get("action"),
                 "research_label": action.get("label"),
+                "research_route": action.get("route"),
                 "risk_level": action.get("risk_level"),
+                "can_export_paper_candidate": action.get("can_export_paper_candidate"),
+                "chain_symbol": action.get("chain_symbol"),
+                "chain_side": action.get("chain_side"),
+                "chain_target_expiry": action.get("chain_target_expiry"),
+                "chain_min_dte": action.get("chain_min_dte"),
+                "chain_max_dte": action.get("chain_max_dte"),
                 "swing_decision": swing.get("decision"),
                 "swing_label": swing.get("label"),
                 "swing_score": swing.get("score"),
@@ -16874,12 +16889,27 @@ async function reloadPositionWorkspace() {
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Action</th><th>Risk</th><th>Contract</th><th>Report</th>
+    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
   </tr></thead><tbody>${rows.map(row => {
     const query = row.query || row.lookup_symbol || '';
+    const symbol = row.lookup_symbol || query;
     const report = row.report || '';
     const open = report ? `<a class="btn" href="${escAttr(report)}" target="_blank">Open</a>` : '-';
     const again = query ? `<button class="btn lookup-history-repeat-btn" type="button" data-query="${escAttr(query)}">Lookup</button>` : '';
+    const watch = query ? `<button class="btn lookup-history-watch-btn" type="button" data-query="${escAttr(query)}">Watch</button>` : '';
+    const workspace = query ? `<button class="btn lookup-history-workspace-btn" type="button" data-query="${escAttr(query)}">Workspace</button>` : '';
+    const scan = query ? `<button class="btn lookup-history-scan-btn" type="button" data-query="${escAttr(query)}">Scan</button>` : '';
+    const paper = query && row.can_export_paper_candidate
+      ? `<button class="btn lookup-history-paper-btn" type="button" data-query="${escAttr(query)}">Paper</button>`
+      : '';
+    const chainSymbol = row.chain_symbol || symbol;
+    const chain = row.chain_symbol
+      ? `<button class="btn lookup-history-chain-btn" type="button"
+          data-symbol="${escAttr(chainSymbol)}"
+          data-side="${escAttr(row.chain_side || 'all')}"
+          data-min-dte="${escAttr(row.chain_min_dte || '')}"
+          data-max-dte="${escAttr(row.chain_max_dte || '')}">Chain</button>`
+      : '';
     return `<tr>
       <td>${cell(row.generated_at)}</td>
       <td>${cell(query)}</td>
@@ -16889,7 +16919,7 @@ function lookupHistoryTable(rows) {
       <td>${cell(row.action)}</td>
       <td>${cell(row.risk)}</td>
       <td>${cell(row.contract_pick || row.contract_winner || '-')}</td>
-      <td>${open} ${again}</td>
+      <td>${open} ${again} ${watch} ${workspace} ${scan} ${paper} ${chain}</td>
     </tr>`;
   }).join('')}</tbody></table></div>`;
 }
@@ -16901,6 +16931,55 @@ function wireLookupHistoryActions() {
       $('symbol').value = query;
       await lookup();
       scrollToId('lookup-results');
+    });
+  });
+  document.querySelectorAll('.lookup-history-watch-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      $('watchlist-query').value = query;
+      await addWatchlist();
+      scrollToId('watchlist-results');
+    });
+  });
+  document.querySelectorAll('.lookup-history-workspace-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      $('global-query').value = query;
+      await globalReviewWorkspace();
+    });
+  });
+  document.querySelectorAll('.lookup-history-scan-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      $('symbol').value = query;
+      await runSymbol();
+      scrollToId('jobs');
+    });
+  });
+  document.querySelectorAll('.lookup-history-paper-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const query = btn.dataset.query || '';
+      if (!query) return;
+      setView('paper');
+      $('paper-query').value = query;
+      await loadPaperCandidates(false);
+      scrollToId('paper-results');
+    });
+  });
+  document.querySelectorAll('.lookup-history-chain-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const symbol = btn.dataset.symbol || '';
+      if (!symbol) return;
+      setView('chains');
+      $('chain-query').value = symbol;
+      $('chain-side').value = btn.dataset.side || 'all';
+      if (btn.dataset.minDte) $('chain-min-dte').value = btn.dataset.minDte;
+      if (btn.dataset.maxDte) $('chain-max-dte').value = btn.dataset.maxDte;
+      await scanOptionChain();
+      scrollToId('chain-results');
     });
   });
 }

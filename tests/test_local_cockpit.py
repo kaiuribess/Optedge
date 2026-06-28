@@ -72,7 +72,14 @@ def test_lookup_history_reads_saved_reports():
                 "lookup_symbol": "AAPL",
                 "total_hits": 3,
                 "research_label": "Paper candidate review",
+                "research_action": "paper_candidate_review",
+                "research_route": "paper",
                 "risk_level": "medium",
+                "can_export_paper_candidate": True,
+                "chain_symbol": "AAPL",
+                "chain_side": "call",
+                "chain_min_dte": 180,
+                "chain_max_dte": 900,
                 "swing_label": "Selective swing review",
                 "swing_score": 72,
                 "contract_pick": "Alternative looks cleaner",
@@ -90,6 +97,10 @@ def test_lookup_history_reads_saved_reports():
         assert row["lookup_symbol"] == "AAPL"
         assert row["report"].startswith("/lookup-report?file=lookup_reports")
         assert row["contract_winner"] == "alternative"
+        assert row["can_export_paper_candidate"] is True
+        assert row["chain_symbol"] == "AAPL"
+        assert row["chain_side"] == "call"
+        assert row["chain_min_dte"] == 180
 
 
 def test_cockpit_html_contains_lookup_controls():
@@ -425,6 +436,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Recent lookup history" in html
     assert "lookup-history-refresh" in html
     assert "lookupHistoryTable" in html
+    assert "lookup-history-watch-btn" in html
+    assert "lookup-history-workspace-btn" in html
+    assert "lookup-history-scan-btn" in html
+    assert "lookup-history-paper-btn" in html
+    assert "lookup-history-chain-btn" in html
     assert "/api/lookup-history" in html
     assert "/lookup-report" in html
     assert "/api/suggestions" in html
