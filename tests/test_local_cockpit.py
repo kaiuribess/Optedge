@@ -213,6 +213,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Review actions" in html
     assert "actionQueueActionLabel" in html
     assert "queue-alt-lookup-btn" in html
+    assert "action_query" in html
     assert "<th>Gate</th>" in html
     assert "<th>Source</th>" in html
     assert "setup_gate_label" in html
@@ -1068,6 +1069,8 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready[0]["swing_verdict_score"] >= 70
         assert ready[0]["option_alt_best"] == "AAPL C 210.0 2026-06-18"
         assert ready[0]["contract_pick_winner"] == "alternative"
+        assert ready[0]["preferred_contract"] == "AAPL C 210.0 2026-06-18"
+        assert ready[0]["action_query"] == "AAPL C 210.0 2026-06-18"
         assert "best nearby contract" in ready[0]["detail"]
         assert "contract pick" in ready[0]["detail"]
 

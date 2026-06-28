@@ -9698,8 +9698,13 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
         symbol=symbol,
         query=query,
     )
+    action_query = query
+    if pick_winner == "alternative" and alt_best and action in {"preview_paper_candidate", "open_research"}:
+        action_query = alt_best
     item.update({
         "source": "watchlist_swing_verdict",
+        "action_query": _clean_value(action_query),
+        "preferred_contract": _clean_value(alt_best if pick_winner == "alternative" else ""),
         "swing_verdict_score": _clean_value(swing_score),
         "swing_verdict_decision": _clean_value(decision),
         "swing_verdict_label": _clean_value(swing_label),
@@ -14255,6 +14260,7 @@ function actionQueueTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
   const body = rows.map(r => {
     const sym = r.query || r.symbol || '';
+    const actionQuery = r.action_query || r.query || r.symbol || '';
     const altLookup = r.option_alt_best
       ? `<button class="btn queue-alt-lookup-btn" type="button" data-query="${escAttr(r.option_alt_best)}">Lookup alt</button>`
       : '';
@@ -14264,7 +14270,7 @@ function actionQueueTable(rows) {
     const gate = gateStatus
       ? `<span class="pill ${escAttr(gateStatus)}">${cell(gateLabel)}</span>`
       : cell(gateLabel);
-    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(actionQueueActionLabel(r.action))}</button>${altLookup}</td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${gate}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td><td>${cell(r.source || '-')}</td></tr>`;
+    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(actionQuery)}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(actionQueueActionLabel(r.action))}</button>${altLookup}</td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${gate}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td><td>${cell(r.source || '-')}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Gate</th><th>Detail</th><th>Action</th><th>Symbol</th><th>Source</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
