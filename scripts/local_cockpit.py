@@ -11204,15 +11204,82 @@ def _safe_lookup_report_path(raw_file: str, data_dir: Path = DATA_DIR) -> Path |
     return candidate if candidate.exists() and candidate.is_file() else None
 
 
+def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
+    symbol = str(row.get("lookup_symbol") or row.get("symbol") or "").strip().upper()
+    baseline = _float_value(row.get("lookup_price"), default=math.nan)
+    if not symbol or not math.isfinite(baseline) or baseline <= 0:
+        return {
+            "follow_status": "no_baseline",
+            "follow_return_pct": None,
+            "follow_price": None,
+            "follow_age_days": None,
+            "follow_source": None,
+        }
+    generated_at = _parse_iso_utc(row.get("generated_at") or row.get("lookup_price_date"))
+    age_days = None
+    if generated_at is not None:
+        age_days = max(0, (datetime.now(timezone.utc) - generated_at).days)
+    try:
+        hist = data_provider.get_history(symbol, period="6mo", interval="1d", cache_age=1800)
+    except Exception as exc:
+        return {
+            "follow_status": "price_unavailable",
+            "follow_return_pct": None,
+            "follow_price": None,
+            "follow_age_days": age_days,
+            "follow_source": f"unavailable: {str(exc)[:80]}",
+        }
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return {
+            "follow_status": "price_unavailable",
+            "follow_return_pct": None,
+            "follow_price": None,
+            "follow_age_days": age_days,
+            "follow_source": None,
+        }
+    close = pd.to_numeric(hist["Close"], errors="coerce").dropna()
+    if close.empty:
+        return {
+            "follow_status": "price_unavailable",
+            "follow_return_pct": None,
+            "follow_price": None,
+            "follow_age_days": age_days,
+            "follow_source": None,
+        }
+    current = float(close.iloc[-1])
+    ret = (current - baseline) / baseline
+    if ret >= 0.08:
+        status = "strong_green"
+    elif ret >= 0.02:
+        status = "green"
+    elif ret <= -0.08:
+        status = "strong_red"
+    elif ret <= -0.02:
+        status = "red"
+    else:
+        status = "flat"
+    return {
+        "follow_status": status,
+        "follow_return_pct": _clean_value(round(ret, 4)),
+        "follow_price": _clean_value(round(current, 4)),
+        "follow_age_days": age_days,
+        "follow_source": _clean_value(getattr(hist, "attrs", {}).get("history_source")),
+    }
+
+
 def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     archive_html = str(raw.get("archive_html_path") or raw.get("html_path") or raw.get("latest_html_path") or "")
     latest_html = str(raw.get("latest_html_path") or "")
     html_rel = archive_html or latest_html
-    return {
+    row = {
         "generated_at": _clean_value(raw.get("generated_at")),
         "query": _clean_value(raw.get("query")),
         "lookup_symbol": _clean_value(raw.get("lookup_symbol") or raw.get("symbol")),
         "total_hits": _clean_value(raw.get("total_hits")),
+        "lookup_price": _clean_value(raw.get("lookup_price")),
+        "lookup_price_date": _clean_value(raw.get("lookup_price_date")),
+        "lookup_price_source": _clean_value(raw.get("lookup_price_source")),
+        "lookup_price_trend": _clean_value(raw.get("lookup_price_trend")),
         "swing": _clean_value(raw.get("swing_label") or raw.get("swing_decision")),
         "swing_score": _clean_value(raw.get("swing_score")),
         "action": _clean_value(raw.get("research_label") or raw.get("research_action")),
@@ -11232,6 +11299,8 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "latest_report": _lookup_report_url(latest_html),
         "source_file": _clean_value(html_rel),
     }
+    row.update(_lookup_followup(row))
+    return row
 
 
 def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str, Any]:
@@ -11263,6 +11332,7 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
             action = brief.get("research_action") if isinstance(brief.get("research_action"), dict) else {}
             swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
             comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
+            price = brief.get("price_snapshot") if isinstance(brief.get("price_snapshot"), dict) else {}
             html_path = path.with_suffix(".html")
             try:
                 html_rel = str(html_path.relative_to(data_dir))
@@ -11273,6 +11343,10 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
                 "query": report.get("query"),
                 "lookup_symbol": report.get("lookup_symbol"),
                 "total_hits": report.get("total_hits"),
+                "lookup_price": price.get("last_price"),
+                "lookup_price_date": price.get("last_date"),
+                "lookup_price_source": price.get("history_source"),
+                "lookup_price_trend": price.get("trend_label"),
                 "research_action": action.get("action"),
                 "research_label": action.get("label"),
                 "research_route": action.get("route"),
@@ -16889,7 +16963,7 @@ async function reloadPositionWorkspace() {
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
+    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Since lookup</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
   </tr></thead><tbody>${rows.map(row => {
     const query = row.query || row.lookup_symbol || '';
     const symbol = row.lookup_symbol || query;
@@ -16916,6 +16990,7 @@ function lookupHistoryTable(rows) {
       <td>${cell(row.lookup_symbol)}</td>
       <td>${cell(row.swing)}</td>
       <td>${cell(row.swing_score)}</td>
+      <td>${pct(row.follow_return_pct)} <small>${cell(row.follow_status)} ${cell(row.follow_age_days)}d</small></td>
       <td>${cell(row.action)}</td>
       <td>${cell(row.risk)}</td>
       <td>${cell(row.contract_pick || row.contract_winner || '-')}</td>

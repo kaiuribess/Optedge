@@ -2807,11 +2807,16 @@ def save_lookup(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, 
     swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
     comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
     idea = brief.get("best_idea") if isinstance(brief.get("best_idea"), dict) else {}
+    price = brief.get("price_snapshot") if isinstance(brief.get("price_snapshot"), dict) else {}
     history_row = {
         "generated_at": report.get("generated_at"),
         "query": report.get("query"),
         "lookup_symbol": report.get("lookup_symbol"),
         "total_hits": report.get("total_hits"),
+        "lookup_price": price.get("last_price"),
+        "lookup_price_date": price.get("last_date"),
+        "lookup_price_source": price.get("history_source"),
+        "lookup_price_trend": price.get("trend_label"),
         "research_action": action.get("action"),
         "research_label": action.get("label"),
         "research_route": action.get("route"),
