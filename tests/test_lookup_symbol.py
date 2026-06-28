@@ -94,6 +94,7 @@ def test_lookup_saves_json_and_html():
         assert history_rows[-1]["can_export_paper_candidate"] is False
         assert "lookup_price" in history_rows[-1]
         assert "lookup_price_source" in history_rows[-1]
+        assert "swing_bias" in history_rows[-1]
         assert history_rows[-1]["archive_html_path"].startswith("lookup_reports")
         assert "Optedge Lookup" in render_html(report)
         assert report["brief"]["research_action"]["action"] == "run_focused_scan"

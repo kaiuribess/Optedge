@@ -102,6 +102,7 @@ def test_lookup_history_reads_saved_reports():
         assert row["chain_side"] == "call"
         assert row["chain_min_dte"] == 180
         assert row["follow_status"] == "no_baseline"
+        assert row["follow_direction"] == "bullish"
         assert history["summary"]["total_saved"] == 1
         assert history["summary"]["priced_count"] == 0
         assert history["summary"]["paper_eligible_count"] == 1
@@ -147,6 +148,8 @@ def test_lookup_history_computes_followup_return_from_free_history():
     row = history["rows"][0]
     assert row["follow_status"] == "strong_green"
     assert row["follow_return_pct"] == 0.1
+    assert row["follow_underlying_return_pct"] == 0.1
+    assert row["follow_direction"] == "raw"
     assert row["follow_price"] == 110.0
     assert row["follow_source"] == "unit_history"
     summary = history["summary"]
@@ -156,6 +159,41 @@ def test_lookup_history_computes_followup_return_from_free_history():
     assert summary["avg_follow_return_pct"] == 0.1
     assert summary["best"]["symbol"] == "AAPL"
     assert summary["worst"]["symbol"] == "AAPL"
+
+
+def test_lookup_history_scores_puts_by_bearish_thesis():
+    old_history = cockpit_module.data_provider.get_history
+    try:
+        def fake_history(symbol, period="6mo", interval="1d", cache_age=1800):
+            assert symbol == "AAPL"
+            idx = pd.date_range("2026-06-20", periods=2, freq="D", tz="UTC")
+            return pd.DataFrame({"Close": [100.0, 90.0]}, index=idx)
+
+        cockpit_module.data_provider.get_history = fake_history
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            (data_dir / "lookup_history.jsonl").write_text(
+                json.dumps({
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "query": "AAPL 20270115 P 220",
+                    "lookup_symbol": "AAPL",
+                    "lookup_price": 100.0,
+                    "chain_side": "put",
+                    "research_label": "Paper candidate review",
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            history = build_lookup_history(data_dir)
+    finally:
+        cockpit_module.data_provider.get_history = old_history
+
+    row = history["rows"][0]
+    assert row["follow_direction"] == "bearish"
+    assert row["follow_underlying_return_pct"] == -0.1
+    assert row["follow_return_pct"] == 0.1
+    assert row["follow_status"] == "strong_green"
+    assert history["summary"]["green_count"] == 1
 
 
 def test_cockpit_html_contains_lookup_controls():
@@ -495,7 +533,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "lookup-history-summary" in html
     assert "lookupHistorySummary" in html
     assert "lookupHistoryTable" in html
-    assert "Since lookup" in html
+    assert "Thesis return" in html
     assert "lookup-history-watch-btn" in html
     assert "lookup-history-workspace-btn" in html
     assert "lookup-history-scan-btn" in html
@@ -6369,6 +6407,7 @@ if __name__ == "__main__":
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_lookup_history_reads_saved_reports()
     test_lookup_history_computes_followup_return_from_free_history()
+    test_lookup_history_scores_puts_by_bearish_thesis()
     test_cockpit_html_contains_lookup_controls()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_data_health_reports_fresh_sec_ticker_cache()
@@ -6451,4 +6490,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("86/86 local cockpit tests passed")
+    print("87/87 local cockpit tests passed")

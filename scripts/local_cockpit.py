@@ -11305,13 +11305,38 @@ def _safe_lookup_report_path(raw_file: str, data_dir: Path = DATA_DIR) -> Path |
     return candidate if candidate.exists() and candidate.is_file() else None
 
 
+def _lookup_thesis_direction(row: dict[str, Any]) -> str:
+    explicit = " ".join(
+        str(row.get(key) or "").strip().lower()
+        for key in ("swing_bias", "chain_side", "option_side", "side")
+    )
+    text = " ".join(
+        str(row.get(key) or "").strip().lower()
+        for key in ("query", "best_idea", "contract_pick", "source_file")
+    )
+    padded_explicit = f" {explicit.replace('-', ' ')} "
+    padded_text = f" {text.replace('-', ' ')} "
+    if any(token in padded_explicit for token in (" put", " puts", " p ")):
+        return "bearish"
+    if any(token in padded_explicit for token in (" call", " calls", " c ")):
+        return "bullish"
+    if re.search(r"\b(short|bearish|puts?|p)\b", padded_text):
+        return "bearish"
+    if re.search(r"\b(long|bullish|shares?|calls?|c)\b", padded_text):
+        return "bullish"
+    return "raw"
+
+
 def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
     symbol = str(row.get("lookup_symbol") or row.get("symbol") or "").strip().upper()
     baseline = _float_value(row.get("lookup_price"), default=math.nan)
+    direction = _lookup_thesis_direction(row)
     if not symbol or not math.isfinite(baseline) or baseline <= 0:
         return {
             "follow_status": "no_baseline",
             "follow_return_pct": None,
+            "follow_underlying_return_pct": None,
+            "follow_direction": direction,
             "follow_price": None,
             "follow_age_days": None,
             "follow_source": None,
@@ -11326,6 +11351,8 @@ def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "follow_status": "price_unavailable",
             "follow_return_pct": None,
+            "follow_underlying_return_pct": None,
+            "follow_direction": direction,
             "follow_price": None,
             "follow_age_days": age_days,
             "follow_source": f"unavailable: {str(exc)[:80]}",
@@ -11334,6 +11361,8 @@ def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "follow_status": "price_unavailable",
             "follow_return_pct": None,
+            "follow_underlying_return_pct": None,
+            "follow_direction": direction,
             "follow_price": None,
             "follow_age_days": age_days,
             "follow_source": None,
@@ -11343,25 +11372,30 @@ def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
         return {
             "follow_status": "price_unavailable",
             "follow_return_pct": None,
+            "follow_underlying_return_pct": None,
+            "follow_direction": direction,
             "follow_price": None,
             "follow_age_days": age_days,
             "follow_source": None,
         }
     current = float(close.iloc[-1])
-    ret = (current - baseline) / baseline
-    if ret >= 0.08:
+    raw_ret = (current - baseline) / baseline
+    thesis_ret = -raw_ret if direction == "bearish" else raw_ret
+    if thesis_ret >= 0.08:
         status = "strong_green"
-    elif ret >= 0.02:
+    elif thesis_ret >= 0.02:
         status = "green"
-    elif ret <= -0.08:
+    elif thesis_ret <= -0.08:
         status = "strong_red"
-    elif ret <= -0.02:
+    elif thesis_ret <= -0.02:
         status = "red"
     else:
         status = "flat"
     return {
         "follow_status": status,
-        "follow_return_pct": _clean_value(round(ret, 4)),
+        "follow_return_pct": _clean_value(round(thesis_ret, 4)),
+        "follow_underlying_return_pct": _clean_value(round(raw_ret, 4)),
+        "follow_direction": direction,
         "follow_price": _clean_value(round(current, 4)),
         "follow_age_days": age_days,
         "follow_source": _clean_value(getattr(hist, "attrs", {}).get("history_source")),
@@ -11381,6 +11415,7 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "lookup_price_date": _clean_value(raw.get("lookup_price_date")),
         "lookup_price_source": _clean_value(raw.get("lookup_price_source")),
         "lookup_price_trend": _clean_value(raw.get("lookup_price_trend")),
+        "swing_bias": _clean_value(raw.get("swing_bias")),
         "swing": _clean_value(raw.get("swing_label") or raw.get("swing_decision")),
         "swing_score": _clean_value(raw.get("swing_score")),
         "action": _clean_value(raw.get("research_label") or raw.get("research_action")),
@@ -11501,6 +11536,7 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
                 "lookup_price_date": price.get("last_date"),
                 "lookup_price_source": price.get("history_source"),
                 "lookup_price_trend": price.get("trend_label"),
+                "swing_bias": swing.get("bias"),
                 "research_action": action.get("action"),
                 "research_label": action.get("label"),
                 "research_route": action.get("route"),
@@ -17126,7 +17162,7 @@ async function reloadPositionWorkspace() {
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Since lookup</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
+    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Thesis return</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
   </tr></thead><tbody>${rows.map(row => {
     const query = row.query || row.lookup_symbol || '';
     const symbol = row.lookup_symbol || query;
@@ -17147,13 +17183,17 @@ function lookupHistoryTable(rows) {
           data-min-dte="${escAttr(row.chain_min_dte || '')}"
           data-max-dte="${escAttr(row.chain_max_dte || '')}">Chain</button>`
       : '';
+    const rawReturn = row.follow_underlying_return_pct !== undefined && row.follow_underlying_return_pct !== row.follow_return_pct
+      ? ` raw ${pct(row.follow_underlying_return_pct)}`
+      : '';
+    const direction = row.follow_direction && row.follow_direction !== 'raw' ? row.follow_direction : 'raw move';
     return `<tr>
       <td>${cell(row.generated_at)}</td>
       <td>${cell(query)}</td>
       <td>${cell(row.lookup_symbol)}</td>
       <td>${cell(row.swing)}</td>
       <td>${cell(row.swing_score)}</td>
-      <td>${pct(row.follow_return_pct)} <small>${cell(row.follow_status)} ${cell(row.follow_age_days)}d</small></td>
+      <td>${pct(row.follow_return_pct)} <small>${cell(row.follow_status)} ${cell(direction)} ${cell(row.follow_age_days)}d${cell(rawReturn)}</small></td>
       <td>${cell(row.action)}</td>
       <td>${cell(row.risk)}</td>
       <td>${cell(row.contract_pick || row.contract_winner || '-')}</td>
@@ -17168,7 +17208,7 @@ function lookupHistorySummary(summary) {
   const fields = [
     ['Saved lookups', summary.total_saved || 0],
     ['Priced', `${summary.priced_count || 0}/${summary.total_saved || 0}`],
-    ['Avg follow-up', pct(summary.avg_follow_return_pct)],
+    ['Avg thesis return', pct(summary.avg_follow_return_pct)],
     ['Green rate', pct(summary.green_rate)],
     ['Green / red', `${summary.green_count || 0} / ${summary.red_count || 0}`],
     ['Paper-ready', summary.paper_eligible_count || 0],
