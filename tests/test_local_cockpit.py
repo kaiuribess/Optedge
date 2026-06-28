@@ -212,6 +212,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Nasdaq small-cap movers" in html
     assert "Review actions" in html
     assert "actionQueueActionLabel" in html
+    assert "queue-alt-lookup-btn" in html
     assert "<th>Gate</th>" in html
     assert "<th>Source</th>" in html
     assert "setup_gate_label" in html
@@ -373,6 +374,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Swing verdict" in html
     assert "Swing score" in html
     assert "Best alt" in html
+    assert "watch-alt-lookup-btn" in html
+    assert "Lookup alt" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "/api/suggestions" in html

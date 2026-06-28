@@ -14235,13 +14235,16 @@ function actionQueueTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No action queue items.</div>';
   const body = rows.map(r => {
     const sym = r.query || r.symbol || '';
+    const altLookup = r.option_alt_best
+      ? `<button class="btn queue-alt-lookup-btn" type="button" data-query="${escAttr(r.option_alt_best)}">Lookup alt</button>`
+      : '';
     const attrs = sym ? ` class="clickable-row" data-symbol="${escAttr(sym)}"` : '';
     const gateStatus = r.setup_gate_status || r.climate_gate_status || r.entry_gate_status || '';
     const gateLabel = r.setup_gate_label || r.climate_gate_label || r.entry_gate_label || gateStatus || '-';
     const gate = gateStatus
       ? `<span class="pill ${escAttr(gateStatus)}">${cell(gateLabel)}</span>`
       : cell(gateLabel);
-    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(actionQueueActionLabel(r.action))}</button></td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${gate}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td><td>${cell(r.source || '-')}</td></tr>`;
+    return `<tr${attrs}><td><button class="btn queue-action-btn" type="button" data-action="${escAttr(r.action || '')}" data-query="${escAttr(r.query || r.symbol || '')}" data-symbol="${escAttr(r.symbol || '')}">${escHtml(actionQueueActionLabel(r.action))}</button>${altLookup}</td><td><strong>${cell(r.priority)}</strong></td><td>${cell(r.category)}</td><td>${cell(r.label)}</td><td>${gate}</td><td>${cell(r.detail)}</td><td>${cell(r.action)}</td><td>${cell(r.symbol || '-')}</td><td>${cell(r.source || '-')}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th></th><th>Priority</th><th>Category</th><th>Item</th><th>Gate</th><th>Detail</th><th>Action</th><th>Symbol</th><th>Source</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -14652,6 +14655,9 @@ function watchlistTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved research targets yet.</div>';
   const body = rows.map(r => {
     const request = r.request ? `${r.request.side || ''} ${r.request.expiry || ''} ${r.request.strike || ''}` : '';
+    const alt = r.option_alt_best
+      ? `${cell(r.option_alt_best)} <button class="btn watch-alt-lookup-btn" type="button" data-query="${escAttr(r.option_alt_best)}">Lookup alt</button>`
+      : '-';
     return `<tr>
       <td><button class="btn watch-lookup-btn" type="button" data-query="${escAttr(r.query || r.symbol || '')}">Lookup</button></td>
       <td><strong>${cell(r.symbol)}</strong></td>
@@ -14664,7 +14670,7 @@ function watchlistTable(rows) {
       <td>${cell(r.swing_verdict_decision || '-')}</td>
       <td>${cell(r.paper_readiness_label || '-')}</td>
       <td>${cell(r.paper_readiness_score)}</td>
-      <td>${cell(r.option_alt_best || '-')}</td>
+      <td>${alt}</td>
       <td>${cell(r.option_alt_readiness)}</td>
       <td>${cell(r.open_count || 0)}</td>
       <td>${pct(r.avg_unrealized_pct)}</td>
@@ -15202,6 +15208,15 @@ function wireActionQueueRows() {
       await routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '');
     });
   });
+  document.querySelectorAll('.queue-alt-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      setView('research');
+      $('symbol').value = btn.dataset.query || '';
+      await lookup();
+      scrollToId('lookup-results');
+    });
+  });
 }
 function wireWatchlistRows() {
   document.querySelectorAll('.watch-lookup-btn').forEach(btn => {
@@ -15209,6 +15224,14 @@ function wireWatchlistRows() {
       setView('research');
       $('symbol').value = btn.dataset.query || '';
       await lookup();
+    });
+  });
+  document.querySelectorAll('.watch-alt-lookup-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      setView('research');
+      $('symbol').value = btn.dataset.query || '';
+      await lookup();
+      scrollToId('lookup-results');
     });
   });
   document.querySelectorAll('.watch-remove-btn').forEach(btn => {
