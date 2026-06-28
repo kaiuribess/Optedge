@@ -11468,6 +11468,62 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     priced_count = len(priced_rows)
     avg_return = (sum(returns) / len(returns)) if returns else None
+
+    def group_stats(key: str, fallback_key: str | None = None) -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            label = str(row.get(key) or (row.get(fallback_key) if fallback_key else "") or "unknown").strip()
+            label = label or "unknown"
+            buckets.setdefault(label, []).append(row)
+        out: list[dict[str, Any]] = []
+        for label, bucket_rows in buckets.items():
+            bucket_priced = [
+                row for row in bucket_rows
+                if math.isfinite(_float_value(row.get("follow_return_pct"), default=math.nan))
+            ]
+            bucket_returns = [
+                _float_value(row.get("follow_return_pct"), default=math.nan)
+                for row in bucket_priced
+            ]
+            bucket_returns = [ret for ret in bucket_returns if math.isfinite(ret)]
+            bucket_green = [
+                row for row in bucket_priced
+                if str(row.get("follow_status") or "") in green_statuses
+            ]
+            bucket_red = [
+                row for row in bucket_priced
+                if str(row.get("follow_status") or "") in red_statuses
+            ]
+            bucket_best = max(
+                bucket_priced,
+                key=lambda row: _float_value(row.get("follow_return_pct"), default=-math.inf),
+                default={},
+            )
+            bucket_priced_count = len(bucket_priced)
+            bucket_avg = sum(bucket_returns) / len(bucket_returns) if bucket_returns else None
+            out.append({
+                "group": _clean_value(label),
+                "total": len(bucket_rows),
+                "priced": bucket_priced_count,
+                "avg_thesis_return": _clean_value(round(bucket_avg, 4)) if bucket_avg is not None else None,
+                "green_rate": (
+                    _clean_value(round(len(bucket_green) / bucket_priced_count, 4))
+                    if bucket_priced_count else None
+                ),
+                "green": len(bucket_green),
+                "red": len(bucket_red),
+                "best_symbol": _clean_value(bucket_best.get("lookup_symbol") or bucket_best.get("query")),
+                "best_return": _clean_value(bucket_best.get("follow_return_pct")) if bucket_best else None,
+            })
+        return sorted(
+            out,
+            key=lambda row: (
+                -int(row.get("priced") or 0),
+                -int(row.get("total") or 0),
+                str(row.get("group") or ""),
+            ),
+        )[:12]
+
     return {
         "total_saved": total,
         "priced_count": priced_count,
@@ -11483,6 +11539,9 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "chain_ready_count": sum(1 for row in rows if str(row.get("chain_symbol") or "").strip()),
         "no_baseline_count": sum(1 for row in rows if row.get("follow_status") == "no_baseline"),
         "price_unavailable_count": sum(1 for row in rows if row.get("follow_status") == "price_unavailable"),
+        "by_direction": group_stats("follow_direction"),
+        "by_action": group_stats("research_action", "action"),
+        "by_route": group_stats("research_route"),
         "best": pick(best),
         "worst": pick(worst),
         "sample_warning": (
@@ -13875,6 +13934,7 @@ tr.clickable-row:hover { background:#18201d; }
     </div>
     <div class="status" id="lookup-history-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="lookup-history-summary"></div>
+    <div class="brief-cols" style="margin-top:12px" id="lookup-history-breakdown"></div>
     <div class="section" style="margin-top:12px"><div id="lookup-history-results" class="table-wrap"></div></div>
   </section>
   <section class="panel" data-view="research">
@@ -17221,6 +17281,22 @@ function lookupHistorySummary(summary) {
   ];
   return fields.map(([label, value]) => `<div class="brief-tile"><span>${escHtml(label)}</span><strong>${cell(value)}</strong></div>`).join('');
 }
+function lookupHistoryBreakdown(summary) {
+  summary = summary || {};
+  return `
+    <div class="brief-list">
+      <h4>By thesis direction</h4>
+      ${table(summary.by_direction || [], true)}
+    </div>
+    <div class="brief-list">
+      <h4>By research action</h4>
+      ${table(summary.by_action || [], true)}
+    </div>
+    <div class="brief-list">
+      <h4>By route</h4>
+      ${table(summary.by_route || [], true)}
+    </div>`;
+}
 function wireLookupHistoryActions() {
   document.querySelectorAll('.lookup-history-repeat-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -17292,6 +17368,7 @@ async function loadLookupHistory() {
   }
   $('lookup-history-status-text').textContent = `${data.count || 0} saved lookup report(s).`;
   $('lookup-history-summary').innerHTML = lookupHistorySummary(data.summary || {});
+  $('lookup-history-breakdown').innerHTML = lookupHistoryBreakdown(data.summary || {});
   $('lookup-history-results').innerHTML = lookupHistoryTable(data.rows || []);
   wireLookupHistoryActions();
 }
