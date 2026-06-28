@@ -103,6 +103,7 @@ def test_lookup_history_reads_saved_reports():
         assert row["chain_min_dte"] == 180
         assert row["follow_status"] == "no_baseline"
         assert row["follow_direction"] == "bullish"
+        assert row["review_age_label"] == "fresh"
         assert history["summary"]["total_saved"] == 1
         assert history["summary"]["priced_count"] == 0
         assert history["summary"]["paper_eligible_count"] == 1
@@ -166,6 +167,7 @@ def test_lookup_history_computes_followup_return_from_free_history():
     assert summary["leaderboard_best"][0]["symbol"] == "AAPL"
     assert summary["leaderboard_best"][0]["thesis_return"] == 0.1
     assert summary["leaderboard_best"][0]["can_export_paper_candidate"] is False
+    assert summary["leaderboard_best"][0]["review_age"] == "fresh"
     assert summary["leaderboard_worst"][0]["symbol"] == "AAPL"
 
 
@@ -544,8 +546,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "lookup-history-direction" in html
     assert "lookup-history-status" in html
     assert "lookup-history-sort" in html
+    assert "lookup-history-age" in html
     assert "Best thesis return" in html
     assert "Worst thesis return" in html
+    assert "Stale review" in html
     assert "lookup-history-paper-only" in html
     assert "lookup-history-chain-only" in html
     assert "lookup-history-summary" in html
@@ -567,6 +571,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Chain-ready shortlist" in html
     assert "lookupHistoryTable" in html
     assert "Thesis return" in html
+    assert "Review age" in html
     assert "lookup-history-watch-btn" in html
     assert "lookup-history-workspace-btn" in html
     assert "lookup-history-scan-btn" in html

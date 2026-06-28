@@ -11402,6 +11402,27 @@ def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _lookup_review_age(row: dict[str, Any]) -> dict[str, Any]:
+    age = _float_value(row.get("follow_age_days"), default=math.nan)
+    if not math.isfinite(age):
+        generated_at = _parse_iso_utc(row.get("generated_at"))
+        if generated_at is not None:
+            age = max(0.0, float((datetime.now(timezone.utc) - generated_at).days))
+    if not math.isfinite(age):
+        return {"review_age_days": None, "review_age_label": "unknown", "review_stale": False}
+    if age >= 14:
+        label = "stale"
+    elif age >= 5:
+        label = "aging"
+    else:
+        label = "fresh"
+    return {
+        "review_age_days": _clean_value(int(age)),
+        "review_age_label": label,
+        "review_stale": label == "stale",
+    }
+
+
 def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     archive_html = str(raw.get("archive_html_path") or raw.get("html_path") or raw.get("latest_html_path") or "")
     latest_html = str(raw.get("latest_html_path") or "")
@@ -11436,6 +11457,7 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
         "source_file": _clean_value(html_rel),
     }
     row.update(_lookup_followup(row))
+    row.update(_lookup_review_age(row))
     return row
 
 
@@ -11478,6 +11500,9 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "action": _clean_value(row.get("action") or row.get("research_action")),
             "risk": _clean_value(row.get("risk")),
             "chain": _clean_value(row.get("chain_symbol")),
+            "review_age": _clean_value(row.get("review_age_label")),
+            "review_age_days": _clean_value(row.get("review_age_days")),
+            "review_stale": bool(row.get("review_stale")),
             "chain_symbol": _clean_value(row.get("chain_symbol")),
             "chain_side": _clean_value(row.get("chain_side")),
             "chain_min_dte": _clean_value(row.get("chain_min_dte")),
@@ -11589,6 +11614,7 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "avg_follow_return_pct": _clean_value(round(avg_return, 4)) if avg_return is not None else None,
         "paper_eligible_count": sum(1 for row in rows if bool(row.get("can_export_paper_candidate"))),
         "chain_ready_count": sum(1 for row in rows if str(row.get("chain_symbol") or "").strip()),
+        "stale_review_count": sum(1 for row in rows if bool(row.get("review_stale"))),
         "no_baseline_count": sum(1 for row in rows if row.get("follow_status") == "no_baseline"),
         "price_unavailable_count": sum(1 for row in rows if row.get("follow_status") == "price_unavailable"),
         "by_direction": group_stats("follow_direction"),
@@ -14011,6 +14037,12 @@ tr.clickable-row:hover { background:#18201d; }
         <option value="score">Highest swing score</option>
         <option value="paper">Paper-ready first</option>
         <option value="chain">Chain-ready first</option>
+      </select>
+      <select id="lookup-history-age" aria-label="Lookup review age">
+        <option value="all">All ages</option>
+        <option value="fresh">Fresh</option>
+        <option value="aging">Aging</option>
+        <option value="stale">Stale</option>
       </select>
       <label class="check"><input id="lookup-history-paper-only" type="checkbox"> paper-ready</label>
       <label class="check"><input id="lookup-history-chain-only" type="checkbox"> chain-ready</label>
@@ -17308,11 +17340,13 @@ function lookupHistoryFilteredRows(rows) {
   const textEl = $('lookup-history-filter');
   const directionEl = $('lookup-history-direction');
   const statusEl = $('lookup-history-status');
+  const ageEl = $('lookup-history-age');
   const paperEl = $('lookup-history-paper-only');
   const chainEl = $('lookup-history-chain-only');
   const q = (textEl ? textEl.value : '').trim().toLowerCase();
   const direction = directionEl ? directionEl.value : 'all';
   const status = statusEl ? statusEl.value : 'all';
+  const age = ageEl ? ageEl.value : 'all';
   const paperOnly = paperEl ? paperEl.checked : false;
   const chainOnly = chainEl ? chainEl.checked : false;
   return rows.filter(row => {
@@ -17331,6 +17365,7 @@ function lookupHistoryFilteredRows(rows) {
     if (status === 'strong_green' && rowStatus !== 'strong_green') return false;
     if (status === 'strong_red' && rowStatus !== 'strong_red') return false;
     if (status === 'unpriced' && !['no_baseline', 'price_unavailable'].includes(rowStatus)) return false;
+    if (age !== 'all' && row.review_age_label !== age) return false;
     if (paperOnly && !row.can_export_paper_candidate) return false;
     if (chainOnly && !row.chain_symbol) return false;
     return true;
@@ -17357,7 +17392,7 @@ function lookupHistorySortedRows(rows) {
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Thesis return</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
+    <th>Time</th><th>Query</th><th>Symbol</th><th>Swing</th><th>Score</th><th>Thesis return</th><th>Review age</th><th>Action</th><th>Risk</th><th>Contract</th><th>Moves</th>
   </tr></thead><tbody>${rows.map(row => {
     const query = row.query || row.lookup_symbol || '';
     const symbol = row.lookup_symbol || query;
@@ -17389,6 +17424,7 @@ function lookupHistoryTable(rows) {
       <td>${cell(row.swing)}</td>
       <td>${cell(row.swing_score)}</td>
       <td>${pct(row.follow_return_pct)} <small>${cell(row.follow_status)} ${cell(direction)} ${cell(row.follow_age_days)}d${cell(rawReturn)}</small></td>
+      <td>${cell(row.review_age_label)} <small>${cell(row.review_age_days)}d</small></td>
       <td>${cell(row.action)}</td>
       <td>${cell(row.risk)}</td>
       <td>${cell(row.contract_pick || row.contract_winner || '-')}</td>
@@ -17416,6 +17452,7 @@ function lookupHistorySummary(summary) {
     ['Green / red', `${summary.green_count || 0} / ${summary.red_count || 0}`],
     ['Paper-ready', summary.paper_eligible_count || 0],
     ['Chain-ready', summary.chain_ready_count || 0],
+    ['Stale review', summary.stale_review_count || 0],
     ['Best', best.symbol ? `${best.symbol} ${pct(best.follow_return_pct)}` : '-'],
     ['Worst', worst.symbol ? `${worst.symbol} ${pct(worst.follow_return_pct)}` : '-'],
     ['Unpriced', summary.unpriced_count || 0],
@@ -17462,11 +17499,12 @@ function lookupHistoryActionButtons(row) {
 function lookupHistoryLeaderboardTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No rows yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
-    <th>Symbol</th><th>Thesis</th><th>Status</th><th>Direction</th><th>Score</th><th>Action</th><th>Risk</th><th>Moves</th>
+    <th>Symbol</th><th>Thesis</th><th>Status</th><th>Age</th><th>Direction</th><th>Score</th><th>Action</th><th>Risk</th><th>Moves</th>
   </tr></thead><tbody>${rows.map(row => `<tr>
     <td>${cell(row.symbol)}</td>
     <td>${pct(row.thesis_return)} <small>raw ${pct(row.underlying_return)}</small></td>
     <td>${cell(row.status)}</td>
+    <td>${cell(row.review_age)} <small>${cell(row.review_age_days)}d</small></td>
     <td>${cell(row.direction)}</td>
     <td>${cell(row.swing_score)}</td>
     <td>${cell(row.action)}</td>
@@ -17617,7 +17655,7 @@ $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
 $('lookup-history-refresh').addEventListener('click', loadLookupHistory);
-['lookup-history-filter', 'lookup-history-direction', 'lookup-history-status', 'lookup-history-sort', 'lookup-history-paper-only', 'lookup-history-chain-only'].forEach(id => {
+['lookup-history-filter', 'lookup-history-direction', 'lookup-history-status', 'lookup-history-sort', 'lookup-history-age', 'lookup-history-paper-only', 'lookup-history-chain-only'].forEach(id => {
   $(id).addEventListener(id === 'lookup-history-filter' ? 'input' : 'change', renderLookupHistoryRows);
 });
 $('global-lookup').addEventListener('click', globalLookup);
