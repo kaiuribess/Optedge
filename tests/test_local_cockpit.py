@@ -539,11 +539,15 @@ def test_cockpit_html_contains_lookup_controls():
     assert "lookup-history-filter" in html
     assert "lookup-history-direction" in html
     assert "lookup-history-status" in html
+    assert "lookup-history-sort" in html
+    assert "Best thesis return" in html
+    assert "Worst thesis return" in html
     assert "lookup-history-paper-only" in html
     assert "lookup-history-chain-only" in html
     assert "lookup-history-summary" in html
     assert "lookup-history-breakdown" in html
     assert "lookupHistoryFilteredRows" in html
+    assert "lookupHistorySortedRows" in html
     assert "renderLookupHistoryRows" in html
     assert "lookupHistorySummary" in html
     assert "lookupHistoryBreakdown" in html

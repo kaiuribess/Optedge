@@ -13947,6 +13947,15 @@ tr.clickable-row:hover { background:#18201d; }
         <option value="strong_red">Strong red</option>
         <option value="unpriced">Unpriced</option>
       </select>
+      <select id="lookup-history-sort" aria-label="Lookup history sort">
+        <option value="newest">Newest first</option>
+        <option value="oldest">Oldest first</option>
+        <option value="best">Best thesis return</option>
+        <option value="worst">Worst thesis return</option>
+        <option value="score">Highest swing score</option>
+        <option value="paper">Paper-ready first</option>
+        <option value="chain">Chain-ready first</option>
+      </select>
       <label class="check"><input id="lookup-history-paper-only" type="checkbox"> paper-ready</label>
       <label class="check"><input id="lookup-history-chain-only" type="checkbox"> chain-ready</label>
     </div>
@@ -17270,6 +17279,24 @@ function lookupHistoryFilteredRows(rows) {
     return true;
   });
 }
+function lookupHistorySortedRows(rows) {
+  rows = [...(rows || [])];
+  const sortEl = $('lookup-history-sort');
+  const mode = sortEl ? sortEl.value : 'newest';
+  const num = (v, fallback=0) => Number.isFinite(Number(v)) ? Number(v) : fallback;
+  const ts = row => {
+    const value = Date.parse(row.generated_at || '');
+    return Number.isFinite(value) ? value : 0;
+  };
+  const tie = (a, b) => ts(b) - ts(a);
+  if (mode === 'oldest') return rows.sort((a, b) => ts(a) - ts(b));
+  if (mode === 'best') return rows.sort((a, b) => num(b.follow_return_pct, -Infinity) - num(a.follow_return_pct, -Infinity) || tie(a, b));
+  if (mode === 'worst') return rows.sort((a, b) => num(a.follow_return_pct, Infinity) - num(b.follow_return_pct, Infinity) || tie(a, b));
+  if (mode === 'score') return rows.sort((a, b) => num(b.swing_score, -Infinity) - num(a.swing_score, -Infinity) || tie(a, b));
+  if (mode === 'paper') return rows.sort((a, b) => Number(!!b.can_export_paper_candidate) - Number(!!a.can_export_paper_candidate) || tie(a, b));
+  if (mode === 'chain') return rows.sort((a, b) => Number(!!b.chain_symbol) - Number(!!a.chain_symbol) || tie(a, b));
+  return rows.sort((a, b) => tie(a, b));
+}
 function lookupHistoryTable(rows) {
   if (!rows || rows.length === 0) return '<div class="empty">No saved lookups yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
@@ -17314,7 +17341,7 @@ function lookupHistoryTable(rows) {
 }
 function renderLookupHistoryRows() {
   const rows = window.latestLookupHistoryRows || [];
-  const filtered = lookupHistoryFilteredRows(rows);
+  const filtered = lookupHistorySortedRows(lookupHistoryFilteredRows(rows));
   $('lookup-history-results').innerHTML = lookupHistoryTable(filtered);
   const total = window.latestLookupHistoryTotal || rows.length || 0;
   $('lookup-history-status-text').textContent = `${filtered.length}/${rows.length} loaded lookup row(s) shown; ${total} saved total.`;
@@ -17478,7 +17505,7 @@ $('run-symbol').addEventListener('click', runSymbol);
 $('symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(); });
 $('symbol').addEventListener('input', () => scheduleSuggestions('symbol', 'symbol-suggestions', true));
 $('lookup-history-refresh').addEventListener('click', loadLookupHistory);
-['lookup-history-filter', 'lookup-history-direction', 'lookup-history-status', 'lookup-history-paper-only', 'lookup-history-chain-only'].forEach(id => {
+['lookup-history-filter', 'lookup-history-direction', 'lookup-history-status', 'lookup-history-sort', 'lookup-history-paper-only', 'lookup-history-chain-only'].forEach(id => {
   $(id).addEventListener(id === 'lookup-history-filter' ? 'input' : 'change', renderLookupHistoryRows);
 });
 $('global-lookup').addEventListener('click', globalLookup);
