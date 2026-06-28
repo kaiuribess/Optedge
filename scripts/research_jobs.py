@@ -246,6 +246,10 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
         brief.get("cboe_option_activity", {})
         if isinstance(brief.get("cboe_option_activity"), dict) else {}
     )
+    option_alternatives = (
+        brief.get("option_alternatives", {})
+        if isinstance(brief.get("option_alternatives"), dict) else {}
+    )
     requested_matches = sections.get("requested_option_matches") or []
     best_match = requested_matches[0] if requested_matches else {}
     request_summary = _requested_match_summary(job.get("request"), requested_matches)
@@ -262,6 +266,13 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
         "lookup_market_structure_status": market.get("status"),
         "lookup_market_risk_score": market.get("risk_score"),
         "lookup_cboe_activity_status": cboe_activity.get("status"),
+        "lookup_option_alt_count": option_alternatives.get("count"),
+        "lookup_option_alt_best": option_alternatives.get("best_label"),
+        "lookup_option_alt_reason": option_alternatives.get("best_reason"),
+        "lookup_option_alt_score": option_alternatives.get("best_score"),
+        "lookup_option_alt_readiness": option_alternatives.get("best_readiness_score"),
+        "lookup_option_alt_swing_fit": option_alternatives.get("best_swing_fit_score"),
+        "lookup_option_alt_spread_pct": option_alternatives.get("best_spread_pct"),
         "lookup_swing_verdict": swing.get("label"),
         "lookup_swing_verdict_score": swing.get("score"),
         "lookup_swing_verdict_decision": swing.get("decision"),

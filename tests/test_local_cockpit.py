@@ -372,6 +372,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Cboe volume" in html
     assert "Swing verdict" in html
     assert "Swing score" in html
+    assert "Best alt" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
     assert "/api/suggestions" in html
@@ -1015,8 +1016,36 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
             "chain_source": "tradier",
             "quote_quality": "live_or_broker",
         }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "rows": [{
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2026-06-18 C 210",
+                "side": "call",
+                "strike": 210.0,
+                "expiry": "2026-06-18",
+                "dte": 10,
+                "bid": 1.9,
+                "ask": 2.1,
+                "mid": 2.0,
+                "premium_dollars": 200.0,
+                "spread_pct": 0.10,
+                "openInterest": 900,
+                "volume": 120,
+                "readiness_score": 88,
+                "contract_quality_score": 90,
+                "swing_fit_score": 91,
+                "swing_fit_label": "reviewable_swing",
+                "contract_grade": "B",
+                "review_lane": "secondary_review",
+                "chain_source": "cboe_options_chain",
+            }],
+        }), encoding="utf-8")
 
         add_watchlist_query("AAPL 20260618 C 200", data_dir)
+        enriched = load_watchlist(data_dir, enrich=True)
+        assert enriched["entries"][0]["option_alt_best"] == "AAPL C 210.0 2026-06-18"
+        assert enriched["entries"][0]["option_alt_readiness"] == 88
         queue = build_action_queue(data_dir)
         ready = [
             row for row in queue["rows"]
@@ -1028,6 +1057,8 @@ def test_action_queue_surfaces_ready_watchlist_ideas():
         assert ready[0]["source"] == "watchlist_swing_verdict"
         assert ready[0]["swing_verdict_decision"] == "paper_review"
         assert ready[0]["swing_verdict_score"] >= 70
+        assert ready[0]["option_alt_best"] == "AAPL C 210.0 2026-06-18"
+        assert "best nearby contract" in ready[0]["detail"]
 
 
 def test_action_queue_promotes_reviewable_swing_scout_rows():

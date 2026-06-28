@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 from datetime import datetime as real_datetime
@@ -135,6 +136,31 @@ def test_run_job_writes_lookup_summary_for_requested_option():
             "chain_source": "tradier",
             "quote_quality": "live_or_broker",
         }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": "2026-06-24T19:00:00+00:00",
+            "rows": [{
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2026-06-18 C 210",
+                "side": "call",
+                "strike": 210.0,
+                "expiry": "2026-06-18",
+                "dte": 10,
+                "bid": 1.9,
+                "ask": 2.1,
+                "mid": 2.0,
+                "premium_dollars": 200.0,
+                "spread_pct": 0.10,
+                "openInterest": 900,
+                "volume": 120,
+                "readiness_score": 88,
+                "contract_quality_score": 90,
+                "swing_fit_score": 91,
+                "swing_fit_label": "reviewable_swing",
+                "contract_grade": "B",
+                "review_lane": "secondary_review",
+                "chain_source": "cboe_options_chain",
+            }],
+        }), encoding="utf-8")
         job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
 
         old_run = jobs_module.subprocess.run
@@ -165,13 +191,16 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert stored["requested_match_status"] == "exact"
         assert stored["requested_match_label"] == "Exact contract found"
         assert stored["requested_match_next_action"] == "open_lookup"
-        assert stored["requested_match_count"] == 1
+        assert stored["requested_match_count"] == 2
         assert stored["requested_match_quality"] == "exact"
         assert stored["requested_chain_symbol"] == "AAPL"
         assert stored["requested_chain_side"] == "call"
         assert stored["requested_chain_min_dte"] <= stored["requested_chain_max_dte"]
         assert stored["requested_match_mid"] == 3.2
         assert stored["requested_match_quote_quality"] == "live_or_broker"
+        assert stored["lookup_option_alt_count"] == 1
+        assert stored["lookup_option_alt_best"] == "AAPL C 210.0 2026-06-18"
+        assert stored["lookup_option_alt_readiness"] == 88
         assert captured_lookup_kwargs["include_sec"] is False
         assert captured_lookup_kwargs["include_price"] is True
         assert captured_lookup_kwargs["include_market_structure"] is True
