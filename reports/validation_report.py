@@ -504,6 +504,19 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
     }
 
 
+def _swing_eligible_sample(closed: pd.DataFrame) -> pd.DataFrame:
+    if closed.empty:
+        return closed.copy()
+    try:
+        from backtest.exit_learning import eligible_closed_for_learning
+
+        frames = [eligible_closed_for_learning(asset, closed) for asset in ("option", "share", "futures")]
+        frames = [frame for frame in frames if not frame.empty]
+        return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+
 def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, Any]:
     out = {}
     reviews = _load_exit_reviews()
@@ -829,6 +842,10 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     overall = _stats(closed)
     after_slippage = _stats(closed, "pnl_pct_after_slippage")
     assets = _asset_breakdown(open_df, closed)
+    swing_eligible = _swing_eligible_sample(closed)
+    swing_eligible_count = int(len(swing_eligible))
+    swing_eligible_overall = _stats(swing_eligible)
+    swing_eligible_after_slippage = _stats(swing_eligible, "pnl_pct_after_slippage")
 
     warnings = []
     if scope != "all_time" and cutoff is not None:
@@ -839,14 +856,33 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
             )
     elif scope != "all_time":
         warnings.append("No model-update timestamp found; validation scope could not isolate the current model era.")
-    if closed_count < MIN_CLOSED_SIGNALS:
+    if swing_eligible_count < MIN_CLOSED_SIGNALS:
         warnings.append(
-            f"Sample size too small: {closed_count} closed signals; need at least {MIN_CLOSED_SIGNALS}."
+            f"Independent swing sample too small: {swing_eligible_count} eligible outcomes; "
+            f"need at least {MIN_CLOSED_SIGNALS}."
         )
     if overall.get("max_drawdown") is not None and overall["max_drawdown"] < -0.20:
-        warnings.append(f"Max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}.")
+        warnings.append(f"All-closure max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}.")
     if overall.get("win_rate") is not None and overall["win_rate"] < BREAKEVEN_WIN_RATE:
-        warnings.append(f"Win rate is below the simple breakeven threshold: {_fmt_pct(overall['win_rate'])}.")
+        warnings.append(
+            f"All-closure win rate is below the simple breakeven threshold: {_fmt_pct(overall['win_rate'])}."
+        )
+    if (
+        swing_eligible_after_slippage.get("max_drawdown") is not None
+        and swing_eligible_after_slippage["max_drawdown"] < -0.20
+    ):
+        warnings.append(
+            "Independent swing max drawdown after slippage is worse than -20%: "
+            f"{_fmt_pct(swing_eligible_after_slippage['max_drawdown'])}."
+        )
+    if (
+        swing_eligible_after_slippage.get("win_rate") is not None
+        and swing_eligible_after_slippage["win_rate"] < BREAKEVEN_WIN_RATE
+    ):
+        warnings.append(
+            "Independent swing win rate after slippage is below the simple breakeven threshold: "
+            f"{_fmt_pct(swing_eligible_after_slippage['win_rate'])}."
+        )
     option_learning = assets.get("option", {}) if isinstance(assets, dict) else {}
     same_scan_dynamic = int(option_learning.get("same_scan_dynamic_exits") or 0)
     if same_scan_dynamic:
@@ -864,6 +900,11 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "total_signals": total_signals,
         "closed_positions": closed_count,
         "open_positions": open_count,
+        "validation_basis": "independent_swing_after_slippage",
+        "swing_eligible_closed_positions": swing_eligible_count,
+        "swing_excluded_closed_positions": int(max(0, closed_count - swing_eligible_count)),
+        "swing_eligible_overall": swing_eligible_overall,
+        "swing_eligible_after_slippage": swing_eligible_after_slippage,
         "equity_curve": {
             "mode": EQUITY_RETURN_MODE,
             "default_allocation_pct": DEFAULT_EQUITY_ALLOCATION_PCT,
@@ -999,6 +1040,11 @@ def render_html(summary: Dict[str, Any]) -> str:
     bench = summary["benchmarks"]
     baseline = summary["random_baseline"]
     equity = summary.get("equity_curve") if isinstance(summary.get("equity_curve"), dict) else {}
+    swing = (
+        summary.get("swing_eligible_after_slippage")
+        if isinstance(summary.get("swing_eligible_after_slippage"), dict)
+        else {}
+    )
     warnings = summary.get("warnings") or []
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No major validation warnings.</li>"
     return f"""<!doctype html>
@@ -1050,6 +1096,19 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
           ("Max drawdown", _fmt_pct(overall.get("max_drawdown"))),
           ("Drawdown mode", equity.get("mode", "n/a")),
           ("Default signal allocation", _fmt_pct(equity.get("default_allocation_pct"))),
+      ])}
+    </section>
+    <section>
+      <h2>Independent Swing Sample</h2>
+      {_metric_table([
+          ("Validation basis", summary.get("validation_basis", "n/a")),
+          ("Eligible closures", summary.get("swing_eligible_closed_positions", 0)),
+          ("Excluded lifecycle churn", summary.get("swing_excluded_closed_positions", 0)),
+          ("After-slippage win rate", _fmt_pct(swing.get("win_rate"))),
+          ("After-slippage average", _fmt_pct(swing.get("avg_return"))),
+          ("After-slippage median", _fmt_pct(swing.get("median_return"))),
+          ("After-slippage profit factor", _fmt(swing.get("profit_factor"))),
+          ("After-slippage max drawdown", _fmt_pct(swing.get("max_drawdown"))),
       ])}
     </section>
     <section>

@@ -2284,6 +2284,30 @@ def test_validation_guardrail_uses_summary_closed_count_with_overall_metrics():
     assert "Only 0 closed" not in " ".join(guard["warnings"])
 
 
+def test_validation_guardrail_prefers_independent_swing_metrics():
+    guard = cockpit_module._validation_guardrail({
+        "closed_positions": 1000,
+        "overall": {
+            "n": 1000,
+            "win_rate": 0.80,
+            "max_drawdown": -0.05,
+            "profit_factor": 2.0,
+        },
+        "swing_eligible_closed_positions": 259,
+        "swing_eligible_after_slippage": {
+            "n": 259,
+            "win_rate": 0.41,
+            "max_drawdown": -0.75,
+            "profit_factor": 2.15,
+        },
+    })
+    assert guard["closed_positions"] == 259
+    assert guard["validation_basis"] == "independent_swing_after_slippage"
+    assert guard["win_rate"] == 0.41
+    assert guard["max_drawdown"] == -0.75
+    assert guard["level"] == "bad"
+
+
 def test_swing_packet_builds_and_writes_daily_decision_packet():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -6550,6 +6574,7 @@ if __name__ == "__main__":
     test_command_center_validation_guard_defers_new_entries_during_active_window()
     test_manual_review_summary_surfaces_entry_gate_state()
     test_validation_guardrail_uses_summary_closed_count_with_overall_metrics()
+    test_validation_guardrail_prefers_independent_swing_metrics()
     test_swing_packet_builds_and_writes_daily_decision_packet()
     test_swing_packet_can_refresh_chain_shortlist_on_demand()
     test_enriched_watchlist_sorts_ready_ideas_first()
@@ -6608,4 +6633,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("89/89 local cockpit tests passed")
+    print("90/90 local cockpit tests passed")

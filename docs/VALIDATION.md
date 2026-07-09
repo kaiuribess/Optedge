@@ -43,6 +43,8 @@ Dynamic/self-learning exits should be judged only after enough closed outcomes e
 
 Performance metrics retain every closed recommendation, including same-scan exits, so poor lifecycle behavior is not hidden. Exit-policy learning uses a stricter subset: same-scan dynamic exits and duplicate episodes are excluded, and learned thresholds fall back to defaults when the policy is stale or the independent sample is under the activation minimum.
 
+The research guard uses the independent swing sample's after-slippage metrics for entry readiness. Raw all-closure metrics remain alongside it for auditability. A clean raw history therefore cannot override weak drawdown, win rate, or sample size in the independent swing evidence.
+
 ## Sample Size
 
 Closed signal count below 500 is marked as too small. This does not mean the system is broken. It means the research evidence is not mature enough to trust sizing without human review.

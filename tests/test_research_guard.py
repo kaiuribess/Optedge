@@ -34,7 +34,30 @@ def test_guard_blocks_wide_option_spread():
     assert guarded.loc[0, "suggested_contracts"] == 0
 
 
+def test_guard_uses_independent_swing_sample_when_available():
+    report = build_guard_report({
+        "closed_positions": 1000,
+        "after_slippage": {
+            "n": 1000,
+            "win_rate": 0.75,
+            "max_drawdown": -0.05,
+        },
+        "swing_eligible_closed_positions": 259,
+        "swing_eligible_after_slippage": {
+            "n": 259,
+            "win_rate": 0.41,
+            "max_drawdown": -0.75,
+        },
+    })
+    assert report["closed_signals"] == 259
+    assert report["validation_basis"] == "independent_swing_after_slippage"
+    assert report["status"] == "blocked"
+    assert any(w["code"] == "sample_size" for w in report["warnings"])
+    assert any(w["code"] == "drawdown" for w in report["warnings"])
+
+
 if __name__ == "__main__":
     test_guard_warns_on_small_sample()
     test_guard_blocks_wide_option_spread()
-    print("2/2 research guard tests passed")
+    test_guard_uses_independent_swing_sample_when_available()
+    print("3/3 research guard tests passed")

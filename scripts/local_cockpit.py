@@ -12849,11 +12849,21 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
             "detail": "Run python run.py --validation-report before reviewing new entries.",
             "warnings": ["validation_summary.json missing"],
         }
-    overall = validation.get("overall") if isinstance(validation.get("overall"), dict) else validation
+    swing_overall = validation.get("swing_eligible_after_slippage")
+    uses_swing_sample = isinstance(swing_overall, dict)
+    overall = (
+        swing_overall
+        if uses_swing_sample
+        else (validation.get("overall") if isinstance(validation.get("overall"), dict) else validation)
+    )
     top_level_closed = (
-        validation.get("closed_positions")
-        if isinstance(validation, dict) and validation.get("closed_positions") is not None
-        else None
+        validation.get("swing_eligible_closed_positions")
+        if uses_swing_sample
+        else (
+            validation.get("closed_positions")
+            if validation.get("closed_positions") is not None
+            else None
+        )
     )
     closed = int(_float_value(
         top_level_closed,
@@ -12867,11 +12877,12 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
     profit_factor = _float_value(overall.get("profit_factor"), default=math.nan)
     raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
     warnings = [str(item) for item in raw_warnings if str(item).strip()]
+    validation_basis = "independent_swing_after_slippage" if uses_swing_sample else "all_closures"
     blocker_reasons: list[str] = []
     review_reasons: list[str] = []
 
-    if closed < 50:
-        review_reasons.append(f"Only {closed} closed signal(s); sample is still early.")
+    if closed < 500:
+        review_reasons.append(f"Only {closed} validation outcome(s); require 500+ before trusting entries.")
     if math.isfinite(max_dd) and max_dd <= -0.20:
         blocker_reasons.append(f"Max drawdown is {max_dd * 100:.1f}%.")
     if math.isfinite(win_rate) and win_rate < 0.20:
@@ -12887,7 +12898,7 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         if "max drawdown" in text or "win rate" in text:
             if warning not in blocker_reasons and warning not in review_reasons:
                 review_reasons.append(warning)
-        elif "sample size" in text and warning not in review_reasons:
+        elif ("sample size" in text or "sample too small" in text) and warning not in review_reasons:
             review_reasons.append(warning)
 
     if blocker_reasons:
@@ -12911,6 +12922,7 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         "win_rate": _clean_value(win_rate if math.isfinite(win_rate) else None),
         "max_drawdown": _clean_value(max_dd if math.isfinite(max_dd) else None),
         "profit_factor": _clean_value(profit_factor if math.isfinite(profit_factor) else None),
+        "validation_basis": validation_basis,
         "warnings": (blocker_reasons + review_reasons + warnings)[:8],
     }
 

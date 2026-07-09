@@ -262,10 +262,17 @@ def test_validation_keeps_churn_in_performance_but_excludes_it_from_learning():
             assert option["learning_eligible_closed_positions"] == 1
             assert option["learning_excluded_closed_positions"] == 1
             assert option["same_scan_dynamic_exits"] == 1
+            assert summary["validation_basis"] == "independent_swing_after_slippage"
+            assert summary["swing_eligible_closed_positions"] == 1
+            assert summary["swing_excluded_closed_positions"] == 1
+            assert summary["swing_eligible_after_slippage"]["n"] == 1
+            assert summary["swing_eligible_after_slippage"]["win_rate"] == 1.0
             assert any("same-scan dynamic option exit" in warning for warning in summary["warnings"])
+            assert any("Independent swing sample too small" in warning for warning in summary["warnings"])
             html = validation_report.render_html(summary)
             assert "Learnable" in html
             assert "Excluded churn" in html
+            assert "Independent Swing Sample" in html
         finally:
             validation_report.DATA_DIR = old_data
             validation_report.LOGS_DIR = old_logs

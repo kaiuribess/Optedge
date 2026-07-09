@@ -61,16 +61,24 @@ def build_guard_report(
     now = now or datetime.now(timezone.utc)
     warnings: List[Dict[str, Any]] = []
 
-    closed = int(summary.get("closed_positions") or summary.get("overall", {}).get("n") or 0)
+    swing_metrics = summary.get("swing_eligible_after_slippage")
+    uses_swing_sample = isinstance(swing_metrics, dict)
+    overall = swing_metrics if uses_swing_sample else (summary.get("after_slippage") or summary.get("overall") or {})
+    closed = int(
+        (summary.get("swing_eligible_closed_positions") or overall.get("n") or 0)
+        if uses_swing_sample
+        else (summary.get("closed_positions") or overall.get("n") or 0)
+    )
+    validation_basis = "independent_swing_after_slippage" if uses_swing_sample else "all_closures_after_slippage"
     if closed < MIN_CLOSED_SIGNALS:
         warnings.append(_warn(
             "sample_size",
             "warning",
-            f"Only {closed} closed signals are available; require {MIN_CLOSED_SIGNALS}+ before trusting live sizing.",
+            f"Only {closed} {validation_basis.replace('_', ' ')} outcomes are available; "
+            f"require {MIN_CLOSED_SIGNALS}+ before trusting live sizing.",
             blocks_trading=False,
         ))
 
-    overall = summary.get("after_slippage") or summary.get("overall") or {}
     max_dd = overall.get("max_drawdown")
     if max_dd is not None and float(max_dd) < MAX_DRAWDOWN_LIMIT:
         warnings.append(_warn(
@@ -165,6 +173,7 @@ def build_guard_report(
         "status": status,
         "warnings": warnings,
         "closed_signals": closed,
+        "validation_basis": validation_basis,
         "model_age_days": model_age,
         "limits": {
             "min_closed_signals": MIN_CLOSED_SIGNALS,
