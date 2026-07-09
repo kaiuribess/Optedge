@@ -608,6 +608,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Chain-ready shortlist" in html
     assert "Needs refresh" in html
     assert "leaderboard_needs_refresh" in html
+    assert "includeRefreshScan=false" in html
+    assert "Fresh scan" in html
+    assert "btn.textContent = 'Starting...'" in html
     assert "lookupHistoryTable" in html
     assert "Thesis return" in html
     assert "Review age" in html

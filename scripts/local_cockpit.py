@@ -17488,12 +17488,15 @@ function lookupHistoryBreakdown(summary) {
       ${table(summary.by_route || [], true)}
     </div>`;
 }
-function lookupHistoryActionButtons(row) {
+function lookupHistoryActionButtons(row, includeRefreshScan=false) {
   const query = row.query || row.symbol || '';
   const report = row.report || '';
   const open = report ? `<a class="btn" href="${escAttr(report)}" target="_blank">Open</a>` : '';
   const again = query ? `<button class="btn lookup-history-repeat-btn" type="button" data-query="${escAttr(query)}">Lookup</button>` : '';
   const watch = query ? `<button class="btn lookup-history-watch-btn" type="button" data-query="${escAttr(query)}">Watch</button>` : '';
+  const refreshScan = query && includeRefreshScan
+    ? `<button class="btn lookup-history-scan-btn" type="button" data-query="${escAttr(query)}">Fresh scan</button>`
+    : '';
   const paper = query && row.can_export_paper_candidate
     ? `<button class="btn lookup-history-paper-btn" type="button" data-query="${escAttr(query)}">Paper</button>`
     : '';
@@ -17505,9 +17508,9 @@ function lookupHistoryActionButtons(row) {
         data-min-dte="${escAttr(row.chain_min_dte || '')}"
         data-max-dte="${escAttr(row.chain_max_dte || '')}">Chain</button>`
     : '';
-  return `${open} ${again} ${watch} ${paper} ${chain}` || '-';
+  return `${open} ${again} ${refreshScan} ${watch} ${paper} ${chain}` || '-';
 }
-function lookupHistoryLeaderboardTable(rows) {
+function lookupHistoryLeaderboardTable(rows, includeRefreshScan=false) {
   if (!rows || rows.length === 0) return '<div class="empty">No rows yet.</div>';
   return `<div class="table-wrap"><table><thead><tr>
     <th>Symbol</th><th>Thesis</th><th>Status</th><th>Age</th><th>Direction</th><th>Score</th><th>Action</th><th>Risk</th><th>Moves</th>
@@ -17520,7 +17523,7 @@ function lookupHistoryLeaderboardTable(rows) {
     <td>${cell(row.swing_score)}</td>
     <td>${cell(row.action)}</td>
     <td>${cell(row.risk)}</td>
-    <td>${lookupHistoryActionButtons(row)}</td>
+    <td>${lookupHistoryActionButtons(row, includeRefreshScan)}</td>
   </tr>`).join('')}</tbody></table></div>`;
 }
 function lookupHistoryLeaderboard(summary) {
@@ -17544,7 +17547,7 @@ function lookupHistoryLeaderboard(summary) {
     </div>
     <div class="brief-list">
       <h4>Needs refresh</h4>
-      ${lookupHistoryLeaderboardTable(summary.leaderboard_needs_refresh || [])}
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_needs_refresh || [], true)}
     </div>`;
 }
 function wireLookupHistoryActions() {
@@ -17578,9 +17581,24 @@ function wireLookupHistoryActions() {
     btn.addEventListener('click', async () => {
       const query = btn.dataset.query || '';
       if (!query) return;
+      btn.disabled = true;
+      const oldLabel = btn.textContent;
+      btn.textContent = 'Starting...';
       $('symbol').value = query;
-      await runSymbol();
-      scrollToId('jobs');
+      try {
+        const started = await runSymbol();
+        if (!started) {
+          btn.disabled = false;
+          btn.textContent = oldLabel;
+          return;
+        }
+        btn.textContent = 'Started';
+        scrollToId('jobs');
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = oldLabel;
+        $('lookup-status').textContent = 'Could not start scan: ' + String(err);
+      }
     });
   });
   document.querySelectorAll('.lookup-history-paper-btn').forEach(btn => {
@@ -17645,7 +17663,7 @@ async function lookup() {
 }
 async function runSymbol() {
   const query = $('symbol').value.trim();
-  if (!query) return;
+  if (!query) return false;
   $('lookup-status').textContent = 'Resolving symbol and starting focused scan...';
   const res = await fetch('/api/run-symbol', {
     method: 'POST',
@@ -17660,10 +17678,11 @@ async function runSymbol() {
   const data = await res.json();
   if (!res.ok || data.ok === false) {
     $('lookup-status').textContent = 'Could not start scan: ' + (data.error || 'unknown error');
-    return;
+    return false;
   }
   $('lookup-status').textContent = `Started focused scan for ${data.symbol}. You can keep using the cockpit while it runs.`;
   await loadJobs();
+  return true;
 }
 $('lookup').addEventListener('click', lookup);
 $('run-symbol').addEventListener('click', runSymbol);
