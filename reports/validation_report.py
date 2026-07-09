@@ -465,6 +465,45 @@ def _closed_with_slippage(closed: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
+    if closed.empty:
+        return {
+            "learning_eligible_closed_positions": 0,
+            "learning_excluded_closed_positions": 0,
+            "same_scan_dynamic_exits": 0,
+            "learning_closed_trading_days": 0,
+        }
+    try:
+        from backtest.exit_learning import (
+            MIN_LEARNING_HOLD_HOURS, eligible_closed_for_learning,
+        )
+
+        eligible = eligible_closed_for_learning(asset, closed)
+    except Exception:
+        MIN_LEARNING_HOLD_HOURS = 1.0
+        eligible = pd.DataFrame()
+    asset_rows = closed[closed.get("asset", "") == asset].copy()
+    entry = pd.to_datetime(asset_rows.get("entry_time"), errors="coerce", utc=True)
+    exit_time = pd.to_datetime(asset_rows.get("exit_time"), errors="coerce", utc=True)
+    if isinstance(entry, pd.Series) and isinstance(exit_time, pd.Series):
+        holding_hours = (exit_time - entry).dt.total_seconds() / 3600.0
+    else:
+        holding_hours = pd.Series(np.nan, index=asset_rows.index)
+    reasons = asset_rows.get("exit_reason", pd.Series("", index=asset_rows.index)).fillna("").astype(str)
+    same_scan = int((reasons.eq("dynamic_exit") & (
+        holding_hours.isna() | (holding_hours < MIN_LEARNING_HOLD_HOURS)
+    )).sum())
+    date_source = eligible.get("entry_time", eligible.get("exit_time", pd.Series(dtype=str)))
+    trading_days = int(pd.to_datetime(date_source, errors="coerce", utc=True).dt.date.nunique()) \
+        if not eligible.empty else 0
+    return {
+        "learning_eligible_closed_positions": int(len(eligible)),
+        "learning_excluded_closed_positions": int(max(0, len(asset_rows) - len(eligible))),
+        "same_scan_dynamic_exits": same_scan,
+        "learning_closed_trading_days": trading_days,
+    }
+
+
 def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, Any]:
     out = {}
     reviews = _load_exit_reviews()
@@ -506,6 +545,7 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
             ),
             "pnl_pct_column": "pnl_pct" if "pnl_pct" in closed_sub.columns else None,
         }
+        out[asset].update(_learning_sample_stats(asset, closed))
     return out
 
 
@@ -788,6 +828,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     open_count = int(len(open_df))
     overall = _stats(closed)
     after_slippage = _stats(closed, "pnl_pct_after_slippage")
+    assets = _asset_breakdown(open_df, closed)
 
     warnings = []
     if scope != "all_time" and cutoff is not None:
@@ -806,6 +847,13 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         warnings.append(f"Max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}.")
     if overall.get("win_rate") is not None and overall["win_rate"] < BREAKEVEN_WIN_RATE:
         warnings.append(f"Win rate is below the simple breakeven threshold: {_fmt_pct(overall['win_rate'])}.")
+    option_learning = assets.get("option", {}) if isinstance(assets, dict) else {}
+    same_scan_dynamic = int(option_learning.get("same_scan_dynamic_exits") or 0)
+    if same_scan_dynamic:
+        warnings.append(
+            f"Detected {same_scan_dynamic} same-scan dynamic option exit(s). They remain in performance metrics "
+            "but are excluded from exit-policy learning as lifecycle churn."
+        )
 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -828,7 +876,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "overall": overall,
         "all_time_overall": _stats(all_time_closed),
         "after_slippage": after_slippage,
-        "assets": _asset_breakdown(open_df, closed),
+        "assets": assets,
         "exit_reviews": _exit_review_summary(),
         "exit_effectiveness": _exit_effectiveness(closed),
         "exit_policy": _exit_policy_summary(),
@@ -921,6 +969,9 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             f"<td>{html.escape(str(asset))}</td>"
             f"<td>{int(row.get('open_positions') or 0)}</td>"
             f"<td>{int(row.get('closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('learning_eligible_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('learning_excluded_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('learning_closed_trading_days') or 0)}</td>"
             f"<td>{_fmt_pct(overall.get('win_rate'))}</td>"
             f"<td>{_fmt_pct(overall.get('avg_return'))}</td>"
             f"<td>{_fmt_pct(overall.get('median_return'))}</td>"
@@ -934,7 +985,7 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th>"
+        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Learnable</th><th>Excluded churn</th><th>Learning days</th>"
         "<th>Win rate</th><th>Avg return</th><th>Median</th><th>Max DD</th>"
         "<th>Profit factor</th><th>Exit actions</th><th>Learned exits</th>"
         "<th>P&L dollars</th><th>P&L points</th><th>Exit reasons</th></tr></thead>"

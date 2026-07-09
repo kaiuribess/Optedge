@@ -227,6 +227,50 @@ def test_summary_exposes_equity_curve_assumption():
             validation_report.LOGS_DIR = old_logs
 
 
+def test_validation_keeps_churn_in_performance_but_excludes_it_from_learning():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            _write_json(
+                validation_report.DATA_DIR / "closed_positions.json",
+                [
+                    {
+                        "position_id": "same-scan",
+                        "ticker": "AAA",
+                        "entry_time": "2026-01-02T15:00:00+00:00",
+                        "exit_time": "2026-01-02T15:00:00+00:00",
+                        "exit_reason": "dynamic_exit",
+                        "pnl_pct": 0.0,
+                    },
+                    {
+                        "position_id": "real-swing",
+                        "ticker": "BBB",
+                        "entry_time": "2026-01-02T15:00:00+00:00",
+                        "exit_time": "2026-01-04T15:00:00+00:00",
+                        "exit_reason": "hard_target",
+                        "pnl_pct": 0.5,
+                    },
+                ],
+            )
+            summary = validation_report.build_summary(scope="all_time")
+            option = summary["assets"]["option"]
+            assert summary["closed_positions"] == 2
+            assert option["closed_positions"] == 2
+            assert option["learning_eligible_closed_positions"] == 1
+            assert option["learning_excluded_closed_positions"] == 1
+            assert option["same_scan_dynamic_exits"] == 1
+            assert any("same-scan dynamic option exit" in warning for warning in summary["warnings"])
+            html = validation_report.render_html(summary)
+            assert "Learnable" in html
+            assert "Excluded churn" in html
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
 def _assert_valid_png(path: Path):
     data = path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
@@ -276,6 +320,7 @@ if __name__ == "__main__":
     test_max_drawdown_includes_starting_equity()
     test_validation_drawdown_uses_normalized_signal_allocation()
     test_summary_exposes_equity_curve_assumption()
+    test_validation_keeps_churn_in_performance_but_excludes_it_from_learning()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("11/11 validation report tests passed")
+    print("12/12 validation report tests passed")

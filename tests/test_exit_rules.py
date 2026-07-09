@@ -12,11 +12,13 @@ from backtest import exit_rules
 
 def test_exit_pressure_blocks_on_research_guard():
     review = exit_rules.compute_exit_pressure(
-        {"ticker": "XYZ", "research_guard_status": "blocked_spread", "stop_price": 8, "entry_price": 10},
+        {"ticker": "XYZ", "research_guard_status": "blocked_spread", "stop_price": 8, "entry_price": 10,
+         "age_days": 0.0},
         asset="share",
     )
     assert review["action"] == "close_early"
     assert "research guard blocked" in review["reasons"]
+    assert review["grace_period_active"] is False
 
 
 def test_exit_pressure_tightens_on_confidence_collapse():
@@ -26,6 +28,18 @@ def test_exit_pressure_tightens_on_confidence_collapse():
         asset="share",
     )
     assert review["action"] in {"tighten_stop", "close_early"}
+
+
+def test_dynamic_exit_grace_prevents_same_scan_soft_close():
+    review = exit_rules.compute_exit_pressure(
+        {"ticker": "XYZ", "confidence": 90, "stop_price": 8, "entry_price": 10,
+         "current_price": 10, "unrealized_pct": 0.0, "age_days": 0.0},
+        {"confidence": 30},
+        asset="share",
+    )
+    assert review["action"] == "watch"
+    assert review["grace_period_active"] is True
+    assert "dynamic exit grace period" in review["reasons"]
 
 
 def test_dynamic_exit_logging_writes_jsonl():
@@ -46,5 +60,6 @@ def test_dynamic_exit_logging_writes_jsonl():
 if __name__ == "__main__":
     test_exit_pressure_blocks_on_research_guard()
     test_exit_pressure_tightens_on_confidence_collapse()
+    test_dynamic_exit_grace_prevents_same_scan_soft_close()
     test_dynamic_exit_logging_writes_jsonl()
-    print("3/3 exit rules tests passed")
+    print("4/4 exit rules tests passed")

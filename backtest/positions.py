@@ -41,7 +41,7 @@ DATA_DIR = ROOT / "data"
 OPEN_FILE   = DATA_DIR / "open_positions.json"
 CLOSED_FILE = DATA_DIR / "closed_positions.json"
 
-OPTION_KEY_COLS = ("ticker", "side", "strike", "expiry")
+REENTRY_COOLDOWN_HOURS = 24.0
 TRACKED_SIGNAL_PREFIXES = ("z_", "factor_")
 TRACKED_SIGNAL_COLS = {
     "rank_score", "fused_score", "confidence", "ev_pct", "kelly_pct",
@@ -117,8 +117,17 @@ def _save(path: Path, rows: List[Dict]) -> None:
         log.warning("positions save %s: %s", path.name, e)
 
 
-def _option_key(row: Dict) -> Tuple:
-    return tuple(row.get(c) for c in OPTION_KEY_COLS)
+def _option_key(row: Dict) -> Optional[Tuple]:
+    ticker = str(row.get("ticker") or "").strip().upper()
+    side = str(row.get("side") or "").strip().lower()
+    expiry = str(row.get("expiry") or "").strip()
+    try:
+        strike = round(float(row.get("strike")), 4)
+    except Exception:
+        return None
+    if not ticker or side not in {"call", "put"} or not expiry:
+        return None
+    return ticker, side, strike, expiry
 
 
 def _signal_map(current_signals: Optional[pd.DataFrame]) -> Dict[Tuple, Dict]:
@@ -126,37 +135,74 @@ def _signal_map(current_signals: Optional[pd.DataFrame]) -> Dict[Tuple, Dict]:
         return {}
     out = {}
     for _, r in current_signals.iterrows():
-        out[tuple(r.get(c) for c in OPTION_KEY_COLS)] = r.to_dict()
+        row = r.to_dict()
+        key = _option_key(row)
+        if key is not None:
+            out[key] = row
     return out
 
 
-def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
+def _recently_closed_option_keys(asof: datetime, cooldown_hours: float) -> set[Tuple]:
+    if cooldown_hours <= 0:
+        return set()
+    now = pd.Timestamp(_asof_utc(asof))
+    recent: set[Tuple] = set()
+    for row in _load(CLOSED_FILE):
+        exit_time = pd.to_datetime(row.get("exit_time"), errors="coerce", utc=True)
+        if pd.isna(exit_time):
+            continue
+        age_hours = (now - exit_time).total_seconds() / 3600.0
+        if 0 <= age_hours < cooldown_hours:
+            key = _option_key(row)
+            if key is not None:
+                recent.add(key)
+    return recent
+
+
+def _option_position_id(key: Tuple, entry_time: str) -> str:
+    ticker, side, strike, expiry = key
+    return f"option|{ticker}|{side}|{float(strike):g}|{expiry}|{entry_time}"
+
+
+def add_new_signals(new_signals: pd.DataFrame, asof: datetime,
+                    reentry_cooldown_hours: float = REENTRY_COOLDOWN_HOURS) -> int:
     """Insert any new (ticker, side, strike, expiry) tuples not already open.
     Returns the number of new positions added."""
     if new_signals is None or new_signals.empty:
         return 0
+    now = _asof_utc(asof)
     open_rows = _load(OPEN_FILE)
-    existing = {_option_key(r) for r in open_rows}
+    existing = {key for row in open_rows if (key := _option_key(row)) is not None}
+    recently_closed = _recently_closed_option_keys(now, reentry_cooldown_hours)
     added = 0
     for _, s in new_signals.iterrows():
         if not _is_actionable_signal(s):
             continue
-        key = (s.get("ticker"), s.get("side"), s.get("strike"), s.get("expiry"))
-        if key in existing or any(v is None for v in key):
+        key = _option_key(s.to_dict())
+        if key is None or key in existing or key in recently_closed:
             continue
+        expiry_dt = _expiry_datetime(s.to_dict())
+        if expiry_dt is not None and now.date() > expiry_dt.date():
+            continue
+        entry_time = now.isoformat()
+        entry_price = s.get("mid")
+        if not _positive_float(entry_price):
+            entry_price = s.get("entry_price")
         row = {
+            "asset": "option",
+            "position_id": _option_position_id(key, entry_time),
             "ticker": s.get("ticker"),
             "side": s.get("side"),
             "strike": float(s.get("strike") or 0),
             "expiry": s.get("expiry"),
             "dte_at_entry": int(s.get("dte") or 0),
-            "entry_price": float(s.get("mid") or 0),
+            "entry_price": float(entry_price or 0),
             "entry_spot":  float(s.get("spot") or 0),
             "entry_iv":    float(s.get("iv_market") or 0),
             "entry_delta": float(s.get("delta") or 0),
             "spread_pct":  float(s.get("spread_pct") or 0),
             "net_edge_pct": float(s.get("net_edge_pct") or 0),
-            "entry_time":  asof.isoformat(),
+            "entry_time":  entry_time,
             "fused_score": float(s.get("fused_score") or 0),
             "confidence":  float(s.get("confidence") or 0),
             "suggested_contracts": int(float(s.get("suggested_contracts") or 0)),
@@ -180,6 +226,7 @@ def add_new_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
                     value = value.item()
                 row[str(col)] = value
         open_rows.append(row)
+        existing.add(key)
         added += 1
     if added:
         _save(OPEN_FILE, open_rows)
@@ -230,6 +277,16 @@ def _expiry_datetime(pos: Dict) -> Optional[datetime]:
         return parsed.to_pydatetime()
     except Exception:
         return None
+
+
+def _is_expired(pos: Dict, now: datetime) -> bool:
+    exp_dt = _expiry_datetime(pos)
+    if exp_dt is None:
+        return False
+    raw = str(pos.get("expiry") or "").strip()
+    if raw and "T" not in raw:
+        return now.date() > exp_dt.date()
+    return now >= exp_dt
 
 
 def _age_days(pos: Dict, now: datetime) -> Optional[float]:
@@ -311,8 +368,7 @@ def close_expired_positions(asof: Optional[datetime] = None,
     still_open: List[Dict] = []
     newly_closed: List[Dict] = []
     for pos in open_rows:
-        exp_dt = _expiry_datetime(pos)
-        if exp_dt is not None and now >= exp_dt:
+        if _is_expired(pos, now):
             newly_closed.append(_expired_close_row(pos, now, chain_blobs))
         else:
             still_open.append(pos)
@@ -397,12 +453,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
         except Exception:
             age_days = None
         # Check expiry first — if past today, close it
-        try:
-            exp_dt = datetime.strptime(str(pos.get("expiry")), "%Y-%m-%d") \
-                              .replace(tzinfo=timezone.utc)
-        except Exception:
-            exp_dt = None
-        is_expired = exp_dt is not None and now >= exp_dt
+        is_expired = _is_expired(pos, now)
         cur_mid = _current_mid_for_position(pos, chains)
         if is_expired:
             entry = float(pos.get("entry_price") or 0)

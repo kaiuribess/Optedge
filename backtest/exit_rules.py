@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 EXIT_REVIEWS_FILE = DATA_DIR / "exit_reviews.jsonl"
+MIN_DYNAMIC_EXIT_AGE_HOURS = 1.0
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -200,6 +201,20 @@ def compute_exit_pressure(position: Dict[str, Any],
     else:
         action = "hold"
 
+    age_value = position.get("age_days")
+    grace_period_active = False
+    if age_value is not None:
+        age_hours = max(0.0, _num(age_value)) * 24.0
+        hard_guard_block = "research guard blocked" in reasons
+        if (
+            age_hours < MIN_DYNAMIC_EXIT_AGE_HOURS
+            and action in {"tighten_stop", "close_early"}
+            and not hard_guard_block
+        ):
+            action = "watch"
+            grace_period_active = True
+            reasons.append("dynamic exit grace period")
+
     old_stop = position.get("stop_price")
     new_stop = _tightened_stop(position, asset, current_price) if action == "tighten_stop" else None
     return {
@@ -224,6 +239,7 @@ def compute_exit_pressure(position: Dict[str, Any],
         "reasons": reasons,
         "used_learned_policy": learned,
         "policy_version": policy.get("policy_version", "default"),
+        "grace_period_active": grace_period_active,
     }
 
 

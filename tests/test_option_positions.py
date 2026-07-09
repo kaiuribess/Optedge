@@ -1,7 +1,7 @@
 import sys
 import tempfile
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -24,7 +24,7 @@ def _valid_row(**overrides):
         "ticker": "AAPL",
         "side": "call",
         "strike": 200.0,
-        "expiry": "2026-06-18",
+        "expiry": "2099-06-18",
         "dte": 30,
         "mid": 2.0,
         "spot": 190.0,
@@ -50,6 +50,9 @@ def test_option_position_adds_trade_row():
             )
             assert added == 1
             assert positions.summary()["open_count"] == 1
+            row = json.loads(positions.OPEN_FILE.read_text())[0]
+            assert row["asset"] == "option"
+            assert row["position_id"].startswith("option|AAPL|call|200|2099-06-18|")
         finally:
             positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE = old_data, old_open, old_closed
 
@@ -95,6 +98,63 @@ def test_option_position_skips_zero_contract_row():
             )
             assert added == 0
             assert positions.summary()["open_count"] == 0
+        finally:
+            positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE = old_data, old_open, old_closed
+
+
+def test_option_position_dedupes_duplicate_rows_in_same_batch():
+    with tempfile.TemporaryDirectory() as td:
+        old_data, old_open, old_closed = positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE
+        _patch_files(td)
+        try:
+            added = positions.add_new_signals(
+                pd.DataFrame([_valid_row(), _valid_row()]),
+                datetime.now(timezone.utc),
+            )
+            assert added == 1
+            assert positions.summary()["open_count"] == 1
+        finally:
+            positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE = old_data, old_open, old_closed
+
+
+def test_option_position_respects_reentry_cooldown():
+    with tempfile.TemporaryDirectory() as td:
+        old_data, old_open, old_closed = positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE
+        _patch_files(td)
+        try:
+            asof = datetime.now(timezone.utc)
+            positions.CLOSED_FILE.write_text(json.dumps([{
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2099-06-18",
+                "exit_time": (asof - timedelta(hours=1)).isoformat(),
+                "exit_reason": "dynamic_exit",
+            }]))
+            added = positions.add_new_signals(pd.DataFrame([_valid_row()]), asof)
+            assert added == 0
+            assert positions.summary()["open_count"] == 0
+        finally:
+            positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE = old_data, old_open, old_closed
+
+
+def test_option_position_stays_open_through_expiration_date():
+    with tempfile.TemporaryDirectory() as td:
+        old_data, old_open, old_closed = positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE
+        _patch_files(td)
+        try:
+            asof = datetime(2026, 6, 18, 20, 0, tzinfo=timezone.utc)
+            positions.OPEN_FILE.write_text(json.dumps([{
+                "ticker": "AAPL",
+                "side": "call",
+                "strike": 200.0,
+                "expiry": "2026-06-18",
+                "entry_price": 2.0,
+                "entry_time": "2026-06-01T00:00:00+00:00",
+            }]))
+            summary = positions.close_expired_positions(asof, log_reviews=False)
+            assert summary["closed_this_iter"] == 0
+            assert summary["open"] == 1
         finally:
             positions.DATA_DIR, positions.OPEN_FILE, positions.CLOSED_FILE = old_data, old_open, old_closed
 
@@ -180,6 +240,9 @@ if __name__ == "__main__":
     test_option_position_skips_watch_row()
     test_option_position_skips_blocked_guard_row()
     test_option_position_skips_zero_contract_row()
+    test_option_position_dedupes_duplicate_rows_in_same_batch()
+    test_option_position_respects_reentry_cooldown()
+    test_option_position_stays_open_through_expiration_date()
     test_option_position_closes_expired_without_chain_reprice()
     test_option_position_expiry_uses_chain_spot_when_available()
-    print("6/6 option position tests passed")
+    print("9/9 option position tests passed")

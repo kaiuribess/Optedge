@@ -13,6 +13,11 @@ DATA_DIR = ROOT / "data"
 POLICY_FILE = DATA_DIR / "exit_policy.json"
 POLICY_HISTORY_FILE = DATA_DIR / "exit_policy_history.jsonl"
 EXIT_REVIEWS_FILE = DATA_DIR / "exit_reviews.jsonl"
+MIN_LEARNING_CLOSED_POSITIONS = 100
+MIN_LEARNING_EXIT_REVIEWS = 20
+MIN_LEARNING_TRADING_DAYS = 10
+MIN_LEARNING_HOLD_HOURS = 1.0
+MAX_POLICY_AGE_DAYS = 14
 
 DEFAULT_POLICY = {
     "policy_version": "default",
@@ -49,12 +54,22 @@ def _deepcopy_default() -> Dict[str, Any]:
     return json.loads(json.dumps(DEFAULT_POLICY))
 
 
+def _policy_is_stale(policy: Dict[str, Any]) -> bool:
+    generated = pd.to_datetime(policy.get("generated_at"), errors="coerce", utc=True)
+    if pd.isna(generated):
+        return True
+    age_days = (pd.Timestamp.now(tz="UTC") - generated).total_seconds() / 86400.0
+    return age_days > MAX_POLICY_AGE_DAYS
+
+
 def load_exit_policy() -> Dict[str, Any]:
     if not POLICY_FILE.exists():
         return _deepcopy_default()
     try:
         data = json.loads(POLICY_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or "assets" not in data:
+            return _deepcopy_default()
+        if _policy_is_stale(data):
             return _deepcopy_default()
         default = _deepcopy_default()
         for asset, defaults in default["assets"].items():
@@ -113,15 +128,79 @@ def _reviews() -> pd.DataFrame:
     return _load_jsonl(EXIT_REVIEWS_FILE)
 
 
+def _asset_rows(frame: pd.DataFrame, asset: str) -> pd.DataFrame:
+    if frame.empty or "asset" not in frame.columns:
+        return pd.DataFrame()
+    return frame[frame["asset"].astype(str) == asset].copy()
+
+
+def _episode_id(row: pd.Series, asset: str) -> str:
+    position_id = str(row.get("position_id") or "").strip()
+    if position_id and position_id.lower() not in {"none", "nan"}:
+        return position_id
+    if asset == "option":
+        keys = ("ticker", "side", "strike", "expiry", "entry_time")
+    elif asset == "futures":
+        keys = ("symbol", "direction", "contract", "entry_time")
+    else:
+        keys = ("ticker", "entry_time")
+    return "|".join(str(row.get(key) or "") for key in keys)
+
+
+def _holding_hours(closed: pd.DataFrame) -> pd.Series:
+    missing = pd.Series(pd.NaT, index=closed.index, dtype="datetime64[ns, UTC]")
+    entry = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True) \
+        if "entry_time" in closed.columns else missing
+    exit_time = pd.to_datetime(closed["exit_time"], errors="coerce", utc=True) \
+        if "exit_time" in closed.columns else missing
+    hours = (exit_time - entry).dt.total_seconds() / 3600.0
+    if "age_days" in closed.columns:
+        fallback = pd.to_numeric(closed["age_days"], errors="coerce") * 24.0
+        hours = hours.where(hours.notna(), fallback)
+    return hours
+
+
+def eligible_closed_for_learning(asset: str, closed_positions: pd.DataFrame) -> pd.DataFrame:
+    """Return independent outcomes suitable for adapting exit thresholds.
+
+    Same-scan dynamic exits are execution churn, not swing-trade evidence. Hard
+    stops and targets remain eligible because they are price-triggered risk exits.
+    """
+    closed = _asset_rows(closed_positions, asset)
+    if closed.empty:
+        return closed
+    closed["_holding_hours"] = _holding_hours(closed)
+    reasons = closed.get("exit_reason", pd.Series("", index=closed.index)).fillna("").astype(str)
+    immediate_dynamic = reasons.eq("dynamic_exit") & (
+        closed["_holding_hours"].isna()
+        | (closed["_holding_hours"] < MIN_LEARNING_HOLD_HOURS)
+    )
+    closed = closed[~immediate_dynamic].copy()
+    if closed.empty:
+        return closed
+    closed["_learning_episode_id"] = closed.apply(lambda row: _episode_id(row, asset), axis=1)
+    return closed.drop_duplicates("_learning_episode_id", keep="last")
+
+
+def _distinct_trading_days(rows: pd.DataFrame, primary: str, fallback: str) -> int:
+    if rows.empty:
+        return 0
+    source = rows.get(primary)
+    if source is None:
+        source = rows.get(fallback, pd.Series(dtype=str))
+    parsed = pd.to_datetime(source, errors="coerce", utc=True)
+    return int(parsed.dt.date.nunique())
+
+
 def enough_data_for_learning(asset: str, closed_positions: pd.DataFrame,
                              exit_reviews: pd.DataFrame) -> bool:
-    closed = closed_positions[closed_positions.get("asset", "") == asset] if not closed_positions.empty else pd.DataFrame()
-    reviews = exit_reviews[exit_reviews.get("asset", "") == asset] if not exit_reviews.empty else pd.DataFrame()
-    if len(closed) < 100 or len(reviews) < 20:
+    closed = eligible_closed_for_learning(asset, closed_positions)
+    reviews = _asset_rows(exit_reviews, asset)
+    if len(closed) < MIN_LEARNING_CLOSED_POSITIONS or len(reviews) < MIN_LEARNING_EXIT_REVIEWS:
         return False
-    date_source = reviews.get("timestamp", reviews.get("entry_time", pd.Series(dtype=str)))
-    days = pd.to_datetime(date_source, errors="coerce", utc=True).dt.date.nunique()
-    return days >= 10
+    closed_days = _distinct_trading_days(closed, "entry_time", "exit_time")
+    review_days = _distinct_trading_days(reviews, "timestamp", "entry_time")
+    return closed_days >= MIN_LEARNING_TRADING_DAYS and review_days >= MIN_LEARNING_TRADING_DAYS
 
 
 def _clamp_thresholds(asset_policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -144,11 +223,11 @@ def _learn_asset(asset: str, current: Dict[str, Any],
                  closed: pd.DataFrame, reviews: pd.DataFrame) -> tuple[Dict[str, Any], list[str]]:
     policy = dict(current)
     reasons = []
-    c = closed[closed["asset"] == asset].copy()
-    r = reviews[reviews["asset"] == asset].copy()
+    c = eligible_closed_for_learning(asset, closed)
+    r = _asset_rows(reviews, asset)
     if not enough_data_for_learning(asset, closed, reviews):
-        policy["learned_active"] = False
-        return policy, ["insufficient sample size"]
+        policy = dict(_deepcopy_default()["assets"].get(asset, {}))
+        return policy, ["insufficient independent sample size"]
 
     r["exit_pressure"] = pd.to_numeric(r.get("exit_pressure"), errors="coerce")
     c["pnl_pct"] = pd.to_numeric(c.get("pnl_pct"), errors="coerce")
@@ -195,10 +274,15 @@ def refit_exit_policy() -> Dict[str, Any]:
     for asset, defaults in default["assets"].items():
         old = old_assets.get(asset, defaults)
         learned, reasons = _learn_asset(asset, old, closed, reviews)
+        raw_closed = _asset_rows(closed, asset)
+        eligible_closed = eligible_closed_for_learning(asset, closed)
         new_policy["assets"][asset] = learned
         history["assets"][asset] = {
-            "closed_positions": int(len(closed[closed.get("asset", "") == asset])) if not closed.empty else 0,
-            "exit_reviews": int(len(reviews[reviews.get("asset", "") == asset])) if not reviews.empty else 0,
+            "closed_positions": int(len(raw_closed)),
+            "learning_eligible_closed_positions": int(len(eligible_closed)),
+            "excluded_closed_positions": int(max(0, len(raw_closed) - len(eligible_closed))),
+            "closed_trading_days": _distinct_trading_days(eligible_closed, "entry_time", "exit_time"),
+            "exit_reviews": int(len(_asset_rows(reviews, asset))),
             "old_thresholds": {
                 "watch": old.get("watch_pressure_threshold"),
                 "tighten": old.get("tighten_pressure_threshold"),
@@ -221,6 +305,11 @@ def refit_exit_policy() -> Dict[str, Any]:
 
 def get_policy_for_asset(asset: str) -> Dict[str, Any]:
     policy = load_exit_policy()
-    out = dict(policy.get("assets", {}).get(asset, _deepcopy_default()["assets"].get(asset, {})))
-    out["policy_version"] = policy.get("policy_version", "default")
+    defaults = _deepcopy_default()["assets"].get(asset, {})
+    out = dict(policy.get("assets", {}).get(asset, defaults))
+    if not out.get("learned_active", False):
+        out = dict(defaults)
+        out["policy_version"] = "default"
+        return out
+    out["policy_version"] = policy.get("policy_version", "unknown")
     return out

@@ -37,8 +37,11 @@ It also separates options, shares, and futures:
 - Dynamic versus hard-exit effectiveness where closed samples exist.
 - Futures `pnl_points` and `pnl_dollars` when available.
 - Current exit policy and whether learned exits are active per asset.
+- Learning-eligible closures, excluded churn, and distinct closed-entry days by asset.
 
 Dynamic/self-learning exits should be judged only after enough closed outcomes exist. Early reports will usually warn that sample size is too small.
+
+Performance metrics retain every closed recommendation, including same-scan exits, so poor lifecycle behavior is not hidden. Exit-policy learning uses a stricter subset: same-scan dynamic exits and duplicate episodes are excluded, and learned thresholds fall back to defaults when the policy is stale or the independent sample is under the activation minimum.
 
 ## Sample Size
 
