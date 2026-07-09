@@ -360,7 +360,8 @@ def _bucket_performance(df: pd.DataFrame, source_col: str, buckets: List[Tuple[f
     return sorted(rows, key=lambda r: r["bucket"])
 
 
-def _factor_ic(closed: pd.DataFrame, min_n: int = 5) -> List[Dict[str, Any]]:
+def _factor_ic(closed: pd.DataFrame, min_n: int = 5,
+               min_reliable_n: int = 100, min_reliable_days: int = 10) -> List[Dict[str, Any]]:
     """Per-factor information coefficient from closed positions.
 
     The position tracker now preserves factor z-columns at entry, so each
@@ -371,21 +372,38 @@ def _factor_ic(closed: pd.DataFrame, min_n: int = 5) -> List[Dict[str, Any]]:
     z_cols = [c for c in closed.columns if str(c).startswith("z_")]
     rows = []
     for col in z_cols:
-        sub = closed[[col, "pnl_pct"]].copy()
+        keep = [col, "pnl_pct"] + (["entry_time"] if "entry_time" in closed.columns else [])
+        sub = closed[keep].copy()
         sub[col] = pd.to_numeric(sub[col], errors="coerce")
         sub["pnl_pct"] = pd.to_numeric(sub["pnl_pct"], errors="coerce")
-        sub = sub.dropna()
+        sub = sub.dropna(subset=[col, "pnl_pct"])
         if len(sub) < min_n or sub[col].nunique() < 2:
             continue
         ic = sub[col].corr(sub["pnl_pct"])
         if pd.isna(ic):
             continue
+        trading_days = (
+            int(pd.to_datetime(sub["entry_time"], errors="coerce", utc=True).dt.date.nunique())
+            if "entry_time" in sub.columns else 0
+        )
+        is_reliable = len(sub) >= min_reliable_n and trading_days >= min_reliable_days
+        if not is_reliable:
+            reliability = "insufficient_history"
+        elif ic >= 0.03:
+            reliability = "supportive"
+        elif ic <= -0.03:
+            reliability = "adverse"
+        else:
+            reliability = "weak"
         rows.append({
             "factor": col.replace("z_", ""),
             "z_col": col,
             "n": int(len(sub)),
+            "trading_days": trading_days,
             "ic": float(ic),
             "avg_score": float(sub[col].mean()),
+            "reliability": reliability,
+            "is_reliable": is_reliable,
         })
     return sorted(rows, key=lambda r: abs(r["ic"]), reverse=True)
 
@@ -846,6 +864,8 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     swing_eligible_count = int(len(swing_eligible))
     swing_eligible_overall = _stats(swing_eligible)
     swing_eligible_after_slippage = _stats(swing_eligible, "pnl_pct_after_slippage")
+    factor_ic = _factor_ic(swing_eligible)
+    all_closure_factor_ic = _factor_ic(closed)
 
     warnings = []
     if scope != "all_time" and cutoff is not None:
@@ -889,6 +909,11 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         warnings.append(
             f"Detected {same_scan_dynamic} same-scan dynamic option exit(s). They remain in performance metrics "
             "but are excluded from exit-policy learning as lifecycle churn."
+        )
+    reliable_factor_count = sum(1 for row in factor_ic if row.get("is_reliable"))
+    if factor_ic and reliable_factor_count == 0:
+        warnings.append(
+            "Factor IC is exploratory: no factor yet has both 100 eligible outcomes and 10 distinct entry days."
         )
 
     summary = {
@@ -941,7 +966,10 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
             (70, 85, "70-84"),
             (85, float("inf"), "85+"),
         ]),
-        "factor_ic": _factor_ic(closed),
+        "factor_ic_basis": "independent_swing_outcomes",
+        "factor_ic_reliable_count": reliable_factor_count,
+        "factor_ic": factor_ic,
+        "all_closure_factor_ic": all_closure_factor_ic,
         "position_aging": _position_aging(open_df),
         "benchmarks": _benchmark_comparison(closed),
         "random_baseline": _random_baseline(_num(closed.get("pnl_pct", pd.Series(dtype=float))).dropna()),
@@ -985,18 +1013,26 @@ def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
     body = []
     for row in rows:
         ic = row.get("ic")
-        color = "#047857" if ic is not None and ic > 0 else "#b91c1c" if ic is not None and ic < 0 else "#475569"
+        reliable = bool(row.get("is_reliable"))
+        color = (
+            "#64748b" if not reliable
+            else "#047857" if ic is not None and ic > 0
+            else "#b91c1c" if ic is not None and ic < 0
+            else "#475569"
+        )
         body.append(
             "<tr>"
             f"<td>{html.escape(str(row.get('factor', '-')))}</td>"
             f"<td>{int(row.get('n') or 0)}</td>"
+            f"<td>{int(row.get('trading_days') or 0)}</td>"
             f"<td style='color:{color};font-weight:600'>{_fmt(ic, 4)}</td>"
             f"<td>{_fmt(row.get('avg_score'), 3)}</td>"
+            f"<td>{html.escape(str(row.get('reliability') or 'unknown'))}</td>"
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>Factor</th><th>n</th><th>IC</th>"
-        "<th>Avg entry z</th></tr></thead>"
+        "<table><thead><tr><th>Factor</th><th>n</th><th>Days</th><th>IC</th>"
+        "<th>Avg entry z</th><th>Reliability</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
 
@@ -1151,7 +1187,8 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
   </div>
 
   <section>
-    <h2>Factor IC</h2>
+    <h2>Factor IC - Independent Swing Sample</h2>
+    <p class="muted">Reliability requires at least 100 eligible outcomes across 10 distinct entry days. Raw all-closure IC remains in validation_summary.json for audit comparison.</p>
     {_factor_ic_table(summary.get("factor_ic", []))}
   </section>
 </main>

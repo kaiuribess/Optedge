@@ -1814,8 +1814,8 @@ def _build_analytics_html(forward_summary=None) -> str:
     else:
         conf_labels = conf_wr_vals = conf_n = conf_pnl = []
 
-    #  7. Factor importance (IC) 
-    factor_labels, factor_ic = [], []
+    #  7. Factor importance (IC) from the independent-swing validation sample.
+    factor_labels, factor_ic, factor_reliability, factor_n, factor_days = [], [], [], [], []
     try:
         ic_rows = json.loads((ROOT / "data" / "factor_ic_summary.json").read_text(encoding="utf-8"))
     except Exception:
@@ -1824,15 +1824,9 @@ def _build_analytics_html(forward_summary=None) -> str:
         for r in ic_rows[:18]:
             factor_labels.append(str(r.get("factor", "")).replace("_", " ").title())
             factor_ic.append(round(float(r.get("ic") or 0), 4))
-    else:
-        z_cols = [c for c in closed.columns if c.startswith("z_")]
-        for col in z_cols:
-            sub = closed[[col, "pnl_pct"]].dropna()
-            if len(sub) >= 5:
-                ic = sub[col].corr(sub["pnl_pct"])
-                if not pd.isna(ic):
-                    factor_labels.append(col.replace("z_", "").replace("_", " ").title())
-                    factor_ic.append(round(ic, 4))
+            factor_reliability.append(str(r.get("reliability") or "insufficient_history"))
+            factor_n.append(int(r.get("n") or 0))
+            factor_days.append(int(r.get("trading_days") or 0))
 
     #  8. Open positions unrealized distribution
     display_open_rows = []
@@ -2068,7 +2062,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     <div id="chart-conf-wr" style="height:240px;"></div>
   </div>
   <div class="chart-box">
-    <h4>Factor IC (correlation w/ realized P&amp;L)</h4>
+    <h4>Factor IC (independent swing outcomes; gray = insufficient history)</h4>
     <div id="chart-factor-ic" style="height:240px;"></div>
   </div>
   <div class="chart-box">
@@ -2193,19 +2187,23 @@ def _build_analytics_html(forward_summary=None) -> str:
   if ({len(conf_labels)} === 0) showEmpty('chart-conf-wr', 'No confidence bucket history yet.');
 
   // 5. Factor IC
-  var icSorted = {J(list(zip(factor_labels, factor_ic)))}.sort((a,b)=>b[1]-a[1]);
+  var icSorted = {J(list(zip(factor_labels, factor_ic, factor_reliability, factor_n, factor_days)))}
+    .sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
   var icLabels = icSorted.map(x=>x[0]), icVals = icSorted.map(x=>x[1]);
-  var icColors = icVals.map(v => v > 0 ? '#10b981' : '#ef4444');
+  var icMeta = icSorted.map(x=>[x[2], x[3], x[4]]);
+  var icColors = icSorted.map(x => x[2] === 'insufficient_history' ? '#64748b' :
+    x[2] === 'supportive' ? '#10b981' : x[2] === 'adverse' ? '#ef4444' : '#f59e0b');
   Plotly.newPlot('chart-factor-ic', [
     {{ x:icVals, y:icLabels, type:'bar', orientation:'h',
        marker:{{color:icColors}},
-       hovertemplate:'%{{y}}<br>IC: %{{x:.4f}}<extra></extra>' }}
+       customdata:icMeta,
+       hovertemplate:'%{{y}}<br>IC: %{{x:.4f}}<br>Reliability: %{{customdata[0]}}<br>n=%{{customdata[1]}} across %{{customdata[2]}} days<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
     xaxis: Object.assign({{}}, DARK.xaxis, {{title:'Information Coefficient (correlation)', zeroline:true}}),
     yaxis: Object.assign({{}}, DARK.yaxis, {{type:'category'}}),
     margin: {{t:10,b:40,l:100,r:15}}
   }}), {{displayModeBar:false, responsive:true}});
-  if (icLabels.length === 0) showEmpty('chart-factor-ic', 'Need at least 5 closed outcomes with factor columns for IC.');
+  if (icLabels.length === 0) showEmpty('chart-factor-ic', 'Run validation to calculate independent-swing factor IC.');
 
   // 6. Position aging
   Plotly.newPlot('chart-position-aging', [

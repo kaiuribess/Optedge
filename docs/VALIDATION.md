@@ -45,6 +45,8 @@ Performance metrics retain every closed recommendation, including same-scan exit
 
 The research guard uses the independent swing sample's after-slippage metrics for entry readiness. Raw all-closure metrics remain alongside it for auditability. A clean raw history therefore cannot override weak drawdown, win rate, or sample size in the independent swing evidence.
 
+Factor IC is also calculated from independent swing outcomes. Each factor is labeled `supportive`, `adverse`, `weak`, or `insufficient_history`; a directional label requires at least 100 eligible outcomes across 10 distinct entry days. Raw all-closure factor IC remains in `validation_summary.json` for comparison, while `factor_ic_summary.json` contains the cleaner independent-swing view used by the dashboard.
+
 ## Sample Size
 
 Closed signal count below 500 is marked as too small. This does not mean the system is broken. It means the research evidence is not mature enough to trust sizing without human review.

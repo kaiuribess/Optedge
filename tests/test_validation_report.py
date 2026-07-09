@@ -278,6 +278,52 @@ def test_validation_keeps_churn_in_performance_but_excludes_it_from_learning():
             validation_report.LOGS_DIR = old_logs
 
 
+def test_factor_ic_uses_independent_swing_sample_and_labels_short_history():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            rows = []
+            for index in range(6):
+                rows.append({
+                    "position_id": f"swing-{index}",
+                    "ticker": "AAA",
+                    "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                    "exit_time": f"2026-01-0{1 + index % 2}T17:00:00+00:00",
+                    "exit_reason": "hard_target",
+                    "pnl_pct": float(index),
+                    "z_alpha": float(index),
+                })
+                rows.append({
+                    "position_id": f"churn-{index}",
+                    "ticker": "BBB",
+                    "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                    "exit_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                    "exit_reason": "dynamic_exit",
+                    "pnl_pct": float(index * -10),
+                    "z_alpha": float(index),
+                })
+            _write_json(validation_report.DATA_DIR / "closed_positions.json", rows)
+
+            summary = validation_report.build_summary(scope="all_time")
+
+            assert summary["factor_ic_basis"] == "independent_swing_outcomes"
+            assert summary["factor_ic_reliable_count"] == 0
+            assert summary["factor_ic"][0]["factor"] == "alpha"
+            assert summary["factor_ic"][0]["n"] == 6
+            assert summary["factor_ic"][0]["trading_days"] == 2
+            assert summary["factor_ic"][0]["ic"] > 0.99
+            assert summary["factor_ic"][0]["reliability"] == "insufficient_history"
+            assert summary["factor_ic"][0]["is_reliable"] is False
+            assert summary["all_closure_factor_ic"][0]["n"] == 12
+            assert summary["all_closure_factor_ic"][0]["ic"] < 0
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
 def _assert_valid_png(path: Path):
     data = path.read_bytes()
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
@@ -328,6 +374,7 @@ if __name__ == "__main__":
     test_validation_drawdown_uses_normalized_signal_allocation()
     test_summary_exposes_equity_curve_assumption()
     test_validation_keeps_churn_in_performance_but_excludes_it_from_learning()
+    test_factor_ic_uses_independent_swing_sample_and_labels_short_history()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("12/12 validation report tests passed")
+    print("13/13 validation report tests passed")
