@@ -11600,6 +11600,16 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         reverse=True,
     )[:6]
+    needs_refresh_rows = sorted(
+        [row for row in rows if bool(row.get("review_stale"))],
+        key=lambda row: (
+            bool(row.get("can_export_paper_candidate")),
+            bool(str(row.get("chain_symbol") or "").strip()),
+            _float_value(row.get("swing_score"), default=-math.inf),
+            _float_value(row.get("review_age_days"), default=-math.inf),
+        ),
+        reverse=True,
+    )[:8]
 
     return {
         "total_saved": total,
@@ -11624,6 +11634,7 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "leaderboard_worst": [leaderboard_row(row) for row in worst_rows],
         "leaderboard_paper_ready": [leaderboard_row(row) for row in paper_ready_rows],
         "leaderboard_chain_ready": [leaderboard_row(row) for row in chain_ready_rows],
+        "leaderboard_needs_refresh": [leaderboard_row(row) for row in needs_refresh_rows],
         "best": pick(best),
         "worst": pick(worst),
         "sample_warning": (
@@ -17530,6 +17541,10 @@ function lookupHistoryLeaderboard(summary) {
     <div class="brief-list">
       <h4>Chain-ready shortlist</h4>
       ${lookupHistoryLeaderboardTable(summary.leaderboard_chain_ready || [])}
+    </div>
+    <div class="brief-list">
+      <h4>Needs refresh</h4>
+      ${lookupHistoryLeaderboardTable(summary.leaderboard_needs_refresh || [])}
     </div>`;
 }
 function wireLookupHistoryActions() {

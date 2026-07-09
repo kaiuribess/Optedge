@@ -67,7 +67,7 @@ def test_lookup_history_reads_saved_reports():
         )
         (data_dir / "lookup_history.jsonl").write_text(
             json.dumps({
-                "generated_at": "2026-06-27T12:00:00+00:00",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
                 "query": "AAPL 20270115 C 220",
                 "lookup_symbol": "AAPL",
                 "total_hits": 3,
@@ -109,6 +109,43 @@ def test_lookup_history_reads_saved_reports():
         assert history["summary"]["paper_eligible_count"] == 1
         assert history["summary"]["chain_ready_count"] == 1
         assert history["summary"]["no_baseline_count"] == 1
+
+
+def test_lookup_history_surfaces_stale_refresh_leaderboard():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        stale_time = datetime.now(timezone.utc) - timedelta(days=30)
+        (data_dir / "lookup_history.jsonl").write_text(
+            json.dumps({
+                "generated_at": stale_time.isoformat(),
+                "query": "MSFT 20270115 C 400",
+                "lookup_symbol": "MSFT",
+                "research_label": "Paper candidate review",
+                "research_action": "paper_candidate_review",
+                "research_route": "paper",
+                "risk_level": "medium",
+                "can_export_paper_candidate": True,
+                "chain_symbol": "MSFT",
+                "chain_side": "call",
+                "chain_min_dte": 90,
+                "chain_max_dte": 900,
+                "swing_score": 78,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        history = build_lookup_history(data_dir)
+
+    row = history["rows"][0]
+    assert row["review_age_label"] == "stale"
+    assert row["review_stale"] is True
+    summary = history["summary"]
+    assert summary["stale_review_count"] == 1
+    assert len(summary["leaderboard_needs_refresh"]) == 1
+    refresh = summary["leaderboard_needs_refresh"][0]
+    assert refresh["symbol"] == "MSFT"
+    assert refresh["can_export_paper_candidate"] is True
+    assert refresh["chain_side"] == "call"
 
 
 def test_lookup_history_computes_followup_return_from_free_history():
@@ -569,6 +606,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Worst follow-through" in html
     assert "Paper-ready shortlist" in html
     assert "Chain-ready shortlist" in html
+    assert "Needs refresh" in html
+    assert "leaderboard_needs_refresh" in html
     assert "lookupHistoryTable" in html
     assert "Thesis return" in html
     assert "Review age" in html
@@ -6444,6 +6483,7 @@ if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_lookup_history_reads_saved_reports()
+    test_lookup_history_surfaces_stale_refresh_leaderboard()
     test_lookup_history_computes_followup_return_from_free_history()
     test_lookup_history_scores_puts_by_bearish_thesis()
     test_cockpit_html_contains_lookup_controls()
@@ -6528,4 +6568,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("87/87 local cockpit tests passed")
+    print("88/88 local cockpit tests passed")
