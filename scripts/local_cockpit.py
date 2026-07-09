@@ -6954,8 +6954,13 @@ def _hygiene_backup_path(path: Path, asof: datetime) -> Path:
 def _option_is_expired_for_hygiene(position: dict[str, Any], asof: datetime) -> bool:
     if not isinstance(position, dict):
         return False
-    expiry_dt = _parse_iso_utc(position.get("expiry") or position.get("expiration_date"))
-    return expiry_dt is not None and asof >= expiry_dt
+    expiry_value = position.get("expiry") or position.get("expiration_date")
+    expiry_dt = _parse_iso_utc(expiry_value)
+    if expiry_dt is None:
+        return False
+    if isinstance(expiry_value, str) and "T" not in expiry_value:
+        return asof.date() > expiry_dt.date()
+    return asof >= expiry_dt
 
 
 def _option_hygiene_close_row(position: dict[str, Any], asof: datetime) -> dict[str, Any]:
@@ -13243,11 +13248,18 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "Autocomplete can use Nasdaq Trader's free symbol directory after the first company lookup warms it.",
         ))
 
+    active_open_counts = dict(open_counts)
+    active_open_counts["options"] = max(0, open_counts["options"] - expired_count)
+    expired_open_counts = {"options": expired_count, "shares": 0, "futures": 0}
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "status": _health_status(checks),
         "open_counts": open_counts,
         "total_open": total_open,
+        "active_open_counts": active_open_counts,
+        "active_total_open": sum(active_open_counts.values()),
+        "expired_open_counts": expired_open_counts,
         "duplicate_open_rows": duplicate_count,
         "expired_local_option_rows": expired_count,
         "expired_local_option_examples": expired_local_options.get("examples", []),
@@ -13268,6 +13280,7 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "notes": [
             "Data health reads the same local files used by the cockpit.",
             "Open-position counts come directly from current open position JSON files.",
+            "Active exposure excludes expired options while preserving their lifecycle records for cleanup.",
             "Free data caches improve search coverage without paid APIs.",
             "Warnings mean review the artifacts before trusting the displayed analytics.",
         ],
@@ -13279,6 +13292,16 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     aging = _read_json(data_dir / "position_aging_summary.json")
     open_counts = _direct_open_counts(data_dir)
     data_health = build_data_health(data_dir)
+    active_open_counts = (
+        data_health.get("active_open_counts")
+        if isinstance(data_health.get("active_open_counts"), dict)
+        else open_counts
+    )
+    expired_open_counts = (
+        data_health.get("expired_open_counts")
+        if isinstance(data_health.get("expired_open_counts"), dict)
+        else {"options": 0, "shares": 0, "futures": 0}
+    )
     latest = {
         "dashboard": artifact_path("latest-dashboard", data_dir),
         "validation_report": artifact_path("validation-report", data_dir),
@@ -13298,6 +13321,9 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "data_dir": str(data_dir),
         "open_counts": open_counts,
         "total_open": sum(open_counts.values()),
+        "active_open_counts": active_open_counts,
+        "active_total_open": sum(int(active_open_counts.get(key, 0)) for key in ("options", "shares", "futures")),
+        "expired_open_counts": expired_open_counts,
         "validation": validation if isinstance(validation, dict) else {},
         "position_aging": aging if isinstance(aging, dict) else {},
         "data_health": data_health,
@@ -13306,6 +13332,7 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "notes": [
             "This cockpit reads local Optedge artifacts only.",
             "Search uses the latest scan snapshots and open position files.",
+            "Headline exposure excludes expired options; lifecycle records remain visible for hygiene cleanup.",
             "No trades are placed from this UI.",
         ],
     }
@@ -13356,6 +13383,7 @@ h1 { margin:0; font-size:28px; font-weight:650; }
 .tile:nth-child(5) { border-left-color:var(--warn); }
 .tile span { display:block; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
 .tile strong { display:block; font-size:26px; margin-top:6px; }
+.tile small { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
 .actions { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
 a, button { color:var(--text); }
 .btn { display:inline-flex; align-items:center; gap:8px; border:1px solid var(--border); background:var(--panel2); border-radius:8px; padding:8px 12px; text-decoration:none; font-size:13px; cursor:pointer; transition:border-color .16s ease, background .16s ease, transform .16s ease; }
@@ -13523,10 +13551,10 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="muted" id="asof">Loading...</div>
   </header>
   <div class="grid">
-    <div class="tile"><span>Open options</span><strong id="open-options">-</strong></div>
-    <div class="tile"><span>Open shares</span><strong id="open-shares">-</strong></div>
-    <div class="tile"><span>Open futures</span><strong id="open-futures">-</strong></div>
-    <div class="tile risk"><span>Total open</span><strong id="total-open">-</strong></div>
+    <div class="tile"><span>Active options</span><strong id="open-options">-</strong><small id="open-options-meta">-</small></div>
+    <div class="tile"><span>Active shares</span><strong id="open-shares">-</strong><small id="open-shares-meta">-</small></div>
+    <div class="tile"><span>Active futures</span><strong id="open-futures">-</strong><small id="open-futures-meta">-</small></div>
+    <div class="tile risk"><span>Active positions</span><strong id="total-open">-</strong><small id="total-open-meta">-</small></div>
     <div class="tile"><span>Data health</span><strong id="data-health">-</strong></div>
   </div>
   <div class="actions">
@@ -15348,7 +15376,7 @@ function healthSummaryHtml(health, rows) {
     acc[row.level] = (acc[row.level] || 0) + 1;
     return acc;
   }, { ok: 0, warn: 0, bad: 0 });
-  const open = (health && health.open_counts) || {};
+  const open = (health && health.active_open_counts) || (health && health.open_counts) || {};
   const guard = (health && health.validation_guardrail) || {};
   const fixFirst = rows.find(row => row.level === 'bad') || rows.find(row => row.level === 'warn');
   const fixCard = fixFirst
@@ -15357,8 +15385,9 @@ function healthSummaryHtml(health, rows) {
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Status</span><strong class="${escAttr(healthClass(health && health.status))}">${cell(health && health.status)}</strong></div>
     <div class="brief-tile"><span>Fix / review / clean</span><strong>${cell(counts.bad || 0)} / ${cell(counts.warn || 0)} / ${cell(counts.ok || 0)}</strong></div>
-    <div class="brief-tile"><span>Open state</span><strong>${cell((health && health.total_open) || 0)}</strong></div>
-    <div class="brief-tile"><span>Assets open</span><strong>O ${cell(open.options || 0)} / S ${cell(open.shares || 0)} / F ${cell(open.futures || 0)}</strong></div>
+    <div class="brief-tile"><span>Active exposure</span><strong>${cell((health && health.active_total_open) || 0)}</strong></div>
+    <div class="brief-tile"><span>Lifecycle records</span><strong>${cell((health && health.total_open) || 0)}</strong></div>
+    <div class="brief-tile"><span>Active by asset</span><strong>O ${cell(open.options || 0)} / S ${cell(open.shares || 0)} / F ${cell(open.futures || 0)}</strong></div>
     <div class="brief-tile"><span>Duplicate opens</span><strong>${cell((health && health.duplicate_open_rows) || 0)}</strong></div>
     <div class="brief-tile"><span>Expired local</span><strong>${cell((health && health.expired_local_option_rows) || 0)}</strong></div>
     <div class="brief-tile"><span>Validation</span><strong>${cell(guard.label || '-')}</strong></div>
@@ -16096,11 +16125,22 @@ async function globalSaveWatchlist() {
 async function loadSummary() {
   const res = await fetch('/api/summary');
   const data = await res.json();
+  const raw = data.open_counts || {};
+  const active = data.active_open_counts || raw;
+  const expired = data.expired_open_counts || {};
   $('asof').textContent = new Date(data.generated_at).toLocaleString();
-  $('open-options').textContent = data.open_counts.options;
-  $('open-shares').textContent = data.open_counts.shares;
-  $('open-futures').textContent = data.open_counts.futures;
-  $('total-open').textContent = data.total_open;
+  $('open-options').textContent = active.options ?? 0;
+  $('open-shares').textContent = active.shares ?? 0;
+  $('open-futures').textContent = active.futures ?? 0;
+  $('total-open').textContent = data.active_total_open ?? data.total_open ?? 0;
+  $('open-options-meta').textContent = expired.options
+    ? `${raw.options || 0} lifecycle records, ${expired.options} expired`
+    : `${raw.options || 0} lifecycle records`;
+  $('open-shares-meta').textContent = `${raw.shares || 0} lifecycle records`;
+  $('open-futures-meta').textContent = `${raw.futures || 0} lifecycle records`;
+  $('total-open-meta').textContent = (data.total_open || 0) !== (data.active_total_open || 0)
+    ? `${data.total_open || 0} records, ${(data.total_open || 0) - (data.active_total_open || 0)} need cleanup`
+    : `${data.total_open || 0} lifecycle records`;
   $('data-health').textContent = (data.data_health && data.data_health.status) || '-';
   $('data-health').className = healthClass((data.data_health && data.data_health.status) || 'ok');
   $('health-results').innerHTML = healthTable(data.data_health);

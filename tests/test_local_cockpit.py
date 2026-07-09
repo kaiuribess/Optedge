@@ -44,6 +44,35 @@ def test_cockpit_summary_counts_open_positions():
         summary = build_summary(data_dir)
         assert summary["open_counts"] == {"options": 1, "shares": 1, "futures": 2}
         assert summary["total_open"] == 4
+        assert summary["active_open_counts"] == {"options": 1, "shares": 1, "futures": 2}
+        assert summary["active_total_open"] == 4
+
+
+def test_cockpit_summary_separates_expired_records_from_active_exposure():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        expired = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        expires_today = datetime.now(timezone.utc).date().isoformat()
+        active = (datetime.now(timezone.utc) + timedelta(days=120)).date().isoformat()
+        (data_dir / "open_positions.json").write_text(json.dumps([
+            {"ticker": "AAPL", "expiry": expired},
+            {"ticker": "SPY", "expiry": expires_today},
+            {"ticker": "MSFT", "expiry": active},
+        ]), encoding="utf-8")
+        (data_dir / "open_share_positions.json").write_text(
+            json.dumps([{"ticker": "NVDA"}]), encoding="utf-8",
+        )
+        (data_dir / "open_futures_positions.json").write_text(
+            json.dumps([{"symbol": "CL=F"}]), encoding="utf-8",
+        )
+
+        summary = build_summary(data_dir)
+
+        assert summary["open_counts"] == {"options": 3, "shares": 1, "futures": 1}
+        assert summary["total_open"] == 5
+        assert summary["active_open_counts"] == {"options": 2, "shares": 1, "futures": 1}
+        assert summary["active_total_open"] == 4
+        assert summary["expired_open_counts"] == {"options": 1, "shares": 0, "futures": 0}
 
 
 def test_cockpit_artifact_path_finds_latest_dashboard():
@@ -248,6 +277,11 @@ def test_lookup_history_scores_puts_by_bearish_thesis():
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "Optedge Local Cockpit" in html
+    assert "Active options" in html
+    assert "Active positions" in html
+    assert "open-options-meta" in html
+    assert "active_open_counts" in html
+    assert "need cleanup" in html
     assert "--panel3:#0f1111" in html
     assert "--accent:#20c997" in html
     assert "--shadow:0 16px 38px" in html
@@ -688,6 +722,8 @@ def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
         assert labels["SEC ticker cache missing"]["level"] == "warn"
         assert labels["Nasdaq symbol directory missing"]["level"] == "warn"
         assert health["expired_local_option_rows"] == 2
+        assert health["active_open_counts"] == {"options": 0, "shares": 0, "futures": 1}
+        assert health["active_total_open"] == 1
         assert "AAPL 2026-06-18 CALL 200" in health["expired_local_option_examples"]
         assert health["free_data_caches"]["sec_company_tickers"]["status"] == "missing"
         assert health["free_data_caches"]["nasdaq_symbol_directory"]["status"] == "missing"
@@ -6484,6 +6520,7 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
 
 if __name__ == "__main__":
     test_cockpit_summary_counts_open_positions()
+    test_cockpit_summary_separates_expired_records_from_active_exposure()
     test_cockpit_artifact_path_finds_latest_dashboard()
     test_lookup_history_reads_saved_reports()
     test_lookup_history_surfaces_stale_refresh_leaderboard()
@@ -6571,4 +6608,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("88/88 local cockpit tests passed")
+    print("89/89 local cockpit tests passed")
