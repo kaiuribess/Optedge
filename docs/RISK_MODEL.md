@@ -56,6 +56,14 @@ Learned thresholds are clamped and can move by at most 5 points per refit. Learn
 
 Entry readiness is evaluated from independent swing outcomes after slippage when that validation view is available. All closures are still reported, but same-scan lifecycle churn cannot make the guard appear statistically mature.
 
+## Adaptive Factor Weights
+
+Source-controlled `config.py` weights are the default priors. A runtime override is allowed only after at least 500 independent lifecycle outcomes across 10 distinct entry days. Repeated forward-test snapshots and same-scan dynamic exits are not treated as independent evidence.
+
+Adaptive fitting uses after-slippage outcomes, day-balanced sample weights, chronological validation splits, and positive-only coefficients. Learned weights receive only a 25% blend against the configured priors, no factor may exceed 30%, and the full current factor set must remain represented.
+
+`config_runtime.py` is parsed as data rather than executed. It is ignored when its evidence metadata is missing, it does not cover every configured factor, either the override or its newest training outcome is older than 14 days, or it fails a concentration or normalization check. The historical snapshot IC report is diagnostic only: it compares current factors with already-realized returns and is not accepted as walk-forward training evidence.
+
 ## Human Review
 
 The output should be treated as a prioritized research board. Fill quality, news shocks, data gaps, spreads, and regime changes can dominate model expectations.

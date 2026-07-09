@@ -33,6 +33,7 @@ jobs:
           PYTHONPATH: .
         run: |
           python tests/test_pricing.py
+          python tests/test_predictor_guard.py
           python tests/test_research_guard.py
           python tests/test_archive.py
           python tests/test_exit_rules.py

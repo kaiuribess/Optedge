@@ -60,8 +60,10 @@ try:
     except Exception:
         _ufilter = None
 
-    # If config_runtime.py exists (auto-retrain output), override SIGNAL_WEIGHTS
-    _runtime_weights = bt_predictor.load_runtime_weights()
+    # Runtime overrides are optional and must prove freshness, coverage, and
+    # independent walk-forward evidence before they can affect ranking.
+    _runtime_status = bt_predictor.runtime_weight_status()
+    _runtime_weights = _runtime_status.get("weights") if _runtime_status.get("usable") else None
     if _runtime_weights:
         _config.SIGNAL_WEIGHTS = _runtime_weights
         # Also patch the imported module so fusion sees the override
@@ -70,6 +72,13 @@ try:
         print(f"  [auto-retrain] using runtime SIGNAL_WEIGHTS: top factor "
               f"= {max(_runtime_weights, key=_runtime_weights.get)} "
               f"({_runtime_weights[max(_runtime_weights, key=_runtime_weights.get)]:.2f})", flush=True)
+    elif _runtime_status.get("exists"):
+        reasons = list(_runtime_status.get("reasons") or [])
+        detail = "; ".join(reasons[:3])
+        if len(reasons) > 3:
+            detail += f"; plus {len(reasons) - 3} more guard(s)"
+        print(f"  [auto-retrain] runtime weights ignored: {detail}; "
+              "using configured priors", flush=True)
 except Exception as e:
     print(f"\nIMPORT ERROR — Optedge can't start.\n{e}\n", flush=True)
     traceback.print_exc()
@@ -840,20 +849,23 @@ def main():
                     "(4) run with --loop 60 (longer gap = less rate-limit pressure).",
                     len(contracts))
 
-    # Auto-retrain BEFORE fusion so this run uses fresh predictor coefs.
-    # Forward-test data + cached IC fold into the predictor here.
+    # Auto-retrain BEFORE fusion from independent lifecycle outcomes. The full
+    # forward-test stream is intentionally not repriced here: it contains
+    # repeated scan snapshots and is run once later for monitoring.
     try:
-        from backtest.forward import run_forward_test
-        ft_pre = run_forward_test()
-        forward_signals_pre = ft_pre["signals"] if not ft_pre["signals"].empty else None
+        adaptive_outcomes_pre = bt_predictor.load_adaptive_outcomes()
+        if adaptive_outcomes_pre.empty:
+            adaptive_outcomes_pre = None
     except Exception:
-        forward_signals_pre = None
+        adaptive_outcomes_pre = None
     try:
         ic_df_pre = bt_predictor.load_cached_ic()
-        if ic_df_pre is not None or forward_signals_pre is not None:
-            coef_payload = bt_predictor.fit_return_predictor(forward_signals_pre, ic_df_pre)
-            new_w = bt_predictor.update_runtime_weights(forward_signals_pre, ic_df_pre)
+        if ic_df_pre is not None or adaptive_outcomes_pre is not None:
+            coef_payload = bt_predictor.fit_return_predictor(adaptive_outcomes_pre, ic_df_pre)
+            new_w = bt_predictor.update_runtime_weights(adaptive_outcomes_pre, ic_df_pre)
             if new_w:
+                _config.SIGNAL_WEIGHTS = new_w
+                fusion_rank.SIGNAL_WEIGHTS = new_w
                 log.info("auto-retrain (pre-fusion): top weight = %s",
                          max(new_w, key=new_w.get))
             top_coef = max(coef_payload["coefs"].items(), key=lambda kv: abs(kv[1]))
@@ -1264,30 +1276,29 @@ def main():
     # Forward-test summary for the dashboard panel
     forward_summary = None
     calibration_summary = None
-    if forward_signals_pre is not None:
-        try:
-            from backtest.forward import run_forward_test
-            ft = run_forward_test()
-            if not ft["signals"].empty:
-                forward_summary = ft
-                log.info("forward test: %d signals, %.1f%% win rate, %.2f%% avg P&L",
-                         ft["overall"]["n_signals"],
-                         ft["overall"]["win_rate"]*100,
-                         ft["overall"]["avg_pnl_pct"]*100)
-                # v19: also compute calibration (predicted vs realized accuracy)
-                try:
-                    from backtest.calibration import diagnostic_summary
-                    calibration_summary = diagnostic_summary(ft["signals"])
-                    overall_cal = calibration_summary.get("overall", {}).get("overall", {})
-                    if overall_cal.get("rank_correlation") is not None:
-                        log.info("calibration: rank_corr=%.2f bias=%+0.3f verdict=%s",
-                                 overall_cal["rank_correlation"],
-                                 overall_cal.get("avg_bias", 0),
-                                 overall_cal.get("verdict", "")[:60])
-                except Exception as e:
-                    log.debug("calibration skipped: %s", e)
-        except Exception as e:
-            log.debug("forward test skipped: %s", e)
+    try:
+        from backtest.forward import run_forward_test
+        ft = run_forward_test()
+        if not ft["signals"].empty:
+            forward_summary = ft
+            log.info("forward test: %d signals, %.1f%% win rate, %.2f%% avg P&L",
+                     ft["overall"]["n_signals"],
+                     ft["overall"]["win_rate"]*100,
+                     ft["overall"]["avg_pnl_pct"]*100)
+            # v19: also compute calibration (predicted vs realized accuracy)
+            try:
+                from backtest.calibration import diagnostic_summary
+                calibration_summary = diagnostic_summary(ft["signals"])
+                overall_cal = calibration_summary.get("overall", {}).get("overall", {})
+                if overall_cal.get("rank_correlation") is not None:
+                    log.info("calibration: rank_corr=%.2f bias=%+0.3f verdict=%s",
+                             overall_cal["rank_correlation"],
+                             overall_cal.get("avg_bias", 0),
+                             overall_cal.get("verdict", "")[:60])
+            except Exception as e:
+                log.debug("calibration skipped: %s", e)
+    except Exception as e:
+        log.debug("forward test skipped: %s", e)
 
     # Refresh IC from a fresh backtest if possible (best-effort)
     try:
