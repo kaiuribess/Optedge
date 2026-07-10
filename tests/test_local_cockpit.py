@@ -2280,6 +2280,8 @@ def test_validation_guardrail_uses_summary_closed_count_with_overall_metrics():
     })
 
     assert guard["closed_positions"] == 1000
+    assert guard["raw_closed_positions"] == 1000
+    assert guard["excluded_closed_positions"] == 0
     assert guard["win_rate"] == 0.117
     assert guard["max_drawdown"] == -1.0
     assert guard["level"] == "bad"
@@ -2297,6 +2299,7 @@ def test_validation_guardrail_prefers_independent_swing_metrics():
             "profit_factor": 2.0,
         },
         "swing_eligible_closed_positions": 259,
+        "swing_excluded_closed_positions": 741,
         "swing_eligible_after_slippage": {
             "n": 259,
             "win_rate": 0.41,
@@ -2305,7 +2308,9 @@ def test_validation_guardrail_prefers_independent_swing_metrics():
         },
     })
     assert guard["closed_positions"] == 259
-    assert guard["validation_basis"] == "independent_swing_after_slippage"
+    assert guard["raw_closed_positions"] == 1000
+    assert guard["excluded_closed_positions"] == 741
+    assert guard["validation_basis"] == "executable_swing_after_slippage"
     assert guard["win_rate"] == 0.41
     assert guard["max_drawdown"] == -0.75
     assert guard["level"] == "bad"

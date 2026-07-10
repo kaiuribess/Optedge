@@ -12904,12 +12904,17 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
             default=_float_value(overall.get("n"), default=0.0),
         ),
     ))
+    raw_closed = int(_float_value(validation.get("closed_positions"), default=closed))
+    excluded_closed = int(_float_value(
+        validation.get("swing_excluded_closed_positions"),
+        default=max(0, raw_closed - closed),
+    )) if uses_swing_sample else 0
     win_rate = _float_value(overall.get("win_rate"), default=math.nan)
     max_dd = _float_value(overall.get("max_drawdown"), default=math.nan)
     profit_factor = _float_value(overall.get("profit_factor"), default=math.nan)
     raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
     warnings = [str(item) for item in raw_warnings if str(item).strip()]
-    validation_basis = "independent_swing_after_slippage" if uses_swing_sample else "all_closures"
+    validation_basis = "executable_swing_after_slippage" if uses_swing_sample else "all_closures"
     blocker_reasons: list[str] = []
     review_reasons: list[str] = []
 
@@ -12951,6 +12956,8 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         "label": label,
         "detail": detail,
         "closed_positions": closed,
+        "raw_closed_positions": raw_closed,
+        "excluded_closed_positions": excluded_closed,
         "win_rate": _clean_value(win_rate if math.isfinite(win_rate) else None),
         "max_drawdown": _clean_value(max_dd if math.isfinite(max_dd) else None),
         "profit_factor": _clean_value(profit_factor if math.isfinite(profit_factor) else None),
@@ -14685,7 +14692,9 @@ function commandCenterHtml(data) {
           <header><span class="pill ${escAttr(guard.level)}">${cell(labelText(guard.level))}</span> <b>${cell(guard.label || 'Validation needs review')}</b></header>
           <p>${cell(guard.detail || 'Review validation before considering new entries.')}</p>
           <div class="review-meta">
-            <span>${cell(guard.closed_positions ?? '-')} closed</span>
+            <span>${cell(guard.closed_positions ?? '-')} executable</span>
+            <span>${cell(guard.excluded_closed_positions ?? 0)} excluded</span>
+            <span>${cell(guard.raw_closed_positions ?? '-')} raw</span>
             <span>win ${pct(guard.win_rate)}</span>
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>
@@ -14972,7 +14981,9 @@ function todayReviewHtml(data) {
           <header><span class="pill ${escAttr(guard.level)}">${cell(labelText(guard.level))}</span> <b>${cell(guard.label || 'Validation needs review')}</b></header>
           <p>${cell(guard.detail || 'Review validation before considering new entries.')}</p>
           <div class="review-meta">
-            <span>${cell(guard.closed_positions ?? '-')} closed</span>
+            <span>${cell(guard.closed_positions ?? '-')} executable</span>
+            <span>${cell(guard.excluded_closed_positions ?? 0)} excluded</span>
+            <span>${cell(guard.raw_closed_positions ?? '-')} raw</span>
             <span>win ${pct(guard.win_rate)}</span>
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>

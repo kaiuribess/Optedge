@@ -481,18 +481,34 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
         return {
             "learning_eligible_closed_positions": 0,
             "learning_excluded_closed_positions": 0,
+            "execution_eligible_closed_positions": 0,
+            "non_executable_closed_positions": 0,
+            "excluded_explicit_not_actionable": 0,
+            "excluded_non_actionable_status": 0,
+            "excluded_guard_blocked": 0,
+            "excluded_non_positive_size": 0,
             "same_scan_dynamic_exits": 0,
             "learning_closed_trading_days": 0,
         }
     try:
         from backtest.exit_learning import (
             MIN_LEARNING_HOLD_HOURS, eligible_closed_for_learning,
+            execution_eligibility_summary,
         )
 
         eligible = eligible_closed_for_learning(asset, closed)
+        execution_summary = execution_eligibility_summary(asset, closed)
     except Exception:
         MIN_LEARNING_HOLD_HOURS = 1.0
         eligible = pd.DataFrame()
+        execution_summary = {
+            "execution_eligible_closed_positions": 0,
+            "non_executable_closed_positions": 0,
+            "excluded_explicit_not_actionable": 0,
+            "excluded_non_actionable_status": 0,
+            "excluded_guard_blocked": 0,
+            "excluded_non_positive_size": 0,
+        }
     asset_rows = closed[closed.get("asset", "") == asset].copy()
     entry = pd.to_datetime(asset_rows.get("entry_time"), errors="coerce", utc=True)
     exit_time = pd.to_datetime(asset_rows.get("exit_time"), errors="coerce", utc=True)
@@ -508,6 +524,7 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
     trading_days = int(pd.to_datetime(date_source, errors="coerce", utc=True).dt.date.nunique()) \
         if not eligible.empty else 0
     return {
+        **execution_summary,
         "learning_eligible_closed_positions": int(len(eligible)),
         "learning_excluded_closed_positions": int(max(0, len(asset_rows) - len(eligible))),
         "same_scan_dynamic_exits": same_scan,
@@ -877,7 +894,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         )
     if swing_eligible_count < MIN_CLOSED_SIGNALS:
         warnings.append(
-            f"Independent swing sample too small: {swing_eligible_count} eligible outcomes; "
+            f"Executable swing sample too small: {swing_eligible_count} executable outcomes; "
             f"need at least {MIN_CLOSED_SIGNALS}."
         )
     if overall.get("max_drawdown") is not None and overall["max_drawdown"] < -0.20:
@@ -891,7 +908,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         and swing_eligible_after_slippage["max_drawdown"] < -0.20
     ):
         warnings.append(
-            "Independent swing max drawdown after slippage is worse than -20%: "
+            "Executable swing max drawdown after slippage is worse than -20%: "
             f"{_fmt_pct(swing_eligible_after_slippage['max_drawdown'])}."
         )
     if (
@@ -899,7 +916,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         and swing_eligible_after_slippage["win_rate"] < BREAKEVEN_WIN_RATE
     ):
         warnings.append(
-            "Independent swing win rate after slippage is below the simple breakeven threshold: "
+            "Executable swing win rate after slippage is below the simple breakeven threshold: "
             f"{_fmt_pct(swing_eligible_after_slippage['win_rate'])}."
         )
     option_learning = assets.get("option", {}) if isinstance(assets, dict) else {}
@@ -912,7 +929,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     reliable_factor_count = sum(1 for row in factor_ic if row.get("is_reliable"))
     if factor_ic and reliable_factor_count == 0:
         warnings.append(
-            "Factor IC is exploratory: no factor yet has both 100 eligible outcomes and 10 distinct entry days."
+            "Factor IC is exploratory: no factor yet has both 100 executable outcomes and 10 distinct entry days."
         )
 
     summary = {
@@ -926,7 +943,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "total_signals": total_signals,
         "closed_positions": closed_count,
         "open_positions": open_count,
-        "validation_basis": "independent_swing_after_slippage",
+        "validation_basis": "executable_swing_after_slippage",
         "swing_eligible_closed_positions": swing_eligible_count,
         "swing_excluded_closed_positions": int(max(0, closed_count - swing_eligible_count)),
         "swing_eligible_overall": swing_eligible_overall,
@@ -1047,8 +1064,10 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             f"<td>{html.escape(str(asset))}</td>"
             f"<td>{int(row.get('open_positions') or 0)}</td>"
             f"<td>{int(row.get('closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('execution_eligible_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('non_executable_closed_positions') or 0)}</td>"
             f"<td>{int(row.get('learning_eligible_closed_positions') or 0)}</td>"
-            f"<td>{int(row.get('learning_excluded_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('same_scan_dynamic_exits') or 0)}</td>"
             f"<td>{int(row.get('learning_closed_trading_days') or 0)}</td>"
             f"<td>{_fmt_pct(overall.get('win_rate'))}</td>"
             f"<td>{_fmt_pct(overall.get('avg_return'))}</td>"
@@ -1063,7 +1082,7 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Learnable</th><th>Excluded churn</th><th>Learning days</th>"
+        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Executable</th><th>Non-executable</th><th>Learnable</th><th>Same-scan churn</th><th>Learning days</th>"
         "<th>Win rate</th><th>Avg return</th><th>Median</th><th>Max DD</th>"
         "<th>Profit factor</th><th>Exit actions</th><th>Learned exits</th>"
         "<th>P&L dollars</th><th>P&L points</th><th>Exit reasons</th></tr></thead>"
@@ -1136,11 +1155,11 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
       ])}
     </section>
     <section>
-      <h2>Independent Swing Sample</h2>
+      <h2>Executable Swing Sample</h2>
       {_metric_table([
           ("Validation basis", summary.get("validation_basis", "n/a")),
-          ("Eligible closures", summary.get("swing_eligible_closed_positions", 0)),
-          ("Excluded lifecycle churn", summary.get("swing_excluded_closed_positions", 0)),
+          ("Executable closures", summary.get("swing_eligible_closed_positions", 0)),
+          ("Excluded from executable sample", summary.get("swing_excluded_closed_positions", 0)),
           ("After-slippage win rate", _fmt_pct(swing.get("win_rate"))),
           ("After-slippage average", _fmt_pct(swing.get("avg_return"))),
           ("After-slippage median", _fmt_pct(swing.get("median_return"))),
@@ -1188,8 +1207,8 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
   </div>
 
   <section>
-    <h2>Factor IC - Independent Swing Sample</h2>
-    <p class="muted">Reliability requires at least 100 eligible outcomes across 10 distinct entry days. Raw all-closure IC remains in validation_summary.json for audit comparison.</p>
+    <h2>Factor IC - Executable Swing Sample</h2>
+    <p class="muted">Reliability requires at least 100 executable outcomes across 10 distinct entry days. Watch/Skip, zero-size, guard-blocked, and same-scan churn rows remain auditable but cannot train the policy. Raw all-closure IC remains in validation_summary.json for comparison.</p>
     {_factor_ic_table(summary.get("factor_ic", []))}
   </section>
 </main>

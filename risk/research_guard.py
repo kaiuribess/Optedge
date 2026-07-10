@@ -69,7 +69,7 @@ def build_guard_report(
         if uses_swing_sample
         else (summary.get("closed_positions") or overall.get("n") or 0)
     )
-    validation_basis = "independent_swing_after_slippage" if uses_swing_sample else "all_closures_after_slippage"
+    validation_basis = "executable_swing_after_slippage" if uses_swing_sample else "all_closures_after_slippage"
     if closed < MIN_CLOSED_SIGNALS:
         warnings.append(_warn(
             "sample_size",

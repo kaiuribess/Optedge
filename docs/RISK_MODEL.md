@@ -54,7 +54,7 @@ New positions receive a one-hour grace period from soft `tighten_stop` and `clos
 
 Learned thresholds are clamped and can move by at most 5 points per refit. Learned policy never overrides hard stops, hard targets, expiry exits, or research-guard blocks. If the policy is missing, malformed, stale, or under-sampled, defaults are used.
 
-Entry readiness is evaluated from independent swing outcomes after slippage when that validation view is available. All closures are still reported, but same-scan lifecycle churn cannot make the guard appear statistically mature.
+Entry readiness is evaluated from executable swing outcomes after slippage when that validation view is available. All closures are still reported, but Watch/Skip rows, zero-size recommendations, blocked entries, and same-scan lifecycle churn cannot make the guard appear statistically mature.
 
 ## Adaptive Factor Weights
 

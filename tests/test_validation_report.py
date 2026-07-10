@@ -303,17 +303,59 @@ def test_validation_keeps_churn_in_performance_but_excludes_it_from_learning():
             assert option["learning_eligible_closed_positions"] == 1
             assert option["learning_excluded_closed_positions"] == 1
             assert option["same_scan_dynamic_exits"] == 1
-            assert summary["validation_basis"] == "independent_swing_after_slippage"
+            assert summary["validation_basis"] == "executable_swing_after_slippage"
             assert summary["swing_eligible_closed_positions"] == 1
             assert summary["swing_excluded_closed_positions"] == 1
             assert summary["swing_eligible_after_slippage"]["n"] == 1
             assert summary["swing_eligible_after_slippage"]["win_rate"] == 1.0
             assert any("same-scan dynamic option exit" in warning for warning in summary["warnings"])
-            assert any("Independent swing sample too small" in warning for warning in summary["warnings"])
+            assert any("Executable swing sample too small" in warning for warning in summary["warnings"])
             html = validation_report.render_html(summary)
             assert "Learnable" in html
-            assert "Excluded churn" in html
-            assert "Independent Swing Sample" in html
+            assert "Non-executable" in html
+            assert "Executable Swing Sample" in html
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
+def test_validation_headline_uses_only_executable_closed_rows():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            base = {
+                "ticker": "AAA",
+                "entry_time": "2026-01-02T15:00:00+00:00",
+                "exit_time": "2026-01-04T15:00:00+00:00",
+                "exit_reason": "hard_target",
+                "pnl_pct": 0.25,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "research_guard_status": "review",
+            }
+            rows = [
+                {**base, "position_id": "trade"},
+                {**base, "position_id": "watch", "trade_status": "Watch"},
+                {**base, "position_id": "zero", "suggested_contracts": 0},
+                {**base, "position_id": "blocked", "research_guard_status": "blocked"},
+                {**base, "position_id": "explicit", "entry_is_actionable": False},
+            ]
+            _write_json(validation_report.DATA_DIR / "closed_positions.json", rows)
+            summary = validation_report.build_summary(scope="all_time")
+            option = summary["assets"]["option"]
+            assert summary["closed_positions"] == 5
+            assert summary["overall"]["n"] == 5
+            assert summary["swing_eligible_closed_positions"] == 1
+            assert summary["swing_eligible_after_slippage"]["n"] == 1
+            assert option["execution_eligible_closed_positions"] == 1
+            assert option["non_executable_closed_positions"] == 4
+            assert option["excluded_non_actionable_status"] == 1
+            assert option["excluded_non_positive_size"] == 1
+            assert option["excluded_guard_blocked"] == 1
+            assert option["excluded_explicit_not_actionable"] == 1
         finally:
             validation_report.DATA_DIR = old_data
             validation_report.LOGS_DIR = old_logs
@@ -416,7 +458,8 @@ if __name__ == "__main__":
     test_validation_drawdown_uses_normalized_signal_allocation()
     test_summary_exposes_equity_curve_assumption()
     test_validation_keeps_churn_in_performance_but_excludes_it_from_learning()
+    test_validation_headline_uses_only_executable_closed_rows()
     test_factor_ic_uses_independent_swing_sample_and_labels_short_history()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("14/14 validation report tests passed")
+    print("15/15 validation report tests passed")

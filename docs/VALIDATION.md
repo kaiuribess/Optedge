@@ -37,15 +37,15 @@ It also separates options, shares, and futures:
 - Dynamic versus hard-exit effectiveness where closed samples exist.
 - Futures `pnl_points` and `pnl_dollars` when available.
 - Current exit policy and whether learned exits are active per asset.
-- Learning-eligible closures, excluded churn, and distinct closed-entry days by asset.
+- Execution-eligible closures, excluded non-executable rows, excluded churn, and distinct closed-entry days by asset.
 
 Dynamic/self-learning exits should be judged only after enough closed outcomes exist. Early reports will usually warn that sample size is too small.
 
-Performance metrics retain every closed recommendation, including same-scan exits, so poor lifecycle behavior is not hidden. Exit-policy learning uses a stricter subset: same-scan dynamic exits and duplicate episodes are excluded, and learned thresholds fall back to defaults when the policy is stale or the independent sample is under the activation minimum.
+Performance metrics retain every closed recommendation, including same-scan exits, so poor lifecycle behavior is not hidden. Headline swing evidence and exit-policy learning use a stricter executable subset: `Watch`/`Skip`, explicitly non-actionable, guard-blocked, zero-size, same-scan dynamic exits, and duplicate episodes are excluded. Learned thresholds fall back to defaults when the policy is stale or the executable sample is under the activation minimum.
 
-The research guard uses the independent swing sample's after-slippage metrics for entry readiness. Raw all-closure metrics remain alongside it for auditability. A clean raw history therefore cannot override weak drawdown, win rate, or sample size in the independent swing evidence.
+The research guard uses the executable swing sample's after-slippage metrics for entry readiness. Raw all-closure metrics remain alongside it for auditability. A large shadow-recommendation history therefore cannot override weak drawdown, win rate, or sample size in trades that were actually sized and eligible to open.
 
-Factor IC is also calculated from independent swing outcomes. Each factor is labeled `supportive`, `adverse`, `weak`, or `insufficient_history`; a directional label requires at least 100 eligible outcomes across 10 distinct entry days. Raw all-closure factor IC remains in `validation_summary.json` for comparison, while `factor_ic_summary.json` contains the cleaner independent-swing view used by the dashboard.
+Factor IC is also calculated from executable swing outcomes. Each factor is labeled `supportive`, `adverse`, `weak`, or `insufficient_history`; a directional label requires at least 100 executable outcomes across 10 distinct entry days. Raw all-closure factor IC remains in `validation_summary.json` for comparison, while `factor_ic_summary.json` contains the cleaner executable-swing view used by the dashboard.
 
 ## Sample Size
 

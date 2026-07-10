@@ -106,10 +106,27 @@ def test_share_position_skips_watch_rows_when_status_present():
             _restore_exit_rules(old_data, old_file)
 
 
+def test_share_position_skips_guard_blocked_rows():
+    with tempfile.TemporaryDirectory() as td:
+        old_data, old_file = exit_rules.DATA_DIR, exit_rules.EXIT_REVIEWS_FILE
+        _patch_files(td)
+        try:
+            asof = datetime.now(timezone.utc)
+            added = share_positions.add_new_share_signals(pd.DataFrame([{
+                "ticker": "AAA", "spot": 10, "trade_status": "Trade",
+                "research_guard_status": "blocked",
+            }]), asof)
+            assert added == 0
+            assert share_positions.summary()["open_count"] == 0
+        finally:
+            _restore_exit_rules(old_data, old_file)
+
+
 if __name__ == "__main__":
     test_share_position_closes_on_stop()
     test_share_position_closes_on_target()
     test_share_position_keeps_open_on_reprice_failure()
     test_share_position_backfills_missing_entry_price()
     test_share_position_skips_watch_rows_when_status_present()
-    print("5/5 share position tests passed")
+    test_share_position_skips_guard_blocked_rows()
+    print("6/6 share position tests passed")

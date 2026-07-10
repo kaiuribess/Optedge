@@ -18,6 +18,7 @@ MIN_LEARNING_EXIT_REVIEWS = 20
 MIN_LEARNING_TRADING_DAYS = 10
 MIN_LEARNING_HOLD_HOURS = 1.0
 MAX_POLICY_AGE_DAYS = 14
+NON_ACTIONABLE_ENTRY_STATUSES = {"watch", "skip", "blocked", "reject", "rejected"}
 
 DEFAULT_POLICY = {
     "policy_version": "default",
@@ -160,13 +161,101 @@ def _holding_hours(closed: pd.DataFrame) -> pd.Series:
     return hours
 
 
+def _coalesced_values(closed: pd.DataFrame, *columns: str) -> pd.Series:
+    values = pd.Series(pd.NA, index=closed.index, dtype=object)
+    for column in columns:
+        if column in closed.columns:
+            values = values.where(values.notna(), closed[column])
+    return values
+
+
+def _normalized_text(closed: pd.DataFrame, *columns: str) -> pd.Series:
+    return _coalesced_values(closed, *columns).fillna("").astype(str).str.strip().str.lower()
+
+
+def _explicit_false(closed: pd.DataFrame, *columns: str) -> pd.Series:
+    values = _coalesced_values(closed, *columns)
+    normalized = values.astype(str).str.strip().str.lower()
+    return values.notna() & normalized.isin({"false", "0", "no", "off"})
+
+
+def _non_positive_entry_size(asset: str, closed: pd.DataFrame) -> pd.Series:
+    columns = {
+        "option": ("entry_suggested_contracts", "suggested_contracts"),
+        "share": ("entry_suggested_dollars", "suggested_dollars", "quantity"),
+        "futures": ("entry_contracts", "contracts", "suggested_contracts"),
+    }.get(asset, ())
+    values = pd.Series(float("nan"), index=closed.index, dtype=float)
+    found = False
+    for column in columns:
+        if column in closed.columns:
+            found = True
+            numeric = pd.to_numeric(closed[column], errors="coerce")
+            values = values.where(values.notna(), numeric)
+    if found:
+        return values.fillna(0.0) <= 0.0
+    # Legacy rows without a sizing field remain auditable and eligible. New
+    # lifecycle rows always persist sizing, so unknown size is not introduced
+    # going forward.
+    return pd.Series(False, index=closed.index, dtype=bool)
+
+
+def execution_eligibility_flags(asset: str, closed_positions: pd.DataFrame) -> pd.DataFrame:
+    """Classify whether closed rows were executable recommendations at entry."""
+    closed = _asset_rows(closed_positions, asset)
+    if closed.empty:
+        return pd.DataFrame(index=closed.index)
+    status = _normalized_text(closed, "entry_trade_status", "trade_status")
+    guard = _normalized_text(
+        closed, "entry_research_guard_status", "research_guard_status",
+    )
+    flags = pd.DataFrame(index=closed.index)
+    flags["explicit_not_actionable"] = _explicit_false(
+        closed, "entry_is_actionable", "is_actionable",
+    )
+    flags["non_actionable_status"] = status.isin(NON_ACTIONABLE_ENTRY_STATUSES)
+    flags["guard_blocked"] = guard.eq("blocked")
+    flags["non_positive_size"] = _non_positive_entry_size(asset, closed)
+    flags["execution_eligible"] = ~flags.any(axis=1)
+    return flags
+
+
+def execution_eligibility_summary(asset: str,
+                                  closed_positions: pd.DataFrame) -> Dict[str, int]:
+    """Return transparent entry-eligibility counts for validation reporting."""
+    closed = _asset_rows(closed_positions, asset)
+    flags = execution_eligibility_flags(asset, closed_positions)
+    if closed.empty or flags.empty:
+        return {
+            "execution_eligible_closed_positions": 0,
+            "non_executable_closed_positions": 0,
+            "excluded_explicit_not_actionable": 0,
+            "excluded_non_actionable_status": 0,
+            "excluded_guard_blocked": 0,
+            "excluded_non_positive_size": 0,
+        }
+    return {
+        "execution_eligible_closed_positions": int(flags["execution_eligible"].sum()),
+        "non_executable_closed_positions": int((~flags["execution_eligible"]).sum()),
+        "excluded_explicit_not_actionable": int(flags["explicit_not_actionable"].sum()),
+        "excluded_non_actionable_status": int(flags["non_actionable_status"].sum()),
+        "excluded_guard_blocked": int(flags["guard_blocked"].sum()),
+        "excluded_non_positive_size": int(flags["non_positive_size"].sum()),
+    }
+
+
 def eligible_closed_for_learning(asset: str, closed_positions: pd.DataFrame) -> pd.DataFrame:
     """Return independent outcomes suitable for adapting exit thresholds.
 
-    Same-scan dynamic exits are execution churn, not swing-trade evidence. Hard
-    stops and targets remain eligible because they are price-triggered risk exits.
+    A row must first represent an executable recommendation at entry. Same-scan
+    dynamic exits are execution churn, not swing-trade evidence. Hard stops and
+    targets remain eligible because they are price-triggered risk exits.
     """
     closed = _asset_rows(closed_positions, asset)
+    if closed.empty:
+        return closed
+    flags = execution_eligibility_flags(asset, closed)
+    closed = closed[flags["execution_eligible"]].copy()
     if closed.empty:
         return closed
     closed["_holding_hours"] = _holding_hours(closed)

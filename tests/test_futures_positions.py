@@ -80,8 +80,26 @@ def test_futures_closes_on_score_reversal():
             _restore_exit_rules(old_data, old_file)
 
 
+def test_futures_skips_zero_size_and_guard_blocked_rows():
+    with tempfile.TemporaryDirectory() as td:
+        old_data, old_file = exit_rules.DATA_DIR, exit_rules.EXIT_REVIEWS_FILE
+        _patch_files(td)
+        try:
+            asof = datetime.now(timezone.utc)
+            zero = _signal("long")
+            zero.loc[0, "suggested_contracts"] = 0
+            blocked = _signal("short")
+            blocked.loc[0, "research_guard_status"] = "blocked"
+            assert futures_positions.add_new_futures_signals(zero, asof) == 0
+            assert futures_positions.add_new_futures_signals(blocked, asof) == 0
+            assert futures_positions.summary()["open_count"] == 0
+        finally:
+            _restore_exit_rules(old_data, old_file)
+
+
 if __name__ == "__main__":
     test_futures_long_closes_on_stop()
     test_futures_short_closes_on_target()
     test_futures_closes_on_score_reversal()
-    print("3/3 futures position tests passed")
+    test_futures_skips_zero_size_and_guard_blocked_rows()
+    print("4/4 futures position tests passed")

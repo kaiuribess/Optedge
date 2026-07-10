@@ -57,6 +57,10 @@ def _learning_frames(*, same_scan: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
         closed.append({
             "asset": "option",
             "position_id": f"option-{index}",
+            "entry_is_actionable": True,
+            "trade_status": "Trade",
+            "research_guard_status": "review",
+            "suggested_contracts": 1,
             "entry_time": entry.isoformat(),
             "exit_time": exit_time.isoformat(),
             "exit_reason": "dynamic_exit",
@@ -85,6 +89,33 @@ def test_independent_multi_day_outcomes_can_activate_learning():
     eligible = exit_learning.eligible_closed_for_learning("option", closed)
     assert len(eligible) == 120
     assert exit_learning.enough_data_for_learning("option", closed, reviews)
+
+
+def test_non_executable_rows_are_excluded_from_learning():
+    rows = pd.DataFrame([
+        {"asset": "option", "position_id": "trade", "trade_status": "Trade",
+         "entry_trade_status": "Trade", "suggested_contracts": 1,
+         "research_guard_status": "review", "entry_research_guard_status": "review",
+         "entry_is_actionable": True},
+        {"asset": "option", "position_id": "watch", "trade_status": "Watch",
+         "suggested_contracts": 1, "research_guard_status": "review"},
+        {"asset": "option", "position_id": "zero", "trade_status": "Trade",
+         "suggested_contracts": 0, "research_guard_status": "review"},
+        {"asset": "option", "position_id": "blocked", "trade_status": "Trade",
+         "suggested_contracts": 1, "research_guard_status": "blocked"},
+        {"asset": "option", "position_id": "explicit", "trade_status": "Trade",
+         "suggested_contracts": 1, "research_guard_status": "review",
+         "entry_is_actionable": False},
+    ])
+    eligible = exit_learning.eligible_closed_for_learning("option", rows)
+    summary = exit_learning.execution_eligibility_summary("option", rows)
+    assert eligible["position_id"].tolist() == ["trade"]
+    assert summary["execution_eligible_closed_positions"] == 1
+    assert summary["non_executable_closed_positions"] == 4
+    assert summary["excluded_non_actionable_status"] == 1
+    assert summary["excluded_non_positive_size"] == 1
+    assert summary["excluded_guard_blocked"] == 1
+    assert summary["excluded_explicit_not_actionable"] == 1
 
 
 def test_insufficient_learning_resets_old_thresholds_to_defaults():
@@ -130,6 +161,7 @@ if __name__ == "__main__":
     test_malformed_policy_falls_back_to_defaults()
     test_same_scan_dynamic_churn_does_not_activate_learning()
     test_independent_multi_day_outcomes_can_activate_learning()
+    test_non_executable_rows_are_excluded_from_learning()
     test_insufficient_learning_resets_old_thresholds_to_defaults()
     test_stale_policy_falls_back_to_defaults()
-    print("7/7 exit learning tests passed")
+    print("8/8 exit learning tests passed")

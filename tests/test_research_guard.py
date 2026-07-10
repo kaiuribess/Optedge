@@ -50,7 +50,7 @@ def test_guard_uses_independent_swing_sample_when_available():
         },
     })
     assert report["closed_signals"] == 259
-    assert report["validation_basis"] == "independent_swing_after_slippage"
+    assert report["validation_basis"] == "executable_swing_after_slippage"
     assert report["status"] == "blocked"
     assert any(w["code"] == "sample_size" for w in report["warnings"])
     assert any(w["code"] == "drawdown" for w in report["warnings"])

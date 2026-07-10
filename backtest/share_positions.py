@@ -114,6 +114,8 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             continue
         if "is_actionable" in s.index and not bool(s.get("is_actionable")):
             continue
+        if str(s.get("research_guard_status") or "").strip().lower() == "blocked":
+            continue
         entry = _safe_float(s.get("spot") or s.get("entry_price") or s.get("current_price"), 0.0)
         if entry <= 0:
             entry = _safe_float(_latest_price(ticker), 0.0)
@@ -127,6 +129,9 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "position_id": _position_id(ticker, entry_time),
             "ticker": ticker,
             "entry_time": entry_time,
+            "entry_is_actionable": True,
+            "entry_trade_status": s.get("trade_status"),
+            "entry_research_guard_status": s.get("research_guard_status"),
             "entry_price": entry,
             "current_price": entry,
             "suggested_dollars": float(s.get("suggested_dollars") or 0),

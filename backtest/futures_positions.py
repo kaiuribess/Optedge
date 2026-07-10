@@ -85,10 +85,17 @@ def add_new_futures_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
     added = 0
     for _, s in new_signals.iterrows():
         symbol = str(s.get("symbol") or "")
-        direction = str(s.get("direction") or "")
+        direction = str(s.get("direction") or "").strip().lower()
         if not symbol or direction not in {"long", "short"} or (symbol, direction) in existing:
             continue
-        if str(s.get("trade_status")) != "Trade":
+        if str(s.get("trade_status") or "").strip().lower() != "trade":
+            continue
+        if "is_actionable" in s.index and not bool(s.get("is_actionable")):
+            continue
+        if str(s.get("research_guard_status") or "").strip().lower() == "blocked":
+            continue
+        contracts = int(float(s.get("suggested_contracts") or 0))
+        if contracts <= 0:
             continue
         entry_time = asof.isoformat()
         row = {
@@ -100,12 +107,15 @@ def add_new_futures_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "using_micro": bool(s.get("using_micro")),
             "direction": direction,
             "entry_time": entry_time,
+            "entry_is_actionable": True,
+            "entry_trade_status": s.get("trade_status"),
+            "entry_research_guard_status": s.get("research_guard_status"),
             "entry_price": float(s.get("entry_price") or s.get("spot") or 0),
             "current_price": float(s.get("entry_price") or s.get("spot") or 0),
             "stop_price": float(s.get("stop_price") or 0),
             "target_price": float(s.get("target_price") or 0),
             "point_value": float(s.get("point_value") or 0),
-            "contracts": int(s.get("suggested_contracts") or 0),
+            "contracts": contracts,
             "risk_dollars": float(s.get("risk_dollars") or 0),
             "reward_dollars": float(s.get("reward_dollars") or 0),
             "futures_score": float(s.get("futures_score") or 0),
