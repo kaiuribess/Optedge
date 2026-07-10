@@ -237,6 +237,15 @@ def _option_card(row: pd.Series) -> str:
         ev_color = "#10b981" if ev_pct > 0 else "#ef4444"
         ev_html = (f'<span class="chip" style="background:{ev_color}20;color:{ev_color}">'
                    f'EV {ev_pct*100:+.0f}%</span>')
+    buyer_edge_html = ""
+    buyer_edge = row.get("buyer_edge_pct")
+    if buyer_edge is not None and not pd.isna(buyer_edge):
+        edge_color = "#10b981" if buyer_edge >= 0 else "#ef4444"
+        buyer_edge_html = (
+            f'<span class="chip" style="background:{edge_color}20;color:{edge_color}" '
+            f'title="Model value advantage for a long buyer after round-trip spread">'
+            f'buyer edge {buyer_edge*100:+.1f}%</span>'
+        )
     # Congress chip
     congress_html = ""
     cong_score = row.get("congress_score") or 0
@@ -302,6 +311,8 @@ def _option_card(row: pd.Series) -> str:
     kelly_pct = row.get("kelly_pct") or 0
     sized_dollars = row.get("actual_dollars") or 0
     sized_contracts = _safe_int(row.get("suggested_contracts"))
+    trade_status = str(row.get("trade_status") or "").strip().lower()
+    actionable_size = trade_status == "trade" and sized_contracts > 0
     kelly_html = ""
     if kelly_pct and not pd.isna(kelly_pct) and kelly_pct > 0:
         kelly_html = (f'<span class="chip" style="background:#3b82f620;color:#3b82f6">'
@@ -321,7 +332,7 @@ def _option_card(row: pd.Series) -> str:
   </div>"""
 
     sizing_block = ""
-    if kelly_pct and kelly_pct > 0 and sized_contracts > 0:
+    if actionable_size:
         sizing_block = f"""
   <div class="sizing-block">
     <h4>Position size <span class="muted">(Kelly)</span></h4>
@@ -331,11 +342,12 @@ def _option_card(row: pd.Series) -> str:
       <span class="muted">{kelly_pct*100:.1f}% of bankroll</span>
     </div>
   </div>"""
-    elif kelly_pct == 0:
+    else:
+        gate_reason = str(row.get("trade_gate_reason") or "not_actionable").replace("_", " ")
         sizing_block = """<div class="sizing-block warn">
     <h4>Position size</h4>
-    <p>Warning Kelly = 0 - predictor disagrees. Skip.</p>
-  </div>"""
+    <p>Not executable: %s.</p>
+  </div>""" % html.escape(gate_reason)
 
     return f"""
 <article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="{row["side"]}" data-status="{html.escape(str(row.get('trade_status') or 'Watch')).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_opt or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}" data-dte="{_safe_int(row.get('dte'))}">
@@ -347,6 +359,7 @@ def _option_card(row: pd.Series) -> str:
       {earnings_html}
       {pred_html}
       {ev_html}
+      {buyer_edge_html}
       {kelly_html}
       {_quote_quality_chip(row)}
       {congress_html}
@@ -369,6 +382,8 @@ def _option_card(row: pd.Series) -> str:
     <div><span class="lab">Delta</span><span class="val">{_fmt_num(row['delta'])}</span></div>
     <div><span class="lab">OI</span><span class="val">{_safe_int(row.get('open_interest')):,}</span></div>
     <div><span class="lab">Spread</span><span class="val">{_fmt_pct(row['spread_pct'])}</span></div>
+    <div><span class="lab">Buyer edge</span><span class="val">{_fmt_pct(row.get('buyer_edge_pct'))}</span></div>
+    <div><span class="lab">Pricing</span><span class="val">{html.escape(str(row.get('pricing_direction') or '-')).replace('_', ' ')}</span></div>
   </div>
   {headline_html}
   {sizing_block}
@@ -809,6 +824,8 @@ def _options_table(df: pd.DataFrame) -> str:
   <td>{int(r['confidence'])}</td>
   <td>{_fmt_pct(r.get('ev_pct'))}</td>
   <td>{_fmt_pct(r.get('kelly_pct'))}</td>
+  <td>{_fmt_pct(r.get('buyer_edge_pct'))}</td>
+  <td>{html.escape(str(r.get('pricing_direction') or '-')).replace('_', ' ')}</td>
   <td>{_fmt_pct(r['iv_market'])}</td>
   <td>{_fmt_pct(r['fair_vol'])}</td>
   <td>{_fmt_pct(r['vol_premium'])}</td>
@@ -820,7 +837,7 @@ def _options_table(df: pd.DataFrame) -> str:
 <table class="ranked">
   <thead><tr>
     <th>#</th><th>Ticker</th><th>Contract</th><th>Side</th>
-    <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>IV</th><th>HV30</th><th>Vol prem</th><th>DTE</th><th>Mid</th><th>Source</th>
+    <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>Buyer edge</th><th>Pricing</th><th>IV</th><th>HV30</th><th>Vol prem</th><th>DTE</th><th>Mid</th><th>Source</th>
   </tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>

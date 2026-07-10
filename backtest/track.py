@@ -81,7 +81,8 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     fp = LOG_DIR / f"signals_{asof.strftime('%Y%m%d_%H%M%S')}.parquet"
     cols = [
         "ticker", "contract", "side", "strike", "expiry", "dte", "spot",
-        "mid", "bid", "ask", "spread_pct", "net_edge_pct",
+        "mid", "bid", "ask", "spread_pct", "mispricing_pct", "net_edge_pct",
+        "buyer_edge_pct", "seller_edge_pct", "pricing_direction", "theo_price",
         "iv_market", "fair_vol", "vol_premium", "delta", "open_interest",
         "regime", "macro_tilt",
         "is_buy", "fused_score", "confidence", "signal", "reasoning", "risks",
@@ -89,7 +90,9 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social", "z_analyst",
         "pred_stock_return_pct", "pred_option_return_pct", "ev_pct", "kelly_pct",
         "suggested_contracts", "actual_dollars", "stop_price", "target_price",
-        "trade_status", "trade_score", "setup_quality_mult",
+        "trade_status", "trade_score", "setup_quality_mult", "pricing_edge_ok",
+        "pricing_edge_penalty_pct", "spread_to_edge_ratio", "trade_gate_reason",
+        "chain_source", "quote_quality",
         "research_guard_status", "research_guard_warnings",
         "entry_time",
     ]

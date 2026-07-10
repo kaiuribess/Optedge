@@ -23,6 +23,7 @@ The sizing layer uses:
 - Max drawdown is worse than -20%.
 - Spread buckets validate poorly.
 - An option recommendation has a spread above 15%.
+- A new long-option recommendation has negative modeled buyer edge after the round-trip spread.
 - Win rate is below a simple breakeven threshold.
 - Model weights appear stale.
 - Key data engines return no data.

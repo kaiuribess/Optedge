@@ -113,6 +113,23 @@ def _fetch_blob(ticker: str) -> Dict[str, Any]:
     }
 
 
+def _pricing_edges(mispricing_pct: np.ndarray,
+                   spread_pct: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return anomaly, long-buyer, and seller edges after round-trip spread.
+
+    ``mispricing_pct`` is positive when market mid is above model value and
+    negative when it is below model value. Absolute anomaly is useful for
+    diagnostics, but only negative mispricing can create value for a long
+    option buyer.
+    """
+    mispricing = np.asarray(mispricing_pct, dtype=float)
+    spread = np.asarray(spread_pct, dtype=float)
+    anomaly_edge = np.abs(mispricing) - spread
+    buyer_edge = -mispricing - spread
+    seller_edge = mispricing - spread
+    return anomaly_edge, buyer_edge, seller_edge
+
+
 def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
                   regime: str = "normal") -> pd.DataFrame:
     """Compute multi-model theoretical prices + IV + mispricing for an entire
@@ -280,9 +297,16 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
                                    (mid_arr - theo_arr) / theo_arr, 0.0)
     # v20.7 — net_edge accounts for half the bid-ask spread on each side of
     # the trade. A 5% mispricing on a contract with a 6% spread is NOT tradable.
-    # net_edge_pct = |mispricing_pct| - spread_pct
-    # (full round-trip: cross half-spread on entry + half on exit = full spread)
-    net_edge_pct_arr = np.abs(mispricing_pct_arr) - spread_arr
+    # net_edge_pct keeps the absolute anomaly for backward-compatible telemetry.
+    # buyer/seller edges below preserve direction after the full spread.
+    net_edge_pct_arr, buyer_edge_pct_arr, seller_edge_pct_arr = _pricing_edges(
+        mispricing_pct_arr, spread_arr,
+    )
+    pricing_direction_arr = np.where(
+        buyer_edge_pct_arr > 0,
+        "underpriced_after_spread",
+        np.where(seller_edge_pct_arr > 0, "overpriced_after_spread", "inside_spread"),
+    )
     vol_premium_arr = iv_market_arr - fair_vol_arr
 
     # Source-provided Greeks (CBOE) — keep raw values for the dashboard
@@ -318,6 +342,9 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
         "mispricing_dollar": mispricing_dollar_arr,
         "mispricing_pct": mispricing_pct_arr,
         "net_edge_pct": net_edge_pct_arr,
+        "buyer_edge_pct": buyer_edge_pct_arr,
+        "seller_edge_pct": seller_edge_pct_arr,
+        "pricing_direction": pricing_direction_arr,
         "delta": delta_arr,
         "gamma_src": gamma_src,
         "theta_src": theta_src,

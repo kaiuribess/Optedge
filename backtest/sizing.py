@@ -47,6 +47,7 @@ KELLY_FRACTION_AGGRESSIVE = 0.50
 MAX_PER_OPTION_TRADE_AGGRESSIVE = 0.10
 MAX_PER_SHARE_TRADE_AGGRESSIVE  = 0.15
 TOTAL_OPTIONS_CAP_AGGRESSIVE    = 0.60
+MIN_OPTION_BUYER_EDGE_PCT = 0.0
 
 DEFAULT_BANKROLL = 10_000
 
@@ -71,6 +72,56 @@ def _bounded(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _option_buyer_edge(row: pd.Series) -> Tuple[float, bool]:
+    """Return buyer-directed edge and whether directional data was available."""
+    raw = row.get("buyer_edge_pct")
+    if raw is not None and not pd.isna(raw):
+        return float(raw), True
+    legacy = row.get("net_edge_pct")
+    if legacy is not None and not pd.isna(legacy):
+        return float(legacy), False
+    return 0.0, False
+
+
+def add_directional_option_edges(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill buyer/seller edge fields on legacy option snapshots."""
+    if df is None or df.empty or "mispricing_pct" not in df.columns:
+        return df
+    out = df.copy()
+    mispricing = pd.to_numeric(out["mispricing_pct"], errors="coerce")
+    spread = pd.to_numeric(
+        out.get("spread_pct", pd.Series(0.0, index=out.index)), errors="coerce",
+    ).fillna(0.0)
+    anomaly = mispricing.abs() - spread
+    buyer = -mispricing - spread
+    seller = mispricing - spread
+    for column, computed in (
+        ("net_edge_pct", anomaly),
+        ("buyer_edge_pct", buyer),
+        ("seller_edge_pct", seller),
+    ):
+        if column not in out.columns:
+            out[column] = computed
+        else:
+            out[column] = pd.to_numeric(out[column], errors="coerce").where(
+                pd.to_numeric(out[column], errors="coerce").notna(), computed,
+            )
+    direction = pd.Series(
+        np.select(
+            [buyer > 0, seller > 0],
+            ["underpriced_after_spread", "overpriced_after_spread"],
+            default="inside_spread",
+        ),
+        index=out.index,
+    )
+    if "pricing_direction" not in out.columns:
+        out["pricing_direction"] = direction
+    else:
+        existing = out["pricing_direction"].fillna("").astype(str).str.strip()
+        out["pricing_direction"] = existing.where(existing.ne(""), direction)
+    return out
+
+
 def _option_setup_quality_mult(row: pd.Series) -> float:
     """Blend non-predictor evidence into position sizing.
 
@@ -82,12 +133,12 @@ def _option_setup_quality_mult(row: pd.Series) -> float:
     if conf is not None and not pd.isna(conf):
         mult *= _bounded(float(conf) / 75.0, 0.60, 1.20)
 
-    net_edge = row.get("net_edge_pct")
-    if net_edge is not None and not pd.isna(net_edge):
-        if net_edge <= 0:
+    pricing_edge, has_pricing_edge = _option_buyer_edge(row)
+    if has_pricing_edge or "net_edge_pct" in row.index:
+        if pricing_edge <= 0:
             mult *= 0.65
         else:
-            mult *= _bounded(1.0 + float(net_edge), 1.0, 1.25)
+            mult *= _bounded(1.0 + pricing_edge, 1.0, 1.25)
 
     spread = row.get("spread_pct")
     if spread is not None and not pd.isna(spread):
@@ -95,10 +146,9 @@ def _option_setup_quality_mult(row: pd.Series) -> float:
             mult *= 0.65
         elif spread > 0.08:
             mult *= 0.80
-        edge = row.get("net_edge_pct")
-        if edge is not None and not pd.isna(edge):
-            edge_abs = max(abs(float(edge)), 0.01)
-            spread_to_edge = float(spread) / edge_abs
+        if has_pricing_edge or "net_edge_pct" in row.index:
+            edge_for_cost = max(pricing_edge, 0.01)
+            spread_to_edge = float(spread) / edge_for_cost
             if float(spread) > 0.05 and spread_to_edge > 1.5:
                 mult *= 0.50
 
@@ -121,7 +171,7 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
     """Attach Trade / Watch / Skip status after EV and sizing are known."""
     if df is None or df.empty:
         return df
-    out = df.copy()
+    out = add_directional_option_edges(df.copy())
     ev = out.get("ev_pct", pd.Series(np.nan, index=out.index)).fillna(-999)
     kelly = out.get("kelly_pct", pd.Series(0.0, index=out.index)).fillna(0.0)
     if asset == "option":
@@ -130,7 +180,15 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
         spread_bad = (ratio > 1.5) & (
             out.get("spread_pct", pd.Series(0.0, index=out.index)).fillna(0.0) > 0.05
         )
-        trade = (ev > 0) & (kelly > 0) & (contracts > 0) & ~spread_bad
+        if "buyer_edge_pct" in out.columns:
+            buyer_edge = pd.to_numeric(out["buyer_edge_pct"], errors="coerce")
+            buyer_edge_bad = buyer_edge.notna() & (buyer_edge < MIN_OPTION_BUYER_EDGE_PCT)
+        else:
+            buyer_edge_bad = pd.Series(False, index=out.index)
+        trade = (
+            (ev > 0) & (kelly > 0) & (contracts > 0)
+            & ~spread_bad & ~buyer_edge_bad
+        )
     else:
         dollars = out.get("suggested_dollars", pd.Series(0.0, index=out.index)).fillna(0.0)
         spread_bad = pd.Series(False, index=out.index)
@@ -138,6 +196,25 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
     watch = (ev > 0) & ~trade & ~spread_bad
     out["trade_status"] = np.where(trade, "Trade", np.where(watch, "Watch", "Skip"))
     out["is_actionable"] = trade
+    if asset == "option":
+        out["pricing_edge_ok"] = ~buyer_edge_bad
+        out["trade_gate_reason"] = np.select(
+            [
+                ev <= 0,
+                kelly <= 0,
+                contracts <= 0,
+                buyer_edge_bad,
+                spread_bad,
+            ],
+            [
+                "non_positive_ev",
+                "zero_kelly",
+                "zero_contracts",
+                "negative_buyer_edge_after_spread",
+                "spread_exceeds_edge",
+            ],
+            default="passed",
+        )
     return out
 
 
@@ -227,11 +304,16 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     # v20.7: subtract round-trip fill cost from predicted return BEFORE EV/Kelly
     pred_net = pred - fill_slippage_pct
     spread = float(row.get("spread_pct") or 0.0)
-    edge = abs(float(row.get("net_edge_pct") or 0.0))
-    spread_to_edge = spread / max(edge, 0.01)
+    buyer_edge, has_directional_edge = _option_buyer_edge(row)
+    edge_for_cost = max(buyer_edge, 0.0) if has_directional_edge else abs(buyer_edge)
+    spread_to_edge = spread / max(edge_for_cost, 0.01)
+    pricing_edge_penalty = 0.0
+    if has_directional_edge and buyer_edge < MIN_OPTION_BUYER_EDGE_PCT:
+        pricing_edge_penalty = min(0.25, abs(buyer_edge - MIN_OPTION_BUYER_EDGE_PCT))
+        pred_net -= pricing_edge_penalty
     spread_penalty = 0.0
     if spread > 0.05 and spread_to_edge > 1.0:
-        spread_penalty = min(0.25, max(0.0, spread - edge))
+        spread_penalty = min(0.25, max(0.0, spread - edge_for_cost))
         pred_net -= spread_penalty
 
     delta = float(row.get("delta") or 0.5)
@@ -246,7 +328,8 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
         return {"ev_pct": float("nan"), "ev_dollar_per_contract": float("nan"),
                 "kelly_full": float("nan"), "kelly_pct": float("nan"),
                 "prob_win": prob_win, "spread_to_edge_ratio": spread_to_edge,
-                "liquidity_penalty_pct": spread_penalty}
+                "liquidity_penalty_pct": spread_penalty,
+                "pricing_edge_penalty_pct": pricing_edge_penalty}
 
     ev_pct = pred_net
     ev_dollar = ev_pct * mid * 100
@@ -255,7 +338,8 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
         return {"ev_pct": ev_pct, "ev_dollar_per_contract": ev_dollar,
                 "kelly_full": 0.0, "kelly_pct": 0.0, "prob_win": prob_win,
                 "spread_to_edge_ratio": spread_to_edge,
-                "liquidity_penalty_pct": spread_penalty}
+                "liquidity_penalty_pct": spread_penalty,
+                "pricing_edge_penalty_pct": pricing_edge_penalty}
 
     # v20.7: conservative Kelly prior. Until we have 500+ logged signals AND
     # 10+ days of forward P&L, use a less-optimistic avg_win.
@@ -282,6 +366,7 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
         "setup_quality_mult": setup_mult,
         "spread_to_edge_ratio": spread_to_edge,
         "liquidity_penalty_pct": spread_penalty,
+        "pricing_edge_penalty_pct": pricing_edge_penalty,
     }
 
 
@@ -381,7 +466,7 @@ def add_sizing_to_options(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
     """
     if df is None or df.empty:
         return df
-    out = df.copy()
+    out = add_directional_option_edges(df)
     rows = [compute_option_ev_and_kelly(r, aggressive=aggressive,
                                           fill_slippage_pct=fill_slippage_pct)
             for _, r in out.iterrows()]

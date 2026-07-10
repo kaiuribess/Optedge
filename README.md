@@ -47,7 +47,7 @@ Optedge is intentionally broad. Each scan can combine many independent signals, 
 
 | Area | Coverage |
 |---|---|
-| Options pricing, surface, and flow | Black-Scholes, CRR binomial, Bjerksund-Stensland, CBOE theoretical price, ensemble weights, IV rank, IV premium, skew, surface anomalies, DTE, delta, open interest, bid/ask spread, unusual options activity, put/call ratios, and contract-level call/put ranking |
+| Options pricing, surface, and flow | Black-Scholes, CRR binomial, Bjerksund-Stensland, CBOE theoretical price, ensemble weights, IV rank, IV premium, directional buyer/seller edge after spread, skew, surface anomalies, DTE, delta, open interest, bid/ask spread, unusual options activity, put/call ratios, and contract-level call/put ranking |
 | Sentiment, social, and retail attention | WSB, r/options, StockTwits-style social signals, ApeWisdom/Twitter-style attention, FinBERT, VADER, keyword/degen-aware scoring, Google Trends, and attention momentum |
 | News, earnings, and catalysts | Recent headlines, headline sentiment, news momentum, earnings calendar, days-to-earnings, whisper signals, IV-crush risk, FDA/biotech catalysts, and event proximity |
 | Fundamentals and value | Market cap, valuation, quality, P/E, FCF yield, earnings yield, EV/EBITDA, SEC companyfacts balance-sheet context, margin/ROIC proxies, deep value buckets, Graham-style score, and Magic Formula-style quality/value composite |

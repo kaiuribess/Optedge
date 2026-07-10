@@ -778,6 +778,9 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
             "target_price": 8.4,
             "spread_pct": 0.12,
             "net_edge_pct": 0.35,
+            "buyer_edge_pct": 0.08,
+            "seller_edge_pct": -0.32,
+            "pricing_direction": "underpriced_after_spread",
             "suggested_contracts": 1,
             "chain_source": "tradier",
             "quote_quality": "live_or_broker",
@@ -811,6 +814,8 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert brief["best_idea"]["quote_source"]["is_live_or_broker"] is True
         assert brief["best_idea"]["spread_pct"] == 0.12
         assert brief["best_idea"]["net_edge_pct"] == 0.35
+        assert brief["best_idea"]["buyer_edge_pct"] == 0.08
+        assert brief["best_idea"]["pricing_direction"] == "underpriced_after_spread"
         assert brief["open_positions"]["count"] == 1
         assert brief["open_positions"]["avg_unrealized_pct"] == 0.5
         assert brief["validation"]["win_rate"] == 0.6
@@ -823,6 +828,8 @@ def test_lookup_builds_research_brief_from_local_factors_and_open_state():
         assert "Research action" in html
         assert "Research Brief" in html
         assert "Quote source" in html
+        assert "Buyer edge" in html
+        assert "Pricing anomaly" in html
         assert "Live Tradier" in html
 
 

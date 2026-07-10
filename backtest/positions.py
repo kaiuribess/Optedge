@@ -46,6 +46,9 @@ TRACKED_SIGNAL_PREFIXES = ("z_", "factor_")
 TRACKED_SIGNAL_COLS = {
     "rank_score", "fused_score", "confidence", "ev_pct", "kelly_pct",
     "prob_win", "setup_quality_mult", "trade_score", "bucket",
+    "mispricing_pct", "theo_price", "buyer_edge_pct", "seller_edge_pct",
+    "pricing_direction", "pricing_edge_ok", "pricing_edge_penalty_pct",
+    "spread_to_edge_ratio", "trade_gate_reason", "chain_source", "quote_quality",
 }
 
 

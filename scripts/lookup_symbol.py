@@ -101,6 +101,7 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
+        "buyer_edge_pct", "seller_edge_pct", "pricing_direction", "trade_gate_reason",
         "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
         "top_headline",
     ],
@@ -155,7 +156,8 @@ DISPLAY_COLUMNS = {
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
         "rank_score", "fused_score", "trade_status", "suggested_contracts",
         "stop_price", "target_price", "spread_pct", "premium_dollars",
-        "actual_dollars", "ev_pct", "net_edge_pct",
+        "actual_dollars", "ev_pct", "net_edge_pct", "buyer_edge_pct",
+        "seller_edge_pct", "pricing_direction", "trade_gate_reason",
         "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
         "match_quality", "strike_diff", "requested_side", "requested_expiry",
         "requested_strike", "match_source", "contract_grade", "review_lane",
@@ -243,6 +245,13 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
+    if "mispricing_pct" in out.columns:
+        try:
+            from backtest.sizing import add_directional_option_edges
+
+            out = add_directional_option_edges(out)
+        except Exception:
+            pass
     age = _snapshot_age_minutes(path)
     file_freshness = _snapshot_freshness(age)
     out["_source_file"] = path.name
@@ -1328,6 +1337,10 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
         "spread_pct": _clean_value(row.get("spread_pct")),
         "ev_pct": _clean_value(row.get("ev_pct")),
         "net_edge_pct": _clean_value(row.get("net_edge_pct")),
+        "buyer_edge_pct": _clean_value(row.get("buyer_edge_pct")),
+        "seller_edge_pct": _clean_value(row.get("seller_edge_pct")),
+        "pricing_direction": _clean_value(row.get("pricing_direction")),
+        "trade_gate_reason": _clean_value(row.get("trade_gate_reason")),
         "suggested_contracts": _clean_value(row.get("suggested_contracts")),
         "suggested_dollars": _clean_value(row.get("suggested_dollars")),
         "chain_source": _clean_value(row.get("chain_source")),
@@ -1764,10 +1777,15 @@ def _swing_verdict(
             elif spread >= 0.35:
                 score -= 14
                 reasons.append(f"Spread is wide at {spread * 100:.1f}%.")
-        edge = _float_value(best_idea.get("net_edge_pct") or best_idea.get("ev_pct"))
+        if str(best_idea.get("asset") or "").lower() == "option":
+            edge = _float_value(best_idea.get("buyer_edge_pct"))
+            if edge is None:
+                edge = _float_value(best_idea.get("ev_pct"))
+        else:
+            edge = _float_value(best_idea.get("ev_pct"))
         if edge is not None:
             score += max(-10, min(12, edge * 35.0))
-            reasons.append(f"Estimated edge is {edge * 100:+.1f}%.")
+            reasons.append(f"Estimated buyer/return edge is {edge * 100:+.1f}%.")
     else:
         score -= 28
         blockers.append("No current ranked local idea is available for this symbol.")
@@ -2742,7 +2760,9 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
     <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
     <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>
-    <div><span class="muted">Net edge</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
+    <div><span class="muted">Buyer edge</span><strong>{_fmt_brief_pct(idea.get('buyer_edge_pct'))}</strong></div>
+    <div><span class="muted">Pricing anomaly</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
+    <div><span class="muted">Pricing direction</span><strong>{html.escape(str(idea.get('pricing_direction') or '-'))}</strong></div>
     <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
     <div><span class="muted">Exact contract exposure</span><strong>{int(contract_exposure.get('exact_total') or 0)}</strong></div>
     <div><span class="muted">Same ticker options</span><strong>{int(contract_exposure.get('same_ticker_total') or 0)}</strong></div>

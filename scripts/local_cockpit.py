@@ -107,6 +107,7 @@ OPPORTUNITY_SPECS = {
             "asset", "actionable", "ticker", "side", "strike", "expiry", "dte", "mid", "spot",
             "confidence", "rank_score", "fused_score", "trade_status",
             "suggested_contracts", "spread_pct", "ev_pct", "net_edge_pct",
+            "buyer_edge_pct", "seller_edge_pct", "pricing_direction", "trade_gate_reason",
             "stop_price", "target_price", "chain_source", "quote_quality",
             "snapshot_age_min", "snapshot_freshness", "top_headline",
         ],
@@ -832,6 +833,13 @@ def _read_parquet(path: Path | None) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
+    if "mispricing_pct" in out.columns:
+        try:
+            from backtest.sizing import add_directional_option_edges
+
+            out = add_directional_option_edges(out)
+        except Exception:
+            pass
     age = _snapshot_age_minutes(path)
     file_freshness = _snapshot_freshness(age)
     out["_source_file"] = path.name
@@ -3649,8 +3657,11 @@ def _setup_quality(row: pd.Series, asset: str) -> str:
     pieces: list[str] = []
     if asset == "option":
         spread = _float_value(row.get("spread_pct"), default=math.nan)
+        buyer_edge = _float_value(row.get("buyer_edge_pct"), default=math.nan)
         if math.isfinite(spread):
             pieces.append(f"spread {spread * 100:.1f}%")
+        if math.isfinite(buyer_edge):
+            pieces.append(f"buyer edge {buyer_edge * 100:+.1f}%")
         source = str(row.get("chain_source") or row.get("quote_quality") or "").strip()
         if source:
             pieces.append(source)
@@ -3681,9 +3692,13 @@ def _setup_reason(row: pd.Series, asset: str) -> str:
     if math.isfinite(confidence) and confidence > 0:
         parts.append(f"conf {confidence:.0f}")
     if asset == "option":
-        edge = _float_value(row.get("net_edge_pct"), default=math.nan)
+        edge = _float_value(row.get("buyer_edge_pct"), default=math.nan)
+        edge_label = "buyer edge"
+        if not math.isfinite(edge):
+            edge = _float_value(row.get("net_edge_pct"), default=math.nan)
+            edge_label = "pricing anomaly"
         if math.isfinite(edge):
-            parts.append(f"edge {edge * 100:.1f}%")
+            parts.append(f"{edge_label} {edge * 100:.1f}%")
     elif asset == "futures":
         fut_score = _float_value(row.get("futures_score"), default=math.nan)
         if math.isfinite(fut_score):
@@ -3754,6 +3769,7 @@ def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
     if asset == "option":
         dte = _float_value(row.get("dte"), default=math.nan)
         spread = _float_value(row.get("spread_pct"), default=math.nan)
+        buyer_edge = _float_value(row.get("buyer_edge_pct"), default=math.nan)
         contracts = _float_value(row.get("suggested_contracts"), default=0.0)
         quote_quality = str(row.get("quote_quality") or row.get("chain_source") or "").lower()
         swing_label = str(row.get("swing_fit_label") or "").strip().lower()
@@ -3774,6 +3790,9 @@ def _setup_readiness(row: pd.Series, asset: str) -> dict[str, Any]:
         if contracts <= 0:
             score -= 40
             flags.append("no contract size")
+        if math.isfinite(buyer_edge) and buyer_edge < 0:
+            score -= 35
+            flags.append("negative buyer edge after spread")
         if swing_label == "avoid":
             score -= 45
             flags.append("avoid swing fit")
@@ -14271,7 +14290,9 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Action risk</span><strong>${escHtml(action.risk_level || '-')}</strong></div>
         <div class="brief-tile"><span>Status</span><strong>${escHtml(idea.trade_status || '-')}</strong></div>
         <div class="brief-tile"><span>Spread</span><strong>${pct(idea.spread_pct)}</strong></div>
-        <div class="brief-tile"><span>Net edge</span><strong>${pct(idea.net_edge_pct)}</strong></div>
+        <div class="brief-tile"><span>Buyer edge</span><strong>${pct(idea.buyer_edge_pct)}</strong></div>
+        <div class="brief-tile"><span>Pricing anomaly</span><strong>${pct(idea.net_edge_pct)}</strong></div>
+        <div class="brief-tile"><span>Pricing direction</span><strong>${escHtml(idea.pricing_direction || '-')}</strong></div>
         <div class="brief-tile"><span>Resolved via</span><strong>${escHtml(resolvedText)}</strong></div>
         <div class="brief-tile"><span>Open exposure</span><strong>${cell(open.count || 0)}</strong></div>
         <div class="brief-tile"><span>Exact contract exposure</span><strong>${cell(contractExposure.exact_total || 0)}</strong></div>

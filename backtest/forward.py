@@ -39,6 +39,8 @@ FEATURE_COLS = [
     "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social",
     "z_analyst", "pred_stock_return_pct", "pred_option_return_pct", "ev_pct",
     "kelly_pct", "suggested_contracts", "actual_dollars",
+    "mispricing_pct", "net_edge_pct", "buyer_edge_pct", "seller_edge_pct",
+    "pricing_direction", "pricing_edge_ok", "trade_gate_reason",
 ]
 
 

@@ -2316,6 +2316,28 @@ def test_validation_guardrail_prefers_independent_swing_metrics():
     assert guard["level"] == "bad"
 
 
+def test_option_setup_readiness_penalizes_negative_buyer_edge():
+    base = pd.Series({
+        "trade_status": "Trade",
+        "snapshot_freshness": "fresh",
+        "confidence": 80,
+        "stop_price": 1.0,
+        "target_price": 4.0,
+        "dte": 120,
+        "spread_pct": 0.05,
+        "suggested_contracts": 1,
+        "quote_quality": "live_or_broker",
+    })
+    positive = cockpit_module._setup_readiness(
+        pd.Series({**base.to_dict(), "buyer_edge_pct": 0.10}), "option",
+    )
+    negative = cockpit_module._setup_readiness(
+        pd.Series({**base.to_dict(), "buyer_edge_pct": -0.10}), "option",
+    )
+    assert negative["readiness_score"] == positive["readiness_score"] - 35
+    assert "negative buyer edge after spread" in negative["risk_flags"]
+
+
 def test_swing_packet_builds_and_writes_daily_decision_packet():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -6583,6 +6605,7 @@ if __name__ == "__main__":
     test_manual_review_summary_surfaces_entry_gate_state()
     test_validation_guardrail_uses_summary_closed_count_with_overall_metrics()
     test_validation_guardrail_prefers_independent_swing_metrics()
+    test_option_setup_readiness_penalizes_negative_buyer_edge()
     test_swing_packet_builds_and_writes_daily_decision_packet()
     test_swing_packet_can_refresh_chain_shortlist_on_demand()
     test_enriched_watchlist_sorts_ready_ideas_first()
@@ -6641,4 +6664,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("90/90 local cockpit tests passed")
+    print("91/91 local cockpit tests passed")

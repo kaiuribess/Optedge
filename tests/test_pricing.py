@@ -27,7 +27,11 @@ from pricing_models import (
     bs_price_vec, crr_price_vec, bjs_price_vec,
     ensemble_theo, classify_vix_regime, load_weights,
 )
-from backtest.sizing import compute_option_ev_and_kelly
+from backtest.sizing import (
+    _add_trade_status, add_directional_option_edges, add_sizing_to_options,
+    compute_option_ev_and_kelly,
+)
+from engines.mispricing import _pricing_edges
 import pandas as pd
 
 
@@ -200,6 +204,91 @@ def test_conservative_kelly_prior_no_realized_data():
     # with avg_win = 0.40 (the v20.6 = max(0.50, abs(0.20)*2 - 0.04) = 0.36)
     assert out["kelly_pct"] >= 0
     assert out["kelly_pct"] < 0.5    # sanity: capped well below 50%
+
+
+def test_pricing_edges_preserve_buyer_and_seller_direction():
+    anomaly, buyer, seller = _pricing_edges(
+        np.array([-0.20, 0.20, 0.00]),
+        np.array([0.05, 0.05, 0.05]),
+    )
+    assert np.allclose(anomaly, [0.15, 0.15, -0.05])
+    assert np.allclose(buyer, [0.15, -0.25, -0.05])
+    assert np.allclose(seller, [-0.25, 0.15, -0.05])
+
+
+def test_negative_buyer_edge_reduces_option_ev():
+    common = {
+        "pred_option_return_pct": 0.60,
+        "delta": 0.75,
+        "mid": 2.0,
+        "dte": 45,
+        "spread_pct": 0.02,
+    }
+    underpriced = compute_option_ev_and_kelly(
+        pd.Series({**common, "buyer_edge_pct": 0.10}), fill_slippage_pct=0.04,
+    )
+    overpriced = compute_option_ev_and_kelly(
+        pd.Series({**common, "buyer_edge_pct": -0.10}), fill_slippage_pct=0.04,
+    )
+    assert overpriced["pricing_edge_penalty_pct"] == 0.10
+    assert underpriced["pricing_edge_penalty_pct"] == 0.0
+    assert overpriced["ev_pct"] < underpriced["ev_pct"]
+    assert overpriced["setup_quality_mult"] < underpriced["setup_quality_mult"]
+
+
+def test_trade_status_requires_non_negative_buyer_edge_when_available():
+    rows = pd.DataFrame([
+        {
+            "ev_pct": 0.20, "kelly_pct": 0.02, "suggested_contracts": 1,
+            "spread_pct": 0.02, "spread_to_edge_ratio": 0.20,
+            "buyer_edge_pct": 0.10,
+        },
+        {
+            "ev_pct": 0.20, "kelly_pct": 0.02, "suggested_contracts": 1,
+            "spread_pct": 0.02, "spread_to_edge_ratio": 2.00,
+            "buyer_edge_pct": -0.10,
+        },
+    ])
+    out = _add_trade_status(rows, asset="option")
+    assert out.loc[0, "trade_status"] == "Trade"
+    assert bool(out.loc[0, "pricing_edge_ok"])
+    assert out.loc[0, "trade_gate_reason"] == "passed"
+    assert out.loc[1, "trade_status"] == "Watch"
+    assert not bool(out.loc[1, "pricing_edge_ok"])
+    assert out.loc[1, "trade_gate_reason"] == "negative_buyer_edge_after_spread"
+
+
+def test_legacy_option_snapshot_backfills_directional_edges():
+    out = add_directional_option_edges(pd.DataFrame([
+        {"mispricing_pct": -0.20, "spread_pct": 0.05},
+        {"mispricing_pct": 0.20, "spread_pct": 0.05},
+    ]))
+    assert np.allclose(out["buyer_edge_pct"], [0.15, -0.25])
+    assert np.allclose(out["seller_edge_pct"], [-0.25, 0.15])
+    assert out["pricing_direction"].tolist() == [
+        "underpriced_after_spread", "overpriced_after_spread",
+    ]
+
+
+def test_option_sizing_backfills_and_gates_overpriced_contracts():
+    rows = pd.DataFrame([
+        {
+            "ticker": "CHEAP", "mid": 1.0, "pred_option_return_pct": 2.0,
+            "delta": 0.90, "dte": 45, "mispricing_pct": -0.20,
+            "spread_pct": 0.02, "confidence": 80,
+        },
+        {
+            "ticker": "RICH", "mid": 1.0, "pred_option_return_pct": 2.0,
+            "delta": 0.90, "dte": 45, "mispricing_pct": 0.20,
+            "spread_pct": 0.02, "confidence": 80,
+        },
+    ])
+    out = add_sizing_to_options(rows, bankroll=10_000, fill_slippage_pct=0.04)
+    assert np.isclose(out.loc[0, "buyer_edge_pct"], 0.18)
+    assert out.loc[0, "trade_status"] == "Trade"
+    assert np.isclose(out.loc[1, "buyer_edge_pct"], -0.22)
+    assert out.loc[1, "trade_status"] == "Watch"
+    assert out.loc[1, "trade_gate_reason"] == "negative_buyer_edge_after_spread"
 
 
 if __name__ == "__main__":

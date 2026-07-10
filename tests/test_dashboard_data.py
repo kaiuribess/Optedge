@@ -71,7 +71,11 @@ def test_dashboard_helpers_dedupe_and_label_positions():
 
 
 def test_option_card_and_table_show_quote_quality():
-    live_row = _sample_option_row(chain_source="tradier", quote_quality="live_or_broker")
+    live_row = _sample_option_row(
+        chain_source="tradier", quote_quality="live_or_broker",
+        buyer_edge_pct=0.10, pricing_direction="underpriced_after_spread",
+        trade_gate_reason="passed",
+    )
     fallback_row = _sample_option_row(ticker="MSFT", chain_source="yfinance", quote_quality="free_or_delayed")
     yahoo_row = _sample_option_row(ticker="NVDA", chain_source="yahoo_options", quote_quality="free_or_delayed")
 
@@ -83,10 +87,23 @@ def test_option_card_and_table_show_quote_quality():
     ]))
 
     assert "Live Tradier" in card_html
+    assert "buyer edge +10.0%" in card_html
+    assert "underpriced after spread" in card_html
     assert "Source" in table_html
     assert "Live Tradier" in table_html
     assert "Yahoo fallback" in table_html
     assert "Yahoo options" in table_html
+
+
+def test_option_card_hides_position_size_for_non_actionable_pricing():
+    row = _sample_option_row(
+        trade_status="Watch", buyer_edge_pct=-0.20,
+        pricing_direction="overpriced_after_spread",
+        trade_gate_reason="negative_buyer_edge_after_spread",
+    )
+    card_html = dashboard_build._option_card(row)
+    assert "Not executable: negative buyer edge after spread." in card_html
+    assert "<strong>1</strong> contract" not in card_html
 
 
 def test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels():
@@ -302,9 +319,10 @@ def test_dashboard_includes_export_and_workflow_controls():
 if __name__ == "__main__":
     test_dashboard_helpers_dedupe_and_label_positions()
     test_option_card_and_table_show_quote_quality()
+    test_option_card_hides_position_size_for_non_actionable_pricing()
     test_dashboard_analytics_uses_pnl_wins_and_unique_open_labels()
     test_dashboard_performance_prefers_validation_over_forward_telemetry()
     test_dashboard_engine_panels_are_merged_into_one_section()
     test_dashboard_section_labels_are_not_mislabeled_as_analyst_only()
     test_dashboard_includes_export_and_workflow_controls()
-    print("7/7 dashboard data tests passed")
+    print("8/8 dashboard data tests passed")
