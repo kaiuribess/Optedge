@@ -5918,8 +5918,12 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
         unknown = "unknown until a fresh read-only broker snapshot is normalized"
         return [
             row("Accounts / buying power", "read supported", unknown, "read-only", "Refresh the raw MCP snapshot before trusting readiness."),
-            row("Positions / orders / realized P&L", "read supported", unknown, "read-only", "Useful for reconciliation and lifecycle audits."),
+            row("Search / live saved scanners", "read supported", unknown, "read-only", "Resolves company names and runs saved Robinhood screeners against live market data."),
+            row("Fundamentals / earnings / equity history", "read supported", unknown, "read-only", "Adds broker-side company, catalyst, and trend checks to each candidate review."),
+            row("Positions / orders", "read supported", unknown, "read-only", "Useful for reconciliation and lifecycle audits."),
+            row("Broker realized P&L / trade history", "read supported", unknown, "read-only", "Keeps real broker outcomes separate from local simulated results."),
             row("Option chains / contracts / quotes", "read supported", unknown, "read-only", "Useful for exact contract verification before a paper/live review."),
+            row("Option price history", "read supported", unknown, "read-only", "Adds recent contract-price behavior; interpolated bars should be ignored."),
             row("Equity order review / placement", "write supported", unknown, "confirmation required", "Optedge does not auto-submit broker orders."),
             row("Single-leg option review / placement", "write supported", unknown, "confirmation required", "Requires one account with agentic access, options approval, and funding."),
         ]
@@ -5937,11 +5941,32 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
             "Use this to verify which account is agentic-accessible and funded.",
         ),
         row(
-            "Positions / orders / realized P&L",
+            "Search / live saved scanners",
+            "read supported",
+            "available through Robinhood MCP",
+            "read-only",
+            "Use search to resolve names and run_scan to compare live scanner matches with Optedge candidates.",
+        ),
+        row(
+            "Fundamentals / earnings / equity history",
+            "read supported",
+            "available through Robinhood MCP",
+            "read-only",
+            "Useful for current company context, earnings timing, and trend confirmation.",
+        ),
+        row(
+            "Positions / orders",
             "read supported",
             "available from snapshot or live MCP reads",
             "read-only",
             "Best used to reconcile Robinhood positions against Optedge local lifecycle state.",
+        ),
+        row(
+            "Broker realized P&L / trade history",
+            "read supported",
+            "available through Robinhood MCP",
+            "read-only",
+            "Use broker outcomes as external evidence and keep them separate from local paper or forward-test P&L.",
         ),
         row(
             "Option chains / contracts / quotes",
@@ -5949,6 +5974,13 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
             "available through Robinhood MCP",
             "read-only",
             "Useful for confirming exact option IDs, strikes, expiries, bid/ask, and tradability.",
+        ),
+        row(
+            "Option price history",
+            "read supported",
+            "available through Robinhood MCP",
+            "read-only",
+            "Use recent option bars as context only; ignore interpolated gap-fill bars and use quotes for the current mark.",
         ),
         row(
             "Equity order review / placement",

@@ -149,6 +149,94 @@ def _candidate_symbol(row: dict[str, Any]) -> str:
     return ""
 
 
+def robinhood_mcp_read_plan(symbols: list[str] | None = None) -> dict[str, Any]:
+    """Describe the current read-only Robinhood intelligence pass for one cycle.
+
+    The local exporter cannot call the authenticated MCP server itself. This
+    structured plan lets a connected Codex/Robinhood session use the expanded
+    broker data surface consistently without confusing a data check with an
+    order action.
+    """
+    symbol_scope: list[str] = []
+    for raw in symbols or []:
+        symbol = _text(raw).upper()
+        if symbol and symbol not in symbol_scope:
+            symbol_scope.append(symbol)
+    symbol_scope = symbol_scope[:10]
+    return {
+        "schema": "optedge_robinhood_mcp_read_plan_v2",
+        "read_only": True,
+        "symbol_scope": symbol_scope,
+        "stages": [
+            {
+                "stage": "account_gate",
+                "required": True,
+                "tools": ["get_accounts", "get_portfolio"],
+                "purpose": "Confirm the dedicated Agentic account, buying power, and options approval.",
+            },
+            {
+                "stage": "broker_reconciliation",
+                "required": True,
+                "tools": [
+                    "get_equity_positions",
+                    "get_option_positions",
+                    "get_equity_orders",
+                    "get_option_orders",
+                ],
+                "purpose": "Reconcile live broker holdings and working orders with Optedge lifecycle state.",
+            },
+            {
+                "stage": "market_discovery",
+                "required": False,
+                "tools": ["search", "get_scans", "run_scan", "get_earnings_calendar"],
+                "purpose": "Resolve company names and compare Optedge candidates with live scanner and earnings-calendar results.",
+                "note": "Creating or modifying a saved scanner is a separate Robinhood account write and is not part of this read plan.",
+            },
+            {
+                "stage": "market_regime_context",
+                "required": True,
+                "tools": ["get_indexes", "get_index_quotes"],
+                "purpose": "Read current broad-market index context before accepting a directional swing thesis.",
+            },
+            {
+                "stage": "underlying_context",
+                "required": True,
+                "tools": [
+                    "get_equity_quotes",
+                    "get_equity_fundamentals",
+                    "get_equity_historicals",
+                    "get_equity_tradability",
+                    "get_earnings_results",
+                ],
+                "purpose": "Verify current price, liquidity, trend, valuation context, and earnings timing for each candidate.",
+            },
+            {
+                "stage": "option_contract_context",
+                "required": True,
+                "tools": [
+                    "get_option_chains",
+                    "get_option_instruments",
+                    "get_option_quotes",
+                    "get_option_historicals",
+                ],
+                "purpose": "Resolve the exact contract and verify mark, spread, Greeks, open interest, volume, and recent contract-price behavior.",
+            },
+            {
+                "stage": "broker_validation",
+                "required": True,
+                "tools": ["get_realized_pnl", "get_pnl_trade_history"],
+                "purpose": "Keep broker-realized results separate from local simulated and forward-test results.",
+            },
+        ],
+        "hard_rules": [
+            "Treat all scanner, quote, fundamental, historical, position, order, and P&L calls in this plan as read-only checks.",
+            "Do not claim a broker fill from a local queue, paper position, review response, or decision-journal row.",
+            "Do not reuse stale quotes or option instrument IDs across cycles.",
+            "Do not use Robinhood realized P&L as a substitute for Optedge validation; report both separately.",
+        ],
+    }
+
+
 def robinhood_mcp_option_review_plan(order: dict[str, Any]) -> dict[str, Any]:
     """Structured single-leg option review instructions for the Robinhood MCP tools.
 
@@ -1261,6 +1349,7 @@ def build_queue_from_candidates(
             "current bid/ask data is missing, stale, or too wide",
         ],
     }
+    mcp_read_plan = robinhood_mcp_read_plan([_candidate_symbol(order) for order in orders])
     return {
         "generated_at": generated_at,
         "schema": "optedge_robinhood_agentic_options_queue_v1",
@@ -1285,6 +1374,7 @@ def build_queue_from_candidates(
         "readiness": readiness,
         "diagnostics": diagnostics,
         "agent_cycle": agent_cycle,
+        "robinhood_mcp_read_plan": mcp_read_plan,
         "rejection_reason_counts": reason_counts,
         "top_rejection_reasons": top_reasons,
         "orders": orders,
@@ -1585,10 +1675,18 @@ def build_agentic_cycle_packet(
     else:
         entry_candidates = []
         review_only_entry_candidates = raw_entry_candidates
+    mcp_read_plan = queue.get("robinhood_mcp_read_plan")
+    if not isinstance(mcp_read_plan, dict):
+        mcp_read_plan = robinhood_mcp_read_plan(
+            [_candidate_symbol(row) for row in queue.get("orders") or [] if isinstance(row, dict)]
+        )
     cycle_actions = [
         "Confirm Robinhood MCP is authenticated and scoped to the dedicated Agentic account.",
         "Fetch Robinhood buying power, option approval, open option positions, and open orders.",
+        "Use Robinhood search or saved scanner reads for discovery context; do not create or modify a scanner implicitly.",
+        "Check current fundamentals, earnings timing, underlying history, exact option quote, and option history for each candidate.",
         "Verify each entry candidate against live bid/ask/mid, spread, current news, and duplicate exposure.",
+        "Read Robinhood realized P&L and trade history for broker-side validation, kept separate from Optedge simulations.",
         "Submit no order unless the entry gate allows fresh entries and every live check passes.",
         "Review actionable exit reviews and match them to broker positions before any SELL_TO_CLOSE.",
         "Record submitted, skipped, held, and closed decisions outside Optedge before the next cycle.",
@@ -1606,6 +1704,7 @@ def build_agentic_cycle_packet(
         "hard_pause_reasons": pause_reasons,
         "review_reasons": review_reasons,
         "entry_gate": entry_gate,
+        "robinhood_mcp_read_plan": mcp_read_plan,
         "files": {
             "queue": str(data_dir / QUEUE_JSON),
             "queue_prompt": str(data_dir / PROMPT_MD),
@@ -1672,6 +1771,11 @@ def render_cycle_prompt(packet: dict[str, Any]) -> str:
     )
     decisions = packet.get("decision_log") if isinstance(packet.get("decision_log"), dict) else {}
     entry_gate = packet.get("entry_gate") if isinstance(packet.get("entry_gate"), dict) else {}
+    read_plan = (
+        packet.get("robinhood_mcp_read_plan")
+        if isinstance(packet.get("robinhood_mcp_read_plan"), dict)
+        else {}
+    )
     lines = [
         "# Optedge Robinhood Agentic Cycle Packet",
         "",
@@ -1749,6 +1853,22 @@ def render_cycle_prompt(packet: dict[str, Any]) -> str:
             )
     lines.extend(["", "## Required Agent Actions"])
     lines.extend(f"- {action}" for action in packet.get("cycle_actions") or [])
+    stages = read_plan.get("stages") if isinstance(read_plan.get("stages"), list) else []
+    if stages:
+        lines.extend([
+            "",
+            "## Robinhood MCP Read-Only Intelligence Plan",
+            f"- Symbols: {', '.join(read_plan.get('symbol_scope') or []) or 'none in current queue'}",
+            "- These checks gather broker and market context; they are not order actions.",
+        ])
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+            tools = ", ".join(stage.get("tools") or [])
+            requirement = "required" if stage.get("required") else "optional"
+            lines.append(
+                f"- {stage.get('stage')} ({requirement}): {tools} - {stage.get('purpose')}"
+            )
     chain_refresh = queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
     if chain_refresh.get("attempted"):
         lines.extend([

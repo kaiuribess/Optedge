@@ -22,6 +22,7 @@ from scripts.export_robinhood_agentic_queue import (
     normalize_agent_decision,
     render_agent_prompt,
     render_cycle_prompt,
+    robinhood_mcp_read_plan,
     write_outputs,
 )
 
@@ -242,6 +243,33 @@ def test_queue_prompt_requires_codex_double_check_and_limit_orders():
     assert "review_option_order" in prompt
 
 
+def test_robinhood_read_plan_uses_expanded_read_only_tool_surface():
+    plan = robinhood_mcp_read_plan(["aapl", "AAPL", "msft"])
+    assert plan["read_only"] is True
+    assert plan["symbol_scope"] == ["AAPL", "MSFT"]
+    tools = {
+        tool
+        for stage in plan["stages"]
+        for tool in stage["tools"]
+    }
+    assert {
+        "search",
+        "get_scans",
+        "run_scan",
+        "get_earnings_calendar",
+        "get_indexes",
+        "get_index_quotes",
+        "get_equity_fundamentals",
+        "get_earnings_results",
+        "get_equity_historicals",
+        "get_equity_tradability",
+        "get_option_historicals",
+        "get_realized_pnl",
+        "get_pnl_trade_history",
+    } <= tools
+    assert "place_option_order" not in tools
+
+
 def test_queue_includes_recurring_cycle_and_management_rules():
     queue = _queue([_candidate()])
     assert queue["agent_cycle"]["recommended_interval_minutes"] == 30
@@ -349,6 +377,8 @@ def test_cycle_packet_summarizes_open_positions_exits_and_validation():
         assert packet["entry_candidates"] == []
         assert packet["review_only_entry_candidates"][0]["symbol"] == "AAPL"
         assert packet["queue_summary"]["gated_ready_to_submit_count"] == 0
+        assert packet["robinhood_mcp_read_plan"]["read_only"] is True
+        assert packet["robinhood_mcp_read_plan"]["symbol_scope"] == ["AAPL"]
         assert "Sample size is still small." in packet["auto_submit_blockers"]
 
         prompt = render_cycle_prompt(packet)
@@ -358,6 +388,10 @@ def test_cycle_packet_summarizes_open_positions_exits_and_validation():
         assert "No fresh entry candidate is submit-eligible" in prompt
         assert "Actionable Exit Reviews" in prompt
         assert "SELL_TO_CLOSE" in prompt
+        assert "Robinhood MCP Read-Only Intelligence Plan" in prompt
+        assert "get_equity_fundamentals" in prompt
+        assert "get_option_historicals" in prompt
+        assert "get_realized_pnl" in prompt
         assert "Max drawdown mode: normalized_signal_allocation" in prompt
         assert "Default signal allocation: 0.01" in prompt
 
@@ -574,6 +608,7 @@ if __name__ == "__main__":
     test_queue_enforces_total_premium_cap_and_summarizes_rejections()
     test_queue_can_give_agent_more_candidates_than_order_cap()
     test_queue_prompt_requires_codex_double_check_and_limit_orders()
+    test_robinhood_read_plan_uses_expanded_read_only_tool_surface()
     test_queue_includes_recurring_cycle_and_management_rules()
     test_empty_queue_diagnostics_explain_stale_and_short_dte_rows()
     test_queue_write_outputs_json_and_prompt()
@@ -584,4 +619,4 @@ if __name__ == "__main__":
     test_build_robinhood_queue_can_refresh_chain_before_loading_candidates()
     test_failed_chain_refresh_does_not_reuse_stale_shortlist()
     test_build_robinhood_queue_loads_watchlist_sec_filing_risk()
-    print("21/21 robinhood agentic queue tests passed")
+    print("22/22 robinhood agentic queue tests passed")

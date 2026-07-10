@@ -80,12 +80,15 @@ This queue is options-only and loss-capped. The local script does not connect to
 Current Robinhood MCP capabilities can include:
 
 - Account, portfolio, buying-power, equity-position, option-position, equity-order, and option-order reads.
-- Real-time equity quotes, option quotes, option chains, option instruments, index lookup, equity fundamentals, and tradability checks.
+- Real-time equity quotes, option quotes, option chains, option instruments, index lookup, equity fundamentals, earnings, and tradability checks.
+- Equity and option price history for trend and contract-behavior review.
 - Saved scanners/screeners, live scanner runs, scanner creation/editing, and scanner sort updates.
-- Aggregate realized P&L reads for post-trade review.
+- Aggregate realized P&L and per-trade realized history for external outcome review.
 - Watchlist reads plus approval-gated watchlist and option-watchlist writes.
 - Equity and single-leg option order review, placement, and cancellation when the selected account is `agentic_allowed=true` and has the required approvals.
 - Long-option exercise requests when the selected account is `agentic_allowed=true`, options-approved, and the user explicitly confirms the irreversible action.
+
+Optedge writes the expanded read sequence into each `robinhood_agentic_cycle.json` as `robinhood_mcp_read_plan`. A connected Codex cycle can use it to resolve names, run saved scanners, verify earnings and fundamentals, inspect underlying and option history, reconcile positions/orders, and compare broker-realized outcomes with Optedge validation. Scanner creation/changes and broker order actions are separate account writes; they are not implied by the read plan.
 
 The local queue remains a research handoff. A broker-side order is only real after Robinhood confirms it.
 
