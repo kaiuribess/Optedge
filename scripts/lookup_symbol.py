@@ -44,6 +44,45 @@ def rich_lookup_kwargs() -> dict[str, bool]:
         "include_cboe_activity": True,
     }
 
+
+def _guard_for_current_validation(
+    validation: dict[str, Any],
+    data_dir: Path,
+) -> dict[str, Any]:
+    """Prefer a guard rebuilt from the validation snapshot being displayed."""
+    if validation:
+        try:
+            from risk.research_guard import build_guard_report
+
+            return build_guard_report(validation_summary=validation)
+        except Exception:
+            pass
+    return (
+        _load_json_obj(data_dir / "research_guard_report.json")
+        or _load_json_obj(data_dir / "research_guard.json")
+    )
+
+
+def _canonical_validation_metrics(validation: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    for key in ("swing_eligible_after_slippage", "after_slippage", "overall"):
+        metrics = validation.get(key)
+        if isinstance(metrics, dict):
+            return metrics, key
+    return {}, "unavailable"
+
+
+def _validation_warning_is_guard_duplicate(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "sample too small",
+            "max drawdown",
+            "win rate",
+            "breakeven threshold",
+        )
+    )
+
 SNAPSHOTS = {
     "options": ("top_options_*.parquet", "ticker"),
     "shares": ("top_shares_*.parquet", "ticker"),
@@ -1913,12 +1952,17 @@ def _research_brief(
     sec_metrics = sec_fact_report[0].get("metrics", {}) if sec_fact_report else {}
     sec_fact_signals = sec_fact_report[0].get("watch_signals", []) if sec_fact_report else []
     validation = _load_json_obj(data_dir / "validation_summary.json")
-    guard = _load_json_obj(data_dir / "research_guard_report.json") or _load_json_obj(data_dir / "research_guard.json")
+    validation_metrics, validation_metrics_basis = _canonical_validation_metrics(validation)
+    guard = _guard_for_current_validation(validation, data_dir)
     warnings = []
-    warnings.extend(str(w) for w in (validation.get("warnings") or [])[:3])
     warnings.extend(
         str(w.get("message", w)) for w in (guard.get("warnings") or [])[:3]
         if isinstance(w, (dict, str))
+    )
+    warnings.extend(
+        str(w)
+        for w in (validation.get("warnings") or [])
+        if not _validation_warning_is_guard_duplicate(w)
     )
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:5])
@@ -2074,10 +2118,14 @@ def _research_brief(
         "swing_verdict": swing_verdict,
         "validation": {
             "scope": validation.get("validation_scope"),
+            "basis": validation_metrics_basis,
             "closed_positions": validation.get("closed_positions"),
             "open_positions": validation.get("open_positions"),
-            "win_rate": (validation.get("overall") or {}).get("win_rate"),
-            "avg_return": (validation.get("overall") or {}).get("avg_return"),
+            "win_rate": validation_metrics.get("win_rate"),
+            "avg_return": validation_metrics.get("avg_return"),
+            "median_return": validation_metrics.get("median_return"),
+            "max_drawdown": validation_metrics.get("max_drawdown"),
+            "profit_factor": validation_metrics.get("profit_factor"),
         },
     }
     return brief

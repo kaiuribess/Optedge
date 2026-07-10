@@ -248,6 +248,55 @@ def test_lookup_reports_data_coverage_without_inflating_hits():
         assert "Coverage score" in html
 
 
+def test_lookup_uses_current_clean_validation_basis_and_ignores_stale_guard_metrics():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        (data_dir / "validation_summary.json").write_text(json.dumps({
+            "generated_at": "2026-07-09T20:00:00+00:00",
+            "validation_scope": "current_model",
+            "closed_positions": 120,
+            "open_positions": 4,
+            "swing_eligible_closed_positions": 120,
+            "swing_eligible_after_slippage": {
+                "n": 120,
+                "win_rate": 0.42,
+                "avg_return": 0.03,
+                "median_return": 0.01,
+                "max_drawdown": -0.25,
+                "profit_factor": 1.3,
+            },
+            "overall": {
+                "win_rate": 0.11,
+                "avg_return": -0.08,
+                "max_drawdown": -0.99,
+            },
+            "warnings": [
+                "All-closure max drawdown is worse than -20%: -99.00%.",
+                "Detected 7 same-scan dynamic option exit(s).",
+            ],
+        }), encoding="utf-8")
+        (data_dir / "research_guard.json").write_text(json.dumps({
+            "generated_at": "2026-06-01T00:00:00+00:00",
+            "status": "blocked",
+            "warnings": [{
+                "code": "drawdown",
+                "message": "Validation max drawdown is -88.0%, worse than the research limit.",
+            }],
+        }), encoding="utf-8")
+
+        report = lookup_symbol("MISS", data_dir, include_sec=False, include_price=False)
+        brief = report["brief"]
+
+        assert brief["validation"]["basis"] == "swing_eligible_after_slippage"
+        assert brief["validation"]["win_rate"] == 0.42
+        assert brief["validation"]["max_drawdown"] == -0.25
+        warning_text = " | ".join(brief["risk_warnings"])
+        assert "-88.0%" not in warning_text
+        assert "-99.00%" not in warning_text
+        assert "-25.0%" in warning_text
+        assert "same-scan dynamic" in warning_text
+
+
 def test_lookup_matches_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -1120,6 +1169,7 @@ if __name__ == "__main__":
     test_lookup_can_include_free_price_snapshot()
     test_lookup_can_include_market_structure_risk_snapshot()
     test_lookup_reports_data_coverage_without_inflating_hits()
+    test_lookup_uses_current_clean_validation_basis_and_ignores_stale_guard_metrics()
     test_lookup_matches_requested_option_contract()
     test_lookup_can_attach_public_cboe_activity_for_requested_option()
     test_lookup_builds_clean_swing_verdict_for_exact_option_review()
@@ -1138,4 +1188,4 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("25/25 lookup tests passed")
+    print("26/26 lookup tests passed")

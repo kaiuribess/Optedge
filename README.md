@@ -113,7 +113,7 @@ Outputs:
 - `data/factor_ic_summary.json`
 - `data/position_aging_summary.json`
 
-Validation uses `current_model` scope by default so current-era results are separated from stale older results. Open positions are counted from the current open-position state files, while closed-position metrics only become meaningful after enough recommendations close.
+Validation keeps the compatibility label `current_model`, but the default scope means the current unarchived experiment. The latest `archive.py` reset establishes the experiment boundary; ordinary model-weight updates do not hide outcomes. Open positions are always counted from the current open-position state files, while closed-position metrics only become meaningful after enough recommendations close.
 
 Early reports are expected to show small-sample warnings. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
 

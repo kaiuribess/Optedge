@@ -461,6 +461,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Focus data trust" in html
     assert "Data coverage" in html
     assert "Coverage score" in html
+    assert "Research loaded for" in html
+    assert "Research lookup failed for" in html
+    assert "overflow-wrap:anywhere" in html
     assert "Event risk" in html
     assert "Earnings / catalyst event risk" in html
     assert "Chain quality" in html

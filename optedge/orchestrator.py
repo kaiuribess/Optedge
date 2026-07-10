@@ -1224,32 +1224,33 @@ def main():
         log.warning("signal log failed: %s", e)
 
     # v20.7 — position-level P&L tracking (distinguishes still-open from closed).
-    # Adds new top-of-board signals as positions and marks open ones to market.
+    # Review positions present at scan start before adding new recommendations;
+    # this prevents a fresh entry from becoming a synthetic same-scan exit.
     try:
         from backtest import positions as _pos
-        if not top_opts.empty:
-            _pos.add_new_signals(top_opts, run_asof)
         _pos.mark_to_market(run_asof, current_signals=ranked_opts)
         expired_cleanup = _pos.close_expired_positions(run_asof)
         if expired_cleanup.get("closed_this_iter", 0) > 0:
             log.info("positions: expired cleanup closed %d stale local option record(s)",
                      expired_cleanup.get("closed_this_iter", 0))
+        if not top_opts.empty:
+            _pos.add_new_signals(top_opts, run_asof)
     except Exception as e:
         log.debug("position tracking skipped: %s", e)
 
     try:
         from backtest import share_positions as _share_pos
+        _share_pos.mark_to_market_shares(run_asof, current_signals=ranked_shares)
         if not top_sh.empty:
             _share_pos.add_new_share_signals(top_sh, run_asof)
-        _share_pos.mark_to_market_shares(run_asof, current_signals=ranked_shares)
     except Exception as e:
         log.warning("share lifecycle skipped: %s", e)
 
     try:
         from backtest import futures_positions as _fut_pos
+        _fut_pos.mark_to_market_futures(run_asof, current_signals=futures_df)
         if not top_fut.empty:
             _fut_pos.add_new_futures_signals(top_fut, run_asof)
-        _fut_pos.mark_to_market_futures(run_asof, current_signals=futures_df)
     except Exception as e:
         log.warning("futures lifecycle skipped: %s", e)
 

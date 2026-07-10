@@ -66,21 +66,14 @@ def _latest_archive_cutoff() -> Optional[pd.Timestamp]:
     return pd.Timestamp(latest.stat().st_mtime, unit="s", tz="UTC")
 
 
-def _model_update_cutoff() -> Optional[pd.Timestamp]:
-    candidates = [
-        ROOT / "config_runtime.py",
-        DATA_DIR / "model_weights.json",
-        DATA_DIR / "predictor_coefs.json",
-    ]
-    mtimes = []
-    for path in candidates:
-        if path.exists():
-            mtimes.append(pd.Timestamp(path.stat().st_mtime, unit="s", tz="UTC"))
-    return max(mtimes) if mtimes else None
-
-
 def _current_scope_cutoff() -> Optional[pd.Timestamp]:
-    return _latest_archive_cutoff() or _model_update_cutoff()
+    """Return only a deliberate experiment/reset boundary.
+
+    Runtime weights, pricing-model weights, and predictor coefficients are
+    rewritten during normal scans. Their filesystem mtimes are therefore not
+    experiment boundaries and must never make valid outcomes disappear.
+    """
+    return _latest_archive_cutoff()
 
 
 def _existing_total_signals() -> Optional[int]:
@@ -846,8 +839,12 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     all_time_closed = closed.copy()
 
     cutoff = pd.to_datetime(since, errors="coerce", utc=True) if since else None
+    cutoff_source = "explicit_since" if cutoff is not None and not pd.isna(cutoff) else None
     if scope == "current_model" and cutoff is None:
         cutoff = _current_scope_cutoff()
+        cutoff_source = "latest_archive_reset" if cutoff is not None else "all_unarchived_history"
+    elif scope == "all_time":
+        cutoff_source = "all_time"
     if scope != "all_time":
         logs = _filter_logs_for_scope(logs, cutoff)
         closed = _filter_since(closed, cutoff)
@@ -872,10 +869,12 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         stale_excluded = max(0, len(all_time_closed) - len(closed))
         if stale_excluded:
             warnings.append(
-                f"Excluded {stale_excluded} older closed positions from the primary metrics because they predate the current experiment/model era."
+                f"Excluded {stale_excluded} older closed positions from the primary metrics because they predate the current experiment boundary."
             )
     elif scope != "all_time":
-        warnings.append("No model-update timestamp found; validation scope could not isolate the current model era.")
+        warnings.append(
+            "No archive/reset boundary found; current-scope metrics include all unarchived local outcomes."
+        )
     if swing_eligible_count < MIN_CLOSED_SIGNALS:
         warnings.append(
             f"Independent swing sample too small: {swing_eligible_count} eligible outcomes; "
@@ -919,7 +918,9 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "validation_scope": scope,
+        "validation_scope_basis": cutoff_source,
         "current_model_cutoff": cutoff.isoformat() if cutoff is not None and not pd.isna(cutoff) else None,
+        "current_experiment_cutoff": cutoff.isoformat() if cutoff is not None and not pd.isna(cutoff) else None,
         "all_time_closed_positions": int(len(all_time_closed)),
         "stale_closed_positions_excluded": int(max(0, len(all_time_closed) - len(closed))),
         "total_signals": total_signals,
@@ -1109,7 +1110,7 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 <main>
   <h1>Optedge Validation Report</h1>
   <div class="muted">Generated {html.escape(summary["generated_at"])} from local signal logs and position state.</div>
-  <div class="muted">Scope: {html.escape(str(summary.get("validation_scope", "current_model")))}; cutoff: {html.escape(str(summary.get("current_model_cutoff") or "n/a"))}</div>
+  <div class="muted">Scope: {html.escape(str(summary.get("validation_scope", "current_model")))}; basis: {html.escape(str(summary.get("validation_scope_basis") or "n/a"))}; cutoff: {html.escape(str(summary.get("current_experiment_cutoff") or summary.get("current_model_cutoff") or "n/a"))}</div>
 
   <section class="warn">
     <h2>Warnings</h2>
@@ -1217,6 +1218,13 @@ def write_report(scope: str = "current_model", since: Optional[str] = None) -> D
         json.dumps(_json_safe(summary.get("position_aging", {})), indent=2, allow_nan=False),
         encoding="utf-8",
     )
+    try:
+        from risk.research_guard import build_guard_report, save_guard_report
+
+        guard = build_guard_report(validation_summary=safe_summary)
+        save_guard_report(guard, path=DATA_DIR / "research_guard.json")
+    except Exception:
+        pass
     REPORT_HTML.write_text(render_html(summary), encoding="utf-8")
     return summary
 
@@ -1224,7 +1232,7 @@ def write_report(scope: str = "current_model", since: Optional[str] = None) -> D
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Optedge validation report")
     parser.add_argument("--all-time", action="store_true",
-                        help="Use every historical closed position instead of the current model era")
+                        help="Use every historical closed position instead of the current unarchived experiment")
     parser.add_argument("--since", default=None,
                         help="ISO date/time cutoff for primary validation metrics")
     args = parser.parse_args()

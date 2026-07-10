@@ -153,6 +153,47 @@ def test_current_model_uses_latest_archive_reset_before_model_mtime():
             summary = validation_report.build_summary(scope="current_model")
             assert summary["closed_positions"] == 1
             assert summary["current_model_cutoff"].startswith("2026-05-18T14:41:53")
+            assert summary["validation_scope_basis"] == "latest_archive_reset"
+        finally:
+            validation_report.ROOT = old_root
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+            validation_report.ARCHIVE_DIR = old_archive
+
+
+def test_model_file_mtime_does_not_erase_unarchived_closed_results():
+    with tempfile.TemporaryDirectory() as td:
+        old_root = validation_report.ROOT
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        old_archive = validation_report.ARCHIVE_DIR
+        root = Path(td)
+        validation_report.ROOT = root
+        validation_report.DATA_DIR = root / "data"
+        validation_report.LOGS_DIR = root / "logs"
+        validation_report.ARCHIVE_DIR = root / "archive"
+        try:
+            model_file = validation_report.DATA_DIR / "predictor_coefs.json"
+            model_file.parent.mkdir(parents=True)
+            model_file.write_text("{}", encoding="utf-8")
+            _write_json(
+                validation_report.DATA_DIR / "closed_positions.json",
+                [{
+                    "ticker": "AAA",
+                    "entry_time": "2026-05-18T14:42:18+00:00",
+                    "exit_time": "2026-05-22T20:27:24+00:00",
+                    "pnl_pct": 0.25,
+                }],
+            )
+
+            summary = validation_report.build_summary(scope="current_model")
+
+            assert summary["closed_positions"] == 1
+            assert summary["stale_closed_positions_excluded"] == 0
+            assert summary["current_model_cutoff"] is None
+            assert summary["current_experiment_cutoff"] is None
+            assert summary["validation_scope_basis"] == "all_unarchived_history"
+            assert any("all unarchived local outcomes" in warning for warning in summary["warnings"])
         finally:
             validation_report.ROOT = old_root
             validation_report.DATA_DIR = old_data
@@ -369,6 +410,7 @@ if __name__ == "__main__":
     test_position_aging_counts_open_positions_by_asset()
     test_current_model_does_not_hide_active_signal_logs()
     test_current_model_uses_latest_archive_reset_before_model_mtime()
+    test_model_file_mtime_does_not_erase_unarchived_closed_results()
     test_total_signals_preserves_existing_count_when_parquet_unreadable()
     test_max_drawdown_includes_starting_equity()
     test_validation_drawdown_uses_normalized_signal_allocation()
@@ -377,4 +419,4 @@ if __name__ == "__main__":
     test_factor_ic_uses_independent_swing_sample_and_labels_short_history()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("13/13 validation report tests passed")
+    print("14/14 validation report tests passed")

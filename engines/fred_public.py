@@ -5,7 +5,7 @@ CSV endpoint is enough for current macro context when no key is available.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import logging
 from typing import Any
@@ -34,7 +34,7 @@ def fred_csv_history(series_id: str, days: int = 90, cache_hours: int = 12) -> l
     if cached is not None:
         return cached
 
-    start = (datetime.utcnow() - timedelta(days=days * 3 + 14)).strftime("%Y-%m-%d")
+    start = (datetime.now(timezone.utc) - timedelta(days=days * 3 + 14)).strftime("%Y-%m-%d")
     try:
         session = data_provider.get_session()
         resp = session.get(FRED_CSV_URL, params={"id": series, "cosd": start}, timeout=15)

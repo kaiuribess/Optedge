@@ -16,7 +16,7 @@ Outputs:
 
 The report reads local signal logs from `logs/` and position state from the option, share, and futures JSON files in `data/`.
 
-By default, the primary metrics use the current model era only. Optedge chooses the latest timestamp from `config_runtime.py`, `data/model_weights.json`, and `data/predictor_coefs.json` as the cutoff. Older closed positions remain counted as stale/excluded, but they do not prove whether the current model is working.
+By default, the primary metrics use the current unarchived experiment. An actual `archive.py` reset establishes the boundary; ordinary rewrites of `config_runtime.py`, `data/model_weights.json`, or `data/predictor_coefs.json` do not. If no archive/reset boundary exists, Optedge includes all unarchived outcomes instead of silently hiding results. Use `--since` when you need an explicit custom cutoff.
 
 Use `--all-time` when you intentionally want the full historical view:
 

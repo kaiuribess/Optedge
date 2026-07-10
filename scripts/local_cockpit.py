@@ -13454,7 +13454,7 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .check { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; }
 .check input { width:auto; }
 .search-actions { display:flex; gap:8px; flex-wrap:wrap; }
-.status { margin-top:8px; font-size:12px; color:var(--muted); min-height:18px; }
+.status { margin-top:8px; min-width:0; font-size:12px; color:var(--muted); min-height:18px; overflow-wrap:anywhere; word-break:break-word; }
 .sections { display:grid; grid-template-columns:1fr; gap:12px; margin-top:14px; }
 .section { min-width:0; border:1px solid var(--border); border-radius:8px; background:var(--panel3); overflow:hidden; }
 .section h3 { margin:0; padding:12px 14px; font-size:14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
@@ -16103,7 +16103,16 @@ async function globalLookup() {
   }
   $('global-status').textContent = `Opening research for ${q}...`;
   setView('research');
-  await lookup();
+  const data = await lookup();
+  if (!data) {
+    $('global-status').textContent = `Research lookup failed for ${q}. Review the lookup status and retry.`;
+    return;
+  }
+  const resolved = data.lookup_symbol && data.lookup_symbol !== data.query
+    ? ` (${data.lookup_symbol})`
+    : '';
+  $('global-status').textContent = `Research loaded for ${data.query}${resolved}: ${data.total_hits || 0} local hit(s).`;
+  scrollToId('lookup-results');
 }
 async function globalReviewWorkspace() {
   const q = globalCommandQuery();
@@ -17732,6 +17741,10 @@ async function lookup() {
   $('lookup-results').innerHTML = '';
   const res = await fetch('/api/lookup?symbol=' + encodeURIComponent(symbol));
   const data = await res.json();
+  if (!res.ok || data.error) {
+    $('lookup-status').textContent = 'Lookup failed: ' + (data.error || 'unknown error');
+    return null;
+  }
   const resolved = data.lookup_symbol && data.lookup_symbol !== data.query ? ` (${data.lookup_symbol})` : '';
   const saved = data.saved_lookup && data.saved_lookup.report_url
     ? ` Saved report: ${data.saved_lookup.report_url}`
@@ -17744,6 +17757,7 @@ async function lookup() {
   $('lookup-results').innerHTML = brief + sections;
   wireLookupBriefActions($('lookup-results'));
   await loadLookupHistory();
+  return data;
 }
 async function runSymbol() {
   const query = $('symbol').value.trim();
