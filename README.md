@@ -114,10 +114,20 @@ Outputs:
 - `data/position_aging_summary.json`
 - `data/fixed_horizon_outcomes.parquet`
 - `data/fixed_horizon_summary.json`
+- `data/robinhood_option_history_requests.json`
+- `data/robinhood_option_history_coverage.json`
 
 Validation keeps the compatibility label `current_model`, but the default scope means the current unarchived experiment. The latest `archive.py` reset establishes the experiment boundary; ordinary model-weight updates do not hide outcomes. Open positions are always counted from the current open-position state files, while closed-position metrics only become meaningful after enough recommendations close.
 
-Early reports are expected to show small-sample warnings. Fixed-horizon evidence scores one independent thesis per asset, ticker, direction, and entry day after 1, 3, 5, 10, and 20 completed sessions. A shadow row records that the current strategy passed before portfolio-level guardrails; this lets validation accumulate while actual sizing remains blocked. Shares and futures use observed historical closes. Options are clearly labeled constant-entry-IV model proxies because a complete free historical option quote tape is not available. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
+Early reports are expected to show small-sample warnings. Fixed-horizon evidence scores one independent thesis per asset, ticker, direction, and entry day after 1, 3, 5, 10, and 20 completed sessions. A shadow row records that the current strategy passed before portfolio-level guardrails; this lets validation accumulate while actual sizing remains blocked. Shares and futures use observed historical closes. Options prefer exact, non-interpolated Robinhood option trade bars from the read-only Codex connector cache, then fall back to a clearly labeled constant-entry-IV model proxy when no exact target-date bar exists. Neither source proves an Optedge fill. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
+
+Build or inspect the bounded read-only option-history queue with:
+
+```bash
+python scripts/refresh_robinhood_option_history.py --status
+```
+
+The local process never receives Robinhood credentials. It writes exact contract requests and a safe agent prompt; a connected Codex/Robinhood session may satisfy those requests using read-only contract and historical-bar tools. The next validation refresh automatically upgrades matching proxy outcomes to broker-observed bars.
 
 Use all-time validation only when you intentionally want older history included:
 
@@ -252,7 +262,7 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 - Focused scan launcher: type a ticker, company name, or option idea and click **Run focused scan**.
 - Full/quick focused-scan modes, optional bankroll override, and aggressive sizing toggle.
 - Open option/share/futures counts.
-- Quick links to the latest dashboard, validation report, validation JSON, equity curve, and external paper-order export.
+- Quick links to the latest dashboard, validation report, validation JSON, option-history coverage and request queue, equity curve, and external paper-order export.
 - A browser UI that does not rerun engines until you choose to run a new scan.
 
 Use another port or keep it from opening a browser:
@@ -316,7 +326,7 @@ The validation report is the main proof layer for the research loop. It reports:
 - Random baseline comparison.
 - Sample-size warnings.
 - Independent 1/3/5/10/20-session outcomes with 95% win-rate intervals and SPY/QQQ excess returns.
-- Explicit outcome quality labels that keep observed market closes separate from modeled option proxies.
+- Explicit outcome quality labels that keep observed stock/futures closes and exact Robinhood option bars separate from modeled option proxies.
 
 See [docs/VALIDATION.md](docs/VALIDATION.md) for details.
 
@@ -341,7 +351,7 @@ Research Guard is supposed to be conservative. A warning is not cosmetic; it mea
 
 Optedge uses free or locally configured sources where possible, including:
 
-- Options chains and price history.
+- Options chains and price history, with an optional read-only Robinhood/Codex cache for exact contract bars.
 - Cboe daily market statistics and total/equity/index put-call ratio CSVs for delayed options sentiment context.
 - FRED public graph CSV macro stress context for credit, rates, labor, inflation, growth, and liquidity.
 - Nasdaq Trader symbol directory for broader official ticker/ETF search and universe hygiene.
@@ -394,6 +404,7 @@ python tests/test_option_positions.py
 python tests/test_share_positions.py
 python tests/test_futures_positions.py
 python tests/test_fixed_horizon.py
+python tests/test_option_history.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
 python tests/test_robinhood_agentic_queue.py

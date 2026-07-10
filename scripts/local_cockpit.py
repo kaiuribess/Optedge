@@ -80,6 +80,10 @@ ARTIFACTS = {
     "validation-report": ("validation_report.html", "text/html; charset=utf-8"),
     "validation-summary": ("validation_summary.json", "application/json; charset=utf-8"),
     "fixed-horizon-summary": ("fixed_horizon_summary.json", "application/json; charset=utf-8"),
+    "option-history-coverage": ("robinhood_option_history_coverage.json", "application/json; charset=utf-8"),
+    "option-history-requests": ("robinhood_option_history_requests.json", "application/json; charset=utf-8"),
+    "option-history-prompt": ("robinhood_option_history_prompt.md", "text/markdown; charset=utf-8"),
+    "option-history-snapshot": ("robinhood_option_history_snapshot.json", "application/json; charset=utf-8"),
     "factor-ic": ("factor_ic_summary.json", "application/json; charset=utf-8"),
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
@@ -12939,6 +12943,20 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
     fixed_shadow_win = _float_value(fixed_shadow.get("win_rate"), default=math.nan)
     fixed_shadow_avg = _float_value(fixed_shadow.get("avg_return"), default=math.nan)
     fixed_shadow_excess = _float_value(fixed_shadow.get("avg_excess_vs_spy"), default=math.nan)
+    option_market_data = (
+        fixed.get("option_market_data")
+        if isinstance(fixed.get("option_market_data"), dict)
+        else {}
+    )
+    option_observed = int(_float_value(
+        option_market_data.get("broker_observed_outcomes"), default=0.0,
+    ))
+    option_total = int(_float_value(
+        option_market_data.get("total_scored_option_outcomes"), default=0.0,
+    ))
+    option_observed_coverage = _float_value(
+        option_market_data.get("broker_observed_coverage_pct"), default=math.nan,
+    )
     raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
     warnings = [str(item) for item in raw_warnings if str(item).strip()]
     validation_basis = "executable_swing_after_slippage" if uses_swing_sample else "all_closures"
@@ -13012,6 +13030,11 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         ),
         "fixed_shadow_excess_vs_spy": _clean_value(
             fixed_shadow_excess if math.isfinite(fixed_shadow_excess) else None
+        ),
+        "option_observed_outcomes": option_observed,
+        "option_total_outcomes": option_total,
+        "option_observed_coverage": _clean_value(
+            option_observed_coverage if math.isfinite(option_observed_coverage) else None
         ),
         "validation_basis": validation_basis,
         "warnings": (blocker_reasons + review_reasons + warnings)[:8],
@@ -13412,6 +13435,7 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "robinhood_agentic_queue": artifact_path("robinhood-agentic-queue", data_dir),
         "robinhood_agentic_prompt": artifact_path("robinhood-agentic-prompt", data_dir),
         "equity_curve": artifact_path("equity-curve", data_dir),
+        "option_history_coverage": artifact_path("option-history-coverage", data_dir),
     }
     snapshots = {
         "options": _latest_file(data_dir, "top_options_*.parquet"),
@@ -13665,6 +13689,7 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/validation-report" target="_blank">Validation report</a>
     <a class="btn" href="/artifact/validation-summary" target="_blank">Validation JSON</a>
     <a class="btn" href="/artifact/fixed-horizon-summary" target="_blank">Fixed horizon</a>
+    <a class="btn" href="/artifact/option-history-coverage" target="_blank">Option data coverage</a>
     <a class="btn" href="/artifact/equity-curve" target="_blank">Equity curve</a>
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
     <a class="btn" href="/artifact/option-chain-shortlist" target="_blank">Chain shortlist</a>
@@ -13941,6 +13966,9 @@ tr.clickable-row:hover { background:#18201d; }
       </select>
       <button class="btn" type="button" id="rh-preview">Preview queue</button>
       <button class="btn" type="button" id="rh-write">Write queue files</button>
+      <a class="btn" href="/artifact/option-history-coverage" target="_blank">Bar coverage</a>
+      <a class="btn" href="/artifact/option-history-requests" target="_blank">History requests</a>
+      <a class="btn" href="/artifact/option-history-prompt" target="_blank">History prompt</a>
     </div>
     <div class="status" id="rh-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="rh-summary"></div>
@@ -14754,6 +14782,7 @@ function commandCenterHtml(data) {
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>
             <span>shadow ${cell(guard.fixed_shadow_n ?? 0)} / ${cell(guard.fixed_shadow_days ?? 0)}d</span>
+            <span>option bars ${cell(guard.option_observed_outcomes ?? 0)} / ${cell(guard.option_total_outcomes ?? 0)}</span>
           </div>
         </div>
       </div>`
@@ -15044,6 +15073,7 @@ function todayReviewHtml(data) {
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>
             <span>shadow ${cell(guard.fixed_shadow_n ?? 0)} / ${cell(guard.fixed_shadow_days ?? 0)}d</span>
+            <span>option bars ${cell(guard.option_observed_outcomes ?? 0)} / ${cell(guard.option_total_outcomes ?? 0)}</span>
           </div>
         </div>
       </div>`

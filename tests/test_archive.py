@@ -19,6 +19,8 @@ def test_archive_moves_data_and_logs():
         root = Path(td)
         _write(root / "data" / "validation_summary.json")
         _write(root / "data" / "fixed_horizon_summary.json")
+        _write(root / "data" / "robinhood_option_history_snapshot.json")
+        _write(root / "data" / "robinhood_option_history_coverage.json")
         _write(root / "data" / "forward_outcomes_options_call.parquet")
         _write(root / "data" / "robinhood_agentic_queue.json")
         _write(root / "data" / "robinhood_agentic_cycle_prompt.md")
@@ -30,9 +32,11 @@ def test_archive_moves_data_and_logs():
         _write(root / "data" / "robinhood_mcp_snapshot_raw.json")
         _write(root / "logs" / "example.log")
         archive_root, moved = archive.run_archive(root, dry_run=False, keep_learned=False)
-        assert len(moved) == 12
+        assert len(moved) == 14
         assert (archive_root / "data" / "validation_summary.json").exists()
         assert (archive_root / "data" / "fixed_horizon_summary.json").exists()
+        assert (archive_root / "data" / "robinhood_option_history_snapshot.json").exists()
+        assert (archive_root / "data" / "robinhood_option_history_coverage.json").exists()
         assert (archive_root / "data" / "forward_outcomes_options_call.parquet").exists()
         assert (archive_root / "data" / "robinhood_agentic_queue.json").exists()
         assert (archive_root / "data" / "robinhood_agentic_cycle_prompt.md").exists()

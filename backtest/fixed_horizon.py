@@ -4,9 +4,9 @@ The live forward monitor answers "where is this signal now?" and therefore
 mixes many holding periods. This module answers a different research question:
 "what happened after exactly N completed market sessions?"
 
-Shares and futures use observed historical closes. Options use a deliberately
-labeled Black-Scholes proxy with entry IV held constant because free historical
-option bid/ask data is not reliably available for the full universe.
+Shares and futures use observed historical closes. Options prefer exact,
+non-interpolated Robinhood option trade bars from the read-only MCP cache and
+fall back to a deliberately labeled Black-Scholes constant-entry-IV proxy.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider  # noqa: E402
+from backtest import option_history  # noqa: E402
 from utils import bs_price  # noqa: E402
 
 log = logging.getLogger("optedge.fixed_horizon")
@@ -36,7 +37,7 @@ DATA_DIR = ROOT / "data"
 OUTCOMES_PATH = DATA_DIR / "fixed_horizon_outcomes.parquet"
 SUMMARY_PATH = DATA_DIR / "fixed_horizon_summary.json"
 
-METHODOLOGY_VERSION = 4
+METHODOLOGY_VERSION = 5
 DEFAULT_HORIZONS = (1, 3, 5, 10, 20)
 HEADLINE_HORIZON = 10
 MIN_RELIABLE_SAMPLES = 100
@@ -367,6 +368,28 @@ def _option_outcome(
     return float(target_price), float(pnl), "bs_constant_entry_iv_proxy"
 
 
+def _observed_option_outcome(
+    row: pd.Series,
+    record: dict[str, Any] | None,
+    target_date: date,
+) -> tuple[float, float, str, dict[str, Any]] | tuple[None, None, str, dict[str, Any]]:
+    expiry = pd.to_datetime(row.get("expiry"), errors="coerce")
+    if pd.isna(expiry):
+        return None, None, "invalid_option_inputs", {}
+    if expiry.date() < target_date:
+        return None, None, "expiry_before_horizon", {}
+    observed = option_history.observed_option_close(record, target_date)
+    if observed is None:
+        return None, None, "missing_exact_option_bar", {}
+    target_price, metadata = observed
+    entry = _entry_price(row, "option")
+    if entry <= 0 or target_price < 0:
+        return None, None, "invalid_entry_or_target_price", metadata
+    bought = _truthy(row.get("is_buy")) is not False
+    pnl = (target_price - entry) / entry if bought else (entry - target_price) / entry
+    return target_price, pnl, "robinhood_observed_option_trade_close", metadata
+
+
 def _market_outcome(
     row: pd.Series,
     asset: str,
@@ -412,10 +435,36 @@ def _carry_fields(row: pd.Series, outcome: dict[str, Any]) -> None:
         "ev_pct", "kelly_pct", "trade_status", "is_actionable",
         "suggested_contracts", "suggested_dollars", "research_guard_status",
         "buyer_edge_pct", "pricing_direction", "dte", "spread_pct",
+        "strike", "expiry", "side",
     }
     for column in row.index:
         if column in exact or str(column).startswith(("z_", "factor_")):
             outcome[column] = row.get(column)
+
+
+def _upgradeable_outcome_ids(
+    outcomes: pd.DataFrame,
+    option_histories: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Return proxy outcome IDs that now have an exact observed option bar."""
+    if outcomes is None or outcomes.empty or not option_histories:
+        return set()
+    asset = outcomes.get("asset", pd.Series("", index=outcomes.index)).astype(str).str.lower()
+    quality = outcomes.get(
+        "outcome_quality", pd.Series("", index=outcomes.index),
+    ).astype(str)
+    candidates = outcomes[asset.eq("option") & quality.eq("modeled_option_proxy")]
+    upgradeable: set[str] = set()
+    for _, row in candidates.iterrows():
+        key = option_history.contract_key_from_row(row)
+        target = pd.to_datetime(row.get("target_date"), errors="coerce")
+        if not key or pd.isna(target):
+            continue
+        if option_history.observed_option_close(option_histories.get(key), target.date()) is not None:
+            outcome_id = _text(row.get("outcome_id"))
+            if outcome_id:
+                upgradeable.add(outcome_id)
+    return upgradeable
 
 
 def evaluate_fixed_horizons(
@@ -425,6 +474,7 @@ def evaluate_fixed_horizons(
     horizons: Iterable[int] = DEFAULT_HORIZONS,
     asof: datetime | None = None,
     existing: pd.DataFrame | None = None,
+    option_histories: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int], dict[str, int]]:
     """Evaluate matured signal/horizon pairs from pre-fetched histories."""
     now = asof or datetime.now(UTC)
@@ -437,7 +487,10 @@ def evaluate_fixed_horizons(
     old = existing.copy() if existing is not None and not existing.empty else pd.DataFrame()
     if not old.empty:
         old = old[pd.to_numeric(old.get("methodology_version"), errors="coerce") == METHODOLOGY_VERSION]
+    option_histories = option_histories or {}
+    upgradeable_ids = _upgradeable_outcome_ids(old, option_histories)
     known = set(old.get("outcome_id", pd.Series(dtype=str)).dropna().astype(str))
+    known.difference_update(upgradeable_ids)
     pending = {str(horizon): 0 for horizon in horizon_values}
     exclusions: dict[str, int] = {}
     rows: list[dict[str, Any]] = []
@@ -451,6 +504,10 @@ def evaluate_fixed_horizons(
         primary = histories.get(symbol, pd.DataFrame())
         source_symbol = symbol
         proxy_used = False
+        option_record = (
+            option_histories.get(option_history.contract_key_from_row(row))
+            if asset == "option" else None
+        )
         if primary is None or primary.empty:
             proxy = _text(row.get("etf")).upper()
             if asset == "futures" and proxy:
@@ -471,8 +528,15 @@ def evaluate_fixed_horizons(
                 continue
             target_date = target_bar["_session_date"]
             target_underlying = _float(target_bar.get("Close"))
+            option_metadata: dict[str, Any] = {}
             if asset == "option":
-                target_price, pnl, method = _option_outcome(row, target_underlying, target_date)
+                target_price, pnl, method, option_metadata = _observed_option_outcome(
+                    row, option_record, target_date,
+                )
+                if target_price is None or pnl is None:
+                    target_price, pnl, method = _option_outcome(
+                        row, target_underlying, target_date,
+                    )
             elif asset == "futures" and proxy_used:
                 target_price, pnl, method = _proxy_futures_outcome(
                     row, primary, entry_date, target_date,
@@ -541,6 +605,7 @@ def evaluate_fixed_horizons(
                 if point_value > 0 and contracts > 0:
                     pnl_dollars = signed_points * point_value * contracts
 
+            observed_option = method == "robinhood_observed_option_trade_close"
             outcome = {
                 "methodology_version": METHODOLOGY_VERSION,
                 "outcome_id": outcome_id,
@@ -573,12 +638,19 @@ def evaluate_fixed_horizons(
                 "excess_vs_qqq_pct": pnl - slippage - qqq_return if qqq_return is not None else None,
                 "valuation_method": method,
                 "outcome_quality": (
-                    "modeled_option_proxy" if asset == "option"
+                    "broker_market_observed" if observed_option
+                    else "modeled_option_proxy" if asset == "option"
                     else "market_proxy" if proxy_used else "market_observed"
                 ),
                 "history_symbol": source_symbol,
-                "history_source": primary.attrs.get("history_source", "unknown"),
-                "history_quality": primary.attrs.get("history_quality", "unknown"),
+                "history_source": (
+                    "robinhood_option_historicals" if observed_option
+                    else primary.attrs.get("history_source", "unknown")
+                ),
+                "history_quality": (
+                    "exact_non_interpolated_trade_bar" if observed_option
+                    else primary.attrs.get("history_quality", "unknown")
+                ),
                 "pnl_points": pnl_points,
                 "pnl_dollars": pnl_dollars,
                 "is_scored": True,
@@ -586,6 +658,7 @@ def evaluate_fixed_horizons(
                 "resolution_reason": "",
                 "generated_at": now.isoformat(),
             }
+            outcome.update(option_metadata)
             _carry_fields(row, outcome)
             rows.append(outcome)
             known.add(outcome_id)
@@ -781,6 +854,15 @@ def build_summary(
         scored.get("outcome_quality", pd.Series(dtype=str)).fillna("unknown").astype(str).value_counts().to_dict()
         if not scored.empty else {}
     )
+    option_scored = (
+        scored[scored.get("asset", pd.Series("", index=scored.index)).astype(str).eq("option")]
+        if not scored.empty else pd.DataFrame()
+    )
+    observed_option_count = int(
+        option_scored.get("outcome_quality", pd.Series(dtype=str))
+        .astype(str).eq("broker_market_observed").sum()
+    ) if not option_scored.empty else 0
+    option_outcome_count = int(len(option_scored))
     persisted_exclusions = (
         outcomes.loc[~outcomes.get(
             "is_scored", pd.Series(True, index=outcomes.index),
@@ -816,7 +898,8 @@ def build_summary(
         )
     if quality.get("modeled_option_proxy", 0):
         warnings.append(
-            "Option fixed-horizon outcomes are constant-entry-IV model proxies, not historical option fills."
+            f"{quality['modeled_option_proxy']} option fixed-horizon outcome(s) still use the "
+            "constant-entry-IV proxy because no exact broker trade bar matched the target date."
         )
 
     return {
@@ -835,6 +918,16 @@ def build_summary(
         "pending_by_horizon": pending,
         "exclusions_by_reason": combined_exclusions,
         "outcome_quality": quality,
+        "option_market_data": {
+            "total_scored_option_outcomes": option_outcome_count,
+            "broker_observed_outcomes": observed_option_count,
+            "modeled_proxy_outcomes": int(quality.get("modeled_option_proxy", 0)),
+            "broker_observed_coverage_pct": (
+                observed_option_count / option_outcome_count if option_outcome_count else None
+            ),
+            "observed_method": "robinhood_regular_session_option_trade_bar",
+            "fallback_method": "black_scholes_constant_entry_iv_proxy",
+        },
         "slippage_assumptions": {
             "option": _option_slippage_pct(),
             "share": SHARE_SLIPPAGE_PCT,
@@ -924,12 +1017,14 @@ def _unresolved_candidates(
     existing: pd.DataFrame,
     horizons: Iterable[int],
     asof: datetime,
+    option_histories: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     horizon_values = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
     known = set(
         existing.get("outcome_id", pd.Series(dtype=str)).dropna().astype(str)
         if existing is not None and not existing.empty else []
     )
+    known.difference_update(_upgradeable_outcome_ids(existing, option_histories or {}))
     pending = {str(horizon): 0 for horizon in horizon_values}
     candidate_indexes = set()
     for index, row in prepared.iterrows():
@@ -958,6 +1053,7 @@ def run_fixed_horizon_test(
     history_loader: HistoryLoader | None = None,
     outcomes_path: Path = OUTCOMES_PATH,
     summary_path: Path = SUMMARY_PATH,
+    option_history_path: Path = option_history.SNAPSHOT_PATH,
     max_workers: int = 12,
     write: bool = True,
 ) -> dict[str, Any]:
@@ -974,10 +1070,19 @@ def run_fixed_horizon_test(
         if write:
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             summary_path.write_text(json.dumps(_json_safe(summary), indent=2), encoding="utf-8")
-        return {"outcomes": existing, "summary": summary, "new_outcomes": 0}
+        return {
+            "outcomes": existing,
+            "summary": summary,
+            "new_outcomes": 0,
+            "upgraded_outcomes": 0,
+        }
 
     prepared = prepare_signals(signals)
-    candidates, pending = _unresolved_candidates(prepared, existing, horizons, now)
+    option_histories = option_history.load_option_histories(option_history_path)
+    upgradeable_before = _upgradeable_outcome_ids(existing, option_histories)
+    candidates, pending = _unresolved_candidates(
+        prepared, existing, horizons, now, option_histories,
+    )
     before = len(existing)
     if candidates.empty:
         outcomes = existing
@@ -995,8 +1100,11 @@ def run_fixed_horizon_test(
             horizons=horizons,
             asof=now,
             existing=existing,
+            option_histories=option_histories,
         )
-        _, pending = _unresolved_candidates(prepared, outcomes, horizons, now)
+        _, pending = _unresolved_candidates(
+            prepared, outcomes, horizons, now, option_histories,
+        )
     summary = build_summary(
         outcomes, signals, pending, exclusions, horizons=horizons, asof=now,
     )
@@ -1005,16 +1113,38 @@ def run_fixed_horizon_test(
         if not outcomes.empty:
             outcomes.to_parquet(outcomes_path, index=False)
         summary_path.write_text(json.dumps(_json_safe(summary), indent=2), encoding="utf-8")
+        try:
+            if outcomes_path.resolve() == OUTCOMES_PATH.resolve():
+                option_artifacts = option_history.refresh_artifacts(
+                    signals,
+                    outcomes=outcomes,
+                    data_dir=outcomes_path.parent,
+                    asof=now,
+                )
+                log.info(
+                    "option history: %d broker-observed outcomes / %d pending contract requests",
+                    option_artifacts["coverage"].get("broker_observed_option_outcomes", 0),
+                    option_artifacts["requests"].get("request_count", 0),
+                )
+        except Exception as exc:
+            log.warning("option-history request refresh skipped: %s", exc)
     new_count = max(0, len(outcomes) - before)
+    upgraded_count = len(upgradeable_before)
     log.info(
-        "fixed horizon: %d new / %d total; headline %ds executed n=%d shadow n=%d",
+        "fixed horizon: %d new / %d upgraded / %d total; headline %ds executed n=%d shadow n=%d",
         new_count,
+        upgraded_count,
         len(outcomes),
         HEADLINE_HORIZON,
         summary.get("headline", {}).get("n", 0),
         summary.get("headline_shadow", {}).get("n", 0),
     )
-    return {"outcomes": outcomes, "summary": summary, "new_outcomes": new_count}
+    return {
+        "outcomes": outcomes,
+        "summary": summary,
+        "new_outcomes": new_count,
+        "upgraded_outcomes": upgraded_count,
+    }
 
 
 if __name__ == "__main__":

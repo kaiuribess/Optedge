@@ -1155,6 +1155,11 @@ def render_html(summary: Dict[str, Any]) -> str:
         if isinstance(summary.get("fixed_horizon"), dict)
         else {}
     )
+    option_market_data = (
+        fixed_horizon.get("option_market_data")
+        if isinstance(fixed_horizon.get("option_market_data"), dict)
+        else {}
+    )
     warnings = summary.get("warnings") or []
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No major validation warnings.</li>"
     return f"""<!doctype html>
@@ -1244,7 +1249,12 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 
   <section>
     <h2>Independent Fixed-Session Forward Test</h2>
-    <p class="muted">One thesis per asset, ticker, direction, and entry day. Shadow rows passed the current strategy before portfolio-level guardrails, allowing evidence to accumulate while execution stays blocked. Only completed market sessions are scored. Shares and futures use observed closes. Options are explicitly labeled constant-entry-IV model proxies because free historical option fills are unavailable across the full universe.</p>
+    <p class="muted">One thesis per asset, ticker, direction, and entry day. Shadow rows passed the current strategy before portfolio-level guardrails, allowing evidence to accumulate while execution stays blocked. Only completed market sessions are scored. Shares and futures use observed closes. Options prefer exact non-interpolated Robinhood trade bars and use a labeled constant-entry-IV proxy only when no exact target-date bar is cached. Neither source proves an Optedge fill.</p>
+    {_metric_table([
+        ("Broker-observed option outcomes", str(int(option_market_data.get("broker_observed_outcomes") or 0))),
+        ("Modeled option outcomes", str(int(option_market_data.get("modeled_proxy_outcomes") or 0))),
+        ("Observed option coverage", _fmt_pct(option_market_data.get("broker_observed_coverage_pct"))),
+    ])}
     {_fixed_horizon_table(fixed_horizon)}
   </section>
 

@@ -453,6 +453,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Write export files" in html
     assert "Chain shortlist" in html
     assert "/artifact/option-chain-shortlist" in html
+    assert "Option data coverage" in html
+    assert "/artifact/option-history-coverage" in html
+    assert "/artifact/option-history-requests" in html
+    assert "/artifact/option-history-prompt" in html
     assert "CBOE public activity" in html
     assert "/api/cboe-option-activity" in html
     assert "cboeActivityResultsHtml" in html

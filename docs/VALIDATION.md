@@ -15,6 +15,8 @@ Outputs:
 - `data/position_aging_summary.json`
 - `data/fixed_horizon_outcomes.parquet`
 - `data/fixed_horizon_summary.json`
+- `data/robinhood_option_history_requests.json`
+- `data/robinhood_option_history_coverage.json`
 
 The report reads local signal logs from `logs/` and position state from the option, share, and futures JSON files in `data/`.
 
@@ -59,8 +61,10 @@ The lifecycle report answers whether tracked recommendations eventually hit an e
 - Current-method shadow rows freeze the strategy's qualification and intended size before portfolio-level guardrails. They can build research evidence while broker/execution eligibility remains blocked, avoiding a validation deadlock.
 - Current long-option evidence must include the directional buyer-edge fields used by the current pricing gate. Older absolute-anomaly rows remain telemetry-only.
 - Shares and futures use observed closes. Futures may use a labeled ETF proxy only when the continuous-contract history is unavailable.
-- Options use a labeled Black-Scholes mark with entry IV held constant. This measures underlying move and time decay under a stable-IV assumption; it is not a historical option fill.
+- Options first look for an exact, non-interpolated target-date trade bar in `data/robinhood_option_history_snapshot.json`. Matching bars are labeled `broker_market_observed`. When no exact bar is cached, the evaluator uses a labeled Black-Scholes mark with entry IV held constant. Both paths apply the configured slippage assumption, and neither path is evidence that Optedge received a fill.
 - The report shows executed and current-method shadow samples separately. The research headline remains untrusted below 100 shadow outcomes or 10 distinct entry days.
+
+`python scripts/refresh_robinhood_option_history.py --status` writes a bounded exact-contract request queue, an agent-safe read-only prompt, and a coverage report. A connected Codex/Robinhood session can resolve those requests with `get_option_instruments` and `get_option_historicals`. Interpolated gap-fill bars are rejected. When new exact bars arrive, previously modeled outcomes are upgraded in place on the next fixed-horizon refresh.
 
 The output includes Wilson 95% intervals for win rate, after-cost returns, profit factor, normalized drawdown, SPY/QQQ excess returns, outcome-quality counts, pending horizons, exclusions, and factor IC by horizon.
 

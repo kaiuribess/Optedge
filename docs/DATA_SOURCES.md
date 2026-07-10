@@ -6,6 +6,7 @@ Optedge favors free or locally available data sources and degrades gracefully wh
 
 - Options chains through the layered chain provider: optional broker/live sources first, then free CBOE/Nasdaq, bounded Yahoo options JSON, and yfinance fallbacks.
 - Public Cboe option symbol activity for contract-volume context and Robinhood queue sanity checks.
+- Optional exact option contract metadata and regular-session historical trade bars through the authenticated, read-only Robinhood MCP connector. The connector remains outside the local Python process; Optedge exchanges bounded request and cache artifacts without storing broker credentials.
 - Market history through Yahoo chart data and `yfinance`, then public no-key Nasdaq historical JSON, then Stooq CSV as a final best-effort fallback.
 - Symbol search/universe hygiene through the official no-key Nasdaq Trader symbol directory plus SEC company tickers.
 - Small-cap mover discovery through Nasdaq's public stock screener endpoint, enriched with FINRA short-volume context when available, and surfaced as delayed review candidates in Swing Scout.

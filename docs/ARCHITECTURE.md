@@ -19,7 +19,7 @@ Optedge is a local research cockpit built around a scan, fuse, size, log, and va
 - `run.py`: compatibility entry point for the current live scanner.
 - `engines/`: individual data/factor collectors.
 - `fusion/`: cross-factor ranking and watchlist generation.
-- `backtest/`: sizing, fixed-horizon and current-mark forward tests, position tracking, calibration, drawdown controls.
+- `backtest/`: sizing, fixed-horizon and current-mark forward tests, read-only option-history cache/upgrade logic, position tracking, calibration, drawdown controls.
 - `dashboard/`: local HTML cockpit rendering.
 - `reports/`: formal validation reports and research artifacts.
 - `risk/`: research safety guardrails.
@@ -28,6 +28,8 @@ Optedge is a local research cockpit built around a scan, fuse, size, log, and va
 ## Asset Lifecycles
 
 Options use option-chain pricing, theoretical value, IV/skew/DTE fields, stop/target/expiry exits, and dynamic exit review after hard exits.
+
+Fixed-horizon option validation prefers exact Robinhood regular-session trade bars supplied through the read-only Codex connector cache. The local process emits bounded contract requests but has no broker credentials or order capability. Missing exact target-date bars fall back to the labeled constant-entry-IV proxy.
 
 Shares use equity prices and non-option factors such as sentiment, news, fundamentals, insider activity, analyst data, macro context, technicals, sector flow, and filings. They do not require strikes, expiries, Greeks, or option-chain fields.
 

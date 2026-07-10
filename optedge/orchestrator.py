@@ -582,7 +582,11 @@ def main():
                 print(f"    Avg after costs:   {float(headline['avg_return'])*100:+.2f}%")
             executed = int((fixed.get("headline") or {}).get("n") or 0)
             print(f"    Executed outcomes: {executed}")
-            print("    Shadow rows passed strategy rules before guardrails. Options are model proxies; shares/futures use observed closes.")
+            option_data = fixed.get("option_market_data", {}) or {}
+            observed = int(option_data.get("broker_observed_outcomes") or 0)
+            modeled = int(option_data.get("modeled_proxy_outcomes") or 0)
+            print("    Shadow rows passed strategy rules before guardrails. Shares/futures use observed closes.")
+            print(f"    Option evidence:   {observed} broker-observed / {modeled} modeled fallback outcome(s)")
         # Save
         out_dir = Path(args.out_dir); out_dir.mkdir(exist_ok=True)
         asof_tag = run_asof.strftime("%Y%m%d_%H%M%S")
