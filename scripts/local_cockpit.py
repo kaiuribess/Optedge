@@ -100,6 +100,10 @@ ARTIFACTS = {
     "agentic-paper-orders": ("agentic_paper_orders.jsonl", "application/x-ndjson; charset=utf-8"),
     "robinhood-live-order-tickets": ("robinhood_live_order_tickets.json", "application/json; charset=utf-8"),
     "robinhood-broker-snapshot": ("robinhood_broker_snapshot.json", "application/json; charset=utf-8"),
+    "robinhood-research-coverage": ("robinhood_research_coverage.json", "application/json; charset=utf-8"),
+    "robinhood-research-requests": ("robinhood_research_requests.json", "application/json; charset=utf-8"),
+    "robinhood-research-prompt": ("robinhood_research_prompt.md", "text/markdown; charset=utf-8"),
+    "robinhood-research-snapshot": ("robinhood_research_snapshot.json", "application/json; charset=utf-8"),
     "position-hygiene-plan": ("position_hygiene_plan.json", "application/json; charset=utf-8"),
 }
 
@@ -13542,9 +13546,9 @@ input:focus, select:focus { outline:none; border-color:var(--accent); box-shadow
 .section { min-width:0; border:1px solid var(--border); border-radius:8px; background:var(--panel3); overflow:hidden; }
 .section h3 { margin:0; padding:12px 14px; font-size:14px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; }
 .brief-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
-.brief-tile { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; }
-.brief-tile span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.4px; }
-.brief-tile strong { display:block; margin-top:5px; font-size:14px; }
+.brief-tile { min-width:0; border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:10px; }
+.brief-tile span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:0; }
+.brief-tile strong { display:block; margin-top:5px; font-size:14px; overflow-wrap:anywhere; word-break:break-word; }
 .setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr)); gap:10px; margin-top:12px; }
 .setup-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:12px; display:flex; flex-direction:column; gap:10px; min-height:176px; }
 .setup-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
@@ -14175,6 +14179,8 @@ tr.clickable-row:hover { background:#18201d; }
       </select>
       <input id="scan-bankroll" type="number" min="1" step="100" placeholder="Bankroll override">
       <label class="check"><input id="scan-aggressive" type="checkbox"> aggressive sizing</label>
+      <a class="btn" href="/artifact/robinhood-research-coverage" target="_blank">Broker research status</a>
+      <a class="btn" href="/artifact/robinhood-research-requests" target="_blank">Broker research queue</a>
     </div>
     <div class="status" id="lookup-status"></div>
     <div class="sections" id="lookup-results"></div>
@@ -14282,6 +14288,8 @@ function briefHtml(brief) {
   const open = brief.open_positions || {};
   const contractExposure = brief.contract_exposure || {};
   const price = brief.price_snapshot || {};
+  const robinhoodResearch = brief.robinhood_research || {};
+  const robinhoodOption = brief.robinhood_option_quote || {};
   const coverage = brief.data_coverage || {};
   const marketStructure = brief.market_structure || {};
   const cboeActivity = brief.cboe_option_activity || {};
@@ -14306,6 +14314,27 @@ function briefHtml(brief) {
     ? `<button class="btn brief-save-preferred-btn" type="button" data-query="${escAttr(preferredContract)}" data-reason="${escAttr(comparison.label || 'Preferred alternative contract')}">Save preferred contract</button>`
     : '';
   const actionButtons = [chainActionButton, scanActionButton, savePreferredButton].filter(Boolean).join('');
+  const robinhoodContext = (robinhoodResearch.symbol || robinhoodOption.instrument_id)
+    ? `<div class="brief-list" style="margin-top:12px"><h4>Robinhood read-only context</h4>
+        <div class="brief-grid">
+          <div class="brief-tile"><span>Broker price</span><strong>${cell(robinhoodResearch.current_price)}</strong></div>
+          <div class="brief-tile"><span>Price session</span><strong>${escHtml(robinhoodResearch.price_session || '-')}</strong></div>
+          <div class="brief-tile"><span>Broker freshness</span><strong>${escHtml(robinhoodResearch.snapshot_freshness || '-')}</strong></div>
+          <div class="brief-tile"><span>Equity quote age</span><strong>${cell(robinhoodResearch.snapshot_age_min)} min</strong></div>
+          <div class="brief-tile"><span>Market cap</span><strong>${moneyShort(robinhoodResearch.market_cap)}</strong></div>
+          <div class="brief-tile"><span>P/E</span><strong>${ratio(robinhoodResearch.pe_ratio)}</strong></div>
+          <div class="brief-tile"><span>Next earnings</span><strong>${escHtml(robinhoodResearch.next_earnings_date || '-')}</strong></div>
+          <div class="brief-tile"><span>Option mark</span><strong>${cell(robinhoodOption.mark_price)}</strong></div>
+          <div class="brief-tile"><span>Broker spread</span><strong>${pct(robinhoodOption.spread_pct)}</strong></div>
+          <div class="brief-tile"><span>Volume / OI</span><strong>${cell(robinhoodOption.volume)} / ${cell(robinhoodOption.open_interest)}</strong></div>
+          <div class="brief-tile"><span>IV</span><strong>${pct(robinhoodOption.implied_volatility)}</strong></div>
+          <div class="brief-tile"><span>Delta / theta</span><strong>${cell(robinhoodOption.delta)} / ${cell(robinhoodOption.theta)}</strong></div>
+          <div class="brief-tile"><span>Tradability</span><strong>${escHtml(robinhoodOption.tradability || '-')}</strong></div>
+          <div class="brief-tile"><span>Option freshness</span><strong>${escHtml(robinhoodOption.snapshot_freshness || '-')}</strong></div>
+          <div class="brief-tile"><span>Option quote age</span><strong>${cell(robinhoodOption.snapshot_age_min)} min</strong></div>
+        </div>
+      </div>`
+    : '<div class="brief-list" style="margin-top:12px"><h4>Robinhood read-only context</h4><div class="empty">Broker quote/fundamental refresh queued; local research is available now.</div></div>';
   const list = (rows) => (rows && rows.length ? rows.slice(0, 5).map(x => `<li>${escHtml(x.factor)} <b>${cell(x.value)}</b></li>`).join('') : '<li>None surfaced</li>');
   const warnings = (brief.risk_warnings && brief.risk_warnings.length)
     ? brief.risk_warnings.slice(0, 5).map(w => `<li>${escHtml(w)}</li>`).join('')
@@ -14368,6 +14397,7 @@ function briefHtml(brief) {
         <div class="brief-tile"><span>Validation win rate</span><strong>${pct(val.win_rate)}</strong></div>
         <div class="brief-tile"><span>Validation avg return</span><strong>${pct(val.avg_return)}</strong></div>
       </div>
+      ${robinhoodContext}
       <div class="brief-cols">
         <div class="brief-list"><h4>Positive factors</h4><ul>${list(brief.top_positive_factors)}</ul></div>
         <div class="brief-list"><h4>Negative factors</h4><ul>${list(brief.top_negative_factors)}</ul></div>
@@ -17847,7 +17877,21 @@ async function lookup() {
   const saved = data.saved_lookup && data.saved_lookup.report_url
     ? ` Saved report: ${data.saved_lookup.report_url}`
     : (data.saved_lookup && data.saved_lookup.error ? ` ${data.saved_lookup.error}` : '');
-  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.${saved}`;
+  const brokerRequest = data.broker_research_request || {};
+  const brokerEquity = (data.brief && data.brief.robinhood_research) || {};
+  const brokerOption = (data.brief && data.brief.robinhood_option_quote) || {};
+  const brokerEquityFreshness = String(brokerEquity.snapshot_freshness || 'unknown');
+  const brokerOptionFreshness = String(brokerOption.snapshot_freshness || '');
+  const brokerStatus = brokerRequest.status === 'satisfied' && brokerOptionFreshness
+    ? ` Broker research loaded; exact option quote is ${brokerOptionFreshness}.`
+    : brokerRequest.status === 'satisfied'
+      ? ` Broker research loaded; equity quote is ${brokerEquityFreshness}.`
+    : brokerRequest.status === 'pending'
+      ? ' Read-only broker refresh queued.'
+      : brokerRequest.status === 'queue_failed'
+        ? ' Broker refresh queue failed; local research still loaded.'
+        : '';
+  $('lookup-status').textContent = `${data.total_hits} hit(s) for ${data.query}${resolved}.${saved}${brokerStatus}`;
   const brief = briefHtml(data.brief);
   const sections = Object.entries(data.sections).map(([name, rows]) => {
     return `<div class="section"><h3><span>${name.replaceAll('_', ' ')}</span><span>${rows.length}</span></h3>${table(rows)}</div>`;

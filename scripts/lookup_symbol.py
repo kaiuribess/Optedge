@@ -28,6 +28,10 @@ from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
 from scripts.export_external_paper_track import _load_option_chain_shortlist
+from scripts.robinhood_research_bridge import (
+    lookup_sections as robinhood_lookup_sections,
+    queue_request as queue_robinhood_research,
+)
 from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
 from scripts.symbol_resolver import resolve_symbol
 
@@ -151,6 +155,25 @@ DISPLAY_COLUMNS = {
         "market_value", "bid_price", "ask_price", "quote_updated_at",
         "agentic_allowed", "option_level", "snapshot_age_min",
         "snapshot_freshness", "status",
+    ],
+    "robinhood_research": [
+        "symbol", "current_price", "price_session", "quote_updated_at", "bid_price",
+        "ask_price", "mid_price", "spread_pct", "official_close",
+        "official_close_date", "market_cap", "pe_ratio", "pb_ratio", "sector",
+        "industry", "volume", "average_volume_30d", "high_52w", "low_52w",
+        "float_shares", "financial_status", "next_earnings_date", "days_to_earnings",
+        "earnings_timing", "earnings_verified", "earnings_eps_estimate",
+        "broker_ret_5d", "broker_ret_20d", "broker_ret_60d",
+        "broker_history_last_date", "snapshot_age_min", "snapshot_freshness", "source",
+    ],
+    "robinhood_option_quotes": [
+        "symbol", "side", "strike", "expiry", "dte", "state", "tradability",
+        "mark_price", "bid_price", "ask_price", "mid_price", "spread_pct",
+        "bid_size", "ask_size", "volume", "open_interest", "implied_volatility",
+        "delta", "gamma", "theta", "vega", "chance_of_profit_long",
+        "break_even_price", "low_fill_rate_buy_price", "high_fill_rate_buy_price",
+        "official_close", "official_close_date", "quote_updated_at", "sellout_datetime",
+        "snapshot_age_min", "snapshot_freshness", "source",
     ],
     "requested_option_matches": [
         "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
@@ -462,6 +485,31 @@ def _build_data_coverage(
             sources.get(section),
             freshness=_section_freshness(sec_rows),
         ))
+
+    broker_research_rows = sections.get("robinhood_research", [])
+    broker_option_rows = sections.get("robinhood_option_quotes", [])
+    broker_rows = broker_research_rows + broker_option_rows
+    broker_freshness = _section_freshness(broker_rows)
+    broker_status = (
+        "hit" if broker_rows and broker_freshness in {"fresh", "aging"}
+        else "risk_review" if broker_rows
+        else "optional_pending"
+    )
+    rows.append(_coverage_row(
+        "Robinhood read-only research",
+        "broker_market_data",
+        len(broker_rows),
+        sources.get("robinhood_research"),
+        status=broker_status,
+        freshness=broker_freshness,
+        detail=(
+            "Fresh/aging broker quote, fundamentals, earnings, and contract context is cached."
+            if broker_status == "hit"
+            else "Broker research cache is stale; do not treat it as a current quote."
+            if broker_status == "risk_review"
+            else "Optional read-only broker refresh is queued; local/free research remains available now."
+        ),
+    ))
 
     if requested_option:
         sec_rows = sections.get("requested_option_matches", [])
@@ -1726,6 +1774,8 @@ def _swing_verdict(
     best_idea: dict[str, Any] | None,
     requested_option: dict[str, Any] | None,
     price_snapshot: dict[str, Any] | None,
+    broker_research: dict[str, Any] | None,
+    broker_option_quote: dict[str, Any] | None,
     open_summary: dict[str, Any],
     broker_summary: dict[str, Any],
     market_structure: dict[str, Any],
@@ -1808,6 +1858,80 @@ def _swing_verdict(
     else:
         score -= 8
         reasons.append("No free price snapshot is attached to this lookup.")
+
+    if broker_research:
+        broker_freshness = str(broker_research.get("snapshot_freshness") or "unknown")
+        if broker_freshness == "fresh":
+            score += 3
+            reasons.append("A fresh read-only Robinhood equity snapshot is attached.")
+        elif broker_freshness == "stale":
+            score -= 8
+            reasons.append("Robinhood equity research is stale and cannot confirm entry timing.")
+        financial_status = str(broker_research.get("financial_status") or "").strip()
+        if financial_status:
+            score -= 25
+            blockers.append(f"Robinhood listing status warning: {financial_status}.")
+        days_to_earnings = _float_value(broker_research.get("days_to_earnings"))
+        if days_to_earnings is not None and 0 <= days_to_earnings <= 5:
+            score -= 20
+            blockers.append(f"Earnings are {int(days_to_earnings)} day(s) away.")
+        elif days_to_earnings is not None and 6 <= days_to_earnings <= 14:
+            score -= 7
+            reasons.append(f"Earnings are {int(days_to_earnings)} days away; define event risk.")
+
+    if requested_option:
+        if broker_option_quote:
+            broker_quote_freshness = str(
+                broker_option_quote.get("snapshot_freshness") or "unknown"
+            )
+            tradability = str(broker_option_quote.get("tradability") or "").lower()
+            if tradability and tradability != "tradable":
+                score -= 40
+                blockers.append("Robinhood marks the requested option untradable.")
+            spread = _float_value(broker_option_quote.get("spread_pct"))
+            if spread is not None and spread <= 0.15:
+                score += 6
+                reasons.append(f"Fresh broker option spread is usable at {spread * 100:.1f}%.")
+            elif spread is not None and spread >= 0.35:
+                score -= 22
+                blockers.append(f"Broker option spread is too wide at {spread * 100:.1f}%.")
+            open_interest = _float_value(broker_option_quote.get("open_interest"))
+            volume = _float_value(broker_option_quote.get("volume"))
+            if open_interest is not None and open_interest < 100:
+                score -= 10
+                reasons.append(f"Broker option open interest is thin ({int(open_interest)}).")
+            if volume is not None and volume < 10:
+                score -= 5
+                reasons.append(f"Broker option volume is thin ({int(volume)}).")
+            if broker_quote_freshness == "fresh":
+                score += 4
+            elif broker_quote_freshness == "stale":
+                score -= 12
+                reasons.append("Exact broker option quote is stale; refresh before review.")
+            local_mid = _float_value(requested_option.get("matched_mid"))
+            broker_mark = _float_value(broker_option_quote.get("mark_price"))
+            broker_quote_age = _float_value(broker_option_quote.get("snapshot_age_min"))
+            if (
+                local_mid is not None
+                and broker_mark is not None
+                and local_mid > 0
+                and broker_mark > 0
+                and (broker_quote_age is None or broker_quote_age <= 24 * 60)
+            ):
+                divergence = abs(local_mid - broker_mark) / broker_mark
+                if divergence >= 0.25:
+                    score -= 30
+                    blockers.append(
+                        "Saved option mid differs from the broker mark by "
+                        f"{divergence * 100:.0f}% (${local_mid:.3f} vs ${broker_mark:.3f}); "
+                        "refresh the local chain before review."
+                    )
+                elif divergence <= 0.10:
+                    score += 3
+                    reasons.append("Saved option mid is within 10% of the broker mark.")
+        else:
+            score -= 5
+            reasons.append("Exact Robinhood option quote is still pending in the read-only cache.")
 
     if requested_option:
         quality = str(requested_option.get("match_quality") or "missing").lower()
@@ -1964,6 +2088,10 @@ def _research_brief(
     sec_fact_report = sections.get("_sec_companyfacts_report", [])
     price_rows = sections.get("price_snapshot", [])
     price_snapshot = price_rows[0] if price_rows else None
+    broker_research_rows = sections.get("robinhood_research", [])
+    broker_research = broker_research_rows[0] if broker_research_rows else None
+    broker_option_rows = sections.get("robinhood_option_quotes", [])
+    broker_option_quote = broker_option_rows[0] if broker_option_rows else None
     market_structure = sections.get("_market_structure_report", [{}])[0] or {}
     cboe_activity = sections.get("_cboe_activity_report", [{}])[0] or {}
     data_coverage = sections.get("_data_coverage_report", [{}])[0] or {}
@@ -1987,6 +2115,10 @@ def _research_brief(
     if cboe_activity and cboe_activity.get("status") == "no_exact_match":
         warnings.append(str(cboe_activity.get("note") or "No exact public Cboe activity matched the requested option."))
     warnings.extend(str(w) for w in (data_coverage.get("warnings") or [])[:2])
+    if broker_research and broker_research.get("snapshot_freshness") == "stale":
+        warnings.append("Robinhood read-only ticker research is stale; a refresh is queued.")
+    if broker_option_quote and broker_option_quote.get("snapshot_freshness") == "stale":
+        warnings.append("Robinhood exact option quote is stale; do not use it for entry pricing.")
     best_idea = _best_idea_dict(best_section, best)
     requested_option = _requested_option_summary(
         resolution.get("request"),
@@ -2059,6 +2191,7 @@ def _research_brief(
     )
     swing_verdict = _swing_verdict(
         resolution.get("request"), best_idea, requested_option, price_snapshot,
+        broker_research, broker_option_quote,
         open_summary, broker_summary, market_structure, cboe_activity, data_coverage,
         paper_readiness, research_action, deduped_warnings,
     )
@@ -2073,6 +2206,8 @@ def _research_brief(
         "best_idea": best_idea,
         "contract_exposure": contract_exposure,
         "price_snapshot": price_snapshot,
+        "robinhood_research": broker_research,
+        "robinhood_option_quote": broker_option_quote,
         "data_coverage": {
             "status": data_coverage.get("status"),
             "label": data_coverage.get("label"),
@@ -2502,6 +2637,21 @@ def lookup_symbol(
     sections: dict[str, list[dict[str, Any]]] = {}
     sources: dict[str, str | None] = {}
     raw_matches: dict[str, pd.DataFrame] = {}
+    broker_research_request: dict[str, Any] = {}
+
+    if q and not q.endswith("=F") and not q.startswith("^"):
+        try:
+            broker_research_request = queue_robinhood_research(
+                original_query,
+                q,
+                resolution.get("request"),
+                data_dir=data_dir,
+            )
+        except Exception as exc:
+            broker_research_request = {
+                "status": "queue_failed",
+                "error": str(exc)[:160],
+            }
 
     for section, (pattern, column) in SNAPSHOTS.items():
         path = _latest_file(data_dir, pattern)
@@ -2528,6 +2678,24 @@ def lookup_symbol(
     broker_rows = _broker_snapshot_positions(q, data_dir)
     sources["broker_positions"] = broker_snapshot_path.name if broker_snapshot_path.exists() else None
     sections["broker_positions"] = _frame_records(pd.DataFrame(broker_rows), "broker_positions")
+
+    try:
+        broker_research_sections = robinhood_lookup_sections(
+            q,
+            resolution.get("request"),
+            data_dir=data_dir,
+        )
+    except Exception:
+        broker_research_sections = {
+            "robinhood_research": [],
+            "robinhood_option_quotes": [],
+        }
+    for section in ("robinhood_research", "robinhood_option_quotes"):
+        rows = broker_research_sections.get(section) or []
+        sections[section] = _frame_records(pd.DataFrame(rows), section)
+        sources[section] = (
+            "robinhood_research_snapshot.json" if rows else None
+        )
 
     if include_price:
         price_snapshot = _price_snapshot(q)
@@ -2608,13 +2776,15 @@ def lookup_symbol(
         "query": original_query.upper(),
         "lookup_symbol": q,
         "resolution": resolution,
+        "broker_research_request": broker_research_request,
         "brief": brief,
         "total_hits": total_hits,
         "sources": sources,
         "sections": public_sections,
         "notes": [
-            "Lookup uses latest local Optedge snapshots, open state, broker snapshot, and saved option-chain shortlist.",
+            "Lookup uses latest local Optedge snapshots, open state, broker snapshot, saved option-chain shortlist, and optional read-only Robinhood research cache.",
             "Optional price snapshots use the free cached history stack and are not live broker quotes.",
+            "Robinhood research requests are read-only and never include orders, accounts, or credentials.",
             "Optional market-structure checks use official no-key Nasdaq Trader risk lists.",
             "Run a fresh scan with --universe TICKER if the ticker is missing or stale.",
             "This is research output only, not an order or financial advice.",
@@ -2674,6 +2844,8 @@ def _render_brief(brief: dict[str, Any]) -> str:
     broker_pos = brief.get("broker_positions") or {}
     contract_exposure = brief.get("contract_exposure") or {}
     price = brief.get("price_snapshot") or {}
+    robinhood = brief.get("robinhood_research") or {}
+    robinhood_option = brief.get("robinhood_option_quote") or {}
     coverage = brief.get("data_coverage") or {}
     market_structure = brief.get("market_structure") or {}
     cboe_activity = brief.get("cboe_option_activity") or {}
@@ -2714,6 +2886,30 @@ def _render_brief(brief: dict[str, Any]) -> str:
     ) or "<li>No contract comparison available.</li>"
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
+    if robinhood or robinhood_option:
+        robinhood_context = f"""
+  <div class="two-col">
+    <div>
+      <h3>Robinhood read-only ticker context</h3>
+      <ul>
+        <li>Price: <b>{html.escape(str(robinhood.get('current_price') if robinhood.get('current_price') is not None else '-'))}</b> ({html.escape(str(robinhood.get('price_session') or '-'))})</li>
+        <li>Quote age: <b>{html.escape(str(round(float(robinhood.get('snapshot_age_min')), 1) if robinhood.get('snapshot_age_min') is not None else '-'))} min</b> ({html.escape(str(robinhood.get('snapshot_freshness') or '-'))})</li>
+        <li>Market cap: <b>{_fmt_brief_money(robinhood.get('market_cap'))}</b>; P/E: <b>{html.escape(str(robinhood.get('pe_ratio') if robinhood.get('pe_ratio') is not None else '-'))}</b></li>
+        <li>Next earnings: <b>{html.escape(str(robinhood.get('next_earnings_date') or '-'))}</b> ({html.escape(str(robinhood.get('days_to_earnings') if robinhood.get('days_to_earnings') is not None else '-'))}d)</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Robinhood exact option context</h3>
+      <ul>
+        <li>Mark: <b>{html.escape(str(robinhood_option.get('mark_price') if robinhood_option.get('mark_price') is not None else '-'))}</b>; spread: <b>{_fmt_brief_pct(robinhood_option.get('spread_pct'))}</b></li>
+        <li>Volume / OI: <b>{html.escape(str(robinhood_option.get('volume') if robinhood_option.get('volume') is not None else '-'))} / {html.escape(str(robinhood_option.get('open_interest') if robinhood_option.get('open_interest') is not None else '-'))}</b></li>
+        <li>IV / delta / theta: <b>{_fmt_brief_pct(robinhood_option.get('implied_volatility'))} / {html.escape(str(robinhood_option.get('delta') if robinhood_option.get('delta') is not None else '-'))} / {html.escape(str(robinhood_option.get('theta') if robinhood_option.get('theta') is not None else '-'))}</b></li>
+        <li>Quote age: <b>{html.escape(str(round(float(robinhood_option.get('snapshot_age_min')), 1) if robinhood_option.get('snapshot_age_min') is not None else '-'))} min</b> ({html.escape(str(robinhood_option.get('snapshot_freshness') or '-'))}); tradability: <b>{html.escape(str(robinhood_option.get('tradability') or '-'))}</b></li>
+      </ul>
+    </div>
+  </div>"""
+    else:
+        robinhood_context = "<p class='muted'>Read-only Robinhood quote/fundamental refresh queued; local research is available now.</p>"
     return f"""
 <section>
   <h2>Research Brief</h2>
@@ -2780,6 +2976,7 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
     <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get('avg_return'))}</strong></div>
   </div>
+  {robinhood_context}
   <div class="two-col">
     <div><h3>Positive factors</h3><ul>{positives}</ul></div>
     <div><h3>Negative factors</h3><ul>{negatives}</ul></div>

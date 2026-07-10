@@ -232,6 +232,14 @@ Instant local lookup from the latest scan artifacts:
 python run.py --lookup NVDA
 ```
 
+When the authenticated Robinhood MCP connector is available, lookup also writes a bounded read-only refresh request. A connected Codex review can attach Robinhood's current equity quote, official close, fundamentals, earnings timing, recent price history, and the exact option contract's mark, spread, Greeks, volume, open interest, tradability, and history. Broker quote timestamps drive freshness labels. Large differences between a saved local option mid and the broker mark block the swing verdict until the local chain is refreshed. No account number, credential, position, order, or fill is stored in this research cache.
+
+Inspect the read-only lookup cache and queue with:
+
+```bash
+python scripts/robinhood_research_bridge.py --status
+```
+
 ## Dashboard
 
 Each scan writes a local dashboard to `data/dashboard_*.html` and opens it in the browser by default unless `--no-open` is used.
@@ -259,10 +267,11 @@ python run.py --cockpit
 The cockpit opens at `http://127.0.0.1:8765` by default and reads local files from `data/`. It gives you:
 
 - Instant symbol lookup across latest option, share, value, futures, and open-position artifacts.
+- Read-only Robinhood ticker and exact-option context when the connector cache has a matching record, with explicit quote age and source labels.
 - Focused scan launcher: type a ticker, company name, or option idea and click **Run focused scan**.
 - Full/quick focused-scan modes, optional bankroll override, and aggressive sizing toggle.
 - Open option/share/futures counts.
-- Quick links to the latest dashboard, validation report, validation JSON, option-history coverage and request queue, equity curve, and external paper-order export.
+- Quick links to the latest dashboard, validation report, validation JSON, option-history and broker-research queues, equity curve, and external paper-order export.
 - A browser UI that does not rerun engines until you choose to run a new scan.
 
 Use another port or keep it from opening a browser:
@@ -351,7 +360,7 @@ Research Guard is supposed to be conservative. A warning is not cosmetic; it mea
 
 Optedge uses free or locally configured sources where possible, including:
 
-- Options chains and price history, with an optional read-only Robinhood/Codex cache for exact contract bars.
+- Options chains and price history, with optional read-only Robinhood/Codex caches for exact contract bars and interactive exact-contract quote checks.
 - Cboe daily market statistics and total/equity/index put-call ratio CSVs for delayed options sentiment context.
 - FRED public graph CSV macro stress context for credit, rates, labor, inflation, growth, and liquidity.
 - Nasdaq Trader symbol directory for broader official ticker/ETF search and universe hygiene.
@@ -410,6 +419,7 @@ python tests/test_external_paper_track.py
 python tests/test_robinhood_agentic_queue.py
 python tests/test_auto_agentic_paper.py
 python tests/test_robinhood_broker_snapshot.py
+python tests/test_robinhood_research_bridge.py
 python tests/test_symbol_resolver.py
 python tests/test_research_jobs.py
 python tests/test_lookup_symbol.py

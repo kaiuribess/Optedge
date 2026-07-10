@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -1168,6 +1169,141 @@ def test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry():
         assert "Broker snapshot" in html
 
 
+def test_lookup_queues_read_only_broker_research_when_cache_missing():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        report = lookup_symbol("AAPL", data_dir)
+        request = report["broker_research_request"]
+        assert request["request_id"] == "equity:AAPL"
+        assert request["status"] == "pending"
+        assert request["read_only"] is True
+        assert (data_dir / "robinhood_research_requests.json").exists()
+        assert (data_dir / "robinhood_research_prompt.md").exists()
+        assert report["sections"]["robinhood_research"] == []
+
+
+def test_lookup_uses_fresh_broker_quote_as_option_liquidity_and_event_veto():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(UTC)
+        expiry = (now.date() + timedelta(days=120)).isoformat()
+        earnings = (now.date() + timedelta(days=3)).isoformat()
+        query = f"AAPL {expiry} C 220"
+        pd.DataFrame([{
+            "ticker": "AAPL", "side": "call", "strike": 220.0, "expiry": expiry,
+            "mid": 6.0, "confidence": 82, "rank_score": 2.2,
+            "trade_status": "Trade", "is_actionable": True,
+            "suggested_contracts": 1, "stop_price": 3.0, "target_price": 12.0,
+            "chain_source": "cboe", "quote_quality": "free_or_delayed",
+            "buyer_edge_pct": 0.12,
+        }]).to_parquet(data_dir / "top_options_20260710_120000.parquet")
+        request_id = f"option:AAPL|{expiry}|call|220"
+        (data_dir / "robinhood_research_snapshot.json").write_text(json.dumps({
+            "schema": "optedge_robinhood_research_snapshot_v1",
+            "generated_at": now.isoformat(),
+            "records": [{
+                "request_id": request_id,
+                "query": query,
+                "symbol": "AAPL",
+                "option_request": {
+                    "asset": "option", "ticker": "AAPL", "expiry": expiry,
+                    "side": "call", "strike": 220,
+                },
+                "collected_at": now.isoformat(),
+                "equity_quote": {"quote": {
+                    "symbol": "AAPL", "last_trade_price": "210",
+                    "venue_last_trade_time": now.isoformat(),
+                    "bid_price": "209.95", "ask_price": "210.05",
+                }},
+                "fundamentals": {
+                    "symbol": "AAPL", "market_cap": "3200000000000",
+                    "pe_ratio": "31.5", "sector": "Technology",
+                },
+                "earnings": [{
+                    "symbol": "AAPL", "year": now.year, "quarter": 3,
+                    "eps": {"estimate": "1.65", "actual": None},
+                    "report": {"date": earnings, "timing": "pm", "verified": True},
+                }],
+                "option_contracts": [{
+                    "instrument": {
+                        "id": "opt-aapl", "chain_symbol": "AAPL",
+                        "expiration_date": expiry, "strike_price": "220",
+                        "type": "call", "state": "active", "tradability": "tradable",
+                    },
+                    "quote": {"quote": {
+                        "instrument_id": "opt-aapl", "mark_price": "6.00",
+                        "bid_price": "4.00", "ask_price": "8.00",
+                        "volume": 2, "open_interest": 50,
+                        "implied_volatility": "0.40", "delta": "0.50",
+                        "theta": "-0.05", "updated_at": now.isoformat(),
+                    }},
+                }],
+            }],
+        }), encoding="utf-8")
+
+        report = lookup_symbol(query, data_dir)
+        assert report["broker_research_request"]["status"] == "satisfied"
+        assert report["sections"]["robinhood_research"][0]["current_price"] == 210
+        assert report["sections"]["robinhood_option_quotes"][0]["spread_pct"] > 0.60
+        brief = report["brief"]
+        assert brief["robinhood_option_quote"]["open_interest"] == 50
+        assert any("Earnings are 3 day" in row for row in brief["swing_verdict"]["blockers"])
+        assert any("spread is too wide" in row for row in brief["swing_verdict"]["blockers"])
+        assert not any("differs from the broker mark" in row for row in brief["swing_verdict"]["blockers"])
+        assert brief["swing_verdict"]["decision"] == "blocked"
+        assert "Robinhood read-only ticker context" in render_html(report)
+
+
+def test_lookup_blocks_large_local_to_broker_option_price_divergence():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        now = datetime.now(UTC)
+        expiry = (now.date() + timedelta(days=120)).isoformat()
+        query = f"AAPL {expiry} C 220"
+        pd.DataFrame([{
+            "ticker": "AAPL", "side": "call", "strike": 220.0, "expiry": expiry,
+            "mid": 6.0, "confidence": 82, "rank_score": 2.2,
+            "trade_status": "Trade", "is_actionable": True,
+            "suggested_contracts": 1, "stop_price": 3.0, "target_price": 12.0,
+            "chain_source": "cboe", "quote_quality": "free_or_delayed",
+        }]).to_parquet(data_dir / "top_options_20260710_120000.parquet")
+        (data_dir / "robinhood_research_snapshot.json").write_text(json.dumps({
+            "schema": "optedge_robinhood_research_snapshot_v1",
+            "records": [{
+                "request_id": f"option:AAPL|{expiry}|call|220",
+                "query": query,
+                "symbol": "AAPL",
+                "option_request": {
+                    "asset": "option", "ticker": "AAPL", "expiry": expiry,
+                    "side": "call", "strike": 220,
+                },
+                "collected_at": now.isoformat(),
+                "equity_quote": {"quote": {
+                    "symbol": "AAPL", "last_trade_price": "210",
+                    "venue_last_trade_time": now.isoformat(),
+                }},
+                "option_contracts": [{
+                    "instrument": {
+                        "id": "opt-aapl", "chain_symbol": "AAPL",
+                        "expiration_date": expiry, "strike_price": "220",
+                        "type": "call", "state": "active", "tradability": "tradable",
+                    },
+                    "quote": {"quote": {
+                        "instrument_id": "opt-aapl", "mark_price": "1.00",
+                        "bid_price": "0.95", "ask_price": "1.05",
+                        "volume": 500, "open_interest": 5000,
+                        "updated_at": now.isoformat(),
+                    }},
+                }],
+            }],
+        }), encoding="utf-8")
+
+        report = lookup_symbol(query, data_dir)
+        blockers = report["brief"]["swing_verdict"]["blockers"]
+        assert any("differs from the broker mark by 500%" in row for row in blockers)
+        assert report["brief"]["swing_verdict"]["decision"] == "blocked"
+
+
 if __name__ == "__main__":
     test_resolver_prefers_local_aliases_for_common_company_names_and_futures()
     test_lookup_reads_open_option_positions()
@@ -1195,4 +1331,7 @@ if __name__ == "__main__":
     test_lookup_action_prioritizes_open_exit_pressure()
     test_lookup_exact_option_request_flags_existing_contract_exposure()
     test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry()
-    print("26/26 lookup tests passed")
+    test_lookup_queues_read_only_broker_research_when_cache_missing()
+    test_lookup_uses_fresh_broker_quote_as_option_liquidity_and_event_veto()
+    test_lookup_blocks_large_local_to_broker_option_price_divergence()
+    print("29/29 lookup tests passed")

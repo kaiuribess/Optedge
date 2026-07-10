@@ -90,6 +90,8 @@ Current Robinhood MCP capabilities can include:
 
 Optedge writes the expanded read sequence into each `robinhood_agentic_cycle.json` as `robinhood_mcp_read_plan`. A connected Codex cycle can use it to resolve names, run saved scanners, verify earnings and fundamentals, inspect underlying and option history, reconcile positions/orders, and compare broker-realized outcomes with Optedge validation. Scanner creation/changes and broker order actions are separate account writes; they are not implied by the read plan.
 
+Interactive ticker/contract searches use the narrower `robinhood_research_bridge.py` queue. It requests market research only and deliberately excludes accounts, positions, orders, and credentials. The lookup UI can use exact broker liquidity and quote-age checks as vetoes, but the cache is not an execution channel and never proves a fill.
+
 The local queue remains a research handoff. A broker-side order is only real after Robinhood confirms it.
 
 Default safety caps:
