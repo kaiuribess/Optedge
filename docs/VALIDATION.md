@@ -13,6 +13,8 @@ Outputs:
 - `data/equity_curve.png`
 - `data/factor_ic_summary.json`
 - `data/position_aging_summary.json`
+- `data/fixed_horizon_outcomes.parquet`
+- `data/fixed_horizon_summary.json`
 
 The report reads local signal logs from `logs/` and position state from the option, share, and futures JSON files in `data/`.
 
@@ -46,6 +48,21 @@ Performance metrics retain every closed recommendation, including same-scan exit
 The research guard uses the executable swing sample's after-slippage metrics for entry readiness. Raw all-closure metrics remain alongside it for auditability. A large shadow-recommendation history therefore cannot override weak drawdown, win rate, or sample size in trades that were actually sized and eligible to open.
 
 Factor IC is also calculated from executable swing outcomes. Each factor is labeled `supportive`, `adverse`, `weak`, or `insufficient_history`; a directional label requires at least 100 executable outcomes across 10 distinct entry days. Raw all-closure factor IC remains in `validation_summary.json` for comparison, while `factor_ic_summary.json` contains the cleaner executable-swing view used by the dashboard.
+
+## Fixed-Session Evidence
+
+The lifecycle report answers whether tracked recommendations eventually hit an exit. The fixed-horizon lane answers whether the entry signal had edge after exactly 1, 3, 5, 10, or 20 completed market sessions.
+
+- Intraday repeats collapse to the first thesis for each asset, ticker, direction, and entry day.
+- A horizon remains pending until the required completed session exists; the current partial session is never scored.
+- `Watch`, `Skip`, guard-blocked, zero-size, and legacy-unverified rows cannot enter executed metrics.
+- Current-method shadow rows freeze the strategy's qualification and intended size before portfolio-level guardrails. They can build research evidence while broker/execution eligibility remains blocked, avoiding a validation deadlock.
+- Current long-option evidence must include the directional buyer-edge fields used by the current pricing gate. Older absolute-anomaly rows remain telemetry-only.
+- Shares and futures use observed closes. Futures may use a labeled ETF proxy only when the continuous-contract history is unavailable.
+- Options use a labeled Black-Scholes mark with entry IV held constant. This measures underlying move and time decay under a stable-IV assumption; it is not a historical option fill.
+- The report shows executed and current-method shadow samples separately. The research headline remains untrusted below 100 shadow outcomes or 10 distinct entry days.
+
+The output includes Wilson 95% intervals for win rate, after-cost returns, profit factor, normalized drawdown, SPY/QQQ excess returns, outcome-quality counts, pending horizons, exclusions, and factor IC by horizon.
 
 ## Sample Size
 

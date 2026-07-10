@@ -125,6 +125,16 @@ def _read_json_rows(path: Path) -> List[Dict[str, Any]]:
         return []
 
 
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _load_parquets(pattern: str) -> pd.DataFrame:
     frames = []
     for fp in sorted(glob.glob(str(pattern))):
@@ -880,6 +890,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     swing_eligible_after_slippage = _stats(swing_eligible, "pnl_pct_after_slippage")
     factor_ic = _factor_ic(swing_eligible)
     all_closure_factor_ic = _factor_ic(closed)
+    fixed_horizon = _read_json_object(DATA_DIR / "fixed_horizon_summary.json")
 
     warnings = []
     if scope != "all_time" and cutoff is not None:
@@ -931,6 +942,8 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         warnings.append(
             "Factor IC is exploratory: no factor yet has both 100 executable outcomes and 10 distinct entry days."
         )
+    for warning in fixed_horizon.get("warnings", [])[:3]:
+        warnings.append(f"Fixed-horizon: {warning}")
 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -991,6 +1004,7 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "position_aging": _position_aging(open_df),
         "benchmarks": _benchmark_comparison(closed),
         "random_baseline": _random_baseline(_num(closed.get("pnl_pct", pd.Series(dtype=float))).dropna()),
+        "fixed_horizon": fixed_horizon,
         "warnings": warnings,
     }
     return summary
@@ -1021,6 +1035,41 @@ def _bucket_table(rows: List[Dict[str, Any]]) -> str:
     return (
         "<table><thead><tr><th>Bucket</th><th>n</th><th>Win rate</th>"
         "<th>Avg return</th><th>Median return</th><th>Profit factor</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _fixed_horizon_table(summary: Dict[str, Any]) -> str:
+    rows = summary.get("by_horizon", []) if isinstance(summary, dict) else []
+    if not rows:
+        return "<p class='muted'>No matured fixed-session outcomes yet.</p>"
+    body = []
+    for row in rows:
+        executable = row.get("executable", {}) or {}
+        shadow = row.get("shadow_current_method", {}) or {}
+        ci_low = shadow.get("win_rate_ci_low")
+        ci_high = shadow.get("win_rate_ci_high")
+        ci = (
+            f"{_fmt_pct(ci_low)} to {_fmt_pct(ci_high)}"
+            if ci_low is not None and ci_high is not None else "n/a"
+        )
+        body.append(
+            "<tr>"
+            f"<td>{int(row.get('horizon_sessions') or 0)}</td>"
+            f"<td>{int(executable.get('n') or 0)}</td>"
+            f"<td>{int(shadow.get('n') or 0)}</td>"
+            f"<td>{int(shadow.get('unique_entry_days') or 0)}</td>"
+            f"<td>{_fmt_pct(shadow.get('win_rate'))}</td>"
+            f"<td>{html.escape(ci)}</td>"
+            f"<td>{_fmt_pct(shadow.get('avg_return'))}</td>"
+            f"<td>{_fmt_pct(shadow.get('avg_excess_vs_spy'))}</td>"
+            f"<td>{_fmt(shadow.get('profit_factor'))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>Sessions</th><th>Executed n</th><th>Shadow n</th>"
+        "<th>Shadow days</th><th>Shadow win</th><th>95% interval</th><th>Avg after costs</th>"
+        "<th>Avg excess vs SPY</th><th>Profit factor</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
     )
 
@@ -1101,6 +1150,11 @@ def render_html(summary: Dict[str, Any]) -> str:
         if isinstance(summary.get("swing_eligible_after_slippage"), dict)
         else {}
     )
+    fixed_horizon = (
+        summary.get("fixed_horizon")
+        if isinstance(summary.get("fixed_horizon"), dict)
+        else {}
+    )
     warnings = summary.get("warnings") or []
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No major validation warnings.</li>"
     return f"""<!doctype html>
@@ -1116,7 +1170,7 @@ h1 {{ margin: 0 0 6px; font-size: 34px; }}
 h2 {{ margin: 0 0 14px; font-size: 20px; }}
 .muted {{ color: #64748b; }}
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 22px 0; }}
-section {{ background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }}
+section {{ min-width: 0; overflow-x: auto; background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; box-shadow: 0 1px 2px rgba(15,23,42,.04); }}
 table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
 th, td {{ padding: 9px 8px; border-bottom: 1px solid #e2e8f0; text-align: left; }}
 th {{ color: #475569; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
@@ -1187,6 +1241,12 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
       ])}
     </section>
   </div>
+
+  <section>
+    <h2>Independent Fixed-Session Forward Test</h2>
+    <p class="muted">One thesis per asset, ticker, direction, and entry day. Shadow rows passed the current strategy before portfolio-level guardrails, allowing evidence to accumulate while execution stays blocked. Only completed market sessions are scored. Shares and futures use observed closes. Options are explicitly labeled constant-entry-IV model proxies because free historical option fills are unavailable across the full universe.</p>
+    {_fixed_horizon_table(fixed_horizon)}
+  </section>
 
   <section>
     <h2>Asset Breakdown</h2>

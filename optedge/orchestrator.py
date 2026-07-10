@@ -502,6 +502,12 @@ def main():
         return 0
 
     if args.validation_report:
+        try:
+            from backtest.fixed_horizon import run_fixed_horizon_test
+
+            run_fixed_horizon_test()
+        except Exception as e:
+            log.warning("fixed-horizon refresh skipped: %s", e)
         from reports.validation_report import (
             EQUITY_PNG, FACTOR_IC_JSON, POSITION_AGING_JSON, REPORT_HTML,
             SUMMARY_JSON, write_report,
@@ -565,6 +571,18 @@ def main():
             print("\n  By signal type:")
             for _, r in result["by_type"].iterrows():
                 print(f"    {r['type']:<6}  n={int(r['n']):>4}  win={r['win_rate']*100:>5.1f}%  avg P&L={r['avg_pnl']*100:+.2f}%")
+        fixed = result.get("fixed_horizon", {}) or {}
+        headline = fixed.get("headline_shadow", {}) or {}
+        if fixed:
+            print(f"\n  Fixed {fixed.get('headline_horizon_sessions', 10)}-session current-method shadow sample:")
+            print(f"    Outcomes:          {int(headline.get('n') or 0)}")
+            print(f"    Entry days:        {int(headline.get('unique_entry_days') or 0)}")
+            if headline.get("win_rate") is not None:
+                print(f"    Win rate:          {float(headline['win_rate'])*100:.1f}%")
+                print(f"    Avg after costs:   {float(headline['avg_return'])*100:+.2f}%")
+            executed = int((fixed.get("headline") or {}).get("n") or 0)
+            print(f"    Executed outcomes: {executed}")
+            print("    Shadow rows passed strategy rules before guardrails. Options are model proxies; shares/futures use observed closes.")
         # Save
         out_dir = Path(args.out_dir); out_dir.mkdir(exist_ok=True)
         asof_tag = run_asof.strftime("%Y%m%d_%H%M%S")
@@ -1049,9 +1067,11 @@ def main():
     ranked_opts = bt_sizing.add_sizing_to_options(ranked_opts, bankroll=args.bankroll,
                                                    aggressive=args.aggressive,
                                                    drawdown_mult=drawdown_mult)
+    ranked_opts = bt_sizing.add_pre_guard_qualification(ranked_opts, asset="option")
     research_guard_report = None
     try:
         from risk.research_guard import (
+            apply_to_asset as _apply_research_guard_asset,
             apply_to_recommendations as _apply_research_guard,
             build_guard_report as _build_guard_report,
             save_guard_report as _save_guard_report,
@@ -1114,6 +1134,7 @@ def main():
     ranked_shares = bt_sizing.add_sizing_to_shares(ranked_shares, bankroll=args.bankroll,
                                                     aggressive=args.aggressive,
                                                     drawdown_mult=drawdown_mult)
+    ranked_shares = bt_sizing.add_pre_guard_qualification(ranked_shares, asset="share")
     if research_guard_report is not None:
         try:
             _, ranked_shares = _apply_research_guard(
@@ -1178,9 +1199,20 @@ def main():
             from backtest.futures_sizing import add_sizing_to_futures
             top_fut = add_sizing_to_futures(top_fut, bankroll=args.bankroll,
                                             aggressive=args.aggressive)
+            top_fut = bt_sizing.add_pre_guard_qualification(top_fut, asset="futures")
             if not futures_df.empty:
                 futures_df = add_sizing_to_futures(futures_df, bankroll=args.bankroll,
                                                    aggressive=args.aggressive)
+                futures_df = bt_sizing.add_pre_guard_qualification(
+                    futures_df, asset="futures",
+                )
+            if research_guard_report is not None:
+                top_fut = _apply_research_guard_asset(
+                    top_fut, guard_report=research_guard_report, asset="futures",
+                )
+                futures_df = _apply_research_guard_asset(
+                    futures_df, guard_report=research_guard_report, asset="futures",
+                )
         except Exception as e:
             log.debug("futures sizing skipped: %s", e)
 
@@ -1217,8 +1249,9 @@ def main():
     try:
         if not top_opts.empty:
             backtest_track.log_signals(top_opts, run_asof)
-            # Also log shares + futures so forward test covers ALL asset types
+        if not top_sh.empty:
             backtest_track.log_signals_shares(top_sh, run_asof)
+        if not top_fut.empty:
             backtest_track.log_signals_futures(top_fut, run_asof)
     except Exception as e:
         log.warning("signal log failed: %s", e)
@@ -1260,6 +1293,24 @@ def main():
     except Exception as e:
         log.debug("exit policy refit skipped: %s", e)
 
+    fixed_horizon_result = None
+    try:
+        from backtest.fixed_horizon import run_fixed_horizon_test
+
+        fixed_horizon_result = run_fixed_horizon_test()
+        fixed_summary = fixed_horizon_result.get("summary", {})
+        fixed_headline = fixed_summary.get("headline", {})
+        fixed_shadow = fixed_summary.get("headline_shadow", {})
+        log.info(
+            "fixed horizon: %d total pairs; %d executed / %d shadow at %d sessions",
+            fixed_summary.get("matured_outcome_pairs", 0),
+            fixed_headline.get("n", 0),
+            fixed_shadow.get("n", 0),
+            fixed_summary.get("headline_horizon_sessions", 10),
+        )
+    except Exception as e:
+        log.warning("fixed-horizon validation skipped: %s", e)
+
     validation_summary = None
     try:
         from reports.validation_report import write_report as _write_validation_report
@@ -1279,17 +1330,43 @@ def main():
     calibration_summary = None
     try:
         from backtest.forward import run_forward_test
-        ft = run_forward_test()
+        ft = run_forward_test(include_fixed_horizon=False)
         if not ft["signals"].empty:
             forward_summary = ft
             log.info("forward test: %d signals, %.1f%% win rate, %.2f%% avg P&L",
                      ft["overall"]["n_signals"],
                      ft["overall"]["win_rate"]*100,
                      ft["overall"]["avg_pnl_pct"]*100)
-            # v19: also compute calibration (predicted vs realized accuracy)
+            # Calibration requires one fixed holding period. Mixed-age current
+            # marks remain telemetry and cannot prove prediction calibration.
             try:
                 from backtest.calibration import diagnostic_summary
-                calibration_summary = diagnostic_summary(ft["signals"])
+                fixed_outcomes = (
+                    fixed_horizon_result.get("outcomes", pd.DataFrame())
+                    if fixed_horizon_result else pd.DataFrame()
+                )
+                if fixed_outcomes.empty:
+                    raise ValueError("no fixed-horizon outcomes")
+                headline_horizon = int(
+                    fixed_horizon_result.get("summary", {}).get(
+                        "headline_horizon_sessions", 10,
+                    )
+                )
+                eligible = fixed_outcomes[
+                    fixed_outcomes.get(
+                        "is_independent", pd.Series(False, index=fixed_outcomes.index),
+                    ).fillna(False).astype(bool)
+                    & fixed_outcomes.get(
+                        "eligible_for_shadow_metrics",
+                        pd.Series(False, index=fixed_outcomes.index),
+                    ).fillna(False).astype(bool)
+                    & (pd.to_numeric(
+                        fixed_outcomes.get("horizon_sessions"), errors="coerce",
+                    ) == headline_horizon)
+                ].copy()
+                if eligible.empty:
+                    raise ValueError("no matured fixed-horizon current-method shadow outcomes")
+                calibration_summary = diagnostic_summary(eligible)
                 overall_cal = calibration_summary.get("overall", {}).get("overall", {})
                 if overall_cal.get("rank_correlation") is not None:
                     log.info("calibration: rank_corr=%.2f bias=%+0.3f verdict=%s",

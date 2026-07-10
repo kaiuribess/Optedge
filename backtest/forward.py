@@ -72,6 +72,19 @@ def _load_logs(prefix: str) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
+def _load_all_logs() -> pd.DataFrame:
+    """Load every asset log into one normalized research table."""
+    frames = []
+    for prefix, asset in (("options", "option"), ("shares", "share"), ("futures", "futures")):
+        frame = _load_logs(prefix)
+        if frame.empty:
+            continue
+        frame = frame.copy()
+        frame["asset"] = asset
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
 def _carry_features(row: pd.Series, out: Dict[str, Any]) -> Dict[str, Any]:
     """Keep model feature columns on re-priced rows so retraining can learn."""
     for col in FEATURE_COLS:
@@ -105,6 +118,13 @@ def _truthy(value: Any) -> Optional[bool]:
     return None
 
 
+def _age_days(entry_time: Any) -> Optional[float]:
+    entry = pd.to_datetime(entry_time, errors="coerce", utc=True)
+    if pd.isna(entry):
+        return None
+    return max(0.0, (pd.Timestamp.now(tz="UTC") - entry).total_seconds() / 86400.0)
+
+
 # -------- Re-pricing per asset type -----------------------------------
 def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
     """Re-price an option contract at current spot, holding entry IV constant."""
@@ -130,14 +150,17 @@ def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
         return None
 
 
-def _process_option(row: pd.Series) -> Dict[str, Any]:
+def _process_option(row: pd.Series,
+                    histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     ticker = row.get("ticker")
     if not ticker:
         return {"ticker": None, "_drop_reason": "no_ticker"}
     entry_mid = safe_float(row.get("mid"))
     if entry_mid <= 0:
         return {"ticker": ticker, "_drop_reason": "no_entry_mid"}
-    hist = data_provider.get_history(ticker, period="5d")
+    hist = (histories or {}).get(str(ticker).upper())
+    if hist is None:
+        hist = data_provider.get_history(ticker, period="1y")
     if hist is None or hist.empty:
         return {"ticker": ticker, "_drop_reason": "no_spot"}
     spot_now = float(hist["Close"].iloc[-1])
@@ -153,6 +176,7 @@ def _process_option(row: pd.Series) -> Dict[str, Any]:
         "side": row.get("side"),                          # call / put
         "confidence": safe_int(row.get("confidence")),
         "entry_time": row.get("entry_time"),
+        "age_days": _age_days(row.get("entry_time")),
         "entry_price": round(entry_mid, 3),
         "current_price": round(float(new_price), 3),
         "spot_now": round(spot_now, 3),
@@ -162,14 +186,17 @@ def _process_option(row: pd.Series) -> Dict[str, Any]:
     return _carry_features(row, out)
 
 
-def _process_share(row: pd.Series) -> Dict[str, Any]:
+def _process_share(row: pd.Series,
+                   histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     ticker = row.get("ticker")
     if not ticker:
         return {"ticker": None, "_drop_reason": "no_ticker"}
     entry_spot = safe_float(row.get("spot") or row.get("entry_price") or row.get("current_price"))
     if entry_spot <= 0:
         return {"ticker": ticker, "_drop_reason": "no_entry_spot"}
-    hist = data_provider.get_history(ticker, period="5d")
+    hist = (histories or {}).get(str(ticker).upper())
+    if hist is None:
+        hist = data_provider.get_history(ticker, period="1y")
     if hist is None or hist.empty:
         return {"ticker": ticker, "_drop_reason": "no_spot"}
     spot_now = float(hist["Close"].iloc[-1])
@@ -181,6 +208,7 @@ def _process_share(row: pd.Series) -> Dict[str, Any]:
         "side": "shares",
         "confidence": safe_int(row.get("confidence")),
         "entry_time": row.get("entry_time"),
+        "age_days": _age_days(row.get("entry_time")),
         "entry_price": round(entry_spot, 3),
         "current_price": round(spot_now, 3),
         "spot_now": round(spot_now, 3),
@@ -191,7 +219,8 @@ def _process_share(row: pd.Series) -> Dict[str, Any]:
     return _carry_features(row, out)
 
 
-def _process_future(row: pd.Series) -> Dict[str, Any]:
+def _process_future(row: pd.Series,
+                    histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     """Futures P&L: point-based, scaled by point_value × n_contracts."""
     symbol = row.get("symbol")
     if not symbol:
@@ -205,17 +234,41 @@ def _process_future(row: pd.Series) -> Dict[str, Any]:
     n_contracts = safe_int(row.get("n_contracts") or row.get("suggested_contracts") or row.get("contracts"))
     if entry <= 0 or point_value <= 0:
         return {"_drop_reason": "no_entry_or_pointvalue"}
-    # Fetch current price for the underlying ETF proxy (futures themselves are hard to fetch)
-    proxy = row.get("etf") or symbol
-    hist = data_provider.get_history(proxy, period="5d")
-    if hist is None or hist.empty:
-        return {"_drop_reason": "no_proxy_spot"}
-    # Approximate futures price move via the ETF proxy %-return × entry
-    etf_ret_pct = (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[0])) - 1
-    current_est = entry * (1 + etf_ret_pct)
+    # Prefer the actual continuous futures series; use the ETF only as a fallback.
+    hist = (histories or {}).get(str(symbol).upper())
+    if hist is None:
+        hist = data_provider.get_history(symbol, period="1y")
+    pricing_method = "observed_continuous_futures_close"
+    current_est = (
+        float(hist["Close"].dropna().iloc[-1])
+        if hist is not None and not hist.empty and not hist["Close"].dropna().empty
+        else 0.0
+    )
+    if current_est <= 0:
+        proxy = str(row.get("etf") or "").strip()
+        proxy_hist = (histories or {}).get(proxy.upper()) if proxy else pd.DataFrame()
+        if proxy and proxy_hist is None:
+            proxy_hist = data_provider.get_history(proxy, period="1y")
+        if proxy_hist is None or proxy_hist.empty:
+            return {"_drop_reason": "no_futures_or_proxy_spot"}
+        entry_time = pd.to_datetime(row.get("entry_time"), errors="coerce", utc=True)
+        proxy_dates = pd.to_datetime(proxy_hist.index, errors="coerce", utc=True)
+        valid = ~proxy_dates.isna()
+        proxy_hist = proxy_hist.loc[valid]
+        proxy_dates = proxy_dates[valid]
+        if not pd.isna(entry_time):
+            eligible = proxy_hist[proxy_dates.date >= entry_time.date()]
+        else:
+            eligible = proxy_hist
+        closes = eligible["Close"].dropna()
+        if len(closes) < 2:
+            return {"_drop_reason": "no_proxy_entry_history"}
+        proxy_return = float(closes.iloc[-1]) / float(closes.iloc[0]) - 1.0
+        current_est = entry * (1.0 + proxy_return)
+        pricing_method = "etf_proxy_since_entry"
     point_move = (current_est - entry) if is_long else (entry - current_est)
-    dollar_pnl = point_move * point_value * max(1, n_contracts)
-    pnl_pct = etf_ret_pct if is_long else -etf_ret_pct
+    dollar_pnl = point_move * point_value * max(0, n_contracts)
+    pnl_pct = point_move / entry
     out = {
         "asset": "futures",
         "ticker": symbol,
@@ -223,12 +276,14 @@ def _process_future(row: pd.Series) -> Dict[str, Any]:
         "side": "futures",
         "confidence": safe_int(row.get("futures_score") * 10 if row.get("futures_score") else 50),
         "entry_time": row.get("entry_time"),
+        "age_days": _age_days(row.get("entry_time")),
         "entry_price": round(entry, 3),
         "current_price": round(current_est, 3),
         "pnl_pct": round(pnl_pct, 4),
         "pnl_pct_after_slippage": round(_slippage_adjusted_pnl(row, pnl_pct, "futures"), 4),
         "dollar_pnl": round(dollar_pnl, 2),
         "bucket": row.get("bucket"),
+        "valuation_method": pricing_method,
     }
     return _carry_features(row, out)
 
@@ -291,8 +346,37 @@ def _risk_metrics(pnl: pd.DataFrame) -> Dict[str, float]:
     }
 
 
+def _prefetch_current_histories(opt_df: pd.DataFrame, sh_df: pd.DataFrame,
+                                fut_df: pd.DataFrame, max_workers: int) -> Dict[str, pd.DataFrame]:
+    """Fetch one daily history per unique symbol for current-mark telemetry."""
+    symbols = set()
+    for frame, column in ((opt_df, "ticker"), (sh_df, "ticker"), (fut_df, "symbol"),
+                          (fut_df, "etf")):
+        if frame is None or frame.empty or column not in frame.columns:
+            continue
+        values = frame[column].dropna().astype(str).str.strip().str.upper()
+        symbols.update(value for value in values if value and value not in {"NAN", "NONE"})
+    histories: Dict[str, pd.DataFrame] = {}
+
+    def fetch(symbol: str):
+        return symbol, data_provider.get_history(symbol, period="1y")
+
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+        jobs = {executor.submit(fetch, symbol): symbol for symbol in sorted(symbols)}
+        for future in as_completed(jobs):
+            symbol = jobs[future]
+            try:
+                key, history = future.result()
+                histories[key] = history if history is not None else pd.DataFrame()
+            except Exception as exc:
+                log.debug("forward history prefetch failed %s: %s", symbol, exc)
+                histories[symbol] = pd.DataFrame()
+    return histories
+
+
 # -------- Public --------------------------------------------------
-def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
+def run_forward_test(max_workers: int = 8,
+                     include_fixed_horizon: bool = True) -> Dict[str, Any]:
     """Re-price every logged signal across options/shares/futures.
 
     Returns:
@@ -327,6 +411,8 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
     log.info("forward test: %d option + %d shares + %d futures = %d signals",
              len(opt_df), len(sh_df), len(fut_df), total)
 
+    histories = _prefetch_current_histories(opt_df, sh_df, fut_df, max_workers)
+
     # Process each in parallel
     rows = []
     dropped = {}
@@ -342,11 +428,11 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = []
         for _, r in opt_df.iterrows():
-            futs.append(ex.submit(_process_option, r))
+            futs.append(ex.submit(_process_option, r, histories))
         for _, r in sh_df.iterrows():
-            futs.append(ex.submit(_process_share, r))
+            futs.append(ex.submit(_process_share, r, histories))
         for _, r in fut_df.iterrows():
-            futs.append(ex.submit(_process_future, r))
+            futs.append(ex.submit(_process_future, r, histories))
         for fut in as_completed(futs):
             try:
                 _push(fut.result())
@@ -361,6 +447,7 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
 
     # Overall
     overall = {
+        "basis": "mixed_age_current_mark_telemetry",
         "n_signals": len(pnl),
         "n_total_logged": total,
         "n_dropped": sum(dropped.values()),
@@ -387,7 +474,7 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
             "max_drawdown_pct": _risk_metrics(sub).get("max_drawdown_pct"),
         })
 
-    return {
+    result = {
         "signals": pnl,
         "overall": overall,
         "by_confidence": _bucket_by_confidence(pnl),
@@ -396,3 +483,15 @@ def run_forward_test(max_workers: int = 8) -> Dict[str, Any]:
         "risk": _risk_metrics(pnl),
         "dropped": dropped,
     }
+    if include_fixed_horizon:
+        try:
+            from backtest.fixed_horizon import run_fixed_horizon_test
+
+            fixed = run_fixed_horizon_test(
+                signals=_load_all_logs(), max_workers=max_workers,
+            )
+            result["fixed_horizon"] = fixed["summary"]
+            result["fixed_horizon_outcomes"] = fixed["outcomes"]
+        except Exception as exc:
+            log.warning("fixed-horizon validation skipped: %s", exc)
+    return result

@@ -1348,6 +1348,10 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
         win_rate = overall.get("win_rate")
         pf = overall.get("profit_factor")
         max_dd = overall.get("max_drawdown")
+        fixed_horizon = validation_summary.get("fixed_horizon", {}) or {}
+        fixed_headline = fixed_horizon.get("headline", {}) or {}
+        fixed_shadow = fixed_horizon.get("headline_shadow", {}) or {}
+        fixed_sessions = int(fixed_horizon.get("headline_horizon_sessions") or 10)
 
         def _fmt_pct(value, default="0.0%"):
             if value is None:
@@ -1377,6 +1381,19 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
 
         win_color = "#10b981" if (win_rate or 0) >= 0.55 else "#f59e0b" if (win_rate or 0) >= 0.45 else "#ef4444"
         pnl_color = "#10b981" if (avg_ret or 0) >= 0 else "#ef4444"
+        fixed_win = fixed_shadow.get("win_rate")
+        fixed_avg = fixed_shadow.get("avg_return")
+        fixed_excess = fixed_shadow.get("avg_excess_vs_spy")
+        fixed_html = f"""
+      <h4 class="sub">Independent {fixed_sessions}-session evidence</h4>
+      <div class="perf-row">
+        <div class="perf-bucket">SHADOW</div>
+        <div class="perf-n">n={int(fixed_shadow.get('n') or 0)} / {int(fixed_shadow.get('unique_entry_days') or 0)} days</div>
+        <div class="perf-win">win {'n/a' if fixed_win is None else f'{float(fixed_win)*100:.1f}%'}</div>
+        <div class="perf-pnl">{_fmt_pct(fixed_avg, 'n/a')}</div>
+      </div>
+      <p class="muted" style="font-size:11px;margin-top:6px;">Executed n={int(fixed_headline.get('n') or 0)}. Average shadow excess vs SPY: {_fmt_pct(fixed_excess, 'n/a')}. Shadow rows passed strategy rules before portfolio guardrails. Options use a labeled constant-entry-IV proxy; shares and futures use observed closes.</p>
+        """ if fixed_horizon else ""
         return f"""
 <section class="panel">
   <h3>Signal Performance Tracking <span class="muted">(lifecycle validation)</span></h3>
@@ -1402,6 +1419,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     <div>
       <h4 class="sub">Why this may be empty</h4>
       <p class="muted">Closed P&amp;L starts at zero after an archive/reset and fills in only when lifecycle positions close. Forward-reprice history is kept separate so stale paper history cannot mix into the current experiment.</p>
+      {fixed_html}
     </div>
   </div>
 </section>

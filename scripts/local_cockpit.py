@@ -79,6 +79,7 @@ ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
     "validation-report": ("validation_report.html", "text/html; charset=utf-8"),
     "validation-summary": ("validation_summary.json", "application/json; charset=utf-8"),
+    "fixed-horizon-summary": ("fixed_horizon_summary.json", "application/json; charset=utf-8"),
     "factor-ic": ("factor_ic_summary.json", "application/json; charset=utf-8"),
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
@@ -12931,6 +12932,13 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
     win_rate = _float_value(overall.get("win_rate"), default=math.nan)
     max_dd = _float_value(overall.get("max_drawdown"), default=math.nan)
     profit_factor = _float_value(overall.get("profit_factor"), default=math.nan)
+    fixed = validation.get("fixed_horizon") if isinstance(validation.get("fixed_horizon"), dict) else {}
+    fixed_shadow = fixed.get("headline_shadow") if isinstance(fixed.get("headline_shadow"), dict) else {}
+    fixed_shadow_n = int(_float_value(fixed_shadow.get("n"), default=0.0))
+    fixed_shadow_days = int(_float_value(fixed_shadow.get("unique_entry_days"), default=0.0))
+    fixed_shadow_win = _float_value(fixed_shadow.get("win_rate"), default=math.nan)
+    fixed_shadow_avg = _float_value(fixed_shadow.get("avg_return"), default=math.nan)
+    fixed_shadow_excess = _float_value(fixed_shadow.get("avg_excess_vs_spy"), default=math.nan)
     raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
     warnings = [str(item) for item in raw_warnings if str(item).strip()]
     validation_basis = "executable_swing_after_slippage" if uses_swing_sample else "all_closures"
@@ -12939,6 +12947,20 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
 
     if closed < 500:
         review_reasons.append(f"Only {closed} validation outcome(s); require 500+ before trusting entries.")
+    if fixed:
+        if fixed_shadow_n < 100 or fixed_shadow_days < 10:
+            review_reasons.append(
+                f"Current-method shadow evidence is {fixed_shadow_n} outcome(s) across "
+                f"{fixed_shadow_days} entry day(s); require 100+ across 10+ days."
+            )
+        elif math.isfinite(fixed_shadow_avg) and fixed_shadow_avg <= 0:
+            blocker_reasons.append(
+                f"Fixed-horizon shadow return is {fixed_shadow_avg * 100:+.1f}%."
+            )
+        elif math.isfinite(fixed_shadow_excess) and fixed_shadow_excess <= 0:
+            blocker_reasons.append(
+                f"Fixed-horizon shadow excess vs SPY is {fixed_shadow_excess * 100:+.1f}%."
+            )
     if math.isfinite(max_dd) and max_dd <= -0.20:
         blocker_reasons.append(f"Max drawdown is {max_dd * 100:.1f}%.")
     if math.isfinite(win_rate) and win_rate < 0.20:
@@ -12980,6 +13002,17 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         "win_rate": _clean_value(win_rate if math.isfinite(win_rate) else None),
         "max_drawdown": _clean_value(max_dd if math.isfinite(max_dd) else None),
         "profit_factor": _clean_value(profit_factor if math.isfinite(profit_factor) else None),
+        "fixed_shadow_n": fixed_shadow_n,
+        "fixed_shadow_days": fixed_shadow_days,
+        "fixed_shadow_win_rate": _clean_value(
+            fixed_shadow_win if math.isfinite(fixed_shadow_win) else None
+        ),
+        "fixed_shadow_avg_return": _clean_value(
+            fixed_shadow_avg if math.isfinite(fixed_shadow_avg) else None
+        ),
+        "fixed_shadow_excess_vs_spy": _clean_value(
+            fixed_shadow_excess if math.isfinite(fixed_shadow_excess) else None
+        ),
         "validation_basis": validation_basis,
         "warnings": (blocker_reasons + review_reasons + warnings)[:8],
     }
@@ -13631,6 +13664,7 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/latest-dashboard" target="_blank">Latest dashboard</a>
     <a class="btn" href="/artifact/validation-report" target="_blank">Validation report</a>
     <a class="btn" href="/artifact/validation-summary" target="_blank">Validation JSON</a>
+    <a class="btn" href="/artifact/fixed-horizon-summary" target="_blank">Fixed horizon</a>
     <a class="btn" href="/artifact/equity-curve" target="_blank">Equity curve</a>
     <a class="btn" href="/artifact/external-paper-orders" target="_blank">Paper orders</a>
     <a class="btn" href="/artifact/option-chain-shortlist" target="_blank">Chain shortlist</a>
@@ -14719,6 +14753,7 @@ function commandCenterHtml(data) {
             <span>win ${pct(guard.win_rate)}</span>
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>
+            <span>shadow ${cell(guard.fixed_shadow_n ?? 0)} / ${cell(guard.fixed_shadow_days ?? 0)}d</span>
           </div>
         </div>
       </div>`
@@ -15008,6 +15043,7 @@ function todayReviewHtml(data) {
             <span>win ${pct(guard.win_rate)}</span>
             <span>max DD ${pct(guard.max_drawdown)}</span>
             <span>PF ${ratio(guard.profit_factor)}</span>
+            <span>shadow ${cell(guard.fixed_shadow_n ?? 0)} / ${cell(guard.fixed_shadow_days ?? 0)}d</span>
           </div>
         </div>
       </div>`

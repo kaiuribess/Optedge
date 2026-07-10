@@ -423,6 +423,52 @@ def _assert_valid_png(path: Path):
             break
 
 
+def test_validation_embeds_fixed_horizon_evidence():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        validation_report.DATA_DIR.mkdir(parents=True)
+        validation_report.LOGS_DIR.mkdir(parents=True)
+        try:
+            fixed = {
+                "headline_horizon_sessions": 10,
+                "headline": {
+                    "n": 0, "unique_entry_days": 0,
+                },
+                "headline_shadow": {
+                    "n": 12, "unique_entry_days": 4, "win_rate": 0.58,
+                    "win_rate_ci_low": 0.31, "win_rate_ci_high": 0.81,
+                    "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
+                    "profit_factor": 1.4,
+                },
+                "by_horizon": [{
+                    "horizon_sessions": 10,
+                    "executable": {"n": 0, "unique_entry_days": 0},
+                    "shadow_current_method": {
+                        "n": 12, "unique_entry_days": 4, "win_rate": 0.58,
+                        "win_rate_ci_low": 0.31, "win_rate_ci_high": 0.81,
+                        "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
+                        "profit_factor": 1.4,
+                    },
+                }],
+                "warnings": ["sample is still small"],
+            }
+            (validation_report.DATA_DIR / "fixed_horizon_summary.json").write_text(
+                json.dumps(fixed), encoding="utf-8",
+            )
+            summary = validation_report.build_summary(scope="all_time")
+            assert summary["fixed_horizon"]["headline_shadow"]["n"] == 12
+            assert any("Fixed-horizon: sample is still small" in item for item in summary["warnings"])
+            html = validation_report.render_html(summary)
+            assert "Independent Fixed-Session Forward Test" in html
+            assert "95% interval" in html
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
 def test_empty_equity_curve_writes_valid_png():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "equity_curve.png"
@@ -460,6 +506,7 @@ if __name__ == "__main__":
     test_validation_keeps_churn_in_performance_but_excludes_it_from_learning()
     test_validation_headline_uses_only_executable_closed_rows()
     test_factor_ic_uses_independent_swing_sample_and_labels_short_history()
+    test_validation_embeds_fixed_horizon_evidence()
     test_empty_equity_curve_writes_valid_png()
     test_closed_equity_curve_writes_real_png_without_matplotlib()
-    print("15/15 validation report tests passed")
+    print("16/16 validation report tests passed")

@@ -218,6 +218,37 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
     return out
 
 
+def add_pre_guard_qualification(df: pd.DataFrame, asset: str) -> pd.DataFrame:
+    """Freeze strategy qualification before portfolio-level research guards.
+
+    A blocked guard must prevent execution without preventing the paper research
+    stream from learning whether the current entry rules would have worked.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    status = out.get("trade_status", pd.Series("", index=out.index)).fillna("").astype(str)
+    actionable = out.get("is_actionable", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    out["pre_guard_trade_status"] = status
+    out["pre_guard_is_actionable"] = actionable
+    if asset in {"option", "futures"}:
+        size = pd.to_numeric(
+            out.get("suggested_contracts", pd.Series(0.0, index=out.index)),
+            errors="coerce",
+        ).fillna(0.0)
+        out["pre_guard_suggested_contracts"] = size
+    else:
+        size = pd.to_numeric(
+            out.get("suggested_dollars", pd.Series(0.0, index=out.index)),
+            errors="coerce",
+        ).fillna(0.0)
+        out["pre_guard_suggested_dollars"] = size
+    out["strategy_qualified_pre_guard"] = (
+        status.str.lower().eq("trade") & actionable & (size > 0)
+    )
+    return out
+
+
 def get_sizing_params(aggressive: bool = False):
     """Return (kelly_fraction, max_option_pct, max_share_pct, total_cap)."""
     if aggressive:

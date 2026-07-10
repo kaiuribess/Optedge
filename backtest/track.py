@@ -90,7 +90,7 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social", "z_analyst",
         "pred_stock_return_pct", "pred_option_return_pct", "ev_pct", "kelly_pct",
         "suggested_contracts", "actual_dollars", "stop_price", "target_price",
-        "trade_status", "trade_score", "setup_quality_mult", "pricing_edge_ok",
+        "trade_status", "is_actionable", "trade_score", "setup_quality_mult", "pricing_edge_ok",
         "pricing_edge_penalty_pct", "spread_to_edge_ratio", "trade_gate_reason",
         "chain_source", "quote_quality",
         "research_guard_status", "research_guard_warnings",
@@ -98,6 +98,13 @@ def log_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     ]
     out = _ensure_entry_time(df, asof)
     keep = [c for c in cols if c in out.columns]
+    keep += [
+        c for c in out.columns
+        if (
+            str(c).startswith(("z_", "factor_", "pre_guard_"))
+            or c == "strategy_qualified_pre_guard"
+        ) and c not in keep
+    ]
     out[keep].to_parquet(fp, index=False)
     log.info("logged %d option signals to %s", len(out), fp.name)
     return fp
@@ -127,6 +134,13 @@ def log_signals_shares(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     if "asset" not in out.columns:
         out["asset"] = "share"
     keep = [c for c in cols if c in out.columns]
+    keep += [
+        c for c in out.columns
+        if (
+            str(c).startswith(("z_", "factor_", "pre_guard_"))
+            or c == "strategy_qualified_pre_guard"
+        ) and c not in keep
+    ]
     out[keep].to_parquet(fp, index=False)
     log.info("logged %d share signals to %s", len(out), fp.name)
     return fp
@@ -149,6 +163,8 @@ def log_signals_futures(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         "suggested_contracts", "suggested_dollars_risk",
         "stop_pts", "target_pts", "dollar_risk_per_contract", "dollar_reward_per_contract",
         "n_contracts", "kelly_pct", "expected_pnl",
+        "trade_status", "is_actionable", "research_guard_status", "research_guard_warnings",
+        "rank_score", "fused_score", "confidence",
         "factor_trend", "factor_momentum", "factor_range_pos", "factor_macro_align",
         "factor_news", "factor_earnings", "factor_social", "factor_congress",
         "factor_iv_rank", "factor_atr_regime", "factor_term_structure", "factor_sentiment_d",
@@ -156,6 +172,13 @@ def log_signals_futures(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     ]
     out = _ensure_entry_time(df, asof)
     keep = [c for c in cols if c in out.columns]
+    keep += [
+        c for c in out.columns
+        if (
+            str(c).startswith(("z_", "factor_", "pre_guard_"))
+            or c == "strategy_qualified_pre_guard"
+        ) and c not in keep
+    ]
     out[keep].to_parquet(fp, index=False)
     log.info("logged %d futures signals to %s", len(out), fp.name)
     return fp

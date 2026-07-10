@@ -29,6 +29,7 @@ ARCHIVE_PATTERNS = [
     "data/tracked_*.json",
     "data/validation_report.html",
     "data/validation_summary.json",
+    "data/fixed_horizon_summary.json",
     "data/equity_curve.png",
     "data/factor_ic_summary.json",
     "data/position_aging_summary.json",

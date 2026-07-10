@@ -10,14 +10,16 @@ Optedge is a local research cockpit built around a scan, fuse, size, log, and va
 4. Sizing applies EV, fractional Kelly, slippage, sector caps, and setup-quality multipliers.
 5. Tracking writes signal logs and asset-specific position state.
 6. Every scan reprices and reanalyzes exits for open options, shares, and futures.
-7. Validation reads logged signals and closed/open positions to produce a formal research report.
+7. Pre-guard qualification freezes the current strategy decision for shadow validation while portfolio guardrails can still block execution.
+8. Fixed-horizon validation settles independent 1/3/5/10/20-session outcomes without using partial sessions or repeated intraday theses.
+9. Lifecycle validation reads logged signals and closed/open positions to produce a formal research report.
 
 ## Main Modules
 
 - `run.py`: compatibility entry point for the current live scanner.
 - `engines/`: individual data/factor collectors.
 - `fusion/`: cross-factor ranking and watchlist generation.
-- `backtest/`: sizing, forward tests, position tracking, calibration, drawdown controls.
+- `backtest/`: sizing, fixed-horizon and current-mark forward tests, position tracking, calibration, drawdown controls.
 - `dashboard/`: local HTML cockpit rendering.
 - `reports/`: formal validation reports and research artifacts.
 - `risk/`: research safety guardrails.

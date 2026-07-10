@@ -42,6 +42,7 @@ jobs:
           python tests/test_option_positions.py
           python tests/test_share_positions.py
           python tests/test_futures_positions.py
+          python tests/test_fixed_horizon.py
           python tests/test_validation_report.py
           python tests/test_external_paper_track.py
           python tests/test_robinhood_agentic_queue.py

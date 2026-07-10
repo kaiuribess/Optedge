@@ -13,6 +13,7 @@ Performance depends on:
 - Earnings gaps, news shocks, and macro events.
 - Small sample sizes during early forward testing.
 - Provider differences in options chains, Greeks, and theoretical prices.
+- Free historical option bid/ask coverage is incomplete. Fixed-horizon option outcomes therefore use a clearly labeled constant-entry-IV model proxy and must not be treated as independently verified fills.
 - Futures continuous-contract prices may differ from tradable contract-month prices.
 - Learned exits stay disabled until the per-asset sample is large enough.
 - Dynamic exits are conservative heuristics, not broker-side orders.

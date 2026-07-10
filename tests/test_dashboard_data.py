@@ -215,6 +215,16 @@ def test_dashboard_performance_prefers_validation_over_forward_telemetry():
             "share": {"open_positions": 1, "closed_positions": 0},
             "futures": {"open_positions": 0, "closed_positions": 0},
         },
+        "fixed_horizon": {
+            "headline_horizon_sessions": 10,
+            "headline": {
+                "n": 0, "unique_entry_days": 0,
+            },
+            "headline_shadow": {
+                "n": 8, "unique_entry_days": 3, "win_rate": 0.625,
+                "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
+            },
+        },
     }
     forward = {
         "signals": object(),
@@ -226,6 +236,8 @@ def test_dashboard_performance_prefers_validation_over_forward_telemetry():
     assert "<span class=\"val\">4</span>" in html
     assert "<span class=\"val\">2</span>" in html
     assert "999" not in html
+    assert "Independent 10-session evidence" in html
+    assert "n=8 / 3 days" in html
 
 
 def test_dashboard_engine_panels_are_merged_into_one_section():

@@ -112,10 +112,12 @@ Outputs:
 - `data/equity_curve.png`
 - `data/factor_ic_summary.json`
 - `data/position_aging_summary.json`
+- `data/fixed_horizon_outcomes.parquet`
+- `data/fixed_horizon_summary.json`
 
 Validation keeps the compatibility label `current_model`, but the default scope means the current unarchived experiment. The latest `archive.py` reset establishes the experiment boundary; ordinary model-weight updates do not hide outcomes. Open positions are always counted from the current open-position state files, while closed-position metrics only become meaningful after enough recommendations close.
 
-Early reports are expected to show small-sample warnings. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
+Early reports are expected to show small-sample warnings. Fixed-horizon evidence scores one independent thesis per asset, ticker, direction, and entry day after 1, 3, 5, 10, and 20 completed sessions. A shadow row records that the current strategy passed before portfolio-level guardrails; this lets validation accumulate while actual sizing remains blocked. Shares and futures use observed historical closes. Options are clearly labeled constant-entry-IV model proxies because a complete free historical option quote tape is not available. Learned exits remain inactive until minimum evidence thresholds are met. Negative or uncorrelated forward results should be treated seriously; this project is a research system, not proof of alpha.
 
 Use all-time validation only when you intentionally want older history included:
 
@@ -199,6 +201,8 @@ Forward test logged signals:
 ```bash
 python run.py --forward
 ```
+
+The command shows mixed-age current marks as monitoring telemetry and separately writes leakage-resistant fixed-session outcomes. Only current-method, independently sampled, executable rows can enter the fixed-horizon headline.
 
 Historical factor IC backtest:
 
@@ -311,6 +315,8 @@ The validation report is the main proof layer for the research loop. It reports:
 - SPY and QQQ benchmark comparison when market data is reachable.
 - Random baseline comparison.
 - Sample-size warnings.
+- Independent 1/3/5/10/20-session outcomes with 95% win-rate intervals and SPY/QQQ excess returns.
+- Explicit outcome quality labels that keep observed market closes separate from modeled option proxies.
 
 See [docs/VALIDATION.md](docs/VALIDATION.md) for details.
 
@@ -387,6 +393,7 @@ python tests/test_futures_sizing.py
 python tests/test_option_positions.py
 python tests/test_share_positions.py
 python tests/test_futures_positions.py
+python tests/test_fixed_horizon.py
 python tests/test_validation_report.py
 python tests/test_external_paper_track.py
 python tests/test_robinhood_agentic_queue.py

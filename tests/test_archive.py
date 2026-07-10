@@ -18,6 +18,7 @@ def test_archive_moves_data_and_logs():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _write(root / "data" / "validation_summary.json")
+        _write(root / "data" / "fixed_horizon_summary.json")
         _write(root / "data" / "forward_outcomes_options_call.parquet")
         _write(root / "data" / "robinhood_agentic_queue.json")
         _write(root / "data" / "robinhood_agentic_cycle_prompt.md")
@@ -29,8 +30,9 @@ def test_archive_moves_data_and_logs():
         _write(root / "data" / "robinhood_mcp_snapshot_raw.json")
         _write(root / "logs" / "example.log")
         archive_root, moved = archive.run_archive(root, dry_run=False, keep_learned=False)
-        assert len(moved) == 11
+        assert len(moved) == 12
         assert (archive_root / "data" / "validation_summary.json").exists()
+        assert (archive_root / "data" / "fixed_horizon_summary.json").exists()
         assert (archive_root / "data" / "forward_outcomes_options_call.parquet").exists()
         assert (archive_root / "data" / "robinhood_agentic_queue.json").exists()
         assert (archive_root / "data" / "robinhood_agentic_cycle_prompt.md").exists()

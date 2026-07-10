@@ -22,6 +22,8 @@ MAX_DRAWDOWN_LIMIT = -0.20
 MAX_OPTION_SPREAD_PCT = 0.15
 MODEL_STALE_DAYS = 14
 BREAKEVEN_WIN_RATE = 0.50
+MIN_FIXED_HORIZON_SIGNALS = 100
+MIN_FIXED_HORIZON_DAYS = 10
 KEY_ENGINES = {"mispricing", "news", "fundamentals", "earnings", "insider"}
 
 
@@ -96,6 +98,38 @@ def build_guard_report(
             f"After-slippage win rate is {float(win_rate) * 100:.1f}%, below the simple breakeven threshold.",
             blocks_trading=False,
         ))
+
+    fixed = summary.get("fixed_horizon") or {}
+    fixed_shadow = fixed.get("headline_shadow") or {}
+    fixed_n = int(fixed_shadow.get("n") or 0)
+    fixed_days = int(fixed_shadow.get("unique_entry_days") or 0)
+    if fixed:
+        if fixed_n < MIN_FIXED_HORIZON_SIGNALS or fixed_days < MIN_FIXED_HORIZON_DAYS:
+            warnings.append(_warn(
+                "fixed_horizon_sample",
+                "warning",
+                f"Current-method fixed-horizon shadow evidence has {fixed_n} outcomes across "
+                f"{fixed_days} entry days; require {MIN_FIXED_HORIZON_SIGNALS}+ across "
+                f"{MIN_FIXED_HORIZON_DAYS}+ days before trusting it.",
+                blocks_trading=False,
+            ))
+        else:
+            fixed_avg = fixed_shadow.get("avg_return")
+            fixed_excess = fixed_shadow.get("avg_excess_vs_spy")
+            if fixed_avg is not None and float(fixed_avg) <= 0:
+                warnings.append(_warn(
+                    "fixed_horizon_return",
+                    "critical",
+                    "Current-method fixed-horizon average return after costs is not positive.",
+                    blocks_trading=True,
+                ))
+            if fixed_excess is not None and float(fixed_excess) <= 0:
+                warnings.append(_warn(
+                    "fixed_horizon_benchmark",
+                    "critical",
+                    "Current-method fixed-horizon evidence does not outperform SPY after costs.",
+                    blocks_trading=True,
+                ))
 
     spread_rows = summary.get("spread_buckets") or []
     for row in spread_rows:
@@ -181,8 +215,49 @@ def build_guard_report(
             "max_option_spread_pct": MAX_OPTION_SPREAD_PCT,
             "model_stale_days": MODEL_STALE_DAYS,
             "breakeven_win_rate": BREAKEVEN_WIN_RATE,
+            "min_fixed_horizon_signals": MIN_FIXED_HORIZON_SIGNALS,
+            "min_fixed_horizon_days": MIN_FIXED_HORIZON_DAYS,
         },
+        "fixed_horizon_shadow": fixed_shadow,
     }
+
+
+def apply_to_asset(
+    recommendations: Optional[pd.DataFrame],
+    guard_report: Optional[Dict[str, Any]] = None,
+    asset: str = "share",
+) -> Optional[pd.DataFrame]:
+    guard_report = guard_report or build_guard_report()
+    guard_messages = [w["message"] for w in guard_report.get("warnings", [])]
+    status = guard_report.get("status", "clear")
+    if recommendations is None or recommendations.empty:
+        return recommendations
+    out = recommendations.copy()
+    out["research_guard_status"] = status
+    out["research_guard_warnings"] = " | ".join(guard_messages[:4]) if guard_messages else ""
+    if asset == "option" and "spread_pct" in out.columns:
+        spread = pd.to_numeric(out["spread_pct"], errors="coerce")
+        too_wide = spread > MAX_OPTION_SPREAD_PCT
+        if too_wide.any():
+            out.loc[too_wide, "research_guard_status"] = "blocked_spread"
+            out.loc[too_wide, "trade_status"] = "Watch"
+            out.loc[too_wide, "is_actionable"] = False
+            for column in ("suggested_contracts", "suggested_dollars", "actual_dollars"):
+                if column in out.columns:
+                    out.loc[too_wide, column] = 0
+            note = f"Blocked: spread is above {MAX_OPTION_SPREAD_PCT * 100:.0f}%."
+            out.loc[too_wide, "research_guard_warnings"] = (
+                out.loc[too_wide, "research_guard_warnings"].astype(str).str.strip()
+                + " | "
+                + note
+            ).str.strip(" |")
+    if status == "blocked":
+        out["trade_status"] = "Watch"
+        out["is_actionable"] = False
+        for column in ("suggested_contracts", "suggested_dollars", "actual_dollars"):
+            if column in out.columns:
+                out[column] = 0
+    return out
 
 
 def apply_to_recommendations(
@@ -190,44 +265,10 @@ def apply_to_recommendations(
     shares: Optional[pd.DataFrame] = None,
     guard_report: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, Optional[pd.DataFrame]]:
-    guard_report = guard_report or build_guard_report()
-    guard_messages = [w["message"] for w in guard_report.get("warnings", [])]
-    status = guard_report.get("status", "clear")
-
-    def _annotate(df: Optional[pd.DataFrame], is_options: bool) -> Optional[pd.DataFrame]:
-        if df is None or df.empty:
-            return df
-        out = df.copy()
-        out["research_guard_status"] = status
-        if guard_messages:
-            out["research_guard_warnings"] = " | ".join(guard_messages[:4])
-        else:
-            out["research_guard_warnings"] = ""
-        if is_options and "spread_pct" in out.columns:
-            spread = pd.to_numeric(out["spread_pct"], errors="coerce")
-            too_wide = spread > MAX_OPTION_SPREAD_PCT
-            if too_wide.any():
-                out.loc[too_wide, "research_guard_status"] = "blocked_spread"
-                out.loc[too_wide, "trade_status"] = "Watch"
-                out.loc[too_wide, "is_actionable"] = False
-                if "suggested_contracts" in out.columns:
-                    out.loc[too_wide, "suggested_contracts"] = 0
-                if "suggested_dollars" in out.columns:
-                    out.loc[too_wide, "suggested_dollars"] = 0
-                if "actual_dollars" in out.columns:
-                    out.loc[too_wide, "actual_dollars"] = 0
-                note = f"Blocked: spread is above {MAX_OPTION_SPREAD_PCT * 100:.0f}%."
-                out.loc[too_wide, "research_guard_warnings"] = (
-                    out.loc[too_wide, "research_guard_warnings"].astype(str).str.strip()
-                    + " | "
-                    + note
-                ).str.strip(" |")
-        if status == "blocked":
-            out["trade_status"] = "Watch"
-            out["is_actionable"] = False
-        return out
-
-    return _annotate(options, True), _annotate(shares, False)
+    return (
+        apply_to_asset(options, guard_report=guard_report, asset="option"),
+        apply_to_asset(shares, guard_report=guard_report, asset="share"),
+    )
 
 
 def save_guard_report(report: Dict[str, Any], path: Optional[Path] = None) -> Path:

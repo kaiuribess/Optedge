@@ -2316,6 +2316,33 @@ def test_validation_guardrail_prefers_independent_swing_metrics():
     assert guard["level"] == "bad"
 
 
+def test_validation_guardrail_surfaces_fixed_horizon_shadow_evidence():
+    review = cockpit_module._validation_guardrail({
+        "closed_positions": 500,
+        "overall": {"n": 500, "win_rate": 0.55, "max_drawdown": -0.05, "profit_factor": 1.2},
+        "fixed_horizon": {
+            "headline_shadow": {"n": 20, "unique_entry_days": 4},
+        },
+    })
+    assert review["fixed_shadow_n"] == 20
+    assert review["fixed_shadow_days"] == 4
+    assert review["level"] == "warn"
+    assert "shadow evidence" in review["detail"].lower()
+
+    blocked = cockpit_module._validation_guardrail({
+        "closed_positions": 500,
+        "overall": {"n": 500, "win_rate": 0.55, "max_drawdown": -0.05, "profit_factor": 1.2},
+        "fixed_horizon": {
+            "headline_shadow": {
+                "n": 120, "unique_entry_days": 12,
+                "avg_return": -0.01, "avg_excess_vs_spy": -0.02,
+            },
+        },
+    })
+    assert blocked["level"] == "bad"
+    assert "Fixed-horizon shadow return" in blocked["detail"]
+
+
 def test_option_setup_readiness_penalizes_negative_buyer_edge():
     base = pd.Series({
         "trade_status": "Trade",
@@ -6605,6 +6632,7 @@ if __name__ == "__main__":
     test_manual_review_summary_surfaces_entry_gate_state()
     test_validation_guardrail_uses_summary_closed_count_with_overall_metrics()
     test_validation_guardrail_prefers_independent_swing_metrics()
+    test_validation_guardrail_surfaces_fixed_horizon_shadow_evidence()
     test_option_setup_readiness_penalizes_negative_buyer_edge()
     test_swing_packet_builds_and_writes_daily_decision_packet()
     test_swing_packet_can_refresh_chain_shortlist_on_demand()
@@ -6664,4 +6692,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("91/91 local cockpit tests passed")
+    print("92/92 local cockpit tests passed")
