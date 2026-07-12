@@ -1,3 +1,4 @@
+# Purpose: Explain factor contributions for ranked trades.
 """Factor attribution — for each ranked trade, identify which 2-3 factors
 contributed most to its score.
 
