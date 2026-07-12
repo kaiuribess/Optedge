@@ -1,3 +1,4 @@
+# Purpose: Test FINRA short-interest parsing and caching.
 import sys
 from pathlib import Path
 
