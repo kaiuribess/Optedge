@@ -1,3 +1,5 @@
+<!-- Purpose: Define strategy-validation and evidence standards. -->
+
 # Validation
 
 Run:
