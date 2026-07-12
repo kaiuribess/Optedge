@@ -1,3 +1,4 @@
+# Purpose: Cache hit rate + freshness tracking.
 """Cache hit rate + freshness tracking.
 
 Monkey-patches data_provider.cache_get + cache_put to track hit/miss counts
