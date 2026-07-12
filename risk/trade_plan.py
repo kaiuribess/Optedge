@@ -1,3 +1,4 @@
+# Purpose: Pure trade sizing and approval-gated Robinhood review packets.
 """Pure trade sizing and approval-gated Robinhood review packets.
 
 This module deliberately has no filesystem, network, broker, credential, clock,
