@@ -1,3 +1,4 @@
+# Purpose: Test futures and micro-contract sizing.
 import sys
 from pathlib import Path
 
