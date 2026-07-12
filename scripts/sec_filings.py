@@ -1,3 +1,4 @@
+# Purpose: Retrieve SEC filings and company facts from EDGAR.
 """Free SEC EDGAR recent filings lookup.
 
 Uses SEC's public data.sec.gov submissions API. No API key required.
