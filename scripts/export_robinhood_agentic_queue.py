@@ -1,3 +1,4 @@
+# Purpose: Build safety-gated Robinhood review queues.
 """Build an option-only Robinhood Agentic Trading handoff queue.
 
 This script does not connect to Robinhood, does not store credentials, and does
