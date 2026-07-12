@@ -1,3 +1,5 @@
+# Keeps secrets, runtime data, generated artifacts, and local tooling files out of Git.
+
 # Local-only configuration and secrets
 keys.py
 .optedge_status.json
