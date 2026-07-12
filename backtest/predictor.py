@@ -1,3 +1,4 @@
+# Purpose: Evidence-gated return prediction and adaptive fusion weights.
 """Evidence-gated return prediction and adaptive fusion weights.
 
 Both learning paths use completed, independent lifecycle outcomes. Repeated
