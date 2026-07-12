@@ -1,3 +1,4 @@
+# Purpose: Build a formal validation report from logged Optedge signals.
 """Build a formal validation report from logged Optedge signals.
 
 Outputs:
