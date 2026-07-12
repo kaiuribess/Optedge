@@ -1,3 +1,4 @@
+# Purpose: Test symbol research and option safeguards.
 import json
 import os
 import sys
