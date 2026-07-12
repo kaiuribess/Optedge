@@ -1,3 +1,5 @@
+<!-- Purpose: Explain repository automation and dependency maintenance. -->
+
 # Repository Automation
 
 This directory automates repository quality checks and dependency maintenance.
