@@ -1,3 +1,4 @@
+# Purpose: Auditable option-expiry valuation for lifecycle cleanup.
 """Auditable option-expiry valuation for lifecycle cleanup.
 
 Expired recommendations must leave the open book, but their outcome should not
