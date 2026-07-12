@@ -1,3 +1,4 @@
+# Purpose: Measure attention with Google Trends and Wikipedia.
 """Google Trends + Wikipedia pageviews search-interest engine — v20.2.
 
 PRIMARY  : pytrends (unofficial Google Trends scrape). Same as v20.1.
