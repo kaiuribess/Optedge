@@ -1,3 +1,4 @@
+# Purpose: Test discovery and swing-execution policy profiles.
 import sys
 from pathlib import Path
 
