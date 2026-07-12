@@ -1,3 +1,4 @@
+# Purpose: Detect implied-volatility surface anomalies by strike.
 """IV Surface anomaly detection — find strikes where IV deviates from neighbors.
 
 For each ticker × expiry × side (call/put), looks at IV across strikes.
