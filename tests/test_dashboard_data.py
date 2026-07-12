@@ -1,3 +1,4 @@
+# Purpose: Test deduplicated dashboard positions and performance.
 import json
 import sys
 import tempfile
