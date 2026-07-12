@@ -1,3 +1,5 @@
+<!-- Purpose: Explain regression coverage and broker-safety testing. -->
+
 # Regression and Safety Tests
 
 This directory protects Optedge research, dashboard, risk, broker-boundary, and provider behavior across Python 3.11 through 3.13.
