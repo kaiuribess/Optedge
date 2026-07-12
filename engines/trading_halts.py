@@ -1,3 +1,4 @@
+# Purpose: Nasdaq Trader trade-halt RSS monitor.
 """Nasdaq Trader trade-halt RSS monitor.
 
 Free/keyless source:
