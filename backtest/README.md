@@ -1,3 +1,5 @@
+<!-- Purpose: Explain backtesting, sizing, and position lifecycle validation. -->
+
 # Backtesting and Lifecycle Validation
 
 This package validates signals and manages simulated trade lifecycles for options, shares, and futures.
