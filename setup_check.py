@@ -1,6 +1,7 @@
-"""Optedge - interactive setup & health check.
+"""Check the local environment and save Optedge provider-health status.
 
-Run BEFORE your first `python3 run.py` to verify all data sources work.
+Run before the first live scan to verify Python, required packages, and key
+market-data services.
 
 Tests each data source independently and reports a green/yellow/red status,
 with a clear remediation note if anything fails. Saves a `.optedge_status.json`
