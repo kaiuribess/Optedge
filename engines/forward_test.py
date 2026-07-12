@@ -1,3 +1,4 @@
+# Purpose: Replay logged signals to produce learning outcomes.
 """Forward-test framework — Optedge v16.
 
 Replays prior signals (options, shares, futures) against historical price
