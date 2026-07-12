@@ -1,3 +1,4 @@
+# Purpose: Combine StockTwits sentiment with social-post mentions.
 """Social signal engine — beyond Reddit.
 
 Two free sources:
