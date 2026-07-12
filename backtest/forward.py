@@ -1,3 +1,4 @@
+# Purpose: Forward testing — replay all logged signals with current prices.
 """Forward testing — replay all logged signals with current prices.
 
 Reads three log file types:
