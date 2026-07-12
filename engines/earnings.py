@@ -1,3 +1,4 @@
+# Purpose: Earnings engine — yfinance calendar.
 """Earnings engine — yfinance calendar.
 
 Per ticker:
