@@ -1,3 +1,4 @@
+# Purpose: Test command routing without unintended server startup.
 from __future__ import annotations
 
 import subprocess
