@@ -1,3 +1,4 @@
+# Purpose: Estimate sector momentum from ETF price and volume.
 """Sector ETF flow — which sectors are seeing institutional inflows?
 
 Approach: use price momentum of the sector ETF itself + volume vs 20d avg.
