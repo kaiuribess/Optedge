@@ -1,4 +1,4 @@
-"""Universe pre-filter.
+"""Select a liquid, relevant ticker subset for expensive research engines.
 
 The full universe (~500 tickers + WSB trending) is too large for the slowest
 engines (per-ticker SEC fetches, options chain pulls). This module ranks the
@@ -8,7 +8,7 @@ heavy engines.
 Strategy:
   1. Cheap proxy: read cached fundamentals.parquet for market cap (avail every run)
   2. Filter to top-N by market cap (default 300)
-  3. ALWAYS include the top 30 WSB trending tickers regardless
+  3. Always include the trending tickers supplied by the caller
   4. Always include tickers with prior signal hits (logs/signals_*.parquet)
 
 When no cache exists (first run), passes through full universe.
