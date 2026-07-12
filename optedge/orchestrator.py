@@ -1,3 +1,4 @@
+# Purpose: Coordinate engines ranking risk logging and reports.
 """Optedge — orchestrator. Long-only options + small-cap shares + futures + value plays.
 
 Engines run in parallel. WSB trending tickers added at runtime. Each engine
