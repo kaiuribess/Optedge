@@ -1,3 +1,4 @@
+# Purpose: Normalize read-only Robinhood exports for the cockpit.
 """Normalize read-only Robinhood Agentic/MCP exports for Optedge.
 
 This script does not connect to Robinhood and does not place orders. It turns a
