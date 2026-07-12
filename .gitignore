@@ -20,6 +20,8 @@ data/*.jsonl
 data/*.png
 data/*.csv
 data/*.md
+# Keep the data-directory privacy guide visible in every clone.
+!data/README.md
 data/lookup_reports/
 logs/*.parquet
 telemetry/*.parquet
