@@ -1,3 +1,4 @@
+# Purpose: Score retail attention with resilient social sources.
 """Twitter/X social signal — v20.1 (pivoted source).
 
 v20 attempted to scrape Twitter via Nitter mirrors but all 5 instances were
