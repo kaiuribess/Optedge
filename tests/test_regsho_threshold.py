@@ -1,3 +1,4 @@
+# Purpose: Test official Reg SHO threshold parsing and caching.
 import sys
 from pathlib import Path
 
