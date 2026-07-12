@@ -1,3 +1,4 @@
+# Purpose: Investment-grade / High-yield credit spread engine.
 """Investment-grade / High-yield credit spread engine.
 
 Tracks the spread between HY (high-yield/junk) and IG (investment-grade) bonds.
