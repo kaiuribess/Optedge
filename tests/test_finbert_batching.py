@@ -1,3 +1,4 @@
+# Purpose: Test single-batch FinBERT ticker scoring.
 import os
 import sys
 from pathlib import Path
