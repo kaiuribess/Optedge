@@ -1,3 +1,4 @@
+# Purpose: Simulate queue entries in a local paper portfolio.
 """Auto-take Robinhood Agentic queue entries in a local paper book.
 
 This module intentionally does not call a broker API. It converts the latest
