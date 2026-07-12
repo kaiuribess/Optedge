@@ -1,4 +1,5 @@
 {
+  "_purpose": "Provide immutable fallback weights for Treasury futures.",
   "weights": {
     "trend": 0.15,
     "momentum": 0.08,
