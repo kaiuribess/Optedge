@@ -1,3 +1,4 @@
+# Purpose: Nasdaq Trader short-sale circuit breaker monitor.
 """Nasdaq Trader short-sale circuit breaker monitor.
 
 Free/keyless source:
