@@ -1,3 +1,4 @@
+# Purpose: Test short-sale circuit-breaker notices.
 import sys
 from pathlib import Path
 
