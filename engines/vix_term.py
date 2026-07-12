@@ -1,3 +1,4 @@
+# Purpose: Classify volatility from VIX term-structure indexes.
 """VIX futures term structure engine.
 
 Computes contango / backwardation from VIX spot vs front-month VIX futures.
