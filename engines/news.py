@@ -1,3 +1,4 @@
+# Purpose: News engine - free RSS headlines per ticker.
 """News engine - free RSS headlines per ticker.
 
 Free, no-key source stack:
