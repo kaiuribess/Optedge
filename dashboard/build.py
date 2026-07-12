@@ -1,3 +1,4 @@
+# Purpose: Render the Optedge quant cockpit as a self-contained HTML file.
 """Render the Optedge quant cockpit as a self-contained HTML file.
 
 Layout:
