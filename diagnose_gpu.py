@@ -1,10 +1,10 @@
-"""Tiny GPU/CUDA diagnostic — run this if FinBERT keeps loading on CPU.
+"""Diagnose PyTorch and NVIDIA CUDA support for optional FinBERT acceleration.
 
 Usage:
     python diagnose_gpu.py
 
-Prints whether torch sees your GPU, what CUDA runtime version torch was
-built against, what NVIDIA driver reports, and recommends a fix.
+Prints whether PyTorch sees a GPU, its compiled CUDA runtime, the installed
+NVIDIA driver state, and targeted installation or driver remediation.
 """
 import platform
 import subprocess
