@@ -1,3 +1,4 @@
+# Purpose: Run forward validation through the mode interface.
 """Forward-test mode helpers."""
 from __future__ import annotations
 
