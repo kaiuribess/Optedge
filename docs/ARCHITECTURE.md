@@ -1,3 +1,5 @@
+<!-- Purpose: Explain Optedge architecture and execution boundaries. -->
+
 # Architecture
 
 Optedge is a local research cockpit built around a scan, fuse, size, log, and validate loop.
