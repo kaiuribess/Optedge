@@ -1,3 +1,4 @@
+# Purpose: Refit pricing-model weights from logged predictions.
 """Per-model accuracy tracker — v20.3.
 
 Reads `logs/model_predictions_*.parquet` (written by engines/mispricing.py)
