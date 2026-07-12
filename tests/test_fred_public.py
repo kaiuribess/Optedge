@@ -1,3 +1,4 @@
+# Purpose: Test keyless public FRED history parsing.
 import sys
 from pathlib import Path
 
