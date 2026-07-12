@@ -1,3 +1,4 @@
+# Purpose: Refresh Robinhood option history for backtesting.
 """CLI wrapper for the read-only Robinhood option-history bridge."""
 from __future__ import annotations
 
