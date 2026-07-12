@@ -1,3 +1,5 @@
+<!-- Purpose: Define position-sizing and portfolio-risk controls. -->
+
 # Risk Model
 
 Optedge is designed as a research and decision-support system, not an automatic execution engine.
