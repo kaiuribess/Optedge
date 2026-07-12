@@ -1,3 +1,4 @@
+# Purpose: Learn guarded exits from completed position evidence.
 """Conservative self-learning exit policy."""
 from __future__ import annotations
 
