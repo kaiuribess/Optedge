@@ -1,3 +1,4 @@
+# Purpose: Rolling engine health registry.
 """Rolling engine health registry.
 
 Each scan records per-engine row counts, runtime, and failure state. The
