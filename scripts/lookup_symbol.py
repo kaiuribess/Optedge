@@ -1,3 +1,4 @@
+# Purpose: Assemble a detailed research report for one symbol.
 """Local Optedge ticker lookup.
 
 This does not call a broker or paid API. It reads the latest generated Optedge
