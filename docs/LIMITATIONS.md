@@ -1,3 +1,5 @@
+<!-- Purpose: Document known research and execution limitations. -->
+
 # Limitations
 
 Optedge is a research and decision-support tool, not an autonomous trading system.
