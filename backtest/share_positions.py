@@ -1,3 +1,4 @@
+# Purpose: Track mark and close share positions.
 """Share position lifecycle tracking."""
 from __future__ import annotations
 
