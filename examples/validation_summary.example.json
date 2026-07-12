@@ -1,4 +1,5 @@
 {
+  "_purpose": "Show a sanitized example of the validation-summary schema.",
   "generated_at": "2026-01-01T00:00:00+00:00",
   "validation_scope": "current_model",
   "validation_scope_basis": "latest_archive_reset",
