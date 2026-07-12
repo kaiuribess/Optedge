@@ -1,3 +1,4 @@
+# Purpose: Compare factor scores with prior multi-horizon returns.
 """Historical backtest — Information Coefficient analysis.
 
 For each ticker in the universe:
