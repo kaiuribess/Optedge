@@ -1,3 +1,4 @@
+# Purpose: Risk-based futures sizing with micro-contract preference.
 """Risk-based futures sizing with micro-contract preference."""
 from __future__ import annotations
 
