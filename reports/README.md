@@ -1,3 +1,5 @@
+<!-- Purpose: Explain validation and pricing-stability report generation. -->
+
 # Validation Reports
 
 This package turns local signal and position history into conservative research-evidence reports.
