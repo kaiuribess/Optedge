@@ -1,3 +1,5 @@
+<!-- Purpose: Index architecture, risk, data, and validation documentation. -->
+
 # Documentation
 
 This directory explains how Optedge works, where its evidence comes from, and how to operate it safely.
