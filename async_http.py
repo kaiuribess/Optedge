@@ -1,8 +1,8 @@
-"""Async HTTP fan-out helper for engines.
+"""Fetch batches of URLs concurrently for Optedge engines.
 
-Wraps aiohttp + httpx (whichever is available) to enable concurrent fetches
-within a single engine with a per-engine SLA timeout. Falls back to
-ThreadPoolExecutor if neither async lib is installed.
+Uses aiohttp or httpx when available, applies per-request timeouts, and falls
+back to ThreadPoolExecutor when neither async client is installed. Every
+backend returns the same normalized per-request result shape.
 
 Usage:
     from async_http import gather_get
