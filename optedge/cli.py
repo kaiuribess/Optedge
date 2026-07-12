@@ -1,3 +1,4 @@
+# Purpose: Route requests to scans loops lookups and the cockpit.
 """Command-line entry point for Optedge."""
 from __future__ import annotations
 
