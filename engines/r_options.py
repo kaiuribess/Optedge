@@ -1,3 +1,4 @@
+# Purpose: R/options daily-discussion engine.
 """r/options daily-discussion engine.
 
 The existing wsb_trending engine scrapes r/wallstreetbets sticky.
