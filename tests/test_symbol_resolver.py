@@ -1,3 +1,4 @@
+# Purpose: Test symbol resolution across local and public sources.
 import json
 import sys
 import tempfile
