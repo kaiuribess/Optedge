@@ -1,3 +1,5 @@
+<!-- Purpose: Explain private local scan histories and validation inputs. -->
+
 # Private Scan History
 
 This directory stores local, timestamped research output from Optedge scans.
