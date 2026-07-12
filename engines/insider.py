@@ -12,7 +12,6 @@ Strategy:
 """
 from __future__ import annotations
 import logging
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
@@ -170,8 +169,6 @@ def _parse_form4(cik: str, acc: str, primary: str) -> List[Dict[str, Any]]:
     rows = []
     for tx in root.findall(".//nonDerivativeTransaction"):
         code = tx.findtext(".//transactionCoding/transactionCode") or ""
-        # Footnote / 10b5-1 indicator?
-        fn_id = tx.findtext(".//transactionCoding/transactionFormType")
         # Shares & price
         shares_txt = tx.findtext(".//transactionAmounts/transactionShares/value")
         price_txt = tx.findtext(".//transactionAmounts/transactionPricePerShare/value")

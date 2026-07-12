@@ -155,6 +155,15 @@ python -m pip install -r requirements.txt
 python setup_check.py
 ```
 
+The requirements file installs this checkout in editable mode. Runtime and
+development dependency declarations live in `pyproject.toml` so installers,
+CI, and the `optedge` command share one source of truth.
+
+Optedge is intentionally source-first: use the installer or editable setup
+above so private runtime state stays in this checkout's ignored `data/`
+directory. A system-wide, non-editable install is not a supported trading-data
+layout.
+
 Python `3.11` through `3.13` is supported; Python `3.12` is recommended.
 
 Optional live/broker option-chain source:
@@ -171,6 +180,12 @@ Single scan:
 
 ```bash
 python run.py
+```
+
+After installation, the equivalent console entry point is also available:
+
+```bash
+optedge --help
 ```
 
 Aggressive research mode with a custom bankroll:
@@ -427,12 +442,12 @@ tests/         direct-run test files
 
 ## Tests
 
-Install the lightweight test tools and run the same full-suite command used by CI:
+Install the development extra and run the same full-suite commands used by CI:
 
 ```powershell
-python -m pip install pytest ruff
+python -m pip install -e ".[dev]"
 python -m pytest
-python -m ruff check . --select E9,F63,F7,F82
+python -m ruff check . --select E9,F63,F7,F82,F401,F841,B033,B007,F541
 ```
 
 Individual `tests/test_*.py` files can still be run directly while developing, but a clean full `python -m pytest` run is the release check.

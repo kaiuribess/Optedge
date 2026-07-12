@@ -4,7 +4,6 @@ import time
 import functools
 import logging
 from typing import Callable, Any, Optional
-import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from scipy.optimize import brentq
@@ -19,7 +18,7 @@ def retry(times: int = 3, delay: float = 1.0, backoff: float = 2.0):
         def wrapper(*args, **kwargs):
             wait = delay
             last = None
-            for i in range(times):
+            for _ in range(times):
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:

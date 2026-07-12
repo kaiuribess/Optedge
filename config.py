@@ -1,5 +1,4 @@
 """Optedge — config & shared constants."""
-import os
 from datetime import datetime, timezone
 
 from optedge.strategy_profile import DISCOVERY_PROFILE

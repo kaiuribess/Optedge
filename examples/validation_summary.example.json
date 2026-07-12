@@ -1,8 +1,38 @@
 {
-  "generated_at": "2026-05-16T00:00:00+00:00",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "validation_scope": "current_model",
+  "validation_scope_basis": "latest_archive_reset",
+  "current_model_cutoff": null,
+  "current_experiment_cutoff": null,
+  "all_time_closed_positions": 0,
+  "stale_closed_positions_excluded": 0,
   "total_signals": 0,
   "closed_positions": 0,
   "open_positions": 0,
+  "validation_basis": "executable_swing_after_slippage",
+  "swing_eligible_closed_positions": 0,
+  "swing_excluded_closed_positions": 0,
+  "swing_eligible_overall": {
+    "n": 0,
+    "win_rate": null,
+    "avg_return": null,
+    "median_return": null,
+    "profit_factor": null,
+    "max_drawdown": null
+  },
+  "swing_eligible_after_slippage": {
+    "n": 0,
+    "win_rate": null,
+    "avg_return": null,
+    "median_return": null,
+    "profit_factor": null,
+    "max_drawdown": null
+  },
+  "equity_curve": {
+    "mode": "normalized_signal_allocation",
+    "default_allocation_pct": 0.01,
+    "max_allocation_pct": 0.1
+  },
   "overall": {
     "n": 0,
     "win_rate": null,
@@ -11,7 +41,41 @@
     "profit_factor": null,
     "max_drawdown": null
   },
+  "after_slippage": {
+    "n": 0,
+    "win_rate": null,
+    "avg_return": null,
+    "median_return": null,
+    "profit_factor": null,
+    "max_drawdown": null
+  },
+  "assets": {
+    "option": {"open_positions": 0, "closed_positions": 0},
+    "share": {"open_positions": 0, "closed_positions": 0},
+    "futures": {"open_positions": 0, "closed_positions": 0}
+  },
+  "exit_reviews": {},
+  "exit_effectiveness": {},
+  "exit_policy": {"policy_version": "default", "assets": {}},
+  "calls_vs_puts": [],
+  "dte_buckets": [],
+  "spread_buckets": [],
+  "confidence_buckets": [],
+  "factor_ic_basis": "executable_swing_outcomes",
+  "factor_ic_reliable_count": 0,
+  "factor_ic": [],
+  "all_closure_factor_ic": [],
+  "position_aging": {},
+  "benchmarks": {},
+  "random_baseline": {"n": 0, "trials": 0},
+  "fixed_horizon": {
+    "methodology_version": 5,
+    "basis": "independent_fixed_session_outcomes_after_slippage",
+    "headline_horizon_sessions": 10,
+    "by_horizon": [],
+    "by_asset_horizon": []
+  },
   "warnings": [
-    "Sample size too small: 0 closed signals; need at least 500."
+    "Executable swing sample too small: 0 executable outcomes; need at least 500."
   ]
 }

@@ -24,8 +24,7 @@ except ImportError:
 from pricing_models import (
     bs_price, bs_implied_vol, bs_delta,
     crr_price, bjs_price,
-    bs_price_vec, crr_price_vec, bjs_price_vec,
-    ensemble_theo, classify_vix_regime, load_weights,
+    bs_price_vec, crr_price_vec, ensemble_theo, classify_vix_regime, load_weights,
 )
 from backtest.sizing import (
     _add_trade_status, add_directional_option_edges, add_sizing_to_options,
@@ -293,7 +292,6 @@ def test_option_sizing_backfills_and_gates_overpriced_contracts():
 
 if __name__ == "__main__":
     # Allow `python tests/test_pricing.py` without pytest
-    import inspect
     fns = [v for k, v in dict(globals()).items()
            if k.startswith("test_") and callable(v)]
     print(f"Running {len(fns)} tests...")

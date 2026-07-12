@@ -297,7 +297,6 @@ def _option_card(row: pd.Series) -> str:
     pc_vol = row.get("pc_vol_ratio")
     if pc_vol is not None and not pd.isna(pc_vol) and (pc_vol > 1.5 or pc_vol < 0.5):
         # extreme P/C
-        contrarian = "bullish" if pc_vol > 1.5 else "bearish"
         pc_color = "#10b981" if pc_vol > 1.5 else "#ef4444"
         pc_html = (f'<span class="chip" title="Crowd positioning - extreme is contrarian" '
                    f'style="background:{pc_color}20;color:{pc_color}">'
@@ -613,7 +612,6 @@ def _macro_banner(macro: Dict[str, Any]) -> str:
     unrate = macro.get("unrate")
     hy_spread = macro.get("hy_spread")
     fed_funds = macro.get("fed_funds")
-    initial_claims = macro.get("initial_claims")
     t10y3m = macro.get("t10y3m")
 
     # Second row only renders if FRED data is available
@@ -1431,7 +1429,7 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
 </section>
 """
     if not forward_summary or forward_summary.get("signals", pd.DataFrame()).empty:
-        return f"""
+        return """
 <section class="panel">
   <h3>Signal Performance Tracking <span class="muted">(auto-updated each run)</span></h3>
   <p class="muted">No tracked signals yet. Run <code>python run.py</code> daily and a track record will accumulate here automatically. Each ranked trade is logged to <code>logs/signals_*.parquet</code> and re-priced on every subsequent run.</p>
@@ -1546,8 +1544,6 @@ def _analyst_panel(analyst: pd.DataFrame, top_n: int = 10) -> str:
         return ""
     # Top buys ranked by score
     bulls = df[df["analyst_score"] > 0.5].sort_values("analyst_score", ascending=False).head(top_n)
-    # Recent upgrades (positive momentum)
-    upgrades = df[df["analyst_momentum"] > 0].sort_values("analyst_momentum", ascending=False).head(top_n)
     bears = df[df["analyst_score"] < -0.3].sort_values("analyst_score").head(min(top_n // 2, 5))
 
     def _row(r, color):
@@ -1815,10 +1811,8 @@ def _build_analytics_html(forward_summary=None) -> str:
         pnl_dates = daily_pnl["date_str"].tolist()
         pnl_cumulative = [round(v * 100, 2) for v in daily_pnl["curve_pnl"].tolist()]
         pnl_daily = [round(v * 100, 2) for v in daily_pnl["avg_pnl"].tolist()]
-        pnl_trades = daily_pnl["trades"].tolist()
-        pnl_wr = daily_pnl["win_rate"].tolist()
     else:
-        pnl_dates = pnl_cumulative = pnl_daily = pnl_trades = pnl_wr = []
+        pnl_dates = pnl_cumulative = pnl_daily = []
 
     #  5. Win rate by bucket 
     if not closed.empty:
@@ -1832,9 +1826,8 @@ def _build_analytics_html(forward_summary=None) -> str:
         bucket_stats["win_rate"] = (bucket_stats["wins"] / bucket_stats["total"] * 100).round(1)
         bucket_labels = bucket_stats["bucket"].str.replace("_", " ").str.title().tolist()
         bucket_wr = bucket_stats["win_rate"].tolist()
-        bucket_avg = [round(v * 100, 2) for v in bucket_stats["avg_pnl"].tolist()]
     else:
-        bucket_labels = bucket_wr = bucket_avg = []
+        bucket_labels = bucket_wr = []
 
     #  6. Confidence vs win rate scatter 
     if not closed.empty and "confidence" in closed.columns:
@@ -2786,7 +2779,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
             <tbody>{''.join(rows)}</tbody>
           </table>
           <p class="muted" style="margin-top:10px;font-size:12px;font-family:Inter">
-            Use <code>--skip-&lt;name&gt;</code> CLI flag to disable any of these (e.g. <code>--skip-cot --skip-13f</code>). Or install missing deps: <code>pip install pytrends</code>. EIA/credit/yield-curve need keys in keys.py (FRED_API_KEY, EIA_API_KEY, FINNHUB_API_KEY).
+            Use <code>--skip-&lt;name&gt;</code> CLI flag to disable any of these (e.g. <code>--skip-cot --skip-13f</code>). Or install missing deps: <code>pip install pytrends</code>. Credit and yield-curve engines retain keyless public fallbacks; EIA and Finnhub enrichment need their own optional keys.
           </p>
         </details>
         """

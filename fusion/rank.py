@@ -20,7 +20,7 @@ import pandas as pd
 
 from config import (
     SIGNAL_WEIGHTS, TOP_N_CALLS, TOP_N_PUTS, TOP_N_SHARES,
-    MAX_PER_TICKER, SHARES_MIN_SCORE,
+    SHARES_MIN_SCORE,
 )
 from utils import zscore, winsor, safe_int
 

@@ -15,9 +15,8 @@ ETF proxy — e.g. SPY puts as a way to express short S&P 500 view).
 from __future__ import annotations
 import logging
 import math
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,7 +28,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
-from utils import safe_float
 
 log = logging.getLogger("optedge.futures")
 

@@ -13,7 +13,7 @@ Outputs an HTML panel showing:
 from __future__ import annotations
 import logging
 import math
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 

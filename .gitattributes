@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+# Windows command scripts require CRLF for reliable cmd.exe execution.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary artifacts must never receive line-ending conversion.
+*.gif binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.parquet binary
+*.pdf binary
+*.png binary
+*.webp binary
+*.xlsx binary

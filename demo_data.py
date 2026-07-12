@@ -13,10 +13,9 @@ from typing import Dict, Any, List
 import math
 import random
 
-import numpy as np
 import pandas as pd
 
-from utils import bs_price, bs_implied_vol
+from utils import bs_price
 
 
 # Plausible ~late April 2026 spot prices and base implied vol levels.

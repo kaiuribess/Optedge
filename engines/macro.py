@@ -9,7 +9,6 @@ import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 
-import pandas as pd
 import requests
 
 import sys

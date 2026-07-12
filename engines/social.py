@@ -14,12 +14,10 @@ from __future__ import annotations
 import logging
 import math
 import re
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
-import requests
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -323,7 +321,7 @@ def _score_trump_for_universe(universe: List[str]) -> Dict[str, Dict[str, Any]]:
             if not d["trump_excerpt"] and len(body) > 30:
                 d["trump_excerpt"] = body[:140]
     # Finalize per-ticker
-    for t, d in out.items():
+    for d in out.values():
         d["trump_avg_sent"] = (d["trump_sent_sum"] / d["trump_weight_sum"]) if d["trump_weight_sum"] else 0
     return out
 

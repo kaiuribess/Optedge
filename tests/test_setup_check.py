@@ -8,18 +8,16 @@ from unittest.mock import patch
 import setup_check
 
 
-def test_fred_setup_never_echoes_supplied_secret() -> None:
-    secret = "fred-test-secret-value"
+def test_missing_fred_key_uses_keyless_fallback_without_prompting() -> None:
     output = io.StringIO()
     previous = os.environ.pop("FRED_API_KEY", None)
     try:
-        with patch.object(setup_check.getpass, "getpass", return_value=secret):
-            with contextlib.redirect_stdout(output):
-                result = setup_check.maybe_setup_fred()
+        with contextlib.redirect_stdout(output):
+            result = setup_check.maybe_setup_fred()
 
-        assert result == secret
-        assert os.environ["FRED_API_KEY"] == secret
-        assert secret not in output.getvalue()
+        assert result == ""
+        assert "FRED_API_KEY" not in os.environ
+        assert "Keyless FRED CSV fallback is available" in output.getvalue()
         assert "Never paste" in output.getvalue()
     finally:
         if previous is None:

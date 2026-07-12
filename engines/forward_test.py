@@ -20,15 +20,12 @@ Replay logic per bucket:
 """
 from __future__ import annotations
 import glob
-import json
 import logging
-import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
-import numpy as np
 import pandas as pd
 
 import sys
@@ -604,8 +601,6 @@ def refit_all_buckets(bucket_dfs: Dict[str, pd.DataFrame],
         # Pull factor columns relevant to this bucket
         priors = learning.get_factor_priors(bucket)
         factor_cols = [c for c in df.columns if c.startswith("factor_") and c[7:] in priors]
-        # Legacy z-cols
-        z_cols = [c for c in df.columns if c.startswith("z_")]
 
         # Map z_cols → factor_*  (only when factor_ form not already present)
         # The legacy options/shares logs use z_mispricing etc. — we copy them with factor_ prefix
@@ -650,7 +645,7 @@ def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
     log.info("forward-test: %d outcomes across %d buckets", n_total,
              sum(1 for df in bucket_dfs.values() if not df.empty))
 
-    status = compute_rolling_stats(bucket_dfs)
+    compute_rolling_stats(bucket_dfs)
     refit_results = refit_all_buckets(bucket_dfs, min_lasso=min_lasso, min_ic=min_ic)
 
     # Summarize for caller

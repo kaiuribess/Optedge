@@ -34,6 +34,8 @@ def main() -> int:
             args.extend(["--data-dir", out_dir])
         if _has_arg("--no-open"):
             args.append("--no-open")
+        if _has_arg("--help") or _has_arg("-h"):
+            args.append("--help")
         return cockpit_main(args)
 
     lookup = _arg_value("--lookup")

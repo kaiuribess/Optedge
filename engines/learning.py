@@ -1,8 +1,8 @@
 """Central self-learning weight manager — Optedge v16.
 
 Owns per-bucket signal weights, hand-crafted priors, and the LassoCV/IC-bootstrap
-refit logic. Every trade type (options_call, options_put, shares_long, plus 7
-futures asset classes) has its own weight file in data/weights/{bucket}.json.
+refit logic. Versioned default weights live under optedge/default_weights/.
+Runtime learning writes only to the ignored data/weights/{bucket}.json files.
 
 This module is intentionally side-effect-free aside from filesystem reads/writes
 to data/weights/, so it can be imported by both the live engines and the
@@ -31,13 +31,14 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 
 import numpy as np
 import pandas as pd
 
 log = logging.getLogger("optedge.learning")
 ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_WEIGHTS_DIR = ROOT / "optedge" / "default_weights"
 WEIGHTS_DIR = ROOT / "data" / "weights"
 
 
@@ -209,20 +210,37 @@ def _bucket_path(bucket: str) -> Path:
     return WEIGHTS_DIR / f"{bucket}.json"
 
 
+def _default_bucket_path(bucket: str) -> Path:
+    return DEFAULT_WEIGHTS_DIR / f"{bucket}.json"
+
+
+def _load_bucket_payload(bucket: str) -> Dict[str, Any] | None:
+    """Load the first valid runtime or versioned-default payload."""
+    for path in (_bucket_path(bucket), _default_bucket_path(bucket)):
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be an object")
+            weights = payload.get("weights")
+            if not isinstance(weights, dict) or not weights:
+                raise ValueError("weights must be a non-empty object")
+            payload["weights"] = {key: float(value) for key, value in weights.items()}
+            return payload
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            log.warning("invalid weight file %s: %s; trying fallback", path, exc)
+    return None
+
+
 def load_weights(bucket: str) -> Dict[str, float]:
-    """Return the active weights for a bucket. Falls back to priors."""
+    """Return runtime weights, then versioned defaults, then code priors."""
     if bucket not in BUCKET_KEYS:
         log.warning("unknown bucket %r — falling back to options_call priors", bucket)
         bucket = "options_call"
-    p = _bucket_path(bucket)
-    if p.exists():
-        try:
-            payload = json.loads(p.read_text(encoding="utf-8"))
-            w = payload.get("weights")
-            if isinstance(w, dict) and w:
-                return {k: float(v) for k, v in w.items()}
-        except Exception as e:
-            log.debug("failed to load %s: %s — using priors", p, e)
+    payload = _load_bucket_payload(bucket)
+    if payload is not None:
+        return dict(payload["weights"])
     return dict(PRIORS.get(bucket, {}))
 
 
@@ -254,14 +272,11 @@ def save_weights(bucket: str, weights: Dict[str, float],
 
 def load_meta(bucket: str) -> Dict[str, Any]:
     """Read just the meta block (for dashboard self-learning panel)."""
-    p = _bucket_path(bucket)
-    if not p.exists():
-        return {"source": "priors", "n_samples": 0, "fitted_at": None,
-                "factor_ic": {}, "decay_flags": []}
-    try:
-        return json.loads(p.read_text(encoding="utf-8")).get("meta", {})
-    except Exception:
-        return {"source": "priors", "n_samples": 0}
+    payload = _load_bucket_payload(bucket)
+    if payload is not None and isinstance(payload.get("meta"), dict):
+        return dict(payload["meta"])
+    return {"source": "priors", "n_samples": 0, "fitted_at": None,
+            "factor_ic": {}, "decay_flags": []}
 
 
 def get_factor_priors(bucket: str) -> Dict[str, float]:
@@ -421,7 +436,11 @@ def apply_weights(factor_matrix: pd.DataFrame, bucket: str) -> pd.Series:
 # Initialization helper — write priors to disk on cold start
 # ---------------------------------------------------------------------------
 def initialize_priors(force: bool = False) -> int:
-    """Make sure every bucket has a weights file. Writes priors if missing.
+    """Make sure every runtime bucket has a weights file.
+
+    Versioned defaults are copied exactly on cold start so shipped learned
+    weights and their provenance remain intact. Code priors are used only when
+    no versioned default exists.
 
     Returns the number of buckets initialized.
     """
@@ -430,6 +449,10 @@ def initialize_priors(force: bool = False) -> int:
     for b in BUCKET_KEYS:
         p = _bucket_path(b)
         if force or not p.exists():
-            save_weights(b, get_factor_priors(b), source="priors", n_samples=0)
+            default_path = _default_bucket_path(b)
+            if default_path.exists():
+                p.write_text(default_path.read_text(encoding="utf-8"), encoding="utf-8")
+            else:
+                save_weights(b, get_factor_priors(b), source="priors", n_samples=0)
             n += 1
     return n

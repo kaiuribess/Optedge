@@ -14,7 +14,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 import pandas as pd
 
@@ -232,7 +232,7 @@ def diagnose() -> None:
                            and len(pd.read_parquet(DATA_DIR / f"forward_outcomes_futures_{k}.parquet")) > 0
                            for k in ["equity","treasury","metal","energy","crypto","currency","agri"])
         if any_outcomes:
-            print(f"→ futures_*: outcomes exist. Check Self-Learning panel for which buckets.")
+            print("→ futures_*: outcomes exist. Check Self-Learning panel for which buckets.")
         else:
             print(f"→ futures_*: {len(fu_files)} log files but 0 replayed outcomes.")
             print("  See deep-dive above — most likely 'too fresh' (<1.2h old) if just deployed.")

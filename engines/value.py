@@ -13,11 +13,9 @@ We ALSO output a value_score in z-units so it merges cleanly with fusion's other
 """
 from __future__ import annotations
 import logging
-import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
-import numpy as np
 import pandas as pd
 
 import sys

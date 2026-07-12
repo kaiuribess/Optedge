@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from pathlib import Path
 from typing import Dict
 
 log = logging.getLogger("optedge.cache_stats")

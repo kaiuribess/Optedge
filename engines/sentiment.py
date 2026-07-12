@@ -12,7 +12,6 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List
 
-import requests
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -48,10 +47,8 @@ _STOPWORDS = {
     "AI", "EV", "GDP", "CPI", "FOMC", "EOD", "AH", "PM", "EPS", "DM",
     # v20.7 — common Reddit / WSB false positives that match the ticker regex
     "NEW", "ALL", "FOR", "THE", "ARE", "BUY", "NOW", "GET", "CAN", "IRS",
-    "PIN", "ANY", "YES", "OWN", "GOT", "TOP", "RUG", "MAY", "FUD", "FED",
-    "ETF", "FAQ", "IMO", "TBH", "OBV", "JFC", "WTF", "LOL", "ROFL", "IDC",
-    "AND", "BUT", "OUT", "USE", "SEE", "WAY", "WHO", "WHY", "GOP", "USA",
-    "USD", "EUR", "JPY", "GBP", "RIP", "DOJ", "IRS", "EU", "UK", "US",
+    "PIN", "ANY", "YES", "OWN", "GOT", "TOP", "RUG", "MAY", "FUD", "FAQ", "IMO", "TBH", "OBV", "JFC", "WTF", "LOL", "ROFL", "IDC",
+    "AND", "BUT", "OUT", "USE", "SEE", "WAY", "WHO", "WHY", "GOP", "EUR", "JPY", "GBP", "RIP", "DOJ", "EU", "UK", "US",
     "TBD", "PT", "AVG", "VAR", "JD", "JS", "PY", "MIT", "VC", "RV",
 }
 

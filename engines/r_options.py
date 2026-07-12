@@ -9,7 +9,6 @@ Free, no auth.
 from __future__ import annotations
 import logging
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Dict, List
 

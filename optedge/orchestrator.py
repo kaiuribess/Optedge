@@ -7,6 +7,7 @@ First run? Run `python setup_check.py` first to verify data sources.
 """
 from __future__ import annotations
 import argparse
+import importlib
 import json
 import logging
 import os
@@ -18,16 +19,12 @@ from pathlib import Path
 
 import pandas as pd
 
-# CRITICAL: print something immediately so silent failures are obvious.
-print("Optedge starting…", flush=True)
-
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
-    from config import (UNIVERSE, UNIVERSE_OPTIONS, UNIVERSE_SHARES, ASOF,
-                        TOP_N_CALLS, TOP_N_PUTS, TOP_N_SHARES,
+    from config import (UNIVERSE, UNIVERSE_OPTIONS, UNIVERSE_SHARES, TOP_N_CALLS, TOP_N_PUTS, TOP_N_SHARES,
                         TOP_N_VALUE, TOP_N_FUTURES,
                         WSB_TRENDING_TOP_N, WSB_TRENDING_MIN_MENTIONS,
                         ENGINE_CONCURRENT)
@@ -61,29 +58,46 @@ try:
     except Exception:
         _ufilter = None
 
+except Exception as e:
+    print(f"\nIMPORT ERROR - Optedge can't start.\n{e}\n", flush=True)
+    traceback.print_exc()
+    sys.exit(2)
+
+
+_runtime_weights_applied = False
+
+
+def _apply_runtime_weight_override() -> None:
+    """Apply a trusted runtime model once, when a scan actually starts."""
+    global _runtime_weights_applied
+    if _runtime_weights_applied:
+        return
+    _runtime_weights_applied = True
+
     # Runtime overrides are optional and must prove freshness, coverage, and
     # independent walk-forward evidence before they can affect ranking.
-    _runtime_status = bt_predictor.runtime_weight_status()
-    _runtime_weights = _runtime_status.get("weights") if _runtime_status.get("usable") else None
-    if _runtime_weights:
-        _config.SIGNAL_WEIGHTS = _runtime_weights
-        # Also patch the imported module so fusion sees the override
-        import fusion.rank as _fr_module
-        _fr_module.SIGNAL_WEIGHTS = _runtime_weights
-        print(f"  [auto-retrain] using runtime SIGNAL_WEIGHTS: top factor "
-              f"= {max(_runtime_weights, key=_runtime_weights.get)} "
-              f"({_runtime_weights[max(_runtime_weights, key=_runtime_weights.get)]:.2f})", flush=True)
-    elif _runtime_status.get("exists"):
-        reasons = list(_runtime_status.get("reasons") or [])
+    runtime_status = bt_predictor.runtime_weight_status()
+    runtime_weights = runtime_status.get("weights") if runtime_status.get("usable") else None
+    if runtime_weights:
+        _config.SIGNAL_WEIGHTS = runtime_weights
+        # Also patch the imported module so fusion sees the override.
+        import fusion.rank as rank_module
+        rank_module.SIGNAL_WEIGHTS = runtime_weights
+        top_factor = max(runtime_weights, key=runtime_weights.get)
+        print(
+            "  [auto-retrain] using runtime SIGNAL_WEIGHTS: top factor "
+            f"= {top_factor} ({runtime_weights[top_factor]:.2f})",
+            flush=True,
+        )
+    elif runtime_status.get("exists"):
+        reasons = list(runtime_status.get("reasons") or [])
         detail = "; ".join(reasons[:3])
         if len(reasons) > 3:
             detail += f"; plus {len(reasons) - 3} more guard(s)"
-        print(f"  [auto-retrain] runtime weights ignored: {detail}; "
-              "using configured priors", flush=True)
-except Exception as e:
-    print(f"\nIMPORT ERROR — Optedge can't start.\n{e}\n", flush=True)
-    traceback.print_exc()
-    sys.exit(2)
+        print(
+            f"  [auto-retrain] runtime weights ignored: {detail}; using configured priors",
+            flush=True,
+        )
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -104,6 +118,21 @@ def _to_df(v):
     DataFrame truthiness ('The truth value of a DataFrame is ambiguous').
     """
     return v if isinstance(v, pd.DataFrame) else pd.DataFrame()
+
+
+def _load_optional_engine(module_name: str):
+    """Load one optional engine, logging only genuine dependency absence.
+
+    Unexpected import-time failures such as RuntimeError or SyntaxError are not
+    swallowed; they surface immediately instead of silently removing a signal.
+    """
+    try:
+        return importlib.import_module(f"engines.{module_name}")
+    except ImportError as exc:
+        logging.getLogger("optedge").warning(
+            "[skip] optional engine %s is unavailable: %s", module_name, exc
+        )
+        return None
 
 
 def auto_detect_mode(args) -> tuple:
@@ -175,119 +204,44 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
         tasks["social"] = lambda: social.run(universe_heavy)
     if not skip_analyst:
         tasks["analyst"] = lambda: analyst.run(universe_heavy)
-    # v17 new engines — heavy engines get pre-filtered universe, broadcast
-    # engines get full universe
-    try:
-        from engines import sector_rs as _sector_rs_mod
-        tasks["sector_rs"] = lambda: _sector_rs_mod.run(universe_heavy)
-    except Exception:
-        pass
-    try:
-        from engines import dark_pool as _dark_pool_mod
-        tasks["dark_pool"] = lambda: _dark_pool_mod.run(universe_heavy)
-    except Exception:
-        pass
-    try:
-        from engines import fda_calendar as _fda_mod
-        tasks["fda"] = lambda: _fda_mod.run(universe_heavy)
-    except Exception:
-        pass
-    try:
-        from engines import sector_etf_flow as _flow_mod
-        def _sector_flow_task():
-            sf = _flow_mod.run()
-            return _flow_mod.per_ticker_score(universe_all, sf)  # broadcast = full
+    # Optional engines are registered from one auditable table. Missing
+    # dependencies are logged; unexpected import failures remain fatal.
+    optional_specs = [
+        (True, "sector_rs", "sector_rs", universe_heavy),
+        (True, "dark_pool", "dark_pool", universe_heavy),
+        (True, "fda", "fda_calendar", universe_heavy),
+        (True, "technicals", "technicals", universe_heavy),
+        (True, "short_int", "short_interest", universe_heavy),
+        (_v20_on("cot"), "cot", "cot", universe_all),
+        (_v20_on("thirteen_f"), "thirteen_f", "thirteen_f", universe_heavy),
+        (_v20_on("vix_term"), "vix_term", "vix_term", universe_all),
+        (_v20_on("eia"), "eia", "eia", universe_all),
+        (_v20_on("wasde"), "wasde", "wasde", universe_all),
+        (_v20_on("buybacks"), "buybacks", "buybacks", universe_heavy),
+        (_v20_on("gtrends"), "gtrends", "google_trends", universe_heavy),
+        (_v20_on("form_144"), "form_144", "form_144", universe_heavy),
+        (_v20_on("whisper"), "whisper", "whisper", universe_heavy),
+        (_v20_on("hyperliquid"), "hyperliquid", "hyperliquid", universe_all),
+        (_v20_on("twitter"), "twitter", "nitter", universe_heavy),
+        (_v20_on("r_options"), "r_options", "r_options", universe_heavy),
+        (_v20_on("yield_curve"), "yield_curve", "yield_curve_pca", universe_all),
+        (_v20_on("credit_spread"), "credit_spread", "credit_spread", universe_all),
+        (_v20_on("sec_ftd"), "sec_ftd", "sec_ftd", universe_heavy),
+    ]
+    for enabled, task_name, module_name, target_universe in optional_specs:
+        if not enabled:
+            continue
+        module = _load_optional_engine(module_name)
+        if module is not None:
+            tasks[task_name] = lambda module=module, target=target_universe: module.run(target)
+
+    flow_module = _load_optional_engine("sector_etf_flow")
+    if flow_module is not None:
+        def _sector_flow_task(module=flow_module):
+            sector_flow = module.run()
+            return module.per_ticker_score(universe_all, sector_flow)
+
         tasks["sector_flow"] = _sector_flow_task
-    except Exception:
-        pass
-    try:
-        from engines import technicals as _tech_mod
-        tasks["technicals"] = lambda: _tech_mod.run(universe_heavy)
-    except Exception:
-        pass
-    try:
-        from engines import short_interest as _short_int_mod
-        tasks["short_int"] = lambda: _short_int_mod.run(universe_heavy)
-    except Exception:
-        pass
-    # v20 — Tier B new engines (broadcast: full universe; heavy: pre-filtered)
-    if _v20_on("cot"):
-        try:
-            from engines import cot as _cot_mod
-            tasks["cot"] = lambda: _cot_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("thirteen_f"):
-        try:
-            from engines import thirteen_f as _13f_mod
-            tasks["thirteen_f"] = lambda: _13f_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("vix_term"):
-        try:
-            from engines import vix_term as _vt_mod
-            tasks["vix_term"] = lambda: _vt_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("eia"):
-        try:
-            from engines import eia as _eia_mod
-            tasks["eia"] = lambda: _eia_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("wasde"):
-        try:
-            from engines import wasde as _wasde_mod
-            tasks["wasde"] = lambda: _wasde_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("buybacks"):
-        try:
-            from engines import buybacks as _bb_mod
-            tasks["buybacks"] = lambda: _bb_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("gtrends"):
-        try:
-            from engines import google_trends as _gt_mod
-            tasks["gtrends"] = lambda: _gt_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("form_144"):
-        try:
-            from engines import form_144 as _f144_mod
-            tasks["form_144"] = lambda: _f144_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("whisper"):
-        try:
-            from engines import whisper as _whisper_mod
-            tasks["whisper"] = lambda: _whisper_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("hyperliquid"):
-        try:
-            from engines import hyperliquid as _hl_mod
-            tasks["hyperliquid"] = lambda: _hl_mod.run(universe_all)
-        except Exception: pass
-    # v20 — Tier C new engines
-    if _v20_on("twitter"):
-        try:
-            from engines import nitter as _twitter_mod
-            tasks["twitter"] = lambda: _twitter_mod.run(universe_heavy)
-        except Exception: pass
-    if _v20_on("r_options"):
-        try:
-            from engines import r_options as _ropt_mod
-            tasks["r_options"] = lambda: _ropt_mod.run(universe_heavy)
-        except Exception: pass
-    # v20 — Tier D new engines (broadcast — hardcoded sector buckets)
-    if _v20_on("yield_curve"):
-        try:
-            from engines import yield_curve_pca as _ycp_mod
-            tasks["yield_curve"] = lambda: _ycp_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("credit_spread"):
-        try:
-            from engines import credit_spread as _cs_mod
-            tasks["credit_spread"] = lambda: _cs_mod.run(universe_all)
-        except Exception: pass
-    if _v20_on("sec_ftd"):
-        try:
-            from engines import sec_ftd as _ftd_mod
-            tasks["sec_ftd"] = lambda: _ftd_mod.run(universe_heavy)
-        except Exception: pass
 
     results = {}
     timings = {}
@@ -338,12 +292,24 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
             name = future_map[fut]
             sla = SLA_MAP.get(name, 300)
             try:
-                results[name] = fut.result(timeout=sla)
+                results[name] = fut.result()
                 t = timings.get(name, {})
-                log.info("[ok] %s engine completed (%.1fs, %d rows)", name,
-                         t.get("elapsed", 0), t.get("rows", 0))
+                elapsed = t.get("elapsed", 0)
+                log.info(
+                    "[ok] %s engine completed (%.1fs, %d rows)",
+                    name,
+                    elapsed,
+                    t.get("rows", 0),
+                )
+                if elapsed > sla:
+                    log.warning(
+                        "[slow] %s engine exceeded its %.1fs SLA threshold (%.1fs)",
+                        name,
+                        sla,
+                        elapsed,
+                    )
             except Exception as e:
-                log.error("[x] %s engine failed/timeout: %s", name, str(e)[:200])
+                log.error("[x] %s engine failed: %s", name, str(e)[:200])
                 results[name] = None
 
     results["_timings"] = timings
@@ -352,6 +318,11 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
 
 def main():
     ap = argparse.ArgumentParser(description="Optedge — long-only options/shares/futures/value ranker")
+    ap.add_argument(
+        "--cockpit",
+        action="store_true",
+        help="Open the local risk-first Trade Desk (handled by the Optedge CLI router)",
+    )
     ap.add_argument("--universe", nargs="*", default=None,
                     help="Override universe (default: config.UNIVERSE + WSB trending)")
     ap.add_argument("--max-calls", type=int, default=TOP_N_CALLS)
@@ -465,6 +436,9 @@ def main():
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
 
+    print("Optedge starting...", flush=True)
+    _apply_runtime_weight_override()
+
     # --quiet overrides log_level
     setup_logging("WARNING" if args.quiet else args.log_level)
     log = logging.getLogger("optedge")
@@ -557,7 +531,7 @@ def main():
                 print("Try again in 15 min, or run from a residential IP.")
             return 0
         ovr = result["overall"]
-        print(f"\n=== FORWARD TEST RESULTS ===")
+        print("\n=== FORWARD TEST RESULTS ===")
         print(f"  Signals tracked:    {ovr['n_signals']}")
         print(f"  Win rate:           {ovr['win_rate']*100:.1f}%")
         print(f"  Avg P&L:            {ovr['avg_pnl_pct']*100:+.2f}%")
@@ -991,8 +965,8 @@ def main():
         "hyperliquid":  "Hyperliquid API unreachable",
         "twitter":      "Apewisdom + Nitter mirrors both down",
         "r_options":    "no r/options sticky mentions in universe",
-        "yield_curve":  "FRED_API_KEY missing or curve series unavailable",
-        "credit_spread":"FRED_API_KEY missing or HY/IG series unavailable",
+        "yield_curve":  "public/keyed curve series unavailable",
+        "credit_spread":"public/keyed HY/IG series unavailable",
         "sec_ftd":      "no SEC fails-to-deliver rows overlapped the universe, or SEC fetch failed",
         "cluster_buys": "no insider triple-buys in last 90 days",
     }

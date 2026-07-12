@@ -15,7 +15,6 @@ This is well-documented behavior; retail piles into puts at bottoms, calls at to
 from __future__ import annotations
 import logging
 import math
-from typing import Dict, Any
 
 import pandas as pd
 

@@ -14,9 +14,7 @@ Output: ticker -> cluster_buys_score in [0, 1].
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List
 
 import pandas as pd
 

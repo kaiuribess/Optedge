@@ -11,12 +11,10 @@ Saves to data/alpha_decay.parquet for the dashboard.
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import pandas as pd
-import numpy as np
 
 log = logging.getLogger("optedge.alpha_decay")
 ROOT = Path(__file__).resolve().parent.parent
