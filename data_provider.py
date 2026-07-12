@@ -1,6 +1,8 @@
-"""Shared data provider — gives every engine a consistent, hardened way
-to fetch data. Wraps yfinance with curl_cffi browser fingerprinting (defeats
-most rate limiting), adds disk caching, and exposes a uniform API.
+"""Provide cached, normalized market data to every Optedge engine.
+
+Exposes uniform access to price history, option chains, fundamentals, and
+short-interest context while recording source and quality metadata. Yahoo and
+yfinance access uses hardened HTTP sessions plus bounded disk caching.
 
 Free no-key history fallbacks are layered behind Yahoo/yfinance so the app can
 keep repricing and backtesting when Yahoo throttles. These fallbacks are not
