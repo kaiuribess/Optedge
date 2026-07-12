@@ -1,3 +1,4 @@
+# Purpose: Keyless FRED CSV helper.
 """Keyless FRED CSV helper.
 
 FRED's official JSON API is best when a key is configured, but the public graph
