@@ -1,3 +1,4 @@
+# Purpose: Test SEC company-facts metrics and warnings.
 import sys
 from pathlib import Path
 
