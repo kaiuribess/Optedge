@@ -1,3 +1,4 @@
+# Purpose: Record loop health and enforce memory and cache limits.
 """Whole-day reliability harness — v20.4.
 
 Per-iter health record so silent degradation over a 13-iter market day is
