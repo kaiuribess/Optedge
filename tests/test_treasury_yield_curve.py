@@ -1,3 +1,4 @@
+# Purpose: Test public Treasury yield-curve factors.
 """Direct-run tests for the official Treasury yield-curve fallback."""
 from __future__ import annotations
 
