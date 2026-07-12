@@ -1,3 +1,4 @@
+# Purpose: Aggregate upcoming biotech regulatory catalysts.
 """FDA catalyst calendar for biotech tickers — v20.2 (layered sources).
 
 For each biotech-classified ticker in the universe we want:
