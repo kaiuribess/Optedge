@@ -1,3 +1,5 @@
+<!-- Purpose: Explain the independent market-research signal engines. -->
+
 # Research Engines
 
 This package collects and scores the independent market evidence used by Optedge.
