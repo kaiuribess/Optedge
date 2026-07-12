@@ -1,4 +1,5 @@
 {
+  "_purpose": "Provide immutable fallback weights for agricultural futures.",
   "weights": {
     "trend": 0.3,
     "momentum": 0.15,
