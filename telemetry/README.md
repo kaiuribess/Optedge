@@ -1,3 +1,5 @@
+<!-- Purpose: Explain engine health, performance, and cache telemetry. -->
+
 # Runtime Telemetry
 
 This package monitors data freshness, engine reliability, performance, memory, and cache behavior.
