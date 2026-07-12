@@ -1,3 +1,4 @@
+# Purpose: Queue and cache read-only Robinhood market research.
 """Read-only Robinhood research cache for interactive ticker and option lookups.
 
 The local cockpit cannot call the authenticated Robinhood MCP server directly.
