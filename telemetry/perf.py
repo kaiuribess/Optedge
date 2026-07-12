@@ -1,3 +1,4 @@
+# Purpose: Per-engine performance tracking.
 """Per-engine performance tracking.
 
 Records latency, success/fail status, row count per engine per run.
