@@ -1,3 +1,4 @@
+# Purpose: Nasdaq public stock screener helpers.
 """Nasdaq public stock screener helpers.
 
 Free/no-key source used for small-cap discovery. This is delayed research data,
