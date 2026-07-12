@@ -1,3 +1,4 @@
+# Purpose: Run one research scan through the orchestrator.
 """Single scan mode."""
 from __future__ import annotations
 
