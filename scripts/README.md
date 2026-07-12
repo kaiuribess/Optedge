@@ -1,3 +1,5 @@
+<!-- Purpose: Explain cockpit utilities and safe research handoffs. -->
+
 # Cockpit and Research Utilities
 
 This directory contains the user-facing utilities around the core Optedge package.
