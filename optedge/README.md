@@ -1,3 +1,5 @@
+<!-- Purpose: Explain the installable application and orchestration package. -->
+
 # Optedge Application Package
 
 This is the installable application package and central control layer.
