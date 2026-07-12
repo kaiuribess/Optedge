@@ -1,3 +1,4 @@
+# Purpose: Downgrade candidates when research evidence is unsafe.
 """Research safety guardrails for live Optedge recommendations.
 
 The guard does two jobs:
