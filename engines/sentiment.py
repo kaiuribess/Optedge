@@ -1,3 +1,4 @@
+# Purpose: Reddit sentiment engine — public JSON endpoints, no auth required.
 """Reddit sentiment engine — public JSON endpoints, no auth required.
 
 Pulls hot/new submissions across configured subreddits, extracts ticker
