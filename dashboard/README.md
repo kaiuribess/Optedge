@@ -1,3 +1,5 @@
+<!-- Purpose: Explain the generated local market-research dashboard. -->
+
 # Research Dashboard
 
 This package builds the self-contained HTML market-research dashboard.
