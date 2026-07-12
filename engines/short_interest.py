@@ -1,3 +1,4 @@
+# Purpose: Score short-interest and squeeze context.
 """Short Interest engine — squeeze-setup detection — v20.2.
 
 v20.2 fix: the v20.1 engine reads `data_provider.get_fundamentals(t)` for short
