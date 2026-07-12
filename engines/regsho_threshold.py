@@ -1,3 +1,4 @@
+# Purpose: Nasdaq Trader Reg SHO threshold-security monitor.
 """Nasdaq Trader Reg SHO threshold-security monitor.
 
 Free/keyless source:
