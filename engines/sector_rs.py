@@ -1,3 +1,4 @@
+# Purpose: Sector Relative Strength — is this ticker outperforming its sector?
 """Sector Relative Strength — is this ticker outperforming its sector?
 
 For each ticker we map to its primary sector ETF (XLK/XLF/XLV/...) and
