@@ -1,3 +1,4 @@
+# Purpose: SEC fails-to-deliver context engine.
 """SEC fails-to-deliver context engine.
 
 Official, free, no-key source:
