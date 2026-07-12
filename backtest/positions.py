@@ -1,3 +1,4 @@
+# Purpose: Track reprice expire and close option recommendations.
 """Position-level P&L tracking — v20.7.
 
 Distinguishes "still-open recommendation" from "expired worthless" so the
