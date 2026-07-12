@@ -1,3 +1,4 @@
+# Purpose: Score energy inventory changes from EIA data.
 """EIA petroleum + natural gas inventory engine — v20.2.
 
 Layered sources:
