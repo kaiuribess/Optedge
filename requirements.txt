@@ -1,3 +1,3 @@
-# Editable source install. Runtime dependencies are declared once in
-# pyproject.toml so CLI, installers, CI, and packaging cannot drift apart.
+# Installs this Optedge checkout in editable source mode. Runtime dependencies
+# live in pyproject.toml so the CLI, installers, CI, and packaging cannot drift.
 -e .
