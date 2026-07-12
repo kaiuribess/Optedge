@@ -1,3 +1,4 @@
+# Purpose: Parse congressional transaction disclosures into signals.
 """Congressional trading engine — direct from House Clerk + Senate eFD.
 
 100% free, no auth, unlimited. Bypasses the dead Stock Watcher S3 buckets
