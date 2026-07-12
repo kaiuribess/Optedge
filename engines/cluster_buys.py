@@ -1,3 +1,4 @@
+# Purpose: Form 4 cluster-buy detector (Tier C quality upgrade)
 """Form 4 cluster-buy detector (Tier C quality upgrade).
 
 Reads the insider engine's output and identifies tickers where 3+ distinct
