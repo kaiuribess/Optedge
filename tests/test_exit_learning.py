@@ -1,3 +1,4 @@
+# Purpose: Test evidence-gated exit-threshold learning.
 import json
 import sys
 import tempfile
