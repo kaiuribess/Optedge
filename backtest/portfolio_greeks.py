@@ -1,3 +1,4 @@
+# Purpose: Portfolio-level Greek aggregation.
 """Portfolio-level Greek aggregation.
 
 Sums delta, gamma, theta, vega across all option picks (weighted by suggested
