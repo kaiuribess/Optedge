@@ -1,3 +1,4 @@
+# Purpose: Value / EV (good-value) engine — Greenblatt Magic Formula style.
 """Value / EV (good-value) engine — Greenblatt Magic Formula style.
 
 For each ticker, computes:
