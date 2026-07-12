@@ -1,3 +1,4 @@
+# Purpose: Expected Value (EV) + Kelly Criterion position sizing.
 """Expected Value (EV) + Kelly Criterion position sizing.
 
 Two related calculations per trade:
