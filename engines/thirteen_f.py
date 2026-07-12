@@ -1,3 +1,4 @@
+# Purpose: Compare SEC 13F holdings for tracked institutions.
 """13F institutional holdings engine — v20.1.
 
 Pulls 13F-HR filings from SEC EDGAR for smart-money funds (Berkshire, Tepper,
