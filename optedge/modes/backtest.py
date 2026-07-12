@@ -1,3 +1,4 @@
+# Purpose: Run historical factor analysis through the mode interface.
 """Historical backtest mode helpers."""
 from __future__ import annotations
 
