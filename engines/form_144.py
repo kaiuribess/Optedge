@@ -1,3 +1,4 @@
+# Purpose: Find proposed insider sales in SEC Form 144 filings.
 """SEC Form 144 — Pre-sale notices engine — v20.2.
 
 Form 144 is filed when an insider intends to sell within 90 days. LEADING
