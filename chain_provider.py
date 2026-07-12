@@ -1,12 +1,14 @@
-"""Multi-source options chain provider - v20.2.
+"""Fetch, normalize, cache, and diagnose multi-source option chains.
 
-Layered, keyless sources (no signup required):
-  PRIMARY   : CBOE delayed quotes JSON     (cdn.cboe.com/api/global/delayed_quotes)
-  FALLBACK 1: NASDAQ option-chain JSON     (api.nasdaq.com/api/quote/{T}/option-chain)
-  FALLBACK 2: Yahoo options JSON           (query1.finance.yahoo.com/v7/finance/options)
-  FALLBACK 3: yfinance (existing path)
+Provider order:
+  1. Tradier production chains when OPTEDGE_TRADIER_TOKEN is configured.
+  2. CBOE delayed quotes JSON (keyless).
+  3. Nasdaq option-chain JSON (keyless).
+  4. Direct Yahoo options JSON (keyless, research-grade).
+  5. yfinance as the final compatibility fallback.
 
 Why this order:
+  - Tradier is the optional authenticated production source.
   - CBOE returns the entire chain (all expirations, all strikes, both sides,
     bid/ask, IV, OI, volume, AND Greeks) in a single HTTP call. Typical
     response: ~0.2s. 410 tickers via 8 parallel workers ~= 10s total.
@@ -14,7 +16,7 @@ Why this order:
     when CBOE returns no contracts (rare - small caps, recent IPOs).
   - Yahoo options JSON is keyless and lighter than the yfinance library path.
     It is unofficial/research-grade, so it stays behind CBOE/NASDAQ.
-  - yfinance is the legacy path. Slow (3+ HTTP calls per ticker) and
+  - yfinance is the compatibility path. Slow (3+ HTTP calls per ticker) and
     rate-limited, but stays as a final fallback so behavior degrades
     gracefully if CBOE/NASDAQ/Yahoo direct are blocked.
 
@@ -23,7 +25,7 @@ All sources normalize to the same return shape:
    "div_yield": float,
    "expirations": List[str],            # "YYYY-MM-DD"
    "chains": Dict[str, pd.DataFrame],   # per-expiration DataFrames
-   "source": str}                       # "cboe" / "nasdaq" / "yahoo_options" / "yfinance"
+   "source": str}                       # "tradier" / "cboe" / "nasdaq" / "yahoo_options" / "yfinance"
 
 Each DataFrame's required columns:
   strike, side ("call"/"put"), bid, ask, lastPrice, volume, openInterest,
