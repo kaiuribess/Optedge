@@ -1,3 +1,4 @@
+# Purpose: Test option expiry with verified settlement evidence.
 """Deterministic tests for expiration-session option valuation."""
 from __future__ import annotations
 
