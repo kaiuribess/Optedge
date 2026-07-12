@@ -1,4 +1,4 @@
-"""Shared utility functions."""
+"""Provide shared retry, option-math, statistics, and numeric helpers."""
 import math
 import time
 import functools
