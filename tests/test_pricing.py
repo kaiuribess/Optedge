@@ -1,3 +1,4 @@
+# Purpose: Test option pricing edge direction and sizing.
 """Unit tests for pricing models + Kelly formula - v20.7.
 
 Run from the optedge/ root:
