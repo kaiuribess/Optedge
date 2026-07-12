@@ -1,3 +1,4 @@
+# Purpose: Test optional engine failure handling.
 from __future__ import annotations
 
 import logging
