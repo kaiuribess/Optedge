@@ -1,3 +1,4 @@
+# Purpose: Measure FINRA daily short-sale volume ratios.
 """Dark pool / off-exchange volume — FINRA RegSHO daily file.
 
 FINRA publishes daily short-sale volume (which is also a proxy for what
