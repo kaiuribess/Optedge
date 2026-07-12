@@ -1,3 +1,4 @@
+# Purpose: Test memory-first performance caching.
 import sys
 from pathlib import Path
 
