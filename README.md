@@ -1,3 +1,5 @@
+<!-- Purpose: Explain Optedge features, setup, safety boundaries, and repository layout. -->
+
 # Optedge - Multi-Asset Market Research Cockpit
 
 ![CI](https://github.com/kaiuribess/Optedge/actions/workflows/ci.yml/badge.svg)
