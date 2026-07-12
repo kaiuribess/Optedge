@@ -1,3 +1,4 @@
+# Purpose: Test public Nasdaq small-cap mover ranking.
 import json
 import sys
 from pathlib import Path
