@@ -1,3 +1,4 @@
+# Purpose: Test share entries exits repricing and tracking.
 import sys
 import tempfile
 from datetime import datetime, timezone
