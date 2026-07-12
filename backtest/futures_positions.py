@@ -1,3 +1,4 @@
+# Purpose: Track mark and close futures positions.
 """Futures position lifecycle tracking."""
 from __future__ import annotations
 
