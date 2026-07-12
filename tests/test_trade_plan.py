@@ -1,3 +1,4 @@
+# Purpose: Test risk-sized plans and manual broker review.
 import json
 import sys
 from pathlib import Path
