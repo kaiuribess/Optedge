@@ -1,3 +1,4 @@
+# Purpose: Run repeated research scans through the orchestrator.
 """Loop mode."""
 from __future__ import annotations
 
