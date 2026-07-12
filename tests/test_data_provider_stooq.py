@@ -1,3 +1,4 @@
+# Purpose: Test free historical price-provider fallbacks.
 import sys
 from pathlib import Path
 
