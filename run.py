@@ -1,3 +1,5 @@
+"""Start Optedge from a source checkout by delegating to its CLI router."""
+
 from optedge.cli import main
 
 
