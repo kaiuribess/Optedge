@@ -1,4 +1,5 @@
 {
+  "_purpose": "Provide immutable fallback weights for equity-index futures.",
   "weights": {
     "trend": 0.2,
     "momentum": 0.1,
