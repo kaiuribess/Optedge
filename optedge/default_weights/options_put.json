@@ -1,4 +1,5 @@
 {
+  "_purpose": "Provide immutable fallback weights for long put research.",
   "weights": {
     "mispricing": -0.26,
     "iv_rank": 0.05,
