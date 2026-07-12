@@ -1,3 +1,4 @@
+# Purpose: Test cockpit workflows trust and manual broker gates.
 import json
 import os
 import sys
