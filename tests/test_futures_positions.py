@@ -1,3 +1,4 @@
+# Purpose: Test futures entries exits reversals and tracking.
 import sys
 import tempfile
 from datetime import datetime, timezone
