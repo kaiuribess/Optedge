@@ -1,7 +1,7 @@
 # Optedge - Multi-Asset Market Research Cockpit
 
 ![CI](https://github.com/kaiuribess/Optedge/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
+![Python](https://img.shields.io/badge/python-3.11--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-research-orange)
 
@@ -145,16 +145,17 @@ Windows:
 install.bat
 ```
 
-Manual setup:
+Manual setup in PowerShell:
 
-```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+```powershell
+py -3.12 -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python setup_check.py
 ```
 
-Python `3.11` or `3.12` is recommended.
+Python `3.11` through `3.13` is supported; Python `3.12` is recommended.
 
 Optional live/broker option-chain source:
 
@@ -205,6 +206,8 @@ python run.py --aggressive --bankroll 25000 --loop 30 --turbo --no-open
 ```
 
 `--turbo` does not place trades. It keeps the normal engine stack, enables the in-process RAM cache, raises FinBERT batch size, and switches insider parsing to the faster count-only mode.
+
+All `--loop` examples above are local research refreshes. They do not schedule a Codex task, send recurring Codex messages, or initiate the Robinhood review/placement flow.
 
 Forward test logged signals:
 
@@ -264,8 +267,11 @@ Run a small local browser cockpit without paid services or extra dashboard hosti
 python run.py --cockpit
 ```
 
-The cockpit opens at `http://127.0.0.1:8765` by default and reads local files from `data/`. It gives you:
+The cockpit opens at `http://127.0.0.1:8765` by default and reads local files from `data/`. It refuses non-loopback/LAN bindings, rejects unknown Host headers, and protects every state-changing request with a per-launch same-origin token. It gives you:
 
+- A decision-first **Trade Desk** as the default screen: market regime, evidence quality, validation/risk gate, and Robinhood review readiness.
+- A stop-based trade planner for whole shares and long calls/puts, with risk budget, allocation cap, slippage, planned stop loss, maximum capital-loss reference, reward/risk, and breakeven win rate.
+- One short-lived manual Robinhood review packet you can copy or download. The packet requires live broker review and exact confirmation, and explicitly forbids batches, loops, scheduled tasks, repeated orders, and automatic retries.
 - Instant symbol lookup across latest option, share, value, futures, and open-position artifacts.
 - Read-only Robinhood ticker and exact-option context when the connector cache has a matching record, with explicit quote age and source labels.
 - Focused scan launcher: type a ticker, company name, or option idea and click **Run focused scan**.
@@ -273,6 +279,27 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 - Open option/share/futures counts.
 - Quick links to the latest dashboard, validation report, validation JSON, option-history and broker-research queues, equity curve, and external paper-order export.
 - A browser UI that does not rerun engines until you choose to run a new scan.
+
+### Manual Robinhood Review
+
+Optedge uses Robinhood's official Agentic Trading connection as an external broker boundary. The local dashboard never asks for or stores a Robinhood password, token, cookie, MFA code, or API key, and it has no broker-order endpoint. Review packets contain an account placeholder; the user chooses an eligible account inside the connected Robinhood task.
+
+1. Set up an eligible account using [Robinhood's Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/).
+2. Connect the Robinhood Trading integration in Codex.
+3. Refresh the read-only broker snapshot and normalize it with `python scripts/normalize_robinhood_broker_snapshot.py`. Use the account-scoped `optedge_robinhood_mcp_read_bundle_v2` capture format in [docs/THIRD_PARTY_FORWARD_TESTING.md](docs/THIRD_PARTY_FORWARD_TESTING.md): preserve the exact decoded `data` envelopes and collection lists; include portfolio, equity-position, option-position, equity-order, and option-order reads for every returned account under the exact request `account_number`; keep those account-scoped reads out of the top level; finish every paginated page with an explicit `data.next` key and the final value set to `null`; preserve each follow-up request cursor when the preceding `next` URL exposes one; and join every open option `option_id` to `get_option_instruments`. Missing/wrong-shaped sections, malformed collection rows, incomplete or unlinked pagination, unscoped reads, missing option instruments, or a missing source timestamp are blocked rather than guessed. Manual review accepts only `optedge_robinhood_broker_snapshot_v1` normalized from this v2 bundle; legacy snapshots remain display-only.
+4. For an option, build a fresh research queue with `python scripts/export_robinhood_agentic_queue.py --account-budget 500`; the exact contract must remain in the current manual-review candidate set and must explicitly identify an equity/ETF underlying as `underlying_type=equity`.
+5. In **Trade Desk**, load a current manual candidate or enter a share plan, verify the account-equity/risk/allocation assumptions and proposed entry, stop, and target, then click **Calculate plan**. The gate requires one same active account to satisfy portfolio value, permissions, conservative buying power, risk, and allocation checks; it never mixes capacity across accounts.
+6. If the gate passes, copy the Robinhood review request into one connected task before its 10-minute expiry.
+7. The connected task must refresh that exact account, positions, working orders, exact instrument, tradability, and live quote. The live instrument's `underlying_type` must exactly match the packet. It recomputes risk against live portfolio value, uses the smaller of explicit buying power and unleveraged buying power, requires positive bid/ask values no older than 120 seconds, enforces the packet's numeric spread cap, and never raises the packet limit. It then calls the Robinhood review tool, shows the complete preview and alerts, and asks you to confirm that exact order.
+8. Placement is allowed only after that exact confirmation and only once with unchanged reviewed fields. A submitted order is not treated as filled until Robinhood reports its broker state.
+
+The broker handoff is manual and on-demand. Optedge does not create a recurring Codex task or automatic trade loop. The legacy Robinhood queue and local auto-paper script are research/paper-only and cannot authorize a broker review or placement.
+
+Current packet support is intentionally narrow: long share/ETF buys and standard `100x`-multiplier, single-leg long calls or puts on equity/ETF underlyings, using limit good-for-day orders during regular hours. Index options (including `^` symbols and known roots such as SPX, NDX, RUT, and VIX), missing/non-equity `underlying_type`, short shares, short options, spreads, adjusted option deliverables, market orders, futures, and crypto are blocked. Every nonterminal broker option order must contain exactly one valid object leg to establish exact identity; multi-leg or malformed-leg orders block review instead of having extra legs discarded. Existing option positions or working open orders in the same symbol and long-call/long-put direction block a new entry even when strike or expiry differs. An equity review needs an active, funded, agentic-accessible account with explicit portfolio value. An option review needs one and the same account to be active, agentic-accessible, funded, and approved for options level 2 or 3; permissions or capacity split across accounts do not qualify. Live spreads are capped at `1%` for shares and at the smaller of the candidate cap or the `15%` option hard cap.
+
+V2 broker readiness uses only a positive `portfolio.total_value` plus both explicit `buying_power` and `unleveraged_buying_power`; it does not substitute equity aliases or cash. Reconciliation assigns each account a stable pseudonymous key and compares signed position type and aggregate quantity per account and exact option contract, so same-nickname accounts, long/short differences, and quantity differences cannot be mistaken for a match.
+
+The entry packet does not place a stop or target order. Those values are planning references only. For a long option, the maximum capital-loss reference is the full debit, and the full debit must fit both the risk budget and allocation cap. For long shares, the planner shows both stop-based loss and full entry notional; a stop is not guaranteed to limit a gap loss.
 
 Use another port or keep it from opening a browser:
 
@@ -400,50 +427,15 @@ tests/         direct-run test files
 
 ## Tests
 
-The CI workflow runs direct test files so import behavior matches simple local commands. Current direct-run tests:
+Install the lightweight test tools and run the same full-suite command used by CI:
 
-```bash
-python tests/test_pricing.py
-python tests/test_research_guard.py
-python tests/test_archive.py
-python tests/test_exit_rules.py
-python tests/test_exit_learning.py
-python tests/test_futures_sizing.py
-python tests/test_option_positions.py
-python tests/test_share_positions.py
-python tests/test_futures_positions.py
-python tests/test_fixed_horizon.py
-python tests/test_option_history.py
-python tests/test_validation_report.py
-python tests/test_external_paper_track.py
-python tests/test_robinhood_agentic_queue.py
-python tests/test_auto_agentic_paper.py
-python tests/test_robinhood_broker_snapshot.py
-python tests/test_robinhood_research_bridge.py
-python tests/test_symbol_resolver.py
-python tests/test_research_jobs.py
-python tests/test_lookup_symbol.py
-python tests/test_sec_companyfacts.py
-python tests/test_news.py
-python tests/test_short_interest.py
-python tests/test_local_cockpit.py
-python tests/test_fred_public.py
-python tests/test_treasury_yield_curve.py
-python tests/test_data_provider_stooq.py
-python tests/test_trading_halts.py
-python tests/test_regsho_threshold.py
-python tests/test_short_sale_circuit.py
-python tests/test_performance_cache.py
-python tests/test_finbert_batching.py
-python tests/test_chain_provider_tradier.py
+```powershell
+python -m pip install pytest ruff
+python -m pytest
+python -m ruff check . --select E9,F63,F7,F82
 ```
 
-If `pytest` and `ruff` are installed:
-
-```bash
-pytest
-ruff check . --select E9,F63,F7,F82
-```
+Individual `tests/test_*.py` files can still be run directly while developing, but a clean full `python -m pytest` run is the release check.
 
 ## Documentation
 

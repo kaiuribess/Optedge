@@ -4,8 +4,10 @@ This module intentionally does not call a broker API. It converts the latest
 Optedge Robinhood agentic queue/cycle into:
 
 - local paper option positions that are opened automatically when gates pass
-- live-ready order tickets that require an explicit broker-side confirmation
 - JSONL audit rows for every paper entry, duplicate skip, or blocked gate
+
+It never creates broker-review tickets. Trade Desk is the only path that can
+build one fresh, expiring, approval-gated Robinhood review packet.
 """
 from __future__ import annotations
 
@@ -27,8 +29,8 @@ from scripts.export_robinhood_agentic_queue import (  # noqa: E402
     KILL_SWITCH,
     QUEUE_JSON,
     append_agent_decision,
-    robinhood_mcp_option_review_plan,
 )
+from optedge.strategy_profile import SWING_EXECUTION_PROFILE  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 PAPER_POSITIONS_JSON = "agentic_paper_positions.json"
@@ -38,6 +40,16 @@ LIVE_ORDER_TICKETS_JSON = "robinhood_live_order_tickets.json"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _age_minutes(value: Any, now: datetime) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds() / 60.0)
 
 
 def _text(value: Any) -> str:
@@ -139,8 +151,12 @@ def _optedge_open_option_keys(data_dir: Path) -> tuple[set[str], set[str]]:
 def _candidate_source(cycle: dict[str, Any], queue: dict[str, Any], allow_blocked_paper: bool) -> tuple[list[dict[str, Any]], str]:
     entry_gate = cycle.get("entry_gate") if isinstance(cycle.get("entry_gate"), dict) else {}
     if entry_gate.get("new_entries_allowed_after_live_checks"):
-        rows = cycle.get("entry_candidates") if isinstance(cycle.get("entry_candidates"), list) else []
-        return [row for row in rows if isinstance(row, dict)], "entry_candidates"
+        rows = (
+            cycle.get("manual_review_candidates")
+            if isinstance(cycle.get("manual_review_candidates"), list)
+            else []
+        )
+        return [row for row in rows if isinstance(row, dict)], "manual_review_candidates"
     if allow_blocked_paper:
         review_rows = (
             cycle.get("review_only_entry_candidates")
@@ -152,60 +168,6 @@ def _candidate_source(cycle: dict[str, Any], queue: dict[str, Any], allow_blocke
         queue_rows = queue.get("orders") if isinstance(queue.get("orders"), list) else []
         return [row for row in queue_rows if isinstance(row, dict)], "queue_orders_override"
     return [], "blocked_by_entry_gate"
-
-
-def _ticket_from_order(
-    order: dict[str, Any],
-    generated_at: str,
-    gate_status: str,
-    source: str,
-) -> dict[str, Any]:
-    limit_price = _float(order.get("max_limit_price") or order.get("reference_entry_price"))
-    quantity = _int(order.get("quantity"), 0)
-    ticket = {
-        "generated_at": generated_at,
-        "schema": "optedge_robinhood_live_order_ticket_v1",
-        "status": "requires_explicit_confirmation",
-        "broker": "robinhood",
-        "asset": "option",
-        "action": "BUY_TO_OPEN",
-        "order_type": "limit",
-        "time_in_force": "day",
-        "symbol": _text(order.get("symbol") or order.get("ticker_or_symbol")).upper(),
-        "contract": _text(order.get("contract")),
-        "option_side": _text(order.get("option_side")).lower(),
-        "strike": order.get("strike"),
-        "expiry": order.get("expiry"),
-        "quantity": quantity,
-        "limit_price": round(limit_price, 2),
-        "estimated_premium_dollars": round(limit_price * quantity * 100.0, 2),
-        "max_limit_price": order.get("max_limit_price"),
-        "reference_entry_price": order.get("reference_entry_price"),
-        "stop_price_reference": order.get("stop_price_reference"),
-        "target_price_reference": order.get("target_price_reference"),
-        "confidence": order.get("confidence"),
-        "rank_score": order.get("rank_score"),
-        "fused_score": order.get("fused_score"),
-        "swing_fit_score": order.get("swing_fit_score"),
-        "swing_fit_label": order.get("swing_fit_label"),
-        "entry_gate_status": gate_status,
-        "candidate_source": source,
-        "live_submit_allowed_by_this_script": False,
-        "broker_mcp_review_supported": True,
-        "broker_mcp_place_supported_after_explicit_confirmation": True,
-        "confirmation_required": True,
-        "notes": [
-            "This is a live-ready ticket only; this script does not submit broker orders.",
-            "Use robinhood_mcp_review_plan to review the exact single-leg limit order before any live place call.",
-            "Before live submission, verify Robinhood buying power, exact contract, bid/ask/mid, spread, and current news.",
-        ],
-    }
-    ticket["robinhood_mcp_review_plan"] = (
-        order.get("robinhood_mcp_review_plan")
-        if isinstance(order.get("robinhood_mcp_review_plan"), dict)
-        else robinhood_mcp_option_review_plan(ticket)
-    )
-    return ticket
 
 
 def _paper_position_from_order(
@@ -241,9 +203,18 @@ def _paper_position_from_order(
         "strike": order.get("strike"),
         "expiry": order.get("expiry"),
         "quantity": quantity,
-        "entry_price": ref_price,
+        # A paper buy is charged at the full executable limit, never the more
+        # optimistic research mid. This is conservative when the source ask is
+        # below the limit and keeps paper P&L from assuming an unattested fill.
+        "entry_price": limit_price,
+        "source_reference_price": ref_price,
         "paper_limit_price": limit_price,
-        "estimated_premium_dollars": round(ref_price * quantity * 100.0, 2),
+        "paper_fill_assumption": "filled_at_full_buy_limit",
+        "paper_fill_slippage_per_contract_dollars": round(
+            max(0.0, limit_price - ref_price) * 100.0,
+            2,
+        ),
+        "estimated_premium_dollars": round(limit_price * quantity * 100.0, 2),
         "stop_price_reference": order.get("stop_price_reference"),
         "target_price_reference": order.get("target_price_reference"),
         "confidence": order.get("confidence"),
@@ -255,7 +226,7 @@ def _paper_position_from_order(
         "candidate_source": source,
         "paper_override_validation_gate": bool(allow_blocked_paper and source != "entry_candidates"),
         "notes": [
-            "Opened automatically in Optedge local paper tracking only.",
+            "Opened in Optedge local paper tracking at the full buy-limit assumption, not the research mid.",
             "No live broker order was placed by this script.",
         ],
     }
@@ -267,7 +238,7 @@ def process_agentic_paper(
     allow_blocked_paper: bool = False,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create paper positions and live-ready tickets from latest agentic queue."""
+    """Create local paper positions from the latest research-only queue."""
     data_dir = Path(data_dir)
     generated_at = _now()
     queue = _read_json(data_dir / QUEUE_JSON, {})
@@ -295,13 +266,26 @@ def process_agentic_paper(
         blockers.append("agentic cycle file is missing or malformed")
 
     candidates, source = _candidate_source(cycle, queue, allow_blocked_paper=allow_blocked_paper)
-    limit = max(0, int(max_orders if max_orders is not None else queue.get("max_orders_to_submit") or 0))
+    limit = max(0, int(
+        max_orders
+        if max_orders is not None
+        else queue.get("max_manual_reviews") or queue.get("max_orders") or 0
+    ))
     if limit <= 0:
         limit = len(candidates)
 
-    tickets = [
-        _ticket_from_order(order, generated_at, gate_status, source)
-        for order in candidates[:limit]
+    generated_dt = datetime.fromisoformat(generated_at)
+    queue_age = _age_minutes(queue.get("generated_at"), generated_dt)
+    cycle_age = _age_minutes(cycle.get("generated_at"), generated_dt)
+    freshness_limit = SWING_EXECUTION_PROFILE.execution_packet_fresh_minutes
+    if queue_age is None or cycle_age is None:
+        blockers.append("queue and cycle timestamps are required for paper entries")
+    elif queue_age > freshness_limit or cycle_age > freshness_limit:
+        blockers.append(
+            f"queue/cycle source is older than the {freshness_limit:g}-minute paper-entry limit"
+        )
+    live_ticket_blockers = list(blockers) + [
+        "legacy queue is research/paper-only; create one fresh manual packet in Trade Desk"
     ]
 
     existing_paper = _read_json(data_dir / PAPER_POSITIONS_JSON, [])
@@ -329,6 +313,12 @@ def process_agentic_paper(
             contract_key = _contract_key(order)
             direction_key = _direction_key(order)
             reasons: list[str] = []
+            paper_limit = _float(order.get("max_limit_price") or order.get("reference_entry_price"))
+            source_ask = _float(order.get("source_ask"), 0.0)
+            if paper_limit <= 0:
+                reasons.append("paper buy limit is missing or invalid")
+            if source_ask > paper_limit + 1e-9:
+                reasons.append("source ask is above the paper buy limit; no fill is observed")
             if contract_key in paper_contract_keys:
                 reasons.append("exact contract already open in local paper book")
             if direction_key in paper_direction_keys:
@@ -353,6 +343,8 @@ def process_agentic_paper(
             paper_contract_keys.add(contract_key)
             paper_direction_keys.add(direction_key)
 
+    tickets: list[dict[str, Any]] = []
+
     output = {
         "generated_at": generated_at,
         "schema": "optedge_agentic_paper_execution_result_v1",
@@ -365,13 +357,14 @@ def process_agentic_paper(
         "allow_blocked_paper": allow_blocked_paper,
         "live_broker_orders_submitted": 0,
         "live_submit_supported": False,
-        "broker_mcp_review_supported": True,
-        "live_submit_note": "This script does not submit real broker orders. It writes live-ready tickets that can be reviewed with Robinhood MCP and still require explicit confirmation.",
+        "broker_mcp_review_supported": False,
+        "live_submit_note": "This script is local paper tracking only. Use Trade Desk to create one fresh approval-gated Robinhood review packet.",
         "candidate_count": len(candidates),
         "ticket_count": len(tickets),
         "opened_paper_count": len(opened),
         "skipped_count": len(skipped),
         "blockers": blockers,
+        "live_ticket_blockers": live_ticket_blockers,
         "files": {
             "paper_positions": str(data_dir / PAPER_POSITIONS_JSON),
             "paper_orders": str(data_dir / PAPER_ORDERS_JSONL),
@@ -386,15 +379,9 @@ def process_agentic_paper(
     if dry_run:
         return output
 
-    if tickets:
-        _write_json(data_dir / LIVE_ORDER_TICKETS_JSON, {
-            "generated_at": generated_at,
-            "schema": "optedge_robinhood_live_order_tickets_v1",
-            "live_submit_supported": False,
-            "broker_mcp_review_supported": True,
-            "confirmation_required": True,
-            "tickets": tickets,
-        })
+    ticket_path = data_dir / LIVE_ORDER_TICKETS_JSON
+    if ticket_path.exists():
+        ticket_path.unlink()
 
     if opened:
         updated_positions = existing_paper + opened
@@ -403,7 +390,7 @@ def process_agentic_paper(
             order_row = {
                 "timestamp": generated_at,
                 "schema": "optedge_agentic_paper_order_v1",
-                "action": "paper_submitted",
+                "action": "paper_opened_at_limit_assumption",
                 "paper_position_id": row.get("paper_position_id"),
                 "symbol": row.get("symbol"),
                 "contract": row.get("contract"),
@@ -430,7 +417,7 @@ def process_agentic_paper(
                     "estimated_premium_dollars": row.get("estimated_premium_dollars"),
                     "entry_gate_status": gate_status,
                     "source": "auto_agentic_paper",
-                    "reason": "local paper order opened automatically; no live broker order submitted",
+                    "reason": "local paper position opened at the conservative full-limit assumption; no broker order submitted",
                 },
                 data_dir=data_dir,
                 generated_at=generated_at,

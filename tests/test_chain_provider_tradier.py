@@ -259,6 +259,9 @@ def test_fetch_chain_records_free_provider_diagnostics():
     chain_provider._fetch_yfinance = lambda *args, **kwargs: None
     try:
         blob = chain_provider.fetch_chain("SPY", cache_age=0, include_diagnostics=True)
+        first_receipt = blob["provider_response_received_at"]
+        data_provider.cache_get = lambda key, *args, **kwargs: cached.get(key)
+        cached_blob = chain_provider.fetch_chain("SPY", cache_age=600, include_diagnostics=True)
     finally:
         data_provider.cache_get = old_cache_get
         data_provider.cache_put = old_cache_put
@@ -276,6 +279,10 @@ def test_fetch_chain_records_free_provider_diagnostics():
     assert blob["source"] == "nasdaq_etf"
     assert blob["quote_quality"] == "free_or_delayed"
     assert blob["data_delay"] == "delayed"
+    assert blob["source_quote_at"] == first_receipt
+    assert blob["source_quote_time_basis"] == "provider_response_received_at"
+    assert cached_blob["provider_response_received_at"] == first_receipt
+    assert cached_blob["source_quote_at"] == first_receipt
     assert [row["provider"] for row in blob["source_attempts"]] == [
         "cboe",
         "nasdaq_stocks",

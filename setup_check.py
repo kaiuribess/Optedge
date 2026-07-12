@@ -7,6 +7,7 @@ with a clear remediation note if anything fails. Saves a `.optedge_status.json`
 so `run.py` can auto-fall-back to working sources.
 """
 from __future__ import annotations
+import getpass
 import json
 import logging
 import os
@@ -49,11 +50,11 @@ def fail(msg: str, hint: str = ""):
 def check_python() -> bool:
     banner("Python version")
     v = sys.version_info
-    if v >= (3, 9):
+    if (3, 11) <= v < (3, 14):
         ok(f"Python {v.major}.{v.minor}.{v.micro}")
         return True
-    fail(f"Python {v.major}.{v.minor} - need >= 3.9",
-         "Install Python 3.9+ (e.g. `brew install python@3.11` on macOS)")
+    fail(f"Python {v.major}.{v.minor} - need >= 3.11 and < 3.14",
+         "Install Python 3.12 (recommended) and recreate the virtual environment")
     return False
 
 
@@ -68,6 +69,7 @@ def check_packages() -> bool:
         ("vaderSentiment", "vaderSentiment.vaderSentiment"),
         ("pyarrow", "pyarrow"),
         ("scikit-learn", "sklearn"),
+        ("matplotlib", "matplotlib"),
     ]
     optional = [("curl_cffi", "curl_cffi")]
     all_good = True
@@ -231,19 +233,27 @@ def maybe_setup_fred() -> str:
     banner("FRED API key - optional (richer macro data)")
     existing = os.environ.get("FRED_API_KEY")
     if existing:
-        ok(f"FRED_API_KEY already set ({existing[:6]}...)")
+        ok("FRED_API_KEY already set (value hidden)")
         return existing
     print(f"  {DIM}FRED is optional. Adds CPI, unemployment, and more macro series.{RESET}")
     print(f"  {DIM}Get a free key in 30s: https://fredaccount.stlouisfed.org/apikey{RESET}")
     try:
-        ans = input("  Have a FRED key now? Paste it (or press Enter to skip): ").strip()
-    except EOFError:
+        ans = getpass.getpass(
+            "  Have a FRED key now? Paste it securely (or press Enter to skip): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans:
-        ok(f"Saved FRED_API_KEY for this session.")
+        ok("Saved FRED_API_KEY for this session (value hidden).")
         os.environ["FRED_API_KEY"] = ans
-        print(f"    {DIM}To make permanent, add to your shell profile:{RESET}")
-        print(f"    {DIM}  export FRED_API_KEY='{ans}'{RESET}")
+        print(
+            f"    {DIM}To make it permanent, store FRED_API_KEY in your shell "
+            f"profile or OS secret store.{RESET}"
+        )
+        print(
+            f"    {DIM}Never paste the key into a shared command, log, screenshot, "
+            f"or Codex task.{RESET}"
+        )
         return ans
     warn("FRED skipped - macro engine will run on yfinance VIX/yields only")
     return ""

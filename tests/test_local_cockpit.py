@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+from http.client import HTTPConnection
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 import scripts.local_cockpit as cockpit_module
 from scripts.export_robinhood_agentic_queue import robinhood_mcp_option_review_plan
+from scripts.normalize_robinhood_broker_snapshot import normalize_broker_snapshot
 from scripts.local_cockpit import (
     add_watchlist_queries, add_watchlist_query, artifact_path, build_agentic_autopilot_status,
     build_agentic_decision_journal,
@@ -24,7 +27,7 @@ from scripts.local_cockpit import (
     build_exit_review_summary, build_free_data_sources, build_positions, build_provider_status, build_risk_summary,
     build_robinhood_agentic_queue_report, build_position_hygiene, build_lookup_history,
     build_saved_option_contracts, build_sector_pulse, build_summary, build_swing_climate, build_swing_scout, build_symbol_suggestions,
-    build_swing_packet, build_watchlist_sec_filings,
+    build_swing_packet, build_trade_desk, build_trade_plan_report, build_watchlist_sec_filings,
     build_today_review, apply_position_hygiene,
     load_watchlist, remove_watchlist_entry, render_cockpit_html, run_watchlist_scans,
     normalize_robinhood_broker_snapshot_file,
@@ -274,8 +277,625 @@ def test_lookup_history_scores_puts_by_bearish_thesis():
     assert history["summary"]["by_direction"][0]["best_symbol"] == "AAPL"
 
 
+def _share_plan_payload():
+    return {
+        "symbol": "AAPL",
+        "asset": "share",
+        "direction": "long",
+        "account_equity": 10_000,
+        "risk_pct": 1,
+        "allocation_pct": 10,
+        "slippage_pct": 0.5,
+        "entry_price": 100,
+        "stop_price": 95,
+        "target_price": 112,
+    }
+
+
+def _manual_gate_account(
+    *,
+    label="Agentic",
+    equity=10_000,
+    buying_power=1_000,
+    active=True,
+    agentic_allowed=True,
+    options_ready=True,
+):
+    return {
+        "account": label,
+        "state": "active" if active else "deactivated",
+        "active": active,
+        "agentic_allowed": agentic_allowed,
+        "option_level": "option_level_2" if options_ready else "",
+        "options_ready": options_ready,
+        "buying_power": buying_power,
+        "account_equity": equity,
+        "funded": buying_power is not None and buying_power > 0,
+        "status": "ready" if active and agentic_allowed and options_ready and buying_power else "not_ready",
+    }
+
+
+def _manual_gate_broker(account_rows, *, option_ready=True):
+    return {
+        "snapshot_exists": True,
+        "snapshot_age_minutes": 1.0,
+        "snapshot_schema": "optedge_robinhood_broker_snapshot_v1",
+        "raw_bundle_schema": "optedge_robinhood_mcp_read_bundle_v2",
+        "execution_capture_ready": True,
+        "status": "synced",
+        "warnings": [],
+        "account_readiness_rows": account_rows,
+        "agentic_readiness_status": "ready" if option_ready else "missing_ready_account",
+        "agentic_readiness_detail": "A single active account must meet every review constraint.",
+    }
+
+
+def _manual_gate_share_plan(
+    *,
+    assumed_equity=9_000,
+    risk_fraction=0.01,
+    allocation_fraction=0.10,
+    planned_stop_loss=50,
+    notional=900,
+):
+    return {
+        "direction": "long",
+        "order": {
+            "symbol": "AAPL",
+            "quantity": 9,
+            "limit_price": 100,
+            "estimated_notional_dollars": notional,
+        },
+        "risk": {
+            "planned_stop_loss_dollars": planned_stop_loss,
+            "full_share_notional_at_risk_dollars": notional,
+        },
+        "account_assumptions": {
+            "account_equity_dollars": assumed_equity,
+            "risk_fraction": risk_fraction,
+            "allocation_fraction": allocation_fraction,
+        },
+    }
+
+
+def _manual_gate_option_plan(*, assumed_equity=9_000, debit=100):
+    return {
+        "direction": "long",
+        "order": {
+            "symbol": "AAPL",
+            "option_type": "call",
+            "underlying_type": "equity",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "quantity": 1,
+            "limit_price": 1.0,
+            "estimated_debit_dollars": debit,
+        },
+        "risk": {"full_option_debit_at_risk_dollars": debit},
+        "account_assumptions": {
+            "account_equity_dollars": assumed_equity,
+            "risk_fraction": 0.02,
+            "allocation_fraction": 0.10,
+        },
+    }
+
+
+def _manual_gate_option_candidate(**updates):
+    candidate = {
+        "symbol": "AAPL",
+        "option_side": "call",
+        "strike": 200,
+        "expiry": "2027-01-15",
+        "quantity": 1,
+        "max_limit_price": 1.0,
+        "source_quote_at": datetime.now(timezone.utc).isoformat(),
+        "source_quote_time_basis": "provider_quote_timestamp",
+        "quote_quality": "live_or_broker",
+        "data_delay": "real_time",
+        "source_bid": 0.99,
+        "source_ask": 1.01,
+        "max_allowed_spread_pct": 0.12,
+        "underlying_type": "equity",
+    }
+    candidate.update(updates)
+    return candidate
+
+
+def _run_manual_gate(
+    asset,
+    plan,
+    broker,
+    *,
+    candidate=None,
+    snapshot_updates=None,
+):
+    old_health = cockpit_module.build_data_health
+    old_broker = cockpit_module.build_broker_reconciliation
+    try:
+        cockpit_module.build_data_health = lambda data_dir: {
+            "status": "ok",
+            "validation_guardrail": {"level": "ok", "detail": "Validated."},
+        }
+        cockpit_module.build_broker_reconciliation = lambda data_dir: broker
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            now = datetime.now(timezone.utc).isoformat()
+            snapshot = {
+                "generated_at": now,
+                "accounts": [],
+                "equity_positions": [],
+                "option_positions": [],
+                "equity_orders": [],
+                "option_orders": [],
+            }
+            snapshot.update(snapshot_updates or {})
+            (data_dir / "robinhood_broker_snapshot.json").write_text(
+                json.dumps(snapshot), encoding="utf-8",
+            )
+            (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+            (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
+            if asset == "option":
+                (data_dir / "robinhood_agentic_queue.json").write_text(
+                    json.dumps({"generated_at": now}), encoding="utf-8",
+                )
+                (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+                    "generated_at": now,
+                    "entry_gate": {"new_entries_allowed_after_live_checks": True},
+                    "manual_review_candidates": [candidate or _manual_gate_option_candidate()],
+                }), encoding="utf-8")
+            return cockpit_module._manual_review_gate(asset, data_dir, plan)
+    finally:
+        cockpit_module.build_data_health = old_health
+        cockpit_module.build_broker_reconciliation = old_broker
+
+
+def test_manual_review_gate_allows_conservative_user_equity_when_live_math_passes():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=1_000),
+    ])
+
+    gate = _run_manual_gate("share", _manual_gate_share_plan(assumed_equity=9_000), broker)
+
+    assert gate["review_allowed"] is True
+    assert gate["blockers"] == []
+    assert gate["review_constraints"]["account"]["eligible_same_account_match_count"] == 1
+
+
+def test_manual_review_gate_blocks_incomplete_v2_capture_even_for_shares():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=1_000),
+    ])
+    broker.update({
+        "normalization_ready": False,
+        "normalization_blocker_count": 1,
+        "normalization_blockers": [
+            "get_equity_orders capture is incomplete because data.next is non-null."
+        ],
+    })
+
+    gate = _run_manual_gate("share", _manual_gate_share_plan(assumed_equity=9_000), broker)
+
+    assert gate["review_allowed"] is False
+    assert any("read capture is incomplete" in blocker for blocker in gate["blockers"])
+
+
+def test_manual_review_gate_blocks_materially_overstated_user_equity():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+
+    gate = _run_manual_gate("share", _manual_gate_share_plan(assumed_equity=12_000), broker)
+
+    assert gate["review_allowed"] is False
+    assert any("materially above" in blocker for blocker in gate["blockers"])
+    assert gate["review_constraints"]["account"]["eligible_same_account_match_count"] == 0
+
+
+def test_manual_review_gate_does_not_mix_capacity_across_accounts():
+    broker = _manual_gate_broker([
+        _manual_gate_account(label="Risk capacity", equity=10_000, buying_power=500),
+        _manual_gate_account(label="Cash capacity", equity=4_000, buying_power=1_000),
+    ])
+    plan = _manual_gate_share_plan(
+        assumed_equity=4_000,
+        risk_fraction=0.02,
+        allocation_fraction=0.20,
+        planned_stop_loss=100,
+        notional=900,
+    )
+
+    gate = _run_manual_gate("share", plan, broker)
+
+    assert gate["review_allowed"] is False
+    assert any("No single eligible Robinhood account" in blocker for blocker in gate["blockers"])
+    assert any("risk fraction" in blocker for blocker in gate["blockers"])
+    assert any("allocation fraction" in blocker for blocker in gate["blockers"])
+    assert any("verified buying power" in blocker for blocker in gate["blockers"])
+    assert gate["review_constraints"]["account"]["eligible_same_account_match_count"] == 0
+
+
+def test_manual_review_gate_preserves_inactive_and_missing_equity_fail_closed():
+    cases = [
+        (
+            [_manual_gate_account(active=False, equity=10_000, buying_power=1_000)],
+            "No active, funded, agentic-accessible equity account",
+        ),
+        (
+            [_manual_gate_account(equity=None, buying_power=1_000)],
+            "portfolio total value is missing",
+        ),
+    ]
+
+    for account_rows, expected in cases:
+        gate = _run_manual_gate(
+            "share",
+            _manual_gate_share_plan(assumed_equity=9_000),
+            _manual_gate_broker(account_rows),
+        )
+        assert gate["review_allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+
+def test_manual_review_gate_blocks_unresolved_nonterminal_broker_orders():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    cases = [
+        (
+            "share",
+            _manual_gate_share_plan(),
+            None,
+            {"equity_orders": [{"state": "mystery_pending", "order_id": "eq-unknown"}]},
+            "nonterminal equity order whose symbol cannot be verified",
+        ),
+        (
+            "option",
+            _manual_gate_option_plan(),
+            _manual_gate_option_candidate(),
+            {"option_orders": [{"state": "mystery_pending", "order_id": "opt-unknown"}]},
+            "nonterminal option order whose exact contract cannot be verified",
+        ),
+    ]
+
+    for asset, plan, candidate, snapshot_updates, expected in cases:
+        gate = _run_manual_gate(
+            asset,
+            plan,
+            _manual_gate_broker([account]),
+            candidate=candidate,
+            snapshot_updates=snapshot_updates,
+        )
+        assert gate["review_allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+
+def test_manual_option_review_blocks_normalized_multi_leg_order_with_planned_second_leg():
+    raw = {
+        "accounts": {"accounts": [{"account_number": "FAKE123456"}]},
+        "option_orders": {"results": [{
+            "account_number": "FAKE123456",
+            "id": "queued-spread",
+            "chain_symbol": "AAPL",
+            "state": "queued",
+            "quantity": "1",
+            "legs": [
+                {
+                    "side": "sell",
+                    "position_effect": "open",
+                    "option_type": "call",
+                    "expiration_date": "2027-01-15",
+                    "strike_price": "210",
+                    "option_id": "first-short-leg",
+                },
+                {
+                    "side": "buy",
+                    "position_effect": "open",
+                    "option_type": "call",
+                    "expiration_date": "2027-01-15",
+                    "strike_price": "200",
+                    "option_id": "planned-long-call-second-leg",
+                },
+            ],
+        }]},
+    }
+    snapshot = normalize_broker_snapshot(
+        raw,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        _manual_gate_broker([_manual_gate_account(equity=10_000, buying_power=2_000)]),
+        candidate=_manual_gate_option_candidate(),
+        snapshot_updates={"option_orders": snapshot["option_orders"]},
+    )
+
+    assert snapshot["option_orders"][0]["contract_identity_status"] == "unresolved_multi_leg"
+    assert gate["review_allowed"] is False
+    assert any("nonterminal multi-leg option order" in blocker for blocker in gate["blockers"])
+
+
+def test_manual_review_gate_blocks_legacy_capture_for_shares_and_options():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    broker.update({
+        "snapshot_schema": "optedge_robinhood_broker_snapshot_v1",
+        "raw_bundle_schema": "legacy_flexible_bundle",
+        "execution_capture_ready": False,
+        "agentic_readiness_status": "capture_untrusted",
+        "agentic_readiness_detail": "A complete account-scoped V2 capture is required.",
+    })
+
+    share_gate = _run_manual_gate("share", _manual_gate_share_plan(), broker)
+    option_gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        broker,
+        candidate=_manual_gate_option_candidate(),
+    )
+
+    for gate in (share_gate, option_gate):
+        assert gate["review_allowed"] is False
+        assert any(
+            "normalized from a complete optedge_robinhood_mcp_read_bundle_v2 capture"
+            in blocker
+            for blocker in gate["blockers"]
+        )
+
+
+def test_manual_share_review_blocks_negative_short_position_before_open_long_buy():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(),
+        broker,
+        snapshot_updates={"equity_positions": [{
+            "symbol": "AAPL",
+            "quantity": -5,
+            "signed_quantity": -5,
+            "position_type": "short",
+        }]},
+    )
+
+    assert gate["review_allowed"] is False
+    assert any("may not silently cover or reduce" in blocker for blocker in gate["blockers"])
+
+
+def test_manual_option_review_blocks_same_direction_broker_exposure_across_contracts():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    cases = [
+        (
+            {"option_positions": [{
+                "symbol": "AAPL",
+                "option_type": "call",
+                "position_type": "long",
+                "strike_price": 210,
+                "expiration_date": "2027-06-18",
+                "quantity": 1,
+                "state": "open",
+            }]},
+            "same-symbol, same-direction option exposure",
+        ),
+        (
+            {"option_orders": [{
+                "symbol": "AAPL",
+                "option_type": "call",
+                "strike_price": 210,
+                "expiration_date": "2027-06-18",
+                "quantity": 1,
+                "state": "queued",
+                "side": "buy",
+                "position_effect": "open",
+            }]},
+            "working same-symbol, same-direction option order",
+        ),
+    ]
+
+    for snapshot_updates, expected in cases:
+        gate = _run_manual_gate(
+            "option",
+            _manual_gate_option_plan(),
+            broker,
+            candidate=_manual_gate_option_candidate(),
+            snapshot_updates=snapshot_updates,
+        )
+        assert gate["review_allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+
+def test_manual_option_review_requires_fresh_two_sided_quote_within_spread_cap():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    cases = [
+        (
+            _manual_gate_option_candidate(source_quote_at=""),
+            "source quote timestamp is missing or invalid",
+        ),
+        (
+            _manual_gate_option_candidate(source_quote_time_basis="artifact_generated_at"),
+            "timestamp basis is missing or non-explicit",
+        ),
+        (
+            _manual_gate_option_candidate(source_bid=None),
+            "source bid/ask is missing or invalid",
+        ),
+        (
+            _manual_gate_option_candidate(source_bid=0.80, source_ask=1.20),
+            "source spread exceeds",
+        ),
+    ]
+
+    for candidate, expected in cases:
+        gate = _run_manual_gate(
+            "option",
+            _manual_gate_option_plan(),
+            broker,
+            candidate=candidate,
+        )
+        assert gate["review_allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+    valid_gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        broker,
+        candidate=_manual_gate_option_candidate(),
+    )
+    assert valid_gate["review_allowed"] is True
+    assert valid_gate["review_constraints"]["quote"]["candidate_source_bid"] == 0.99
+    assert valid_gate["review_constraints"]["quote"]["candidate_source_ask"] == 1.01
+
+    research_gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        broker,
+        candidate=_manual_gate_option_candidate(
+            source_quote_time_basis="provider_response_received_at",
+            quote_quality="free_or_delayed",
+            data_delay="delayed",
+        ),
+    )
+    assert research_gate["review_allowed"] is True
+    assert research_gate["review_constraints"]["quote"]["candidate_quote_is_research_only"] is True
+    assert research_gate["review_constraints"]["quote"]["max_live_quote_age_seconds"] == 120
+    assert research_gate["review_constraints"]["quote"]["limit_price_may_increase"] is False
+    assert research_gate["review_constraints"]["quote"]["max_spread_fraction"] == 0.12
+    assert any("fresh Robinhood quote" in warning for warning in research_gate["warnings"])
+
+
+def test_trade_plan_report_calculates_but_blocks_without_local_evidence():
+    with tempfile.TemporaryDirectory() as td:
+        report = build_trade_plan_report(_share_plan_payload(), Path(td))
+
+    assert report["calculation_ok"] is True
+    assert report["ok"] is False
+    assert report["trade_plan"]["order"]["quantity"] == 10
+    assert report["review_packet"]["status"] == "blocked"
+    assert "DO NOT CALL" in report["review_prompt"]
+
+
+def test_trade_plan_report_builds_manual_review_without_execution_or_automation():
+    old_gate = cockpit_module._manual_review_gate
+    try:
+        cockpit_module._manual_review_gate = lambda asset, data_dir, plan: {
+            "status": "ready",
+            "review_allowed": True,
+            "asset": asset,
+            "blockers": [],
+            "warnings": [],
+            "does_not_place_orders": True,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            report = build_trade_plan_report(_share_plan_payload(), Path(td))
+    finally:
+        cockpit_module._manual_review_gate = old_gate
+
+    assert report["ok"] is True
+    assert report["calculation_ok"] is True
+    assert report["does_not_place_orders"] is True
+    assert report["automation_enabled"] is False
+    assert report["trade_plan"]["order"]["quantity"] == 10
+    assert report["review_packet"]["status"] == "manual_review_required"
+    assert report["review_packet"]["review_plan"]["review_tool"] == "review_equity_order"
+    assert "No scheduled task" in report["review_prompt"]
+    assert "place_equity_order" in report["review_prompt"]
+
+
+def test_trade_plan_report_blocks_short_option_review():
+    with tempfile.TemporaryDirectory() as td:
+        report = build_trade_plan_report({
+            "symbol": "AAPL",
+            "asset": "option",
+            "direction": "short",
+            "option_type": "call",
+            "underlying_type": "equity",
+            "expiry": "2027-01-15",
+            "strike": 200,
+            "contract_multiplier": 100,
+            "account_equity": 10_000,
+            "risk_pct": 1,
+            "allocation_pct": 10,
+            "entry_price": 2,
+            "stop_price": 1,
+            "target_price": 4,
+        }, Path(td))
+
+    assert report["ok"] is False
+    assert report["trade_plan"]["is_actionable"] is False
+    assert report["review_packet"]["status"] == "blocked"
+    assert "DO NOT CALL" in report["review_prompt"]
+
+
+def test_trade_plan_report_blocks_index_option_types_and_roots():
+    base = {
+        "asset": "option",
+        "direction": "long",
+        "option_type": "call",
+        "expiry": "2027-01-15",
+        "strike": 200,
+        "contract_multiplier": 100,
+        "account_equity": 10_000,
+        "risk_pct": 1,
+        "allocation_pct": 10,
+        "entry_price": 1,
+        "stop_price": 0.5,
+        "target_price": 2,
+    }
+    cases = [
+        ({"symbol": "AAPL", "underlying_type": "index"}, "unsupported_review_underlying_type"),
+        ({"symbol": "SPX", "underlying_type": "equity"}, "unsupported_index_option_root"),
+        ({"symbol": "^SPX", "underlying_type": "equity"}, "unsupported_index_option_root"),
+    ]
+
+    for updates, expected_code in cases:
+        with tempfile.TemporaryDirectory() as td:
+            report = build_trade_plan_report({**base, **updates}, Path(td))
+        error_codes = {
+            row.get("code") for row in report["trade_plan"]["validation"]["errors"]
+        }
+        assert report["ok"] is False
+        assert report["review_packet"]["status"] == "blocked"
+        assert expected_code in error_codes
+
+
+def test_trade_desk_contract_is_manual_and_versioned():
+    old_command = cockpit_module.build_command_center
+    old_autopilot = cockpit_module.build_agentic_autopilot_status
+    try:
+        cockpit_module.build_command_center = lambda data_dir, include_live_discovery=False, refresh_trade_queue=False: {
+            "status": "review",
+            "status_detail": "Review the snapshot.",
+        }
+        cockpit_module.build_agentic_autopilot_status = lambda data_dir: {
+            "status": "idle",
+            "auto_submit_allowed": False,
+        }
+        with tempfile.TemporaryDirectory() as td:
+            desk = build_trade_desk(Path(td))
+    finally:
+        cockpit_module.build_command_center = old_command
+        cockpit_module.build_agentic_autopilot_status = old_autopilot
+
+    assert desk["schema"] == "optedge_trade_desk_v1"
+    assert desk["strategy_version"]
+    assert desk["execution_mode"] == "manual_review_only"
+    assert desk["automation_enabled"] is False
+    assert desk["snapshot_id"] == "local-empty"
+
+
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
+    assert "__OPTEDGE_CSRF_TOKEN__" not in html
+    assert cockpit_module.COCKPIT_CSRF_TOKEN in html
+    assert "X-Optedge-CSRF" in html
+    assert "window.fetch =" in html
+    assert "\ufffd" not in html
     assert "Optedge Local Cockpit" in html
     assert "Active options" in html
     assert "Active positions" in html
@@ -329,7 +949,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Data trust ribbon" in html
     assert "trust-card" in html
     assert "loadCommandCenter" in html
-    assert "loadView('overview')" in html
+    assert "loadView('desk')" in html
     assert "loaders.slice(0, 1)" in html
     assert "window.setTimeout" in html
     assert "loadPositions().catch" not in html
@@ -337,6 +957,19 @@ def test_cockpit_html_contains_lookup_controls():
     assert "loadRobinhoodQueue(false).catch" not in html
     assert "loadExplorer().catch" not in html
     assert "loadWatchlist().catch" not in html
+    assert "Trade Desk" in html
+    assert 'data-view="desk"' in html
+    assert "/api/trade-desk" in html
+    assert "tradeDeskFlow" in html
+    assert "Risk-first trade planner" in html
+    assert "plan-calculate" in html
+    assert "plan-copy-review" in html
+    assert "plan-download" in html
+    assert "/api/trade-plan" in html
+    assert "calculateTradePlan" in html
+    assert "manual Robinhood review" in html
+    assert "no automation" in html
+    assert "Equity and ETF options only" in html
     assert "command-center-action-btn" in html
     assert "Best swing radar" in html
     assert "Session plan" in html
@@ -618,6 +1251,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Lookup alt" in html
     assert "Symbol lookup" in html
     assert "/api/lookup" in html
+    assert "fetch('/api/lookup', {" in html
+    assert "method: 'POST'" in html
+    assert "/api/lookup?symbol=" not in html
     assert "Recent lookup history" in html
     assert "lookup-history-refresh" in html
     assert "lookup-history-filter" in html
@@ -675,6 +1311,165 @@ def test_cockpit_html_contains_lookup_controls():
     assert "job-match-btn" in html
     assert "Quick scan" in html
     assert "Bankroll override" in html
+
+
+def test_mutation_requests_require_json_same_origin_and_per_process_token():
+    valid = {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+        "Host": "127.0.0.1:8765",
+        "Origin": "http://127.0.0.1:8765",
+    }
+    assert cockpit_module._post_request_rejection(valid) is None
+    assert "Content-Type" in cockpit_module._post_request_rejection({**valid, "Content-Type": "text/plain"})
+    assert "token" in cockpit_module._post_request_rejection({**valid, "X-Optedge-CSRF": "wrong"})
+    assert "Cross-origin" in cockpit_module._post_request_rejection({
+        **valid,
+        "Origin": "https://malicious.example",
+    })
+    hostile_rebound = {
+        **valid,
+        "Host": "attacker.example:8765",
+        "Origin": "http://attacker.example:8765",
+    }
+    assert "Host" in cockpit_module._post_request_rejection(hostile_rebound)
+    assert cockpit_module._loopback_request_host("127.0.0.1:8765") is True
+    assert cockpit_module._loopback_request_host("localhost:8765") is True
+    assert cockpit_module._loopback_request_host("attacker.example:8765") is False
+
+
+def test_lookup_http_routes_require_csrf_json_post_and_get_routes_are_inert():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        calls: list[tuple[str, str]] = []
+        original_lookup = cockpit_module.lookup_symbol
+        original_save = cockpit_module.save_lookup
+
+        def fake_lookup(symbol, target_dir, **kwargs):
+            assert Path(target_dir) == data_dir
+            calls.append(("lookup", str(symbol)))
+            return {
+                "query": str(symbol).upper(),
+                "lookup_symbol": str(symbol).upper(),
+                "total_hits": 0,
+                "brief": {},
+            }
+
+        def fake_save(report, target_dir):
+            assert Path(target_dir) == data_dir
+            calls.append(("save", str(report.get("query"))))
+            archive_dir = data_dir / "lookup_reports"
+            return {
+                "html": data_dir / "lookup_AAPL.html",
+                "json": data_dir / "lookup_AAPL.json",
+                "archive_html": archive_dir / "lookup_AAPL_20260712_120000.html",
+                "archive_json": archive_dir / "lookup_AAPL_20260712_120000.json",
+                "history": data_dir / "lookup_history.jsonl",
+            }
+
+        cockpit_module.lookup_symbol = fake_lookup
+        cockpit_module.save_lookup = fake_save
+        handler = type(
+            "LookupSecurityTestHandler",
+            (cockpit_module.CockpitHandler,),
+            {"data_dir": data_dir},
+        )
+        server = cockpit_module.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        origin = f"http://127.0.0.1:{port}"
+
+        def request(method, path, *, body=None, headers=None):
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request(method, path, body=body, headers=headers or {})
+                response = connection.getresponse()
+                payload = response.read()
+                return response.status, payload
+            finally:
+                connection.close()
+
+        try:
+            for path in ("/api/lookup?symbol=AAPL", "/lookup?symbol=AAPL"):
+                status, _ = request("GET", path)
+                assert status == 404
+            assert calls == []
+            assert list(data_dir.rglob("*")) == []
+
+            status, _ = request(
+                "POST",
+                "/api/lookup",
+                body=json.dumps({"symbol": "AAPL"}),
+                headers={"Content-Type": "application/json", "Origin": origin},
+            )
+            assert status == 403
+            assert calls == []
+
+            status, _ = request(
+                "POST",
+                "/api/lookup",
+                body=json.dumps({"symbol": "AAPL"}),
+                headers={
+                    "Content-Type": "text/plain",
+                    "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+                    "Origin": origin,
+                },
+            )
+            assert status == 403
+            assert calls == []
+
+            status, payload = request(
+                "POST",
+                "/api/lookup",
+                body=json.dumps({"symbol": "AAPL"}),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+                    "Origin": origin,
+                },
+            )
+            assert status == 200
+            result = json.loads(payload.decode("utf-8"))
+            assert result["lookup_symbol"] == "AAPL"
+            assert result["saved_lookup"]["report_url"].startswith("/lookup-report?")
+            assert calls == [("lookup", "AAPL"), ("save", "AAPL")]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            cockpit_module.lookup_symbol = original_lookup
+            cockpit_module.save_lookup = original_save
+
+
+def test_read_only_watchlist_enrichment_does_not_queue_broker_research():
+    original_lookup = cockpit_module.lookup_symbol
+    calls: list[dict] = []
+
+    def fake_lookup(query, data_dir, **kwargs):
+        calls.append(dict(kwargs))
+        return {"total_hits": 0, "brief": {}}
+
+    try:
+        cockpit_module.lookup_symbol = fake_lookup
+        with tempfile.TemporaryDirectory() as td:
+            result = cockpit_module._enrich_watchlist_entry(
+                {"symbol": "AAPL", "query": "AAPL"},
+                Path(td),
+            )
+    finally:
+        cockpit_module.lookup_symbol = original_lookup
+
+    assert result["local_hits"] == 0
+    assert calls == [{"include_sec": False, "queue_broker_request": False}]
+
+
+def test_cockpit_refuses_non_loopback_bindings():
+    try:
+        cockpit_module.run_server("0.0.0.0", 8765, Path("unused"), open_browser=False)
+        raise AssertionError("expected non-loopback binding to be rejected")
+    except ValueError as exc:
+        assert "local-only" in str(exc)
 
 
 def test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png():
@@ -2441,6 +3236,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
                 "rank_score": 2.1,
                 "dte": 210,
                 "spread_pct": 0.04,
+                "underlying_type": "equity",
             }],
             "held": [],
         }
@@ -2544,6 +3340,7 @@ def test_swing_packet_builds_and_writes_daily_decision_packet():
                 "mid": 5.0,
                 "premium_dollars": 500,
                 "spread_pct": 0.04,
+                "underlying_type": "equity",
                 "openInterest": 1200,
                 "volume": 80,
                 "breakeven_price": 225.0,
@@ -4329,6 +5126,7 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
                 "fused_score": 1.5,
                 "trade_status": "Trade",
                 "spread_pct": 0.04,
+                "underlying_type": "equity",
             },
             {
                 "ticker": "MSFT",
@@ -4344,6 +5142,7 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
                 "rank_score": 1.0,
                 "trade_status": "Trade",
                 "spread_pct": 0.04,
+                "underlying_type": "equity",
             },
         ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
         pd.DataFrame([
@@ -4388,14 +5187,22 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
 def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
+        source_quote_at = datetime.now(timezone.utc).isoformat()
         pd.DataFrame([
             {
                 "ticker": "AAPL",
                 "contract": "AAPL 2027-01-15 C 200",
+                "underlying_type": "equity",
                 "side": "call",
                 "strike": 200,
                 "expiry": "2027-01-15",
                 "mid": 0.75,
+                "bid": 0.735,
+                "ask": 0.765,
+                "source_quote_at": source_quote_at,
+                "data_delay": "real_time",
+                "source_quote_time_basis": "broker_quote_timestamp",
+                "quote_quality": "live_or_broker",
                 "suggested_contracts": 1,
                 "actual_dollars": 75,
                 "stop_price": 0.35,
@@ -4409,10 +5216,17 @@ def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
             {
                 "ticker": "MSFT",
                 "contract": "MSFT 2026-10-16 C 500",
+                "underlying_type": "equity",
                 "side": "call",
                 "strike": 500,
                 "expiry": "2026-10-16",
                 "mid": 0.65,
+                "bid": 0.637,
+                "ask": 0.663,
+                "source_quote_at": source_quote_at,
+                "data_delay": "real_time",
+                "source_quote_time_basis": "broker_quote_timestamp",
+                "quote_quality": "live_or_broker",
                 "suggested_contracts": 1,
                 "actual_dollars": 65,
                 "stop_price": 0.3,
@@ -4651,7 +5465,7 @@ def test_agentic_autopilot_status_blocks_stale_packets_and_tickets():
         assert status["next_actions"][0]["action"] == "refresh_autopilot_packet"
 
 
-def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
+def test_agentic_autopilot_blocks_legacy_ticket_but_preserves_defensive_preflight():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         now = datetime.now(timezone.utc).isoformat()
@@ -4694,8 +5508,16 @@ def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
             "generated_at": now,
             "accounts": [{
                 "nickname": "Agentic",
+                "state": "active",
                 "agentic_allowed": True,
                 "option_level": "option_level_2",
+                "buying_power": 500,
+                "unleveraged_buying_power": 500,
+                "portfolio": {
+                    "total_value": 10_000,
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                },
                 "option_positions": [],
             }],
         }), encoding="utf-8")
@@ -4704,31 +5526,169 @@ def test_agentic_autopilot_preflight_passes_clean_confirmation_ticket():
 
         status = build_agentic_autopilot_status(data_dir)
 
-        assert status["status"] == "ticket_ready"
-        assert status["fresh_entries_allowed"] is True
-        assert status["ticket_preflight_block_count"] == 0
+        assert status["status"] == "blocked"
+        assert status["label"] == "Legacy ticket blocked"
+        assert status["fresh_entries_allowed"] is False
+        assert any("legacy live-ticket artifacts are deprecated" in value for value in status["blockers"])
+        assert status["ticket_preflight_block_count"] >= 1
         assert status["ticket_preflight_warn_count"] == 0
         assert status["decision_recent_count"] == 0
         assert status["decision_log_needed"] is True
         assert any("staged live ticket" in reason for reason in status["decision_debt_reasons"])
-        assert status["tickets"][0]["preflight_status"] == "pass"
-        assert status["tickets"][0]["preflight_blocks"] == 0
+        assert status["tickets"][0]["status"] == "blocked"
+        assert status["tickets"][0]["preflight_status"] == "blocked"
+        assert status["tickets"][0]["preflight_blocks"] >= 1
         assert status["tickets"][0]["preflight_warnings"] == 0
-        assert status["tickets"][0]["mcp_review_status"] == "ready"
-        assert status["tickets"][0]["mcp_review_tool"] == "review_option_order"
-        assert status["tickets"][0]["mcp_place_tool"] == "place_option_order"
-        assert status["tickets"][0]["mcp_lookup_symbol"] == "AAPL"
+        assert status["tickets"][0]["mcp_review_status"] == "review"
+        assert status["tickets"][0]["mcp_review_tool"] is None
+        assert status["tickets"][0]["mcp_place_tool"] is None
+        assert status["tickets"][0]["mcp_lookup_symbol"] is None
         checks = {(row["check"], row["level"]) for row in status["ticket_preflight"]}
         assert ("Fresh packet", "pass") in checks
-        assert ("Entry gate", "pass") in checks
+        assert ("Entry gate", "block") in checks
         assert ("Confirmation", "pass") in checks
         assert ("Execution mode", "pass") in checks
-        assert ("MCP review plan", "pass") in checks
+        assert ("MCP review plan", "block") in checks
         actions = [row["action"] for row in status["next_actions"]]
         assert "log_decision" in actions
+        assert "review_ticket" in actions
 
 
-def test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan():
+def test_agentic_autopilot_blocks_stale_unfunded_and_split_broker_state():
+    cases = [
+        (
+            "stale",
+            (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+            [{
+                "nickname": "Agentic",
+                "state": "active",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+                "buying_power": 500,
+                "unleveraged_buying_power": 500,
+                "portfolio": {
+                    "total_value": 10_000,
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                },
+                "option_positions": [],
+            }],
+            "broker snapshot is stale",
+            "stale",
+        ),
+        (
+            "unfunded",
+            datetime.now(timezone.utc).isoformat(),
+            [{
+                "nickname": "Agentic",
+                "state": "active",
+                "agentic_allowed": True,
+                "option_level": "option_level_2",
+                "buying_power": 0,
+                "unleveraged_buying_power": 0,
+                "portfolio": {
+                    "total_value": 10_000,
+                    "buying_power": 0,
+                    "unleveraged_buying_power": 0,
+                },
+                "option_positions": [],
+            }],
+            "not funded and agentic-options ready",
+            "blocked",
+        ),
+        (
+            "split",
+            datetime.now(timezone.utc).isoformat(),
+            [
+                {
+                    "nickname": "Options",
+                    "state": "active",
+                    "agentic_allowed": False,
+                    "option_level": "option_level_2",
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                    "portfolio": {
+                        "total_value": 10_000,
+                        "buying_power": 500,
+                        "unleveraged_buying_power": 500,
+                    },
+                    "option_positions": [],
+                },
+                {
+                    "nickname": "Agentic",
+                    "state": "active",
+                    "agentic_allowed": True,
+                    "option_level": "",
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                    "portfolio": {
+                        "total_value": 10_000,
+                        "buying_power": 500,
+                        "unleveraged_buying_power": 500,
+                    },
+                    "option_positions": [],
+                },
+            ],
+            "not funded and agentic-options ready",
+            "blocked",
+        ),
+    ]
+    for label, snapshot_time, accounts, blocker_text, expected_status in cases:
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            now = datetime.now(timezone.utc).isoformat()
+            ticket = {
+                "symbol": "AAPL",
+                "contract": "AAPL 2027-01-15 C 200",
+                "option_side": "call",
+                "strike": 200,
+                "expiry": "2027-01-15",
+                "generated_at": now,
+                "quantity": 1,
+                "limit_price": 1.25,
+                "estimated_premium_dollars": 125.0,
+                "confirmation_required": True,
+                "live_submit_allowed_by_this_script": False,
+            }
+            ticket["robinhood_mcp_review_plan"] = robinhood_mcp_option_review_plan(ticket)
+            (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps({
+                "status": "ready",
+                "generated_at": now,
+                "orders": [ticket],
+            }), encoding="utf-8")
+            (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+                "generated_at": now,
+                "auto_submit_allowed": False,
+                "entry_gate": {
+                    "status": "open",
+                    "new_entries_allowed_after_live_checks": True,
+                    "blockers": [],
+                    "warnings": [],
+                },
+                "entry_candidates": [ticket],
+            }), encoding="utf-8")
+            (data_dir / "robinhood_live_order_tickets.json").write_text(json.dumps({
+                "generated_at": now,
+                "tickets": [ticket],
+            }), encoding="utf-8")
+            (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
+                "generated_at": snapshot_time,
+                "accounts": accounts,
+                "option_positions": [],
+            }), encoding="utf-8")
+            (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
+            (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+
+            status = build_agentic_autopilot_status(data_dir)
+
+            assert status["status"] == expected_status, label
+            assert status["fresh_entries_allowed"] is False, label
+            assert status["ticket_preflight_block_count"] >= 1, label
+            assert status["tickets"][0]["preflight_status"] == "blocked", label
+            assert any(blocker_text in blocker for blocker in status["blockers"]), label
+
+
+def test_agentic_autopilot_blocks_when_live_ticket_lacks_mcp_review_plan():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         now = datetime.now(timezone.utc).isoformat()
@@ -4769,8 +5729,16 @@ def test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan():
             "generated_at": now,
             "accounts": [{
                 "nickname": "Agentic",
+                "state": "active",
                 "agentic_allowed": True,
                 "option_level": "option_level_2",
+                "buying_power": 500,
+                "unleveraged_buying_power": 500,
+                "portfolio": {
+                    "total_value": 10_000,
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                },
                 "option_positions": [],
             }],
         }), encoding="utf-8")
@@ -4780,10 +5748,10 @@ def test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan():
         status = build_agentic_autopilot_status(data_dir)
 
         assert status["tickets"][0]["mcp_review_status"] == "missing"
-        assert status["tickets"][0]["preflight_status"] == "warn"
-        assert status["ticket_preflight_warn_count"] >= 1
+        assert status["tickets"][0]["preflight_status"] == "blocked"
+        assert status["ticket_preflight_block_count"] >= 1
         assert any(
-            row["check"] == "MCP review plan" and row["level"] == "warn"
+            row["check"] == "MCP review plan" and row["level"] == "block"
             for row in status["ticket_preflight"]
         )
 
@@ -4795,8 +5763,16 @@ def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
             "accounts": [{
                 "account_number": "FAKE123456",
                 "nickname": "Agentic",
+                "state": "active",
                 "agentic_allowed": True,
                 "option_level": "option_level_2",
+                "buying_power": 500,
+                "unleveraged_buying_power": 500,
+                "portfolio": {
+                    "total_value": 10_000,
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                },
             }],
             "option_positions": {
                 "results": [{
@@ -4879,8 +5855,16 @@ def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
             "accounts": [
                 {
                     "nickname": "Default",
+                    "state": "active",
                     "agentic_allowed": False,
                     "option_level": "option_level_2",
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                    "portfolio": {
+                        "total_value": 10_000,
+                        "buying_power": 500,
+                        "unleveraged_buying_power": 500,
+                    },
                     "option_positions": [
                         {
                             "chain_symbol": "AAPL",
@@ -4902,8 +5886,16 @@ def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
                 },
                 {
                     "nickname": "Agentic",
+                    "state": "active",
                     "agentic_allowed": True,
                     "option_level": "",
+                    "buying_power": 500,
+                    "unleveraged_buying_power": 500,
+                    "portfolio": {
+                        "total_value": 10_000,
+                        "buying_power": 500,
+                        "unleveraged_buying_power": 500,
+                    },
                     "option_positions": [],
                 },
             ],
@@ -4929,7 +5921,7 @@ def test_broker_reconciliation_surfaces_broker_and_local_mismatches():
         )
         assert option_write["tool_support"] == "write supported"
         assert option_write["local_policy"] == "explicit approval required"
-        assert option_write["account_status"] == "Split account permissions"
+        assert option_write["account_status"] == "Trusted V2 broker capture required"
         assert any("options-approved account exists" in warning for warning in report["warnings"])
         statuses = {row["contract"]: row["status"] for row in report["rows"]}
         assert statuses["AAPL 2027-01-15 CALL 200"] == "matched"
@@ -5099,7 +6091,9 @@ def test_position_hygiene_apply_preview_does_not_mutate_positions():
         (data_dir / "open_positions.json").write_text(json.dumps(open_rows), encoding="utf-8")
         (data_dir / "closed_positions.json").write_text(json.dumps(closed_rows), encoding="utf-8")
 
-        report = apply_position_hygiene(data_dir, apply=False)
+        report = apply_position_hygiene(
+            data_dir, apply=False, fetch_expiry_history=False,
+        )
 
         assert report["status"] == "preview"
         assert report["expired_to_close_count"] == 1
@@ -5144,7 +6138,18 @@ def test_position_hygiene_apply_backs_up_and_moves_only_expired_options():
         (data_dir / "open_positions.json").write_text(json.dumps(open_rows), encoding="utf-8")
         (data_dir / "closed_positions.json").write_text(json.dumps(closed_rows), encoding="utf-8")
 
-        report = apply_position_hygiene(data_dir, apply=True)
+        def fake_history(_ticker, period="1y", interval="1d", cache_age=3600):
+            frame = pd.DataFrame(
+                {"Close": [205.0]},
+                index=pd.to_datetime([expired_expiry], utc=True),
+            )
+            frame.attrs["history_source"] = "test_history"
+            frame.attrs["history_quality"] = "observed_test"
+            return frame
+
+        report = apply_position_hygiene(
+            data_dir, apply=True, history_fetcher=fake_history,
+        )
 
         assert report["status"] == "applied"
         assert report["wrote_files"] is True
@@ -5160,12 +6165,74 @@ def test_position_hygiene_apply_backs_up_and_moves_only_expired_options():
         assert [row["ticker"] for row in remaining_open] == ["MSFT"]
         closed = saved_closed[-1]
         assert closed["ticker"] == "AAPL"
-        assert closed["exit_reason"] == "expired_hygiene"
-        assert closed["exit_price"] == 0.0
-        assert closed["pnl_pct"] == -1.0
+        assert closed["exit_reason"] == "expired"
+        assert closed["exit_price"] == 5.0
+        assert closed["pnl_pct"] == 4.0
         assert closed["trade_status"] == "Closed"
         assert closed["hygiene_source"] == "position_hygiene"
+        assert closed["expiry_close_price_source"] == "intrinsic_proxy_from_underlying_expiry_close"
+        assert report["unresolved_expiry_count"] == 0
         assert "broker orders" in report["notes"][-1]
+
+
+def test_position_hygiene_rolls_back_if_second_lifecycle_write_fails():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        expired_expiry = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        open_rows = [{
+            "ticker": "AAPL",
+            "side": "call",
+            "strike": 200,
+            "expiry": expired_expiry,
+            "entry_price": 1.0,
+        }]
+        closed_rows = [{"ticker": "OLD", "exit_reason": "hard_target"}]
+        open_path = data_dir / "open_positions.json"
+        closed_path = data_dir / "closed_positions.json"
+        open_path.write_text(json.dumps(open_rows), encoding="utf-8")
+        closed_path.write_text(json.dumps(closed_rows), encoding="utf-8")
+        original_open = open_path.read_bytes()
+        original_closed = closed_path.read_bytes()
+        original_writer = cockpit_module._atomic_json_list_write
+
+        def fail_open_write(path, rows):
+            if path == open_path:
+                raise OSError("simulated second write failure")
+            return original_writer(path, rows)
+
+        cockpit_module._atomic_json_list_write = fail_open_write
+        try:
+            report = apply_position_hygiene(
+                data_dir,
+                apply=True,
+                fetch_expiry_history=False,
+            )
+        finally:
+            cockpit_module._atomic_json_list_write = original_writer
+
+        assert report["status"] == "failed"
+        assert report["wrote_files"] is False
+        assert "rolled back" in report["error"]
+        assert open_path.read_bytes() == original_open
+        assert closed_path.read_bytes() == original_closed
+
+
+def test_position_hygiene_blocks_malformed_existing_history():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        open_path = data_dir / "open_positions.json"
+        closed_path = data_dir / "closed_positions.json"
+        open_path.write_text("[]", encoding="utf-8")
+        malformed = b'{"not": "a closed-position list"}'
+        closed_path.write_bytes(malformed)
+
+        report = apply_position_hygiene(data_dir, apply=True)
+
+        assert report["status"] == "blocked"
+        assert report["wrote_files"] is False
+        assert "not a valid JSON list" in report["error"]
+        assert closed_path.read_bytes() == malformed
+        assert json.loads(open_path.read_text(encoding="utf-8")) == []
 
 
 def test_agentic_autopilot_paper_book_marks_targets_and_missing_quotes():
@@ -5307,6 +6374,8 @@ def test_option_chain_scan_fetches_and_filters_contracts():
             "source": "cboe",
             "quote_quality": "free_or_delayed",
             "data_delay": "delayed",
+            "source_quote_at": "2026-06-13T19:58:00+00:00",
+            "source_quote_time_basis": "provider_quote_timestamp",
             "source_attempts": [
                 {"provider": "cboe", "status": "ok", "rows": 3, "expirations": 2},
             ],
@@ -5323,6 +6392,8 @@ def test_option_chain_scan_fetches_and_filters_contracts():
                         "openInterest": 1000,
                         "impliedVolatility": 0.30,
                         "delta": 0.42,
+                        "source_quote_at": "2026-06-13T19:59:00+00:00",
+                        "source_quote_time_basis": "provider_row.quote_timestamp",
                     },
                     {
                         "strike": 300.0,
@@ -5378,6 +6449,8 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["source"] == "cboe"
     assert report["quote_quality"] == "free_or_delayed"
     assert report["data_delay"] == "delayed"
+    assert report["source_quote_at"] == "2026-06-13T19:58:00+00:00"
+    assert report["source_quote_time_basis"] == "provider_quote_timestamp"
     assert report["providers_checked"] == 1
     assert report["source_attempts"][0]["provider"] == "cboe"
     assert report["total_contracts"] == 3
@@ -5400,6 +6473,8 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["chain_source"] == "cboe"
     assert row["quote_quality"] == "free_or_delayed"
     assert row["data_delay"] == "delayed"
+    assert row["source_quote_at"] == "2026-06-13T19:59:00+00:00"
+    assert row["source_quote_time_basis"] == "provider_row.quote_timestamp"
     assert row["premium_dollars"] == 500.0
     assert row["breakeven_price"] == 225.0
     assert row["breakeven_direction"] == "up"
@@ -5722,6 +6797,9 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
             "grade_counts": {"A": 1},
             "source_counts": {"cboe": 1},
             "rows": [{
+                "generated_at": "2026-06-13T20:00:00+00:00",
+                "source_quote_at": "2026-06-13T19:59:00+00:00",
+                "source_quote_time_basis": "provider_quote_timestamp",
                 "symbol": "AAPL",
                 "contract_query": "AAPL 2027-01-15 C 220",
                 "side": "call",
@@ -5778,6 +6856,9 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert "tight spread; 3m+ swing" in csv_text
         assert payload["count"] == 1
         assert payload["rows"][0]["quote_quality"] == "free_or_delayed"
+        assert payload["rows"][0]["generated_at"] == "2026-06-13T20:00:00+00:00"
+        assert payload["rows"][0]["source_quote_at"] == "2026-06-13T19:59:00+00:00"
+        assert payload["rows"][0]["source_quote_time_basis"] == "provider_quote_timestamp"
         assert payload["rows"][0]["chain_source"] == "cboe"
         assert payload["rows"][0]["breakeven_price"] == 225.0
         assert payload["rows"][0]["budget_fit"] == "inside_budget"
@@ -6611,7 +7692,27 @@ if __name__ == "__main__":
     test_lookup_history_surfaces_stale_refresh_leaderboard()
     test_lookup_history_computes_followup_return_from_free_history()
     test_lookup_history_scores_puts_by_bearish_thesis()
+    test_manual_review_gate_allows_conservative_user_equity_when_live_math_passes()
+    test_manual_review_gate_blocks_incomplete_v2_capture_even_for_shares()
+    test_manual_review_gate_blocks_materially_overstated_user_equity()
+    test_manual_review_gate_does_not_mix_capacity_across_accounts()
+    test_manual_review_gate_preserves_inactive_and_missing_equity_fail_closed()
+    test_manual_review_gate_blocks_unresolved_nonterminal_broker_orders()
+    test_manual_option_review_blocks_normalized_multi_leg_order_with_planned_second_leg()
+    test_manual_review_gate_blocks_legacy_capture_for_shares_and_options()
+    test_manual_share_review_blocks_negative_short_position_before_open_long_buy()
+    test_manual_option_review_blocks_same_direction_broker_exposure_across_contracts()
+    test_manual_option_review_requires_fresh_two_sided_quote_within_spread_cap()
+    test_trade_plan_report_calculates_but_blocks_without_local_evidence()
+    test_trade_plan_report_builds_manual_review_without_execution_or_automation()
+    test_trade_plan_report_blocks_short_option_review()
+    test_trade_plan_report_blocks_index_option_types_and_roots()
+    test_trade_desk_contract_is_manual_and_versioned()
     test_cockpit_html_contains_lookup_controls()
+    test_mutation_requests_require_json_same_origin_and_per_process_token()
+    test_lookup_http_routes_require_csrf_json_post_and_get_routes_are_inert()
+    test_read_only_watchlist_enrichment_does_not_queue_broker_research()
+    test_cockpit_refuses_non_loopback_bindings()
     test_data_health_flags_mismatched_open_counts_duplicates_and_bad_png()
     test_data_health_reports_fresh_sec_ticker_cache()
     test_data_health_audits_latest_opportunity_duplicates()
@@ -6669,14 +7770,17 @@ if __name__ == "__main__":
     test_agentic_decision_journal_records_local_review_rows()
     test_agentic_autopilot_status_summarizes_gate_tickets_and_paper_book()
     test_agentic_autopilot_status_blocks_stale_packets_and_tickets()
-    test_agentic_autopilot_preflight_passes_clean_confirmation_ticket()
-    test_agentic_autopilot_warns_when_live_ticket_lacks_mcp_review_plan()
+    test_agentic_autopilot_blocks_legacy_ticket_but_preserves_defensive_preflight()
+    test_agentic_autopilot_blocks_stale_unfunded_and_split_broker_state()
+    test_agentic_autopilot_blocks_when_live_ticket_lacks_mcp_review_plan()
     test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation()
     test_broker_reconciliation_surfaces_broker_and_local_mismatches()
     test_agentic_autopilot_blocks_ticket_when_broker_reconciliation_mismatches()
     test_position_hygiene_builds_safe_cleanup_plan_without_mutating_positions()
     test_position_hygiene_apply_preview_does_not_mutate_positions()
     test_position_hygiene_apply_backs_up_and_moves_only_expired_options()
+    test_position_hygiene_rolls_back_if_second_lifecycle_write_fails()
+    test_position_hygiene_blocks_malformed_existing_history()
     test_agentic_autopilot_paper_book_marks_targets_and_missing_quotes()
     test_agentic_autopilot_paper_book_does_not_fake_zero_pnl_without_quotes()
     test_option_chain_scan_fetches_and_filters_contracts()
@@ -6696,4 +7800,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("92/92 local cockpit tests passed")
+    print("115/115 local cockpit tests passed")

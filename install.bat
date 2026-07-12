@@ -12,7 +12,7 @@ echo.
 
 REM Step 1: detect compatible Python
 set PY_CMD=
-for %%V in (3.13 3.12 3.11 3.10 3.9) do (
+for %%V in (3.13 3.12 3.11) do (
     if "!PY_CMD!"=="" (
         py -%%V --version >nul 2>&1 && set PY_CMD=py -%%V
     )
@@ -22,23 +22,23 @@ if "%PY_CMD%"=="" (
     if !errorlevel! equ 0 (
         for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PY_VER=%%v
         echo Found python !PY_VER!
-        REM Refuse Python 3.14+ (no wheels yet for data-science packages)
-        echo !PY_VER! | findstr /b "3.14" >nul && (
-            echo.
-            echo ERROR: Python 3.14 has no Windows wheels for the packages we need.
-            echo        Install Python 3.13 from https://www.python.org/downloads/release/python-3130/
-            echo        Make sure "Add python.exe to PATH" is CHECKED during install.
-            pause
-            exit /b 1
-        )
         set PY_CMD=python
     )
 )
 if "%PY_CMD%"=="" (
     echo.
-    echo ERROR: No compatible Python found ^(need 3.9 - 3.13^)
+    echo ERROR: No compatible Python found ^(need 3.11 - 3.13^)
     echo        Install Python 3.13 from https://www.python.org/downloads/release/python-3130/
     echo        Make sure "Add python.exe to PATH" is CHECKED during install.
+    pause
+    exit /b 1
+)
+
+%PY_CMD% -c "import sys; raise SystemExit(0 if sys.version_info[:2] in ((3,11),(3,12),(3,13)) else 1)" >nul 2>&1
+if !errorlevel! neq 0 (
+    echo.
+    echo ERROR: Optedge requires Python 3.11 through 3.13.
+    echo        Install Python 3.12 or 3.13 and run this installer again.
     pause
     exit /b 1
 )
@@ -88,6 +88,7 @@ echo.
 echo Run the pipeline:           python run.py
 echo Demo mode ^(no network^):    python run.py --demo
 echo Fast insider:               python run.py --fast-insider
+echo Open the Trade Desk:        python scripts\local_cockpit.py
 echo.
 echo The venv is now active in this window. To re-activate later:
 echo    venv\Scripts\activate.bat

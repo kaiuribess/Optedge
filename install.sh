@@ -17,11 +17,15 @@ echo -e "${BOLD}╰────────────────────�
 # 1. Check Python
 if ! command -v python3 &>/dev/null; then
     echo -e "${RED}✗ Python 3 not found.${NC}"
-    echo "  Install Python 3.9+ from https://www.python.org/downloads/"
+    echo "  Install Python 3.12 from https://www.python.org/downloads/"
     exit 1
 fi
 
 PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+if ! python3 -c "import sys; raise SystemExit(0 if (3, 11) <= sys.version_info < (3, 14) else 1)"; then
+    echo -e "${RED}✗ Optedge requires Python 3.11 through 3.13 (found $PY_VERSION).${NC}"
+    exit 1
+fi
 echo -e "${GREEN}✓${NC} Python $PY_VERSION"
 
 # 2. Choose install method
@@ -69,6 +73,7 @@ if [ "$choice" = "1" ]; then
 fi
 echo -e "  Run the pipeline:                    ${BOLD}$PY run.py${NC}"
 echo -e "  Quick demo (no network):             ${BOLD}$PY run.py --demo${NC}"
+echo -e "  Open the Trade Desk:                 ${BOLD}$PY scripts/local_cockpit.py${NC}"
 echo ""
 echo "  → Outputs land in data/"
 echo "  → Open data/dashboard_*.html in your browser"

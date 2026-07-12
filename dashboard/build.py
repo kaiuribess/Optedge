@@ -22,6 +22,12 @@ import math
 
 import pandas as pd
 
+from optedge.strategy_profile import (
+    DISCOVERY_PROFILE,
+    STRATEGY_VERSION,
+    SWING_EXECUTION_PROFILE,
+)
+
 try:
     from fusion.attribution import attribution_chip as _attrib_chip
 except Exception:
@@ -2370,7 +2376,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   <header class="top">
     <div>
       <h1>Optedge - Quant Cockpit</h1>
-      <div class="muted">Long-only buy list  -  multi-factor fusion  -  9 signals</div>
+      <div class="muted">Multi-asset swing research  -  multi-factor fusion  -  policy {STRATEGY_VERSION}</div>
     </div>
     <div class="meta">
       asof {asof_str}
@@ -2500,10 +2506,10 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   <section class="appendix">
     <h3>Methodology</h3>
     <p class="muted">EV = P(win) x predicted gain + P(loss) x max loss. P(win) approximated by |delta| for options. Kelly fraction f* = (b - p - q)/b, then x 0.25 (quarter Kelly per research consensus). Hard caps: 5% bankroll per option trade, 8% per share trade. Negative Kelly = the predictor disagrees with the rank -> marked as "skip".</p>
-    <p class="muted">Long-only by design. Each contract is z-scored cross-sectionally on nine signals (mispricing, IV-rank, skew, sentiment Delta, fundamentals, insider, macro, news Delta, earnings catalyst) and combined via the prior weights below. Action-aligned scoring: positive secondary signals boost calls + dampen puts, and vice-versa. Max one idea per ticker for diversity.</p>
+    <p class="muted">Each contract is z-scored cross-sectionally across the configured factor library and combined using the prior weights below. Action-aligned scoring maps directional evidence to calls or puts, while shares and futures use their asset-specific ranking paths. Max one option idea per ticker is retained for diversity.</p>
     <div class="weights">{weight_rows}</div>
     <h3 style="margin-top:20px;">Filters</h3>
-    <p class="muted">Options must clear: open interest >= 100, daily volume >= 25, bid-ask spread <= 15%, mid >= $0.10, 14 <= DTE <= 60. Shares must score >= 0.6 z-units bullish and not already have an option idea.</p>
+    <p class="muted">Discovery profile: options must clear open interest &gt;= {DISCOVERY_PROFILE.min_open_interest}, daily volume &gt;= {DISCOVERY_PROFILE.min_daily_volume}, bid-ask spread &lt;= {DISCOVERY_PROFILE.max_option_spread_pct:.0%}, mid &gt;= ${DISCOVERY_PROFILE.min_option_price:.2f}, and {DISCOVERY_PROFILE.option_min_dte}-{DISCOVERY_PROFILE.option_max_dte} DTE. Swing-execution profile: a separate Robinhood review candidate requires {SWING_EXECUTION_PROFILE.option_min_dte}+ DTE, spread &lt;= {SWING_EXECUTION_PROFILE.max_option_spread_pct:.0%}, fresh quotes, and all validation and account gates. Shares must score &gt;= 0.6 z-units bullish and not already have an option idea.</p>
     <h3 style="margin-top:20px;">Data sources (all free)</h3>
     <p class="muted">yfinance (options, prices, fundamentals, VIX/yields). Reddit JSON (sentiment + WSB trending). SEC EDGAR Form 4 (insider). Google News RSS (news flow). FRED optional for richer macro. None of this is investment advice.</p>
   </section>

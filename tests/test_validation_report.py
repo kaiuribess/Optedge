@@ -361,6 +361,130 @@ def test_validation_headline_uses_only_executable_closed_rows():
             validation_report.LOGS_DIR = old_logs
 
 
+def test_validation_headline_excludes_unresolved_expiry_outcomes_from_sample_count():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        try:
+            base = {
+                "asset": "option",
+                "ticker": "AAA",
+                "entry_time": "2026-01-02T15:00:00+00:00",
+                "exit_time": "2026-01-04T15:00:00+00:00",
+                "exit_reason": "expired",
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "research_guard_status": "review",
+            }
+            _write_json(validation_report.DATA_DIR / "closed_positions.json", [
+                {**base, "position_id": "resolved", "pnl_pct": 0.25, "validation_eligible": True},
+                {**base, "position_id": "unresolved", "pnl_pct": None, "validation_eligible": False},
+            ])
+
+            summary = validation_report.build_summary(scope="all_time")
+
+            assert summary["closed_positions"] == 2
+            assert summary["priced_closed_positions"] == 1
+            assert summary["unresolved_closed_positions"] == 1
+            assert summary["swing_eligible_closed_positions"] == 1
+            assert summary["swing_eligible_after_slippage"]["n"] == 1
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+
+
+def test_numeric_validation_ineligible_rows_never_enter_performance_analytics():
+    with tempfile.TemporaryDirectory() as td:
+        old_data = validation_report.DATA_DIR
+        old_logs = validation_report.LOGS_DIR
+        old_period_return = validation_report._period_return
+        validation_report.DATA_DIR = Path(td) / "data"
+        validation_report.LOGS_DIR = Path(td) / "logs"
+        benchmark_windows = []
+        try:
+            rows = []
+            for index, pnl in enumerate((0.05, 0.10, 0.15, 0.20, 0.25)):
+                rows.append({
+                    "asset": "option",
+                    "position_id": f"eligible-{index}",
+                    "ticker": "AAA",
+                    "side": "call",
+                    "entry_time": f"2026-01-{10 + index:02d}T15:00:00+00:00",
+                    "exit_time": f"2026-01-{11 + index:02d}T15:00:00+00:00",
+                    "exit_reason": "dynamic_exit" if index == 0 else "hard_target",
+                    "pnl_pct": pnl,
+                    "pnl_dollars": pnl * 100,
+                    "dte_at_entry": 10,
+                    "spread_pct": 0.04,
+                    "confidence": 75,
+                    "z_alpha": float(index),
+                    "validation_eligible": True,
+                })
+            rows.append({
+                "asset": "option",
+                "position_id": "numeric-but-ineligible",
+                "ticker": "BAD",
+                "side": "put",
+                "entry_time": "2000-01-01T15:00:00+00:00",
+                "exit_time": "2099-01-01T15:00:00+00:00",
+                "exit_reason": "hard_stop",
+                "pnl_pct": -99.0,
+                "pnl_dollars": -9900.0,
+                "dte_at_entry": 400,
+                "spread_pct": 0.90,
+                "confidence": 1,
+                "z_alpha": 999.0,
+                "validation_eligible": False,
+                "validation_exclusion_reason": "proxy_outcome",
+            })
+            _write_json(validation_report.DATA_DIR / "closed_positions.json", rows)
+
+            def fake_period_return(symbol, start, end):
+                benchmark_windows.append((symbol, start, end))
+                return 0.01
+
+            validation_report._period_return = fake_period_return
+            summary = validation_report.build_summary(scope="all_time")
+            closed = validation_report._closed_with_slippage(pd.DataFrame(rows))
+            equity_returns = validation_report._equity_return_series(
+                closed, "pnl_pct_after_slippage"
+            )
+        finally:
+            validation_report.DATA_DIR = old_data
+            validation_report.LOGS_DIR = old_logs
+            validation_report._period_return = old_period_return
+
+    assert summary["closed_positions"] == 6
+    assert summary["raw_priced_closed_positions"] == 6
+    assert summary["priced_closed_positions"] == 5
+    assert summary["validation_eligible_closed_positions"] == 5
+    assert summary["validation_excluded_closed_positions"] == 1
+    assert summary["overall"]["n"] == 5
+    assert summary["random_baseline"]["n"] == 5
+    assert len(equity_returns) == 5
+    assert summary["all_closure_factor_ic"][0]["n"] == 5
+    assert summary["all_closure_factor_ic"][0]["ic"] > 0.99
+    assert [row["bucket"] for row in summary["dte_buckets"]] == ["8-14 DTE"]
+    assert [row["bucket"] for row in summary["spread_buckets"]] == ["0-5%"]
+    assert [row["bucket"] for row in summary["confidence_buckets"]] == ["70-84"]
+    side_rows = {row["bucket"]: row for row in summary["calls_vs_puts"]}
+    assert side_rows["call"]["n"] == 5
+    assert side_rows["put"]["n"] == 0
+    option = summary["assets"]["option"]
+    assert option["closed_positions"] == 6
+    assert option["validation_excluded_closed_positions"] == 1
+    assert option["pnl_dollars"] == 75.0
+    exits = summary["exit_effectiveness"]["option"]
+    assert exits["hard_exit_count"] == 4
+    assert exits["raw_hard_exit_count"] == 5
+    assert exits["validation_excluded_count"] == 1
+    assert len(benchmark_windows) == 2
+    assert all(str(start.date()) >= "2026-01-10" for _, start, _ in benchmark_windows)
+    assert all(str(end.date()) <= "2026-01-15" for _, _, end in benchmark_windows)
+
+
 def test_factor_ic_uses_independent_swing_sample_and_labels_short_history():
     with tempfile.TemporaryDirectory() as td:
         old_data = validation_report.DATA_DIR

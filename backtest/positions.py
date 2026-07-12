@@ -24,9 +24,10 @@ positions.py = portfolio state.
 from __future__ import annotations
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -34,6 +35,10 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from backtest.option_expiry import (  # noqa: E402
+    expiry_exit_time, resolve_expiry_valuations, valuation_for_position,
+)
 
 log = logging.getLogger("optedge.positions")
 
@@ -49,6 +54,13 @@ TRACKED_SIGNAL_COLS = {
     "mispricing_pct", "theo_price", "buyer_edge_pct", "seller_edge_pct",
     "pricing_direction", "pricing_edge_ok", "pricing_edge_penalty_pct",
     "spread_to_edge_ratio", "trade_gate_reason", "chain_source", "quote_quality",
+    "underlying_type", "settlement_style", "official_settlement_style",
+    "official_settlement_value", "official_settlement_source",
+    "official_settlement_source_id", "official_settlement_record_id",
+    "official_settlement_published_at", "official_settlement_verified",
+    "contract_multiplier", "trade_value_multiplier",
+    "deliverable", "deliverable_description", "deliverable_type", "deliverable_units",
+    "is_adjusted_contract", "corporate_action_ambiguous",
 }
 
 
@@ -113,11 +125,14 @@ def _load(path: Path) -> List[Dict]:
 
 
 def _save(path: Path, rows: List[Dict]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_text(json.dumps(rows, indent=2, default=str))
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
+        temp.replace(path)
     except Exception as e:
         log.warning("positions save %s: %s", path.name, e)
+        raise
 
 
 def _option_key(row: Dict) -> Optional[Tuple]:
@@ -305,61 +320,132 @@ def _age_days(pos: Dict, now: datetime) -> Optional[float]:
         return None
 
 
-def _expiry_final_value(pos: Dict, chain_blobs: Optional[Dict[str, dict]] = None) -> Tuple[float, str]:
-    """Return a conservative expiry value and explain the price source.
-
-    If a fresh underlying spot is available from an option-chain blob, intrinsic
-    value is used. Otherwise the position is marked at zero rather than creating
-    a fake ITM value from missing spot data.
-    """
-    ticker = (pos.get("ticker") or "").upper()
-    spot = None
-    if chain_blobs:
-        blob = chain_blobs.get(ticker)
-        if blob:
-            try:
-                candidate = float(blob.get("spot") or 0)
-                if candidate > 0:
-                    spot = candidate
-            except Exception:
-                spot = None
-    if spot is None:
-        return 0.0, "zero_after_expiry_without_final_spot"
-
-    try:
-        strike = float(pos.get("strike") or 0)
-    except Exception:
-        strike = 0.0
-    side = str(pos.get("side") or "").lower()
-    if side == "put":
-        return max(0.0, strike - spot), "intrinsic_from_chain_spot"
-    return max(0.0, spot - strike), "intrinsic_from_chain_spot"
+def _closed_identity(row: Dict) -> Tuple:
+    position_id = str(row.get("position_id") or "").strip()
+    if position_id:
+        return ("position_id", position_id)
+    return ("contract_entry", _option_key(row), str(row.get("entry_time") or ""))
 
 
-def _expired_close_row(pos: Dict, now: datetime,
-                       chain_blobs: Optional[Dict[str, dict]] = None) -> Dict:
-    final, source = _expiry_final_value(pos, chain_blobs)
+def merge_closed_rows(
+    existing: List[Dict], incoming: List[Dict]
+) -> Tuple[List[Dict], List[Dict], int]:
+    """Append closed positions without duplicating an existing lifecycle row."""
+    merged = list(existing)
+    seen = {_closed_identity(row) for row in merged if isinstance(row, dict)}
+    added: List[Dict] = []
+    duplicate_count = 0
+    for row in incoming:
+        identity = _closed_identity(row)
+        if identity in seen:
+            duplicate_count += 1
+            continue
+        seen.add(identity)
+        merged.append(row)
+        added.append(row)
+    return merged, added, duplicate_count
+
+
+def build_expired_close_row(
+    pos: Dict,
+    recorded_at: datetime,
+    expiry_valuations: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict:
+    valuation = valuation_for_position(pos, expiry_valuations)
+    final = valuation.get("option_value")
+    source = valuation.get("price_source") or "unresolved_no_expiry_market_data"
     try:
         entry = float(pos.get("entry_price") or 0)
     except Exception:
         entry = 0.0
-    pnl_pct = ((final - entry) / entry) if entry > 0 else 0.0
+    pnl_pct = (
+        ((float(final) - entry) / entry)
+        if final is not None and entry > 0
+        else None
+    )
+    contracts = max(0, int(float(pos.get("suggested_contracts") or 0)))
+    pnl_dollars = (
+        (float(final) - entry) * 100.0 * contracts
+        if final is not None and entry > 0 and contracts > 0
+        else None
+    )
+    effective_exit_time = expiry_exit_time(pos) or recorded_at
+    if source == "broker_option_trade_bar_on_expiry":
+        outcome_quality = "broker_market_observed"
+    elif source == "intrinsic_from_official_settlement_value":
+        outcome_quality = "official_expiry_settlement"
+    elif source == "intrinsic_proxy_from_underlying_expiry_close":
+        outcome_quality = "expiry_intrinsic_proxy"
+    else:
+        outcome_quality = "unresolved"
     return {
         **pos,
-        "exit_time": now.isoformat(),
+        "underlying_type": valuation.get("underlying_type") or pos.get("underlying_type"),
+        "settlement_style": valuation.get("settlement_style") or pos.get("settlement_style"),
+        "contract_multiplier": valuation.get("contract_multiplier"),
+        "deliverable": valuation.get("deliverable"),
+        "exit_time": effective_exit_time.isoformat(),
+        "lifecycle_recorded_at": recorded_at.isoformat(),
         "exit_price": final,
         "exit_reason": "expired",
         "pnl_pct": pnl_pct,
-        "age_days": _age_days(pos, now),
+        "pnl_dollars": pnl_dollars,
+        "age_days": _age_days(pos, effective_exit_time),
         "trade_status": "Closed",
         "latest_exit_action": "expired",
+        "latest_exit_pressure": 100.0,
         "expiry_close_price_source": source,
+        "expiry_valuation_date": valuation.get("valuation_date"),
+        "expiry_underlying_price": valuation.get("underlying_price"),
+        "expiry_underlying_price_date": valuation.get("underlying_price_date"),
+        "expiry_underlying_session_gap_days": valuation.get("underlying_session_gap_days"),
+        "expiry_underlying_session_provenance": valuation.get("underlying_session_provenance"),
+        "expiry_underlying_type": valuation.get("underlying_type"),
+        "expiry_settlement_style": valuation.get("settlement_style"),
+        "expiry_official_settlement_value": valuation.get("official_settlement_value"),
+        "expiry_official_settlement_source": valuation.get("official_settlement_source"),
+        "expiry_official_settlement_source_id": valuation.get("official_settlement_source_id"),
+        "expiry_official_settlement_published_at": valuation.get("official_settlement_published_at"),
+        "expiry_official_settlement_verified": valuation.get("official_settlement_verified"),
+        "expiry_contract_multiplier": valuation.get("contract_multiplier"),
+        "expiry_deliverable": valuation.get("deliverable"),
+        "expiry_deliverable_is_standard": valuation.get("deliverable_is_standard"),
+        "expiry_corporate_action_ambiguous": valuation.get("corporate_action_ambiguous"),
+        "expiry_underlying_price_basis": valuation.get("underlying_price_basis"),
+        "expiry_underlying_history_source": valuation.get("underlying_history_source"),
+        "expiry_underlying_history_quality": valuation.get("underlying_history_quality"),
+        "expiry_option_bar_date": valuation.get("option_bar_date"),
+        "expiry_option_instrument_id": valuation.get("option_instrument_id"),
+        "expiry_settlement_is_proxy": bool(valuation.get("settlement_is_proxy", True)),
+        "outcome_quality": outcome_quality,
+        "validation_eligible": bool(valuation.get("validation_eligible", False)),
+        "validation_exclusion_reason": valuation.get("validation_exclusion_reason"),
     }
+
+
+def _expiry_final_value(
+    pos: Dict,
+    expiry_valuations: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Tuple[Optional[float], str]:
+    valuation = valuation_for_position(pos, expiry_valuations)
+    return valuation.get("option_value"), str(valuation.get("price_source") or "")
+
+
+def _expired_close_row(
+    pos: Dict,
+    now: datetime,
+    expiry_valuations: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict:
+    return build_expired_close_row(pos, now, expiry_valuations)
 
 
 def close_expired_positions(asof: Optional[datetime] = None,
                             chain_blobs: Optional[Dict[str, dict]] = None,
-                            log_reviews: bool = True) -> Dict[str, float]:
+                            log_reviews: bool = True,
+                            expiry_valuations: Optional[Dict[str, Dict[str, Any]]] = None,
+                            history_fetcher: Optional[Callable[..., pd.DataFrame]] = None,
+                            option_history_path: Optional[Path] = None,
+                            fetch_expiry_history: bool = True) -> Dict[str, float]:
     """Move expired local option positions from open to closed.
 
     This is a lightweight safety fallback used by normal runs after MTM. It does
@@ -372,20 +458,43 @@ def close_expired_positions(asof: Optional[datetime] = None,
 
     now = _asof_utc(asof)
     still_open: List[Dict] = []
-    newly_closed: List[Dict] = []
+    expired_open: List[Dict] = []
     for pos in open_rows:
         if _is_expired(pos, now):
-            newly_closed.append(_expired_close_row(pos, now, chain_blobs))
+            expired_open.append(pos)
         else:
             still_open.append(pos)
 
-    if not newly_closed:
+    if not expired_open:
         return {"open": len(open_rows), "closed_this_iter": 0, "mean_unrealized_pct": 0.0}
+
+    valuations = dict(expiry_valuations or {})
+    if fetch_expiry_history:
+        try:
+            resolved = resolve_expiry_valuations(
+                expired_open,
+                asof=now,
+                history_fetcher=history_fetcher,
+                option_history_path=option_history_path or (DATA_DIR / "robinhood_option_history_snapshot.json"),
+            )
+            for key, value in resolved.items():
+                valuations.setdefault(key, value)
+        except Exception as exc:
+            log.debug("expiry valuation lookup skipped: %s", exc)
+    newly_closed = [build_expired_close_row(pos, now, valuations) for pos in expired_open]
+    prev_closed = _load(CLOSED_FILE)
+    merged_closed, added_closed, duplicate_count = merge_closed_rows(prev_closed, newly_closed)
+
+    # Durably append the outcome before removing it from the open book. If the
+    # closed-history write fails, _save raises and OPEN_FILE remains untouched.
+    if added_closed:
+        _save(CLOSED_FILE, merged_closed)
+    _save(OPEN_FILE, still_open)
 
     if log_reviews:
         try:
             from backtest.exit_rules import compute_exit_pressure, log_exit_review
-            for closed in newly_closed:
+            for closed in added_closed:
                 review = compute_exit_pressure(closed, None, asset="option")
                 review.update({
                     "action": "expired",
@@ -396,13 +505,14 @@ def close_expired_positions(asof: Optional[datetime] = None,
                 log_exit_review(review)
         except Exception as e:
             log.debug("expired position review logging skipped: %s", e)
-
-    prev_closed = _load(CLOSED_FILE)
-    _save(CLOSED_FILE, prev_closed + newly_closed)
-    _save(OPEN_FILE, still_open)
-    log.info("positions: auto-closed %d expired local option position(s)", len(newly_closed))
+    log.info(
+        "positions: removed %d expired option(s) from open; added %d closed (%d already closed)",
+        len(expired_open), len(added_closed), duplicate_count,
+    )
     return {"open": len(still_open),
-            "closed_this_iter": len(newly_closed),
+            "closed_this_iter": len(added_closed),
+            "expired_removed_from_open": len(expired_open),
+            "deduped_existing_closed": duplicate_count,
             "mean_unrealized_pct": 0.0}
 
 
@@ -411,9 +521,18 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
     """Re-fetch the current chain for each unique open-position ticker and
     compute per-position unrealized P&L. Move expired/triggered positions
     to closed. Returns a small summary dict for logging."""
+    expiry_summary = close_expired_positions(asof)
+    expired_closed = int(expiry_summary.get("closed_this_iter", 0) or 0)
+    expired_removed = int(expiry_summary.get("expired_removed_from_open", 0) or 0)
     open_rows = _load(OPEN_FILE)
     if not open_rows:
-        return {"open": 0, "closed_this_iter": 0, "mean_unrealized_pct": 0.0}
+        return {
+            "open": 0,
+            "closed_this_iter": expired_closed,
+            "expired_closed": expired_closed,
+            "expired_removed_from_open": expired_removed,
+            "mean_unrealized_pct": 0.0,
+        }
     try:
         from backtest.exit_rules import (
             apply_dynamic_exit_action, compute_exit_pressure, log_exit_review,
@@ -426,8 +545,13 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
         import chain_provider
     except Exception:
         log.debug("positions: chain_provider unavailable, skipping MTM")
-        return {"open": len(open_rows), "closed_this_iter": 0,
-                 "mean_unrealized_pct": 0.0}
+        return {
+            "open": len(open_rows),
+            "closed_this_iter": expired_closed,
+            "expired_closed": expired_closed,
+            "expired_removed_from_open": expired_removed,
+            "mean_unrealized_pct": 0.0,
+        }
 
     tickers = sorted({(r.get("ticker") or "").upper() for r in open_rows
                        if r.get("ticker")})
@@ -449,6 +573,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
 
     still_open: List[Dict] = []
     newly_closed: List[Dict] = []
+    terminal_reviews: List[Dict] = []
     unrealized_pcts: List[float] = []
     now = asof if isinstance(asof, datetime) else datetime.now(timezone.utc)
     for pos in open_rows:
@@ -458,32 +583,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
             age_days = max(0.0, (pd.Timestamp(now) - entry_ts).total_seconds() / 86400.0)
         except Exception:
             age_days = None
-        # Check expiry first — if past today, close it
-        is_expired = _is_expired(pos, now)
         cur_mid = _current_mid_for_position(pos, chains)
-        if is_expired:
-            entry = float(pos.get("entry_price") or 0)
-            # At expiry, intrinsic value is the only thing left
-            strike = float(pos.get("strike") or 0)
-            spot = 0.0
-            blob = chains.get((pos.get("ticker") or "").upper())
-            if blob:
-                spot = float(blob.get("spot") or 0)
-            if pos.get("side") == "call":
-                final = max(0.0, spot - strike)
-            else:
-                final = max(0.0, strike - spot)
-            pnl_pct = ((final - entry) / entry) if entry > 0 else 0.0
-            closed = {**pos, "exit_time": now.isoformat(),
-                      "exit_price": final, "exit_reason": "expired",
-                      "pnl_pct": pnl_pct, "age_days": age_days}
-            if compute_exit_pressure and log_exit_review:
-                review = compute_exit_pressure(closed, current_signal, asset="option")
-                review.update({"action": "expired", "current_price": final,
-                               "current_pnl_pct": pnl_pct})
-                log_exit_review(review)
-            newly_closed.append(closed)
-            continue
         if cur_mid is None:
             # Couldn't reprice — keep open, no MTM update
             pos2 = {**pos, "age_days": age_days,
@@ -512,7 +612,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                 review = compute_exit_pressure(closed, current_signal, asset="option")
                 review.update({"action": "hard_stop", "current_price": cur_mid,
                                "current_pnl_pct": pnl_pct})
-                log_exit_review(review)
+                terminal_reviews.append(review)
             newly_closed.append(closed)
             continue
         if target > 0 and cur_mid >= target:
@@ -523,7 +623,7 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                 review = compute_exit_pressure(closed, current_signal, asset="option")
                 review.update({"action": "hard_target", "current_price": cur_mid,
                                "current_pnl_pct": pnl_pct})
-                log_exit_review(review)
+                terminal_reviews.append(review)
             newly_closed.append(closed)
             continue
         pos2 = {**pos, "current_mid": cur_mid, "current_price": cur_mid,
@@ -531,25 +631,42 @@ def mark_to_market(asof: datetime, max_chain_fetch: int = 60,
                 "last_reprice_source": "chain"}
         if compute_exit_pressure and apply_dynamic_exit_action and log_exit_review:
             review = compute_exit_pressure(pos2, current_signal, asset="option")
-            log_exit_review(review)
             if review["action"] == "close_early":
+                terminal_reviews.append(review)
                 newly_closed.append({**pos2, "exit_time": now.isoformat(),
                                      "exit_price": cur_mid,
                                      "exit_reason": "dynamic_exit",
                                      "pnl_pct": pnl_pct})
                 continue
+            log_exit_review(review)
             pos2 = apply_dynamic_exit_action(pos2, review, current_price=cur_mid)
         still_open.append(pos2)
 
+    added_closed: List[Dict] = []
+    duplicate_count = 0
     if newly_closed:
         prev_closed = _load(CLOSED_FILE)
-        _save(CLOSED_FILE, prev_closed + newly_closed)
+        merged_closed, added_closed, duplicate_count = merge_closed_rows(
+            prev_closed, newly_closed,
+        )
+        if added_closed:
+            _save(CLOSED_FILE, merged_closed)
     _save(OPEN_FILE, still_open)
+    if log_exit_review:
+        for review in terminal_reviews:
+            try:
+                log_exit_review(review)
+            except Exception as exc:
+                log.debug("terminal option exit review logging skipped: %s", exc)
     mean_un = (sum(unrealized_pcts) / len(unrealized_pcts)) if unrealized_pcts else 0.0
+    total_closed = expired_closed + len(added_closed)
     log.info("positions: %d open (mean unrealized %+.1f%%), %d closed this iter",
-             len(still_open), mean_un * 100, len(newly_closed))
+             len(still_open), mean_un * 100, total_closed)
     return {"open": len(still_open),
-            "closed_this_iter": len(newly_closed),
+            "closed_this_iter": total_closed,
+            "expired_closed": expired_closed,
+            "expired_removed_from_open": expired_removed,
+            "deduped_existing_closed": duplicate_count,
             "mean_unrealized_pct": mean_un}
 
 
@@ -557,13 +674,30 @@ def summary() -> Dict[str, float]:
     """Roll-up of open + closed positions. Useful for the dashboard."""
     open_rows = _load(OPEN_FILE)
     closed_rows = _load(CLOSED_FILE)
-    closed_pnls = [float(r.get("pnl_pct") or 0) for r in closed_rows]
+    closed_pnls = []
+    unresolved_count = 0
+    for row in closed_rows:
+        pnl = row.get("pnl_pct")
+        if pnl is None or row.get("validation_eligible") is False:
+            unresolved_count += 1
+            continue
+        try:
+            value = float(pnl)
+        except (TypeError, ValueError):
+            unresolved_count += 1
+            continue
+        if math.isfinite(value):
+            closed_pnls.append(value)
+        else:
+            unresolved_count += 1
     realized_win_rate = (sum(1 for p in closed_pnls if p > 0) / len(closed_pnls)) \
                          if closed_pnls else 0.0
     realized_avg = (sum(closed_pnls) / len(closed_pnls)) if closed_pnls else 0.0
     return {
         "open_count": len(open_rows),
         "closed_count": len(closed_rows),
+        "priced_closed_count": len(closed_pnls),
+        "unresolved_closed_count": unresolved_count,
         "realized_win_rate": realized_win_rate,
         "realized_avg_pnl_pct": realized_avg,
     }

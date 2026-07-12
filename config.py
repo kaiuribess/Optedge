@@ -2,6 +2,8 @@
 import os
 from datetime import datetime, timezone
 
+from optedge.strategy_profile import DISCOVERY_PROFILE
+
 # ---- Universe ----------------------------------------------------------
 # Wide coverage. Pulled from S&P 500 + Russell 2000 popular constituents +
 # WSB trending names. WSB trending is added DYNAMICALLY at runtime.
@@ -147,12 +149,12 @@ WSB_TRENDING_TOP_N = 30        # extra tickers added at runtime
 WSB_TRENDING_MIN_MENTIONS = 3  # threshold to be considered "trending"
 
 # ---- Risk / liquidity floors ------------------------------------------
-MIN_OPEN_INTEREST = 100
-MIN_DAILY_VOLUME = 25
-MAX_BID_ASK_SPREAD_PCT = 0.15
-MIN_OPTION_PRICE = 0.10
-MIN_DTE = 14
-MAX_DTE = 60
+MIN_OPEN_INTEREST = DISCOVERY_PROFILE.min_open_interest
+MIN_DAILY_VOLUME = DISCOVERY_PROFILE.min_daily_volume
+MAX_BID_ASK_SPREAD_PCT = DISCOVERY_PROFILE.max_option_spread_pct
+MIN_OPTION_PRICE = DISCOVERY_PROFILE.min_option_price
+MIN_DTE = DISCOVERY_PROFILE.option_min_dte
+MAX_DTE = DISCOVERY_PROFILE.option_max_dte
 
 # ---- Pricing ----------------------------------------------------------
 RISK_FREE_RATE_DEFAULT = 0.045

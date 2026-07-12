@@ -107,11 +107,17 @@ def configure_ram_cache(enabled: bool | None = None, max_items: int | None = Non
     return cache_stats()
 
 
-def _tag_history(df: pd.DataFrame, source: str, quality: str = "free_or_delayed") -> pd.DataFrame:
+def _tag_history(
+    df: pd.DataFrame,
+    source: str,
+    quality: str = "free_or_delayed",
+    price_basis: str = "unknown",
+) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame() if df is None else df
     df.attrs["history_source"] = source
     df.attrs["history_quality"] = quality
+    df.attrs["price_basis"] = price_basis
     return df
 
 
@@ -123,6 +129,7 @@ def _history_cache_records(df: pd.DataFrame, source: str, quality: str = "free_o
     for row in records:
         row["_history_source"] = source
         row["_history_quality"] = quality
+        row["_history_price_basis"] = str(df.attrs.get("price_basis") or "unknown")
     return records
 
 
@@ -132,16 +139,29 @@ def _history_from_cache(records: Any) -> pd.DataFrame:
         return df
     source = None
     quality = None
+    price_basis = None
     if "_history_source" in df.columns:
         source = str(df["_history_source"].dropna().iloc[0]) if not df["_history_source"].dropna().empty else None
         df = df.drop(columns=["_history_source"])
     if "_history_quality" in df.columns:
         quality = str(df["_history_quality"].dropna().iloc[0]) if not df["_history_quality"].dropna().empty else None
         df = df.drop(columns=["_history_quality"])
+    if "_history_price_basis" in df.columns:
+        price_basis = (
+            str(df["_history_price_basis"].dropna().iloc[0])
+            if not df["_history_price_basis"].dropna().empty
+            else None
+        )
+        df = df.drop(columns=["_history_price_basis"])
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce", utc=True)
         df = df.dropna(subset=["Date"]).set_index("Date")
-    return _tag_history(df, source or "cache", quality or "cached")
+    return _tag_history(
+        df,
+        source or "cache",
+        quality or "cached",
+        price_basis or "unknown",
+    )
 
 
 # -------- Session factory ---------------------------------------------
@@ -198,16 +218,21 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
     # --- Primary: Yahoo v8 chart endpoint (direct, no library overhead) ---
     h = _yahoo_v8_history(ticker, period, interval)
     if not h.empty:
-        h = _tag_history(h, "yahoo_chart", "free_or_delayed")
+        h = _tag_history(h, "yahoo_chart", "free_or_delayed", "unadjusted_close")
         cache_put(key, _history_cache_records(h, "yahoo_chart", "free_or_delayed"))
         return h
 
     # --- Fallback: yfinance library (existing path) ---
     try:
         tk = yf_ticker(ticker)
-        h = tk.history(period=period, interval=interval)
+        try:
+            h = tk.history(period=period, interval=interval, auto_adjust=False)
+            price_basis = "unadjusted_close"
+        except TypeError:
+            h = tk.history(period=period, interval=interval)
+            price_basis = "unknown"
         if not h.empty:
-            h = _tag_history(h, "yfinance", "free_or_delayed")
+            h = _tag_history(h, "yfinance", "free_or_delayed", price_basis)
             cache_put(key, _history_cache_records(h, "yfinance", "free_or_delayed"))
             return h
     except Exception as e:
@@ -216,7 +241,7 @@ def get_history(ticker: str, period: str = "1y", interval: str = "1d",
     # --- Public Nasdaq historical endpoint. No key, not a live quote. ---
     h = _nasdaq_history(ticker, period, interval)
     if not h.empty:
-        h = _tag_history(h, "nasdaq_historical", "free_or_delayed")
+        h = _tag_history(h, "nasdaq_historical", "free_or_delayed", "unadjusted_close")
         cache_put(key, _history_cache_records(h, "nasdaq_historical", "free_or_delayed"))
         return h
 
@@ -271,7 +296,9 @@ def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
         })
         df = df.set_index("Date")
         df = df.dropna(subset=["Close"])
-        return _tag_history(df, "yahoo_chart", "free_or_delayed")
+        return _tag_history(
+            df, "yahoo_chart", "free_or_delayed", "unadjusted_close"
+        )
     except Exception as e:
         log.debug("yahoo v8 parse %s: %s", ticker, e)
         return pd.DataFrame()
@@ -389,7 +416,12 @@ def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
             continue
         df = df.dropna(subset=["Close"]).set_index("Date").sort_index()
         if not df.empty:
-            return _tag_history(df[["Open", "High", "Low", "Close", "Volume"]], "nasdaq_historical", "free_or_delayed")
+            return _tag_history(
+                df[["Open", "High", "Low", "Close", "Volume"]],
+                "nasdaq_historical",
+                "free_or_delayed",
+                "unadjusted_close",
+            )
     return pd.DataFrame()
 
 
