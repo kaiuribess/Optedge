@@ -1,7 +1,6 @@
 @echo off
-REM Optedge v20 - run launcher (Windows)
-REM Usage: run.bat               -> standard run
-REM        run.bat --aggressive --bankroll 25000 --loop 30   -> user's daily command
+REM Launches Optedge on Windows, preferring this repository's virtual environment.
+REM Usage: run.bat [Optedge command-line arguments]
 
 setlocal EnableDelayedExpansion
 
