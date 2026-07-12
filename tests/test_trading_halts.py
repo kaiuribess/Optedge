@@ -1,3 +1,4 @@
+# Purpose: Test active and resumed trading-halt parsing.
 import sys
 from pathlib import Path
 
