@@ -1,3 +1,4 @@
+# Purpose: Score option volume-to-open-interest imbalances.
 """Unusual Options Activity (UOA) — per-ticker signal.
 
 For each ticker, looks across all its tradeable contracts and finds the
