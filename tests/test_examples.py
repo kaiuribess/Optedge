@@ -1,3 +1,4 @@
+# Purpose: Test example validation output against the current schema.
 from __future__ import annotations
 
 import json
