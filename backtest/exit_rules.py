@@ -1,3 +1,4 @@
+# Purpose: Shared dynamic exit review logic for options, shares, and futures.
 """Shared dynamic exit review logic for options, shares, and futures."""
 from __future__ import annotations
 
