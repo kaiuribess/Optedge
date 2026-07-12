@@ -1,3 +1,4 @@
+# Purpose: Canonical strategy policy for discovery and swing-execution review.
 """Canonical strategy policy for discovery and swing-execution review.
 
 Discovery deliberately uses a shorter option-DTE window to find and score
