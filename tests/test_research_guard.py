@@ -1,3 +1,4 @@
+# Purpose: Test research blocking without evidence deadlocks.
 import sys
 from pathlib import Path
 
