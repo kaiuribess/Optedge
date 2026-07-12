@@ -1,3 +1,5 @@
+<!-- Purpose: Document market-data sources and fallback quality. -->
+
 # Data Sources
 
 Optedge favors free or locally available data sources and degrades gracefully when a source is unavailable.
