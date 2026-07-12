@@ -1,3 +1,4 @@
+# Purpose: Test safe archiving of runtime data and logs.
 from pathlib import Path
 import sys
 import tempfile
