@@ -1,3 +1,4 @@
+# Purpose: Score momentum and volatility across futures proxies.
 """Futures engine — equity index, commodity, and crypto futures.
 
 Free via yfinance using continuous-contract symbols (`ES=F`, `NQ=F`, etc.).
