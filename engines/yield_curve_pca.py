@@ -1,3 +1,4 @@
+# Purpose: Yield curve PCA factors engine.
 """Yield curve PCA factors engine.
 
 Extracts the classic principal components of the US Treasury yield curve:
