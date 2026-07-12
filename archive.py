@@ -1,4 +1,8 @@
-"""Archive generated Optedge run artifacts without deleting anything."""
+"""Archive generated Optedge run artifacts without deleting anything.
+
+Moves generated data and logs into uniquely timestamped directories, with a
+dry-run preview and explicit control over whether learned state is preserved.
+"""
 from __future__ import annotations
 
 import argparse
