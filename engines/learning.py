@@ -1,3 +1,4 @@
+# Purpose: Load defaults and refit per-asset signal weights.
 """Central self-learning weight manager — Optedge v16.
 
 Owns per-bucket signal weights, hand-crafted priors, and the LassoCV/IC-bootstrap
