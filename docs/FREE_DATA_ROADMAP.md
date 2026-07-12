@@ -1,3 +1,5 @@
+<!-- Purpose: Plan improvements to free market-data coverage. -->
+
 # Free Data Roadmap
 
 Optedge should prefer sources that are free, stable, documented, and allowed for automated research use. This keeps the project useful for a retail user without forcing paid feeds too early.
