@@ -1,3 +1,4 @@
+# Purpose: Diagnose missing share and futures learning outcomes.
 """Diagnostic — why are shares/futures empty? (v16.1.1)
 
 Walks bucket-by-bucket through the self-learning pipeline and reports:
