@@ -1,3 +1,4 @@
+# Purpose: Build macro context with hardened market data.
 """Macro / economic context engine — uses data_provider for hardened sessions.
 
 VIX, ^TNX (10y yield), ^IRX (3m yield), SPY 3M return — all via yfinance.
