@@ -1,3 +1,4 @@
+# Purpose: Test SEC failure-to-deliver normalization.
 import sys
 from pathlib import Path
 
