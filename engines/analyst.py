@@ -1,3 +1,4 @@
+# Purpose: Analyst Recommendations engine — Finnhub-powered.
 """Analyst Recommendations engine — Finnhub-powered.
 
 For each ticker, pulls:
