@@ -1,3 +1,5 @@
+<!-- Purpose: Explain signal fusion, attribution, and trade ranking. -->
+
 # Signal Fusion and Ranking
 
 This package combines engine evidence into ranked option, share, value, and futures research.
