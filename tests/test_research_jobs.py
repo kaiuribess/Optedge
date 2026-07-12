@@ -1,3 +1,4 @@
+# Purpose: Test isolated jobs and safe artifact access.
 import json
 import sys
 import tempfile
