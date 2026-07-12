@@ -1,3 +1,4 @@
+# Purpose: Test guarded exits grace periods and decision logs.
 import json
 import sys
 import tempfile
