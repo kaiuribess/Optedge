@@ -1,3 +1,4 @@
+# Purpose: Run and track background symbol research jobs.
 """Background focused-scan jobs for the local cockpit."""
 from __future__ import annotations
 
