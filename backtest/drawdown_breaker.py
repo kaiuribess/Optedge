@@ -1,3 +1,4 @@
+# Purpose: Drawdown circuit breaker.
 """Drawdown circuit breaker.
 
 Reads recent forward-test signal P&L from logs/*.parquet and computes the
