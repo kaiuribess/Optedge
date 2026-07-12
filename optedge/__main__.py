@@ -1,3 +1,4 @@
+# Purpose: Run Optedge with python -m optedge.
 """Allow installed and source checkouts to run with ``python -m optedge``."""
 
 from .cli import main
