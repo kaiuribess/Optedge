@@ -1,5 +1,5 @@
 @echo off
-REM Optedge - Windows easy installer
+REM Installs Optedge and its dependencies into a local virtual environment on Windows.
 REM Usage: double-click install.bat OR run from cmd: install.bat
 
 setlocal EnableDelayedExpansion
