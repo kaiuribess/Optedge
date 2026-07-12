@@ -1,3 +1,4 @@
+# Purpose: Share Finnhub requests across research engines.
 """Finnhub API client — shared by congress, insider, and analyst engines.
 
 Free tier: 60 req/min. We cache aggressively (24h) since most of these
