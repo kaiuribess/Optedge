@@ -1,3 +1,4 @@
+# Purpose: Test forward outcomes across asset classes.
 """Deterministic tests for fixed-session forward validation."""
 from __future__ import annotations
 
