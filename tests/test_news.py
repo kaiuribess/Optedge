@@ -1,3 +1,4 @@
+# Purpose: Test resilient news feeds with source context.
 """Direct-run tests for the no-key news RSS engine."""
 from __future__ import annotations
 
