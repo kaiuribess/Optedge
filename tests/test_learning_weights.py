@@ -1,3 +1,4 @@
+# Purpose: Test versioned defaults and isolated learned weights.
 from __future__ import annotations
 
 import json
