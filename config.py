@@ -1,4 +1,9 @@
-"""Optedge — config & shared constants."""
+"""Define shared Optedge strategy, universe, risk, and runtime settings.
+
+This versioned configuration supplies discovery profiles, ticker universes,
+liquidity thresholds, factor weights, concurrency limits, feature flags, and
+output defaults used across the research pipeline.
+"""
 from datetime import datetime, timezone
 
 from optedge.strategy_profile import DISCOVERY_PROFILE
