@@ -1,3 +1,4 @@
+# Purpose: Insider activity engine — SEC EDGAR Form 4 over the last N days.
 """Insider activity engine — SEC EDGAR Form 4 over the last N days.
 
 Strategy:
