@@ -1,3 +1,4 @@
+# Purpose: Test fail-closed broker snapshot normalization.
 import json
 import sys
 import tempfile
