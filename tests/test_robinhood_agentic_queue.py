@@ -1,3 +1,4 @@
+# Purpose: Test fresh bounded research-only Robinhood queues.
 import json
 import sys
 import tempfile
