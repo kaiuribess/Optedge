@@ -1,3 +1,4 @@
+# Purpose: Fundamentals engine — yfinance-based, with caching.
 """Fundamentals engine — yfinance-based, with caching.
 
 Per ticker: revenue growth, gross/operating margin, EPS trend, P/E, EV/EBITDA,
