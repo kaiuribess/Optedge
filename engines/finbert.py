@@ -1,3 +1,4 @@
+# Purpose: Score financial headlines with optional FinBERT.
 """FinBERT financial sentiment engine — v20.3 (optional, GPU-aware).
 
 OPT-IN. Disabled by default. Returns empty if torch+transformers aren't
