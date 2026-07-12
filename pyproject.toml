@@ -1,3 +1,5 @@
+# Defines package metadata, dependencies, the CLI entry point, build settings, and test/lint configuration.
+
 [project]
 name = "optedge"
 description = "Free multi-factor options, shares, futures, and value research cockpit."
