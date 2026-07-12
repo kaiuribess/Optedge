@@ -1,3 +1,4 @@
+# Purpose: Test predictor evidence freshness and diversity gates.
 """Regression tests for adaptive predictor and runtime-weight trust guards."""
 from __future__ import annotations
 
