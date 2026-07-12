@@ -1,3 +1,4 @@
+# Purpose: Alpha decay tracker.
 """Alpha decay tracker.
 
 Reads logged signals and their realized forward returns at multiple horizons
