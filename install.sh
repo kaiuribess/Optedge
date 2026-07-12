@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Optedge - reproducible source installer for Linux and macOS.
+# Installs Optedge and its dependencies into a local virtual environment on Linux and macOS.
 
 set -euo pipefail
 
