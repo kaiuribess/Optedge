@@ -1,3 +1,5 @@
+<!-- Purpose: Explain private local runtime data and its Git boundary. -->
+
 # Private Runtime Data
 
 This directory holds private, machine-generated Optedge state. The guide and placeholders are tracked; live contents stay local.
