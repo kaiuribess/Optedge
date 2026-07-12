@@ -1,3 +1,4 @@
+# Purpose: Compare Heston pricing stability with Black-Scholes.
 """Validate Heston pricing stability before enabling it in production."""
 from __future__ import annotations
 
