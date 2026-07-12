@@ -1,11 +1,11 @@
-"""Synthetic but realistic data provider for sandbox demos.
+"""Generate deterministic, schema-compatible data for demos and offline tests.
 
 When live data sources (Yahoo Finance, Reddit) are blocked, this module
 generates plausible options chains, sentiment, fundamentals, and macro
 inputs so the full fusion pipeline can be exercised end-to-end.
 
-Calibrated to roughly Q2 2026 market levels. Returns the SAME schemas
-as the real engines so fusion.rank.fuse() works without modification.
+Returns the same schemas as the real engines so the complete fusion pipeline
+can run without modification or network access.
 """
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
