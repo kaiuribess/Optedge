@@ -1,3 +1,5 @@
+<!-- Purpose: Catalog research factors and their evidence sources. -->
+
 # Factor Library
 
 Optedge combines multiple families of evidence:
