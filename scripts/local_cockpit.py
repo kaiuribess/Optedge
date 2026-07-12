@@ -1,3 +1,4 @@
+# Purpose: Serve the local swing-trading research cockpit.
 """Free local Optedge cockpit server.
 
 This is a lightweight browser UI for existing Optedge artifacts. It does not
