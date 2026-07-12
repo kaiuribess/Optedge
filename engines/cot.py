@@ -1,3 +1,4 @@
+# Purpose: Score CFTC positioning across futures markets.
 """CFTC Commitments of Traders (CoT) engine — v20.2.
 
 v20.2 fix: the original v20.1 cot pulled from cftc.gov/dea/newcot/c_disagg.txt
