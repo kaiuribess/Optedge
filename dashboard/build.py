@@ -1975,6 +1975,42 @@ def _build_analytics_html(forward_summary=None) -> str:
     import json as _json
     J = _json.dumps
 
+    def _render_open_position_row(row):
+        position_label = html.escape(str(row.get("position_label") or row.get("ticker", "-")))
+        side = str(row.get("side", "-")).upper()
+        side_color = "#10b981" if side.lower() in {"call", "long", "share"} else "#f87171"
+        strike = html.escape(str(row.get("strike", "-")))
+        expiry = html.escape(str(row.get("expiry", "-")))
+        entry_price = float(row.get("entry_price", 0) or 0)
+        current_price = float(row.get("current_price", 0) or 0)
+        unrealized_pct = float(row.get("unrealized_pct", 0) or 0)
+        pnl_color = "#10b981" if unrealized_pct >= 0 else "#ef4444"
+        age_days = float(row.get("age_days", 0) or 0)
+        confidence = int(row.get("confidence", 0)) if row.get("confidence") else "-"
+        stop_price = float(row.get("stop_price", 0) or 0)
+        target_price = float(row.get("target_price", 0) or 0)
+        return (
+            "<tr>"
+            f"<td><strong>{position_label}</strong></td>"
+            f'<td><span style="color:{side_color}">{html.escape(side)}</span></td>'
+            f"<td>{strike}</td>"
+            f"<td>{expiry}</td>"
+            f"<td>${entry_price:.2f}</td>"
+            f"<td>${current_price:.2f}</td>"
+            f'<td style="color:{pnl_color};font-weight:600">{unrealized_pct * 100:+.1f}%</td>'
+            f"<td>{age_days:.1f}d</td>"
+            f"<td>{confidence}</td>"
+            f'<td style="color:#f59e0b">${stop_price:.2f}</td>'
+            f'<td style="color:#10b981">${target_price:.2f}</td>'
+            "</tr>"
+        )
+
+    # Keep nested row templating outside the surrounding page f-string so the
+    # module parses identically on every supported Python version, including 3.11.
+    open_positions_rows_html = "".join(
+        _render_open_position_row(row) for row in display_open_rows
+    )
+
     return f"""
 <details class="dash-section" open id="sect-analytics">
 <summary><h2 class="section-title" style="display:flex;align-items:center;gap:12px;">
@@ -2126,22 +2162,7 @@ def _build_analytics_html(forward_summary=None) -> str:
       <th>Entry $</th><th>Current $</th><th>Unrealized</th><th>Age</th><th>Conf</th><th>Stop</th><th>Target</th>
     </tr></thead>
     <tbody id="pos-tbody">
-    {''.join(
-      f"""<tr>
-        <td><strong>{html.escape(str(r.get("position_label") or r.get("ticker","-")))}</strong></td>
-        <td><span style="color:{'#10b981' if str(r.get('side')).lower() in ('call','long','share') else '#f87171'}">{html.escape(str(r.get('side','-')).upper())}</span></td>
-        <td>{r.get('strike','-')}</td>
-        <td>{r.get('expiry','-')}</td>
-        <td>${r.get('entry_price',0):.2f}</td>
-        <td>${r.get('current_price',0):.2f}</td>
-        <td style="color:{'#10b981' if r.get('unrealized_pct',0)>=0 else '#ef4444'};font-weight:600">{r.get('unrealized_pct',0)*100:+.1f}%</td>
-        <td>{float(r.get('age_days',0) or 0):.1f}d</td>
-        <td>{int(r.get('confidence',0)) if r.get('confidence') else '-'}</td>
-        <td style="color:#f59e0b">${r.get('stop_price',0):.2f}</td>
-        <td style="color:#10b981">${r.get('target_price',0):.2f}</td>
-      </tr>"""
-      for r in display_open_rows
-    )}
+    {open_positions_rows_html}
     </tbody>
   </table>
   </div>
