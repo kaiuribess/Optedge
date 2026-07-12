@@ -1,3 +1,4 @@
+# Purpose: Technical indicators engine — pure-pandas, no external deps.
 """Technical indicators engine — pure-pandas, no external deps.
 
 Computes per ticker:
