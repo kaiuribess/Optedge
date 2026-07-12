@@ -1,3 +1,4 @@
+# Purpose: WSB-trending ticker discovery.
 """WSB-trending ticker discovery.
 
 Scans Reddit hot/rising/top across r/wallstreetbets, r/options, r/stocks for
