@@ -9,6 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout
@@ -17,7 +21,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
@@ -28,40 +32,7 @@ jobs:
       - name: Run tests
         env:
           PYTHONPATH: .
-        run: |
-          python tests/test_pricing.py
-          python tests/test_predictor_guard.py
-          python tests/test_research_guard.py
-          python tests/test_archive.py
-          python tests/test_exit_rules.py
-          python tests/test_exit_learning.py
-          python tests/test_futures_sizing.py
-          python tests/test_option_positions.py
-          python tests/test_share_positions.py
-          python tests/test_futures_positions.py
-          python tests/test_fixed_horizon.py
-          python tests/test_option_history.py
-          python tests/test_validation_report.py
-          python tests/test_external_paper_track.py
-          python tests/test_robinhood_agentic_queue.py
-          python tests/test_auto_agentic_paper.py
-          python tests/test_robinhood_broker_snapshot.py
-          python tests/test_robinhood_research_bridge.py
-          python tests/test_symbol_resolver.py
-          python tests/test_research_jobs.py
-          python tests/test_lookup_symbol.py
-          python tests/test_sec_companyfacts.py
-          python tests/test_news.py
-          python tests/test_short_interest.py
-          python tests/test_local_cockpit.py
-          python tests/test_fred_public.py
-          python tests/test_treasury_yield_curve.py
-          python tests/test_sec_ftd.py
-          python tests/test_cboe_symbol_data.py
-          python tests/test_data_provider_stooq.py
-          python tests/test_performance_cache.py
-          python tests/test_finbert_batching.py
-          python tests/test_chain_provider_tradier.py
+        run: python -m pytest
 
       - name: Lint
         run: |

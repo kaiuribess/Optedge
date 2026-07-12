@@ -182,6 +182,11 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
                 "strike": 220.0,
                 "dte": 216,
                 "mid": 1.20,
+                "bid": 1.176,
+                "ask": 1.224,
+                "quote_updated_at": generated_at,
+                "source_quote_at": "2026-07-12T17:45:00+00:00",
+                "source_quote_time_basis": "provider_quote_timestamp",
                 "premium_dollars": 120.0,
                 "stop_price_reference": 0.70,
                 "target_price_reference": 2.30,
@@ -199,6 +204,7 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
                 "liquidity_label": "deep",
                 "chain_source": "cboe",
                 "quote_quality": "free_or_delayed",
+                "data_delay": "delayed",
             }],
         }), encoding="utf-8")
 
@@ -216,10 +222,46 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
     assert row["swing_fit_score"] == 93
     assert "long swing runway" in row["swing_fit_reasons"]
     assert row["liquidity_label"] == "deep"
+    assert row["source_quote_at"] == "2026-07-12T17:45:00+00:00"
+    assert row["source_quote_time_basis"] == "provider_quote_timestamp"
+    assert row["data_delay"] == "delayed"
     assert "chain shortlist" in row["reason_selected"]
     assert "clean swing" in row["reason_selected"]
     assert "chain-shortlist" in row["notes"]
     assert "swing_fit=clean_swing" in row["notes"]
+
+
+def test_external_track_does_not_promote_artifact_times_to_quote_provenance():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "AAPL",
+                "contract_query": "AAPL 2027-01-15 C 220",
+                "side": "call",
+                "expiry": "2027-01-15",
+                "strike": 220.0,
+                "dte": 216,
+                "mid": 1.20,
+                "bid": 1.18,
+                "ask": 1.22,
+                "premium_dollars": 120.0,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "quote_quality": "free_or_delayed",
+                "data_delay": "delayed",
+            }],
+        }), encoding="utf-8")
+
+        out = build_external_orders(data_dir, asset="option", query="AAPL")
+
+    assert len(out) == 1
+    assert out.iloc[0]["source_quote_at"] == ""
+    assert out.iloc[0]["source_quote_time_basis"] == ""
+    assert out.iloc[0]["data_delay"] == "delayed"
 
 
 def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
@@ -238,6 +280,11 @@ def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
                     "strike": 230.0,
                     "dte": 216,
                     "mid": 1.30,
+                    "bid": 1.2675,
+                    "ask": 1.3325,
+                    "quote_updated_at": generated_at,
+                    "source_quote_at": generated_at,
+                    "source_quote_time_basis": "provider_response_received_at",
                     "premium_dollars": 130.0,
                     "stop_price_reference": 0.70,
                     "target_price_reference": 2.60,
@@ -261,6 +308,9 @@ def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
                     "strike": 260.0,
                     "dte": 216,
                     "mid": 1.00,
+                    "bid": 0.975,
+                    "ask": 1.025,
+                    "quote_updated_at": generated_at,
                     "premium_dollars": 100.0,
                     "stop_price_reference": 0.50,
                     "target_price_reference": 2.00,
@@ -284,6 +334,9 @@ def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
                     "strike": 300.0,
                     "dte": 216,
                     "mid": 0.60,
+                    "bid": 0.585,
+                    "ask": 0.615,
+                    "quote_updated_at": generated_at,
                     "premium_dollars": 60.0,
                     "stop_price_reference": 0.30,
                     "target_price_reference": 1.20,
@@ -319,12 +372,18 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
                 {
                     "generated_at": generated_at,
                     "symbol": "MSFT",
+                    "underlying_type": "equity",
                     "contract_query": "MSFT 2027-01-15 C 500",
                     "side": "call",
                     "expiry": "2027-01-15",
                     "strike": 500.0,
                     "dte": 216,
                     "mid": 1.10,
+                    "bid": 1.0835,
+                    "ask": 1.1165,
+                    "quote_updated_at": generated_at,
+                    "source_quote_at": generated_at,
+                    "source_quote_time_basis": "provider_response_received_at",
                     "premium_dollars": 110.0,
                     "spread_pct": 0.03,
                     "openInterest": 1500,
@@ -338,16 +397,23 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
                     "swing_fit_warnings": ["verify delayed quote"],
                     "chain_source": "cboe",
                     "quote_quality": "free_or_delayed",
+                    "data_delay": "delayed",
                 },
                 {
                     "generated_at": generated_at,
                     "symbol": "MSFT",
+                    "underlying_type": "equity",
                     "contract_query": "MSFT 2026-10-16 C 520",
                     "side": "call",
                     "expiry": "2026-10-16",
                     "strike": 520.0,
                     "dte": 124,
                     "mid": 0.55,
+                    "bid": 0.539,
+                    "ask": 0.561,
+                    "quote_updated_at": generated_at,
+                    "source_quote_at": generated_at,
+                    "source_quote_time_basis": "provider_response_received_at",
                     "premium_dollars": 55.0,
                     "spread_pct": 0.04,
                     "openInterest": 900,
@@ -357,10 +423,14 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
                     "contract_quality_score": 80,
                     "chain_source": "cboe",
                     "quote_quality": "free_or_delayed",
+                    "data_delay": "delayed",
                 },
             ],
         }), encoding="utf-8")
 
+        research = build_external_orders(
+            data_dir, asset="option", query="MSFT", min_option_dte=180,
+        )
         queue = build_robinhood_queue(
             data_dir,
             account_budget=500,
@@ -371,14 +441,18 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
             query="MSFT",
         )
 
-    assert queue["status"] == "ready"
+    assert len(research) == 1
+    assert research.iloc[0]["ticker_or_symbol"] == "MSFT"
     assert len(queue["orders"]) == 1
     assert queue["orders"][0]["symbol"] == "MSFT"
-    assert queue["orders"][0]["swing_fit_label"] == "clean_swing"
-    assert queue["orders"][0]["swing_fit_score"] == 91
-    assert queue["orders"][0]["max_limit_price"] >= 1.1
+    assert queue["orders"][0]["fresh_robinhood_quote_required"] is True
+    assert any(
+        "delayed/free" in warning
+        for warning in queue["orders"][0]["research_quote_warnings"]
+    )
     assert queue["readiness"]["label"] == "ready"
-    assert queue["readiness"]["ready_to_submit_count"] == 1
+    assert queue["readiness"]["ready_to_submit_count"] == 0
+    assert queue["readiness"]["manual_review_candidate_count"] == 1
     assert queue["rejection_reason_counts"]["dte below 180"] >= 1
     assert queue["diagnostics"]["reason_groups"]["below_min_dte"] >= 1
 

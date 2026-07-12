@@ -20,6 +20,8 @@ DATA_DIR = ROOT / "data"
 
 NORMALIZED_COLUMNS = [
     "generated_at",
+    "source_quote_at",
+    "source_quote_time_basis",
     "asset",
     "ticker_or_symbol",
     "action",
@@ -27,9 +29,16 @@ NORMALIZED_COLUMNS = [
     "quantity",
     "contract",
     "option_side",
+    "underlying_type",
     "strike",
     "expiry",
     "entry_price",
+    "bid",
+    "ask",
+    "spread_pct",
+    "chain_source",
+    "quote_quality",
+    "data_delay",
     "stop_price",
     "target_price",
     "confidence",
@@ -222,10 +231,15 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["grade_reasons"] = _series_or_default(df, "grade_reasons")
     out["risk_flags"] = _series_or_default(df, "risk_flags")
     out["chain_source"] = _series_or_default(df, "chain_source")
+    out["underlying_type"] = _series_or_default(df, "underlying_type")
     out["quote_quality"] = _series_or_default(df, "quote_quality")
     out["data_delay"] = _series_or_default(df, "data_delay")
+    out["source_quote_at"] = _series_or_default(df, "source_quote_at")
+    out["source_quote_time_basis"] = _series_or_default(df, "source_quote_time_basis")
     out["top_headline"] = "3m+ option-chain shortlist candidate"
     out["generated_at"] = _series_or_default(df, "generated_at", generated_at)
+    for timestamp_key in ("quote_updated_at", "updated_at", "asof", "entry_time"):
+        out[timestamp_key] = _series_or_default(df, timestamp_key)
     out["_source_file"] = source_path.name
     out["_source_mtime"] = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc).isoformat()
     out["_chain_shortlist"] = True
@@ -240,6 +254,21 @@ def _parse_time(value: Any) -> datetime | None:
         return pd.to_datetime(text, utc=True).to_pydatetime()
     except Exception:
         return None
+
+
+def _source_quote_provenance(row: pd.Series) -> tuple[str, str]:
+    """Carry only explicit source quote provenance into later artifacts.
+
+    Generated/export times and file mtimes prove that Optedge processed a row;
+    they do not prove when its bid/ask existed. Missing provenance therefore
+    remains missing so broker-review gates can fail closed without hiding the
+    row from research and paper-tracking views.
+    """
+    timestamp_text = _text(row.get("source_quote_at"))
+    basis = _text(row.get("source_quote_time_basis"))
+    if _parse_time(timestamp_text) is None:
+        return "", basis
+    return timestamp_text, basis
 
 
 def _option_dte(row: pd.Series, generated_at: str) -> int | None:
@@ -384,6 +413,13 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
     target = _safe_float(row.get("target_price"), 0.0)
     risk = max(entry - stop, 0.0) * max(contracts, 1) * 100 if stop else suggested_dollars
     reward = max(target - entry, 0.0) * max(contracts, 1) * 100 if target else ""
+    bid = _safe_float(row.get("bid"), math.nan)
+    ask = _safe_float(row.get("ask"), math.nan)
+    spread = _safe_float(row.get("spread_pct"), math.nan)
+    if math.isfinite(bid) and bid > 0 and math.isfinite(ask) and ask >= bid:
+        mid = (bid + ask) / 2.0
+        spread = (ask - bid) / mid if mid > 0 else math.nan
+    source_quote_at, source_quote_time_basis = _source_quote_provenance(row)
     swing_label = _text(row.get("swing_fit_label"))
     swing_reasons = _text(row.get("swing_fit_reasons"))
     swing_warnings = _text(row.get("swing_fit_warnings"))
@@ -409,9 +445,18 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
         "quantity": contracts,
         "contract": _text(row.get("contract")) or f"{ticker} {expiry} {side.upper()} {strike}",
         "option_side": side,
+        "underlying_type": _text(row.get("underlying_type")),
         "strike": strike,
         "expiry": expiry,
         "entry_price": entry,
+        "bid": round(bid, 6) if math.isfinite(bid) else "",
+        "ask": round(ask, 6) if math.isfinite(ask) else "",
+        "spread_pct": round(spread, 6) if math.isfinite(spread) else "",
+        "source_quote_at": source_quote_at,
+        "source_quote_time_basis": source_quote_time_basis,
+        "chain_source": _text(row.get("chain_source")),
+        "quote_quality": _text(row.get("quote_quality")),
+        "data_delay": _text(row.get("data_delay")),
         "stop_price": stop,
         "target_price": target,
         "confidence": _safe_int(row.get("confidence"), ""),

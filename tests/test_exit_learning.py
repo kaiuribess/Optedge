@@ -96,16 +96,16 @@ def test_non_executable_rows_are_excluded_from_learning():
         {"asset": "option", "position_id": "trade", "trade_status": "Trade",
          "entry_trade_status": "Trade", "suggested_contracts": 1,
          "research_guard_status": "review", "entry_research_guard_status": "review",
-         "entry_is_actionable": True},
+         "entry_is_actionable": True, "pnl_pct": 0.1},
         {"asset": "option", "position_id": "watch", "trade_status": "Watch",
-         "suggested_contracts": 1, "research_guard_status": "review"},
+         "suggested_contracts": 1, "research_guard_status": "review", "pnl_pct": 0.1},
         {"asset": "option", "position_id": "zero", "trade_status": "Trade",
-         "suggested_contracts": 0, "research_guard_status": "review"},
+         "suggested_contracts": 0, "research_guard_status": "review", "pnl_pct": 0.1},
         {"asset": "option", "position_id": "blocked", "trade_status": "Trade",
-         "suggested_contracts": 1, "research_guard_status": "blocked"},
+         "suggested_contracts": 1, "research_guard_status": "blocked", "pnl_pct": 0.1},
         {"asset": "option", "position_id": "explicit", "trade_status": "Trade",
          "suggested_contracts": 1, "research_guard_status": "review",
-         "entry_is_actionable": False},
+         "entry_is_actionable": False, "pnl_pct": 0.1},
     ])
     eligible = exit_learning.eligible_closed_for_learning("option", rows)
     summary = exit_learning.execution_eligibility_summary("option", rows)
@@ -116,6 +116,28 @@ def test_non_executable_rows_are_excluded_from_learning():
     assert summary["excluded_non_positive_size"] == 1
     assert summary["excluded_guard_blocked"] == 1
     assert summary["excluded_explicit_not_actionable"] == 1
+
+
+def test_unresolved_or_nonfinite_outcomes_are_excluded_from_learning():
+    base = {
+        "asset": "option",
+        "trade_status": "Trade",
+        "suggested_contracts": 1,
+        "research_guard_status": "review",
+        "entry_time": "2026-01-02T15:00:00+00:00",
+        "exit_time": "2026-01-03T15:00:00+00:00",
+        "exit_reason": "expired",
+    }
+    rows = pd.DataFrame([
+        {**base, "position_id": "resolved", "pnl_pct": 0.2, "validation_eligible": True},
+        {**base, "position_id": "unresolved", "pnl_pct": None, "validation_eligible": False},
+        {**base, "position_id": "missing-pnl", "pnl_pct": None},
+        {**base, "position_id": "infinite", "pnl_pct": float("inf")},
+    ])
+
+    eligible = exit_learning.eligible_closed_for_learning("option", rows)
+
+    assert eligible["position_id"].tolist() == ["resolved"]
 
 
 def test_insufficient_learning_resets_old_thresholds_to_defaults():

@@ -46,6 +46,7 @@ try:
     from backtest import predictor as bt_predictor
     from backtest import sizing as bt_sizing
     from dashboard import build as dash_build
+    from optedge.strategy_profile import is_known_index_option_symbol
     import data_provider
     # v20: telemetry + universe filter (best-effort imports)
     try:
@@ -434,19 +435,19 @@ def main():
     ap.add_argument("--no-open", action="store_true",
                     help="Don't auto-open the dashboard in browser when done")
     ap.add_argument("--robinhood-agentic-queue", action="store_true",
-                    help="Write an options-only Robinhood Agentic handoff queue after each scan")
+                    help="Write an options-only Robinhood research/paper shortlist after each scan")
     ap.add_argument("--robinhood-budget", type=float, default=None,
                     help="Budget for Robinhood Agentic queue caps (defaults to --bankroll)")
     ap.add_argument("--robinhood-max-candidates", type=int, default=5,
-                    help="Max option candidates to hand to the Robinhood agent")
+                    help="Max option candidates to keep in the manual-review shortlist")
     ap.add_argument("--robinhood-max-orders", type=int, default=2,
-                    help="Max option orders the Robinhood agent may submit from the candidate queue")
+                    help="Compatibility name for the manual-review comparison cap; authorizes zero submissions")
     ap.add_argument("--robinhood-min-dte", type=int, default=90,
                     help="Minimum DTE for Robinhood agentic option candidates (default 90d+ swing)")
     ap.add_argument("--robinhood-min-confidence", type=float, default=55.0,
                     help="Minimum confidence for Robinhood agentic option candidates")
     ap.add_argument("--robinhood-max-premium-per-order", type=float, default=None,
-                    help="Max premium per option order for Robinhood Agentic queue")
+                    help="Max debit per option candidate in the Robinhood manual-review shortlist")
     ap.add_argument("--robinhood-refresh-chain", action="store_true",
                     help="Refresh the free/provider option-chain shortlist before building the Robinhood queue")
     ap.add_argument("--robinhood-chain-preset", default="auto",
@@ -1096,6 +1097,16 @@ def main():
         option_candidates = ranked_opts[ranked_opts["trade_status"] != "Skip"]
     top_opts = fusion_rank.top_options(option_candidates, max_calls=args.max_calls,
                                        max_puts=args.max_puts)
+    if not top_opts.empty:
+        if "underlying_type" not in top_opts.columns:
+            top_opts["underlying_type"] = "equity"
+        else:
+            top_opts["underlying_type"] = (
+                top_opts["underlying_type"].fillna("").astype(str).str.strip().str.lower()
+            )
+            top_opts.loc[top_opts["underlying_type"].eq(""), "underlying_type"] = "equity"
+        option_symbols = top_opts.get("ticker", pd.Series("", index=top_opts.index)).astype(str)
+        top_opts.loc[option_symbols.map(is_known_index_option_symbol), "underlying_type"] = "index"
 
     # v20 — Aggregate portfolio Greeks
     portfolio_greeks = {}
@@ -1265,11 +1276,13 @@ def main():
     # this prevents a fresh entry from becoming a synthetic same-scan exit.
     try:
         from backtest import positions as _pos
-        _pos.mark_to_market(run_asof, current_signals=ranked_opts)
-        expired_cleanup = _pos.close_expired_positions(run_asof)
-        if expired_cleanup.get("closed_this_iter", 0) > 0:
-            log.info("positions: expired cleanup closed %d stale local option record(s)",
-                     expired_cleanup.get("closed_this_iter", 0))
+        position_summary = _pos.mark_to_market(run_asof, current_signals=ranked_opts)
+        if position_summary.get("expired_removed_from_open", 0) > 0:
+            log.info(
+                "positions: expiry cleanup removed %d stale open record(s), added %d closed",
+                position_summary.get("expired_removed_from_open", 0),
+                position_summary.get("expired_closed", 0),
+            )
         if not top_opts.empty:
             _pos.add_new_signals(top_opts, run_asof)
     except Exception as e:

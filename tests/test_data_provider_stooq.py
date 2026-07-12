@@ -86,6 +86,7 @@ def test_nasdaq_history_parses_public_json_without_network():
     assert list(hist.columns) == ["Open", "High", "Low", "Close", "Volume"]
     assert float(hist["Close"].iloc[-1]) == 12.5
     assert hist.attrs["history_source"] == "nasdaq_historical"
+    assert hist.attrs["price_basis"] == "unadjusted_close"
     assert hist.attrs["history_quality"] == "free_or_delayed"
     assert "assetclass=stocks" in seen_urls[0]
     assert "/quote/AAPL/historical" in seen_urls[0]
@@ -137,6 +138,7 @@ def test_get_history_uses_nasdaq_after_yahoo_failures():
     assert hist.attrs["history_source"] == "nasdaq_historical"
     assert "history:AAPL:1mo:1d" in stored
     assert stored["history:AAPL:1mo:1d"][0]["_history_source"] == "nasdaq_historical"
+    assert stored["history:AAPL:1mo:1d"][0]["_history_price_basis"] == "unadjusted_close"
 
 
 def test_get_history_uses_stooq_after_other_free_sources_fail():
@@ -182,9 +184,11 @@ def test_get_history_uses_stooq_after_other_free_sources_fail():
     assert float(hist["Close"].iloc[-1]) == 12.5
     assert hist.attrs["history_source"] == "stooq_csv"
     assert hist.attrs["history_quality"] == "delayed"
+    assert hist.attrs["price_basis"] == "unknown"
     assert stored["history:AAPL:1mo:1d"][0]["_history_source"] == "stooq_csv"
     cached = data_provider._history_from_cache(stored["history:AAPL:1mo:1d"])
     assert cached.attrs["history_source"] == "stooq_csv"
+    assert cached.attrs["price_basis"] == "unknown"
 
 
 if __name__ == "__main__":

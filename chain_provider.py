@@ -734,6 +734,8 @@ def _attempt_record(
         "source": (blob or {}).get("source") or name,
         "quote_quality": (blob or {}).get("quote_quality"),
         "data_delay": (blob or {}).get("data_delay"),
+        "provider_response_received_at": (blob or {}).get("provider_response_received_at"),
+        "source_quote_time_basis": (blob or {}).get("source_quote_time_basis"),
         "latency_ms": round(elapsed_ms, 1),
         "note": note or ("usable chain returned" if rows > 0 else "no usable chain returned"),
     }
@@ -744,6 +746,15 @@ def _timed_attempt(name: str, fetcher) -> Tuple[Optional[Dict[str, Any]], Dict[s
     note = ""
     try:
         blob = fetcher()
+        if isinstance(blob, dict) and blob:
+            # This is a receipt timestamp, not an exchange quote timestamp. It
+            # is assigned once before caching and therefore cannot be refreshed
+            # by a cache read, scan, shortlist write, or later export.
+            received_at = datetime.now(timezone.utc).isoformat()
+            blob.setdefault("provider_response_received_at", received_at)
+            if not blob.get("source_quote_at"):
+                blob["source_quote_at"] = blob["provider_response_received_at"]
+                blob["source_quote_time_basis"] = "provider_response_received_at"
     except Exception as exc:
         blob = None
         note = str(exc)[:180]
@@ -787,6 +798,8 @@ def fetch_chain(ticker: str, cache_age: int = 600, include_diagnostics: bool = F
                     "source": blob.get("source"),
                     "quote_quality": blob.get("quote_quality"),
                     "data_delay": blob.get("data_delay"),
+                    "provider_response_received_at": blob.get("provider_response_received_at"),
+                    "source_quote_time_basis": blob.get("source_quote_time_basis"),
                     "latency_ms": 0,
                     "note": "cache hit",
                 }]

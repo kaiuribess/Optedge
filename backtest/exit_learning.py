@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -258,6 +259,17 @@ def eligible_closed_for_learning(asset: str, closed_positions: pd.DataFrame) -> 
     closed = closed[flags["execution_eligible"]].copy()
     if closed.empty:
         return closed
+    pnl = pd.to_numeric(
+        closed.get("pnl_pct", pd.Series(float("nan"), index=closed.index)),
+        errors="coerce",
+    )
+    resolved_outcome = pnl.map(lambda value: pd.notna(value) and math.isfinite(float(value)))
+    if "validation_eligible" in closed.columns:
+        resolved_outcome &= ~_explicit_false(closed, "validation_eligible")
+    closed = closed[resolved_outcome].copy()
+    if closed.empty:
+        return closed
+    closed["pnl_pct"] = pnl.loc[closed.index]
     closed["_holding_hours"] = _holding_hours(closed)
     reasons = closed.get("exit_reason", pd.Series("", index=closed.index)).fillna("").astype(str)
     immediate_dynamic = reasons.eq("dynamic_exit") & (

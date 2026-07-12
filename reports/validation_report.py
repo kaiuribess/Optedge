@@ -201,6 +201,23 @@ def _num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
+def _validation_eligible_mask(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series(dtype=bool)
+    if "validation_eligible" not in df.columns:
+        return pd.Series(True, index=df.index, dtype=bool)
+    return ~df["validation_eligible"].map(
+        lambda value: value is False or str(value).strip().lower() in {"false", "0", "no"}
+    )
+
+
+def _validation_eligible_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the only rows permitted to influence performance analytics."""
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+    return df.loc[_validation_eligible_mask(df)].copy()
+
+
 def _fmt_pct(v: Optional[float]) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/a"
@@ -288,6 +305,9 @@ def _equity_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -> pd.S
     """Return per-signal account contributions for the validation equity curve."""
     if df is None or df.empty or return_col not in df.columns:
         return pd.Series(dtype=float)
+    df = _validation_eligible_rows(df)
+    if df.empty:
+        return pd.Series(dtype=float)
     idx = df.index
     if "equity_return" in df.columns:
         direct = pd.to_numeric(df["equity_return"], errors="coerce").dropna()
@@ -314,7 +334,8 @@ def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
             "profit_factor": None,
             "max_drawdown": None,
         }
-    r = _num(df[return_col]).dropna()
+    eligible_df = _validation_eligible_rows(df)
+    r = _num(eligible_df[return_col]).dropna()
     if r.empty:
         return {
             "n": 0,
@@ -330,7 +351,7 @@ def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
         "avg_return": float(r.mean()),
         "median_return": float(r.median()),
         "profit_factor": _profit_factor(r),
-        "max_drawdown": _max_drawdown(_equity_return_series(df, return_col)),
+        "max_drawdown": _max_drawdown(_equity_return_series(eligible_df, return_col)),
         "max_drawdown_mode": EQUITY_RETURN_MODE,
         "best": float(r.max()),
         "worst": float(r.min()),
@@ -351,6 +372,7 @@ def _bucket_label(v: Any, buckets: List[Tuple[float, float, str]]) -> str:
 
 
 def _bucket_performance(df: pd.DataFrame, source_col: str, buckets: List[Tuple[float, float, str]]) -> List[Dict[str, Any]]:
+    df = _validation_eligible_rows(df)
     if df.empty or source_col not in df.columns:
         return [{"bucket": "Unavailable", **_stats(pd.DataFrame())}]
     temp = df.copy()
@@ -370,7 +392,8 @@ def _factor_ic(closed: pd.DataFrame, min_n: int = 5,
     The position tracker now preserves factor z-columns at entry, so each
     closed recommendation can say which entry factors were predictive.
     """
-    if closed is None or closed.empty or "pnl_pct" not in closed.columns:
+    closed = _validation_eligible_rows(closed)
+    if closed.empty or "pnl_pct" not in closed.columns:
         return []
     z_cols = [c for c in closed.columns if str(c).startswith("z_")]
     rows = []
@@ -458,6 +481,7 @@ def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
 
 
 def _side_performance(closed: pd.DataFrame) -> List[Dict[str, Any]]:
+    closed = _validation_eligible_rows(closed)
     if closed.empty or "side" not in closed.columns:
         return []
     rows = []
@@ -491,6 +515,8 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
         return {
             "learning_eligible_closed_positions": 0,
             "learning_excluded_closed_positions": 0,
+            "validation_eligible_closed_positions": 0,
+            "validation_excluded_closed_positions": 0,
             "execution_eligible_closed_positions": 0,
             "non_executable_closed_positions": 0,
             "excluded_explicit_not_actionable": 0,
@@ -506,8 +532,9 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
             execution_eligibility_summary,
         )
 
-        eligible = eligible_closed_for_learning(asset, closed)
-        execution_summary = execution_eligibility_summary(asset, closed)
+        validation_rows = _validation_eligible_rows(closed)
+        eligible = eligible_closed_for_learning(asset, validation_rows)
+        execution_summary = execution_eligibility_summary(asset, validation_rows)
     except Exception:
         MIN_LEARNING_HOLD_HOURS = 1.0
         eligible = pd.DataFrame()
@@ -520,6 +547,7 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
             "excluded_non_positive_size": 0,
         }
     asset_rows = closed[closed.get("asset", "") == asset].copy()
+    validation_asset_rows = _validation_eligible_rows(asset_rows)
     entry = pd.to_datetime(asset_rows.get("entry_time"), errors="coerce", utc=True)
     exit_time = pd.to_datetime(asset_rows.get("exit_time"), errors="coerce", utc=True)
     if isinstance(entry, pd.Series) and isinstance(exit_time, pd.Series):
@@ -535,6 +563,10 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
         if not eligible.empty else 0
     return {
         **execution_summary,
+        "validation_eligible_closed_positions": int(len(validation_asset_rows)),
+        "validation_excluded_closed_positions": int(
+            max(0, len(asset_rows) - len(validation_asset_rows))
+        ),
         "learning_eligible_closed_positions": int(len(eligible)),
         "learning_excluded_closed_positions": int(max(0, len(asset_rows) - len(eligible))),
         "same_scan_dynamic_exits": same_scan,
@@ -545,6 +577,9 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
 def _swing_eligible_sample(closed: pd.DataFrame) -> pd.DataFrame:
     if closed.empty:
         return closed.copy()
+    closed = _validation_eligible_rows(closed)
+    if closed.empty:
+        return closed
     try:
         from backtest.exit_learning import eligible_closed_for_learning
 
@@ -563,6 +598,15 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
     for asset in ("option", "share", "futures"):
         open_sub = open_df[open_df.get("asset", "") == asset] if not open_df.empty else pd.DataFrame()
         closed_sub = closed[closed.get("asset", "") == asset] if not closed.empty else pd.DataFrame()
+        eligible_closed_sub = _validation_eligible_rows(closed_sub)
+        raw_priced_count = int(_num(
+            closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index))
+        ).notna().sum()) if not closed_sub.empty else 0
+        priced_mask = _validation_eligible_mask(closed_sub) & _num(
+            closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index))
+        ).notna() if not closed_sub.empty else pd.Series(dtype=bool)
+        priced_count = int(priced_mask.sum()) if not priced_mask.empty else 0
+        unresolved_count = int(max(0, len(closed_sub) - priced_count))
         review_sub = (
             reviews[reviews["asset"] == asset]
             if not reviews.empty and "asset" in reviews.columns else pd.DataFrame()
@@ -571,6 +615,13 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
         out[asset] = {
             "open_positions": int(len(open_sub)),
             "closed_positions": int(len(closed_sub)),
+            "raw_priced_closed_positions": raw_priced_count,
+            "validation_eligible_closed_positions": int(len(eligible_closed_sub)),
+            "validation_excluded_closed_positions": int(
+                max(0, len(closed_sub) - len(eligible_closed_sub))
+            ),
+            "priced_closed_positions": priced_count,
+            "unresolved_closed_positions": unresolved_count,
             "overall": _stats(closed_sub),
             "after_slippage": _stats(closed_sub, "pnl_pct_after_slippage"),
             "exit_reasons": (
@@ -587,12 +638,12 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
             "policy_version": asset_policy.get("policy_version", policy.get("policy_version", "default")
                                                 if isinstance(policy, dict) else "default"),
             "pnl_dollars": (
-                float(pd.to_numeric(closed_sub.get("pnl_dollars"), errors="coerce").sum())
-                if "pnl_dollars" in closed_sub.columns else None
+                float(pd.to_numeric(eligible_closed_sub.get("pnl_dollars"), errors="coerce").sum())
+                if "pnl_dollars" in eligible_closed_sub.columns else None
             ),
             "pnl_points": (
-                float(pd.to_numeric(closed_sub.get("pnl_points"), errors="coerce").sum())
-                if "pnl_points" in closed_sub.columns else None
+                float(pd.to_numeric(eligible_closed_sub.get("pnl_points"), errors="coerce").sum())
+                if "pnl_points" in eligible_closed_sub.columns else None
             ),
             "pnl_pct_column": "pnl_pct" if "pnl_pct" in closed_sub.columns else None,
         }
@@ -632,14 +683,19 @@ def _exit_effectiveness(closed: pd.DataFrame) -> Dict[str, Any]:
     if closed is None or closed.empty:
         return {}
     out = {}
-    for asset, sub in closed.groupby(closed.get("asset", pd.Series("option", index=closed.index))):
+    for asset, raw_sub in closed.groupby(closed.get("asset", pd.Series("option", index=closed.index))):
+        sub = _validation_eligible_rows(raw_sub)
         dyn = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str) == "dynamic_exit"]
         hard = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str).str.startswith("hard_")]
+        raw_reasons = raw_sub.get("exit_reason", pd.Series("", index=raw_sub.index)).astype(str)
         out[str(asset)] = {
             "dynamic_exit": _stats(dyn),
             "hard_exit": _stats(hard),
             "dynamic_exit_count": int(len(dyn)),
             "hard_exit_count": int(len(hard)),
+            "raw_dynamic_exit_count": int((raw_reasons == "dynamic_exit").sum()),
+            "raw_hard_exit_count": int(raw_reasons.str.startswith("hard_").sum()),
+            "validation_excluded_count": int(max(0, len(raw_sub) - len(sub))),
         }
     return out
 
@@ -670,6 +726,7 @@ def _period_return(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> Optio
 
 
 def _benchmark_comparison(closed: pd.DataFrame) -> Dict[str, Any]:
+    closed = _validation_eligible_rows(closed)
     if closed.empty or "entry_time" not in closed.columns:
         return {"SPY": None, "QQQ": None, "note": "No dated closed positions."}
     start = closed["entry_time"].dropna().min()
@@ -708,6 +765,7 @@ def _random_baseline(returns: Iterable[float], trials: int = 1000) -> Dict[str, 
 
 def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    closed = _validation_eligible_rows(closed)
     if closed.empty or "pnl_pct_after_slippage" not in closed.columns:
         _write_empty_equity_curve(path)
         return
@@ -880,6 +938,19 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     if total_signals == 0 and list(LOGS_DIR.glob("*signals_*.parquet")):
         total_signals = _existing_total_signals() or 0
     closed_count = int(len(closed))
+    validation_eligible_closed = _validation_eligible_rows(closed)
+    validation_eligible_closed_count = int(len(validation_eligible_closed))
+    validation_excluded_closed_count = int(
+        max(0, closed_count - validation_eligible_closed_count)
+    )
+    raw_priced_closed_count = int(_num(
+        closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))
+    ).notna().sum()) if not closed.empty else 0
+    priced_closed_count = int((
+        _validation_eligible_mask(closed)
+        & _num(closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))).notna()
+    ).sum()) if not closed.empty else 0
+    unresolved_closed_count = int(max(0, closed_count - priced_closed_count))
     open_count = int(len(open_df))
     overall = _stats(closed)
     after_slippage = _stats(closed, "pnl_pct_after_slippage")
@@ -907,6 +978,11 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         warnings.append(
             f"Executable swing sample too small: {swing_eligible_count} executable outcomes; "
             f"need at least {MIN_CLOSED_SIGNALS}."
+        )
+    if unresolved_closed_count:
+        warnings.append(
+            f"{unresolved_closed_count} closed lifecycle record(s) have unresolved pricing or explicit "
+            "validation exclusions and are excluded from performance metrics."
         )
     if overall.get("max_drawdown") is not None and overall["max_drawdown"] < -0.20:
         warnings.append(f"All-closure max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}.")
@@ -955,6 +1031,11 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "stale_closed_positions_excluded": int(max(0, len(all_time_closed) - len(closed))),
         "total_signals": total_signals,
         "closed_positions": closed_count,
+        "raw_priced_closed_positions": raw_priced_closed_count,
+        "validation_eligible_closed_positions": validation_eligible_closed_count,
+        "validation_excluded_closed_positions": validation_excluded_closed_count,
+        "priced_closed_positions": priced_closed_count,
+        "unresolved_closed_positions": unresolved_closed_count,
         "open_positions": open_count,
         "validation_basis": "executable_swing_after_slippage",
         "swing_eligible_closed_positions": swing_eligible_count,
@@ -967,7 +1048,8 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
             "max_allocation_pct": MAX_EQUITY_ALLOCATION_PCT,
             "description": (
                 "Drawdown and equity curve use per-signal account contributions. "
-                "When exact exposure is unavailable, each signal is treated as a 1% account allocation."
+                "Explicitly validation-ineligible rows are excluded. When exact exposure is unavailable, "
+                "each eligible signal is treated as a 1% account allocation."
             ),
         },
         "overall": overall,
@@ -1003,7 +1085,9 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "all_closure_factor_ic": all_closure_factor_ic,
         "position_aging": _position_aging(open_df),
         "benchmarks": _benchmark_comparison(closed),
-        "random_baseline": _random_baseline(_num(closed.get("pnl_pct", pd.Series(dtype=float))).dropna()),
+        "random_baseline": _random_baseline(_num(
+            validation_eligible_closed.get("pnl_pct", pd.Series(dtype=float))
+        ).dropna()),
         "fixed_horizon": fixed_horizon,
         "warnings": warnings,
     }
@@ -1113,6 +1197,9 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             f"<td>{html.escape(str(asset))}</td>"
             f"<td>{int(row.get('open_positions') or 0)}</td>"
             f"<td>{int(row.get('closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('validation_excluded_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('priced_closed_positions') or 0)}</td>"
+            f"<td>{int(row.get('unresolved_closed_positions') or 0)}</td>"
             f"<td>{int(row.get('execution_eligible_closed_positions') or 0)}</td>"
             f"<td>{int(row.get('non_executable_closed_positions') or 0)}</td>"
             f"<td>{int(row.get('learning_eligible_closed_positions') or 0)}</td>"
@@ -1131,7 +1218,7 @@ def _asset_table(assets: Dict[str, Any]) -> str:
             "</tr>"
         )
     return (
-        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Executable</th><th>Non-executable</th><th>Learnable</th><th>Same-scan churn</th><th>Learning days</th>"
+        "<table><thead><tr><th>Asset</th><th>Open</th><th>Closed</th><th>Validation excluded</th><th>Priced</th><th>Unresolved</th><th>Executable</th><th>Non-executable</th><th>Learnable</th><th>Same-scan churn</th><th>Learning days</th>"
         "<th>Win rate</th><th>Avg return</th><th>Median</th><th>Max DD</th>"
         "<th>Profit factor</th><th>Exit actions</th><th>Learned exits</th>"
         "<th>P&L dollars</th><th>P&L points</th><th>Exit reasons</th></tr></thead>"
@@ -1201,6 +1288,10 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
       {_metric_table([
           ("Total logged signals", summary["total_signals"]),
           ("Closed positions", summary["closed_positions"]),
+          ("Raw numeric closures", summary.get("raw_priced_closed_positions", 0)),
+          ("Validation-excluded closures", summary.get("validation_excluded_closed_positions", 0)),
+          ("Priced closures", summary.get("priced_closed_positions", 0)),
+          ("Unresolved closures", summary.get("unresolved_closed_positions", 0)),
           ("Open positions", summary["open_positions"]),
           ("All-time closed positions", summary.get("all_time_closed_positions", 0)),
           ("Stale closed excluded", summary.get("stale_closed_positions_excluded", 0)),

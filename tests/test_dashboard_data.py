@@ -326,6 +326,11 @@ def test_dashboard_includes_export_and_workflow_controls():
     assert 'id="print-dashboard"' in html
     assert 'id="top-only"' in html
     assert "optedge-visible-" in html
+    assert "Long-only buy list" not in html
+    assert "9 signals" not in html
+    assert "Multi-asset swing research" in html
+    assert "Discovery profile:" in html
+    assert "Swing-execution profile:" in html
 
 
 if __name__ == "__main__":

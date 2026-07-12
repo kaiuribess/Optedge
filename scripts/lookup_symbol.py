@@ -2629,6 +2629,7 @@ def lookup_symbol(
     include_price: bool = False,
     include_market_structure: bool = False,
     include_cboe_activity: bool = False,
+    queue_broker_request: bool = True,
 ) -> dict[str, Any]:
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
@@ -2639,7 +2640,7 @@ def lookup_symbol(
     raw_matches: dict[str, pd.DataFrame] = {}
     broker_research_request: dict[str, Any] = {}
 
-    if q and not q.endswith("=F") and not q.startswith("^"):
+    if queue_broker_request and q and not q.endswith("=F") and not q.startswith("^"):
         try:
             broker_research_request = queue_robinhood_research(
                 original_query,
@@ -2652,6 +2653,11 @@ def lookup_symbol(
                 "status": "queue_failed",
                 "error": str(exc)[:160],
             }
+    elif not queue_broker_request:
+        broker_research_request = {
+            "status": "not_requested",
+            "detail": "This read-only lookup path does not enqueue broker research.",
+        }
 
     for section, (pattern, column) in SNAPSHOTS.items():
         path = _latest_file(data_dir, pattern)
