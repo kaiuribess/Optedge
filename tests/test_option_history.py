@@ -1,3 +1,4 @@
+# Purpose: Test observed option history and proxy boundaries.
 """Tests for the read-only Robinhood option-history validation bridge."""
 from __future__ import annotations
 
