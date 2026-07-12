@@ -1,3 +1,4 @@
+# Purpose: Test bounded non-live agentic paper orders.
 import json
 import sys
 import tempfile
