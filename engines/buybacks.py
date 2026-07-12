@@ -1,3 +1,4 @@
+# Purpose: Find stock-repurchase authorizations in SEC filings.
 """SEC 8-K buyback announcement scanner — v20.1.
 
 Pulls recent 8-K filings from EDGAR Full-Text Search and flags any mentioning
