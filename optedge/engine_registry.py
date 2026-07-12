@@ -1,3 +1,4 @@
+# Purpose: List engines for shared status metadata.
 """Engine registry metadata for documentation and future orchestration cleanup."""
 from __future__ import annotations
 
