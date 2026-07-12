@@ -1,3 +1,4 @@
+# Purpose: Resolve company names and aliases to tradable symbols.
 """Resolve user search text into a tradable ticker/symbol using free sources."""
 from __future__ import annotations
 
