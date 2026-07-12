@@ -1,3 +1,4 @@
+# Purpose: Hyperliquid open interest engine.
 """Hyperliquid open interest engine.
 
 Hyperliquid is a decentralized perpetuals exchange with public REST API.
