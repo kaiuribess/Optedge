@@ -1,3 +1,4 @@
+# Purpose: Evaluate factor weights with chronological holdouts.
 """Backtest module — Optedge v16. Walk-forward backtest + per-factor attribution.
 
 Per bucket:
