@@ -421,24 +421,36 @@ See [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md).
 
 ## Project Layout
 
-```text
-optedge/
-  cli.py
-  orchestrator.py
-  engine_registry.py
-  modes/
+GitHub's file-list column shows the latest commit message and timestamp; it is
+not a customizable file-description field. This map is the canonical guide to
+what each major path does.
 
-engines/       factor and data engines
-fusion/        ranking and attribution
-backtest/      sizing, lifecycle tracking, exits, forward tests, calibration
-dashboard/     interactive HTML dashboard
-reports/       validation report generation
-risk/          research guardrails
-docs/          architecture, validation, risk, limitations
-tests/         direct-run test files
-```
-
-`run.py` is intentionally tiny and delegates to `optedge.cli`.
+| Path | Purpose |
+|---|---|
+| `run.py` | Minimal source-checkout launcher; delegates all routing to `optedge.cli`. |
+| `optedge/cli.py` | Routes commands to scans, symbol lookup, loop mode, or the local Trade Desk. |
+| `optedge/orchestrator.py` | Coordinates the research engines, ranking, risk controls, tracking, and output generation. |
+| `config.py` | Versioned research defaults, universes, limits, feature flags, and risk settings. |
+| `setup_check.py` | Verifies Python, network data sources, and optional provider readiness before a live run. |
+| `data_provider.py` | Historical-price and quote-provider access with bounded fallbacks and status reporting. |
+| `chain_provider.py` | Option-chain acquisition and source fallback logic. |
+| `pricing_models.py` | Option-pricing models and shared contract valuation helpers. |
+| `engines/` | Independent factor and data engines: technicals, fundamentals, sentiment, filings, macro, flow, and catalysts. |
+| `fusion/` | Combines normalized engine evidence into ranked option, share, value, and futures ideas. |
+| `backtest/` | Position sizing, lifecycle tracking, exits, calibration, forward testing, and model evaluation. |
+| `risk/` | Research guardrails and review-only trade-plan packet construction. |
+| `scripts/local_cockpit.py` | Serves the local swing-trading cockpit and Trade Desk interface. |
+| `scripts/export_robinhood_agentic_queue.py` | Builds bounded, approval-gated Robinhood review packets; it does not place orders. |
+| `scripts/normalize_robinhood_broker_snapshot.py` | Converts ignored read-only broker captures into a safe, pseudonymous dashboard snapshot. |
+| `dashboard/` | Generates the standalone interactive HTML research dashboard. |
+| `reports/` | Builds validation reports, equity curves, factor evidence, and research summaries. |
+| `telemetry/` | Records engine timing, health, and cache diagnostics. |
+| `optedge/default_weights/` | Immutable shipped strategy weights used when trusted runtime weights are unavailable. |
+| `data/` | Git-ignored local research, broker, model, and lifecycle state; never commit private contents. |
+| `docs/` | Architecture, validation, data-source, risk, broker-workflow, and limitation references. |
+| `tests/` | Regression and safety tests run locally and across Python 3.11-3.13 in CI. |
+| `pyproject.toml` | Canonical package metadata, dependencies, command entry point, and tool configuration. |
+| `install.bat` / `install.sh` | Reproducible source-first setup for Windows and Linux/macOS. |
 
 ## Tests
 
