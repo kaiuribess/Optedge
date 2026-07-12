@@ -1,3 +1,4 @@
+# Purpose: Score agricultural context around USDA WASDE releases.
 """USDA WASDE monthly reports engine — v20.2.
 
 The World Agricultural Supply and Demand Estimates (WASDE) drops mid-month
