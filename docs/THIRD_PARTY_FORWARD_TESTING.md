@@ -1,3 +1,5 @@
+<!-- Purpose: Document approval-gated Robinhood testing workflows. -->
+
 # Third-Party Forward Testing
 
 Optedge has two separate tracking layers:
