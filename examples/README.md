@@ -1,3 +1,5 @@
+<!-- Purpose: Explain sanitized example research artifacts. -->
+
 # Examples
 
 This directory provides small, sanitized examples of generated research artifacts.
