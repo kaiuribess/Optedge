@@ -1,11 +1,9 @@
-"""Multi-model options pricing — v20.7 (vectorized).
+"""Price options with scalar, vectorized, and regime-aware model ensembles.
 
-Four theoretical models running on every contract via numpy vectorized
-operations. No per-row Python loops, no "fast-path skip" shortcuts.
-A Heston stochastic-vol implementation exists in this module but is
-DISABLED by default — the Lewis-2001 Fourier inversion needs more
-validation before it can drive position sizing; until then `all_models_vec`
-omits it from the default set.
+Implements Black-Scholes-Merton, Cox-Ross-Rubinstein, and
+Bjerksund-Stensland calculations, then combines the available theoretical
+values with CBOE data when present. The vectorized paths avoid per-row Python
+loops for chain-scale pricing.
 
 Active models:
   - bs_price_vec   : Black-Scholes-Merton (European, with continuous div yield)
@@ -13,16 +11,9 @@ Active models:
   - bjs_price_vec  : Bjerksund-Stensland 2002 closed-form (American)
   - cboe_theo      : CBOE's published proprietary theoretical (read off chain)
 
-The legacy per-row functions (bs_price, crr_price, bjs_price) remain in
-the module for callers that price one option at a time (tests, fallbacks).
-
-Latency target (per ticker, ~500 surviving contracts):
-  - bs_price_vec      ~ 0.5ms
-  - crr_price_vec  80 ~ 30ms   (was 660ms unvectorized)
-  - bjs_price_vec     ~ 5ms    (was 6700ms unvectorized)
-  - heston_price_vec  ~ 60ms
-
-Plus an adaptive regime-aware ensemble combiner — same interface as v20.3.
+Legacy scalar functions remain for single-contract callers and fallbacks. A
+Heston implementation is available for research but stays out of the default
+ensemble until its stability evidence is strong enough for sizing decisions.
 """
 from __future__ import annotations
 import json
