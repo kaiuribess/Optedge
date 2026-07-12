@@ -1,3 +1,4 @@
+# Purpose: Test option entries expiry deduplication and recovery.
 import sys
 import tempfile
 import json
