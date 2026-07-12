@@ -1,3 +1,4 @@
+# Purpose: Test Optedge across supported Python versions and enforce linting.
 name: Optedge CI
 
 on:
