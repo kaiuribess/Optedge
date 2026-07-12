@@ -1,3 +1,4 @@
+# Purpose: Leakage-resistant fixed-horizon forward outcomes.
 """Leakage-resistant fixed-horizon forward outcomes.
 
 The live forward monitor answers "where is this signal now?" and therefore
