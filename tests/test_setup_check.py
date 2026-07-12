@@ -1,3 +1,4 @@
+# Purpose: Test keyless FRED setup and secret protection.
 from __future__ import annotations
 
 import contextlib
