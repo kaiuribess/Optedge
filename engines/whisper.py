@@ -1,3 +1,4 @@
+# Purpose: Score earnings setups from analyst price-target gaps.
 """Earnings whisper engine — v20.2 (layered sources).
 
 History:
