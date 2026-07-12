@@ -1,3 +1,4 @@
+# Purpose: Propose weekly Python and GitHub Actions dependency updates.
 version: 2
 updates:
   - package-ecosystem: pip
