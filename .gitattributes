@@ -1,3 +1,5 @@
+# Normalizes text line endings while preserving Windows scripts and binary artifacts.
+
 * text=auto eol=lf
 
 # Windows command scripts require CRLF for reliable cmd.exe execution.
