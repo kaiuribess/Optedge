@@ -1,3 +1,4 @@
+# Purpose: Read-only Robinhood option-history cache and request queue.
 """Read-only Robinhood option-history cache and request queue.
 
 The authenticated Robinhood MCP connector is available to Codex, not to the
