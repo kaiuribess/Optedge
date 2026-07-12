@@ -1,3 +1,4 @@
+# Purpose: Test executable performance evidence.
 import binascii
 import json
 import struct
