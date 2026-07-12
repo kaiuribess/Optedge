@@ -1,3 +1,4 @@
+# Purpose: Export candidates for external paper tracking.
 """Export a small executable subset for third-party paper tracking.
 
 This script does not place trades and does not use broker credentials. It only
