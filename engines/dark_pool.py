@@ -18,9 +18,8 @@ Free, no auth, no API key.
 """
 from __future__ import annotations
 import logging
-import math
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any
+from typing import List
 
 import pandas as pd
 import requests

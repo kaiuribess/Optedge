@@ -324,7 +324,8 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
     if launch:
         launcher = [
             sys.executable,
-            str(ROOT / "scripts" / "research_jobs.py"),
+            "-m",
+            "scripts.research_jobs",
             "run-job",
             job_id,
             symbol,
@@ -370,7 +371,8 @@ def create_refresh_job(data_dir: Path = DATA_DIR, *, launch: bool = True,
     if launch:
         launcher = [
             sys.executable,
-            str(ROOT / "scripts" / "research_jobs.py"),
+            "-m",
+            "scripts.research_jobs",
             "run-refresh-job",
             job_id,
             "--data-dir",
@@ -403,7 +405,8 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
     log_path = job_log_path(job_id, data_dir)
     command = [
         sys.executable,
-        str(ROOT / "run.py"),
+        "-m",
+        "optedge",
         "--universe",
         symbol,
         "--no-open",
@@ -462,7 +465,8 @@ def run_refresh_job(job_id: str, data_dir: Path = DATA_DIR,
     log_path = job_log_path(job_id, data_dir)
     command = [
         sys.executable,
-        str(ROOT / "run.py"),
+        "-m",
+        "optedge",
         "--no-open",
         "--out-dir",
         str(data_dir),

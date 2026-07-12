@@ -15,7 +15,7 @@ This replaces the old behavior of using file mtime as a proxy for entry time
 from __future__ import annotations
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd

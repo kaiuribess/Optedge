@@ -2,10 +2,6 @@
 to fetch data. Wraps yfinance with curl_cffi browser fingerprinting (defeats
 most rate limiting), adds disk caching, and exposes a uniform API.
 
-If you have a Polygon.io free API key (set POLYGON_API_KEY env var), this
-module will prefer Polygon for options chains and prices — Polygon's free
-tier is more reliable than yfinance and doesn't get rate-limited the same way.
-
 Free no-key history fallbacks are layered behind Yahoo/yfinance so the app can
 keep repricing and backtesting when Yahoo throttles. These fallbacks are not
 treated as live quotes.
@@ -19,7 +15,7 @@ import hashlib
 import io
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 
 import pandas as pd
 

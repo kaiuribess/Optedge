@@ -11,11 +11,9 @@ earnings is < 3 days out (IV crush risk).
 """
 from __future__ import annotations
 import logging
-import math
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import List, Dict, Any
 
 import pandas as pd
 
@@ -138,7 +136,6 @@ def _process_ticker(t: str) -> Dict[str, Any]:
     # commentary captures the transcript story without us scraping transcripts directly.
     fetched["post_earnings_window"] = False
     try:
-        eps_ts = fetched.get("eps_ts_last") or fetched.get("earningsTimestampStart")
         # Many fields aren't populated; fallback to inferring from next_date in the past
         if fetched.get("days_to_earnings") is not None and -7 <= fetched["days_to_earnings"] <= 0:
             fetched["post_earnings_window"] = True

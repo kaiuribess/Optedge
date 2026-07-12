@@ -32,7 +32,6 @@ from typing import Dict, Optional
 
 import numpy as np
 from scipy.stats import norm
-from scipy.optimize import brentq
 
 # Re-export legacy per-row helpers for callers that need a single-option price
 from utils import bs_price, bs_implied_vol, bs_delta  # noqa: F401
@@ -303,8 +302,6 @@ def _bjs_american_call_vec(S, K, T, r, b, sigma):
 
     # No early-exercise benefit when b >= r → American == European
     european_mask = b >= r
-    bs_val = bs_price_vec(S, K, T, r[0] if np.ndim(r) == 0 else np.zeros_like(S),
-                           sigma, np.where(b >= r, r - b, r - b), np.ones_like(S, dtype=bool))
     # Re-derive BS price with the right rate: handled below by manual formula
     # to avoid scalar-r assumption mismatch.
 

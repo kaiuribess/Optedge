@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, Any, Optional
 
-import numpy as np
 import pandas as pd
 
 log = logging.getLogger("optedge.calibration")

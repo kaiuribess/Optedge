@@ -1,11 +1,15 @@
-# Local-only files
+# Local-only configuration and secrets
 keys.py
 .optedge_status.json
 config_runtime.py
+.env
+.env.*
+!.env.example
 
-# Caches & outputs
+# Runtime data, caches, and outputs
 data/_cache/
 data/cockpit_jobs/
+data/weights/*.json
 data/*.parquet
 data/*.json
 data/*.html
@@ -19,13 +23,36 @@ logs/*.parquet
 telemetry/*.parquet
 archive/
 
-# Python
+# Python environments, caches, coverage, and builds
 __pycache__/
 *.pyc
 venv/
+.venv/
+env/
 .codex_git/
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+build/
+dist/
+
+# Local databases, logs, and editor backups
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.tmp
+*.bak
+*.orig
+*.swp
+.idea/
+.vscode/
 
 # OS
 .DS_Store

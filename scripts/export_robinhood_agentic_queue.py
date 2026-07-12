@@ -93,7 +93,6 @@ def manual_review_quote_provenance_reasons(row: dict[str, Any]) -> list[str]:
         reasons.append("source quote timestamp basis is missing or non-explicit")
 
     quality = _text(row.get("quote_quality")).lower().replace("-", "_").replace(" ", "_")
-    delay = _text(row.get("data_delay")).lower().replace("-", "_").replace(" ", "_")
     if not quality or quality == "unknown":
         reasons.append("quote quality is missing or unknown for manual broker review")
     elif any(token in quality for token in ("free", "delayed", "research", "indicative")):

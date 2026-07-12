@@ -24,11 +24,10 @@ import io
 import logging
 import math
 import re
-import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from xml.etree import ElementTree as ET
 
 import requests
@@ -253,9 +252,7 @@ def _fetch_and_parse_ptr(filing: Dict[str, str]) -> List[Dict[str, Any]]:
 # -------- Senate eFD scraping ----------------------------------------
 def _build_senate_session() -> Optional[requests.Session]:
     """One-time auth dance: GET home → POST prohibition_agreement → ready."""
-    cache_key = "congress:senate_session_alive"
-    # We don't actually cache the session itself (cookies aren't picklable cleanly),
-    # but we use this key as a "session worked recently" hint. Skip if recently ok.
+    # We don't cache the session itself because its cookies are not cleanly picklable.
     sess = requests.Session()
     sess.headers["User-Agent"] = USER_AGENT
     try:
@@ -379,7 +376,6 @@ def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
                 continue
             # Columns: #, Transaction Date, Owner, Ticker, Asset Name, Asset Type, Type, Amount, [Comment]
             tx_date_str = cells[1]
-            owner = cells[2]
             ticker_raw = cells[3]
             asset_name = cells[4]
             asset_type = cells[5]

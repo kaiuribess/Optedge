@@ -20,7 +20,7 @@ No network required for the proximity component; yfinance is used for the
 """
 from __future__ import annotations
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 

@@ -188,6 +188,7 @@ def test_run_job_writes_lookup_summary_for_requested_option():
             jobs_module.lookup_symbol = old_lookup
 
         stored = read_job(job["job_id"], data_dir)
+        assert stored["command"][:3] == [sys.executable, "-m", "optedge"]
         assert stored["status"] == "completed"
         assert stored["request_label"] == "AAPL 2026-06-18 C 200"
         assert stored["requested_match_status"] == "exact"
@@ -279,6 +280,7 @@ def test_run_refresh_job_uses_full_market_command_without_ticker():
         stored = read_job(job["job_id"], data_dir)
         command = stored["command"]
         assert stored["status"] == "completed"
+        assert command[:3] == [sys.executable, "-m", "optedge"]
         assert "--no-open" in command
         assert "--out-dir" in command
         assert "--minimal" in command

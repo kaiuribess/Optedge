@@ -7,9 +7,7 @@ with a clear remediation note if anything fails. Saves a `.optedge_status.json`
 so `run.py` can auto-fall-back to working sources.
 """
 from __future__ import annotations
-import getpass
 import json
-import logging
 import os
 import sys
 import time
@@ -110,7 +108,7 @@ def check_yfinance() -> tuple[bool, str]:
         if h.empty:
             fail("AAPL history returned empty",
                  "Yahoo may be rate-limiting your IP. Wait 5 min and retry, or "
-                 "set up Polygon.io (free tier) - see README.")
+                 "use demo mode while the free provider stack recovers.")
             return False, "empty"
         last = float(h["Close"].iloc[-1])
         ok(f"AAPL last close: ${last:.2f}")
@@ -136,7 +134,7 @@ def check_yfinance() -> tuple[bool, str]:
         if "rate" in msg.lower() or "429" in msg:
             fail(f"Yahoo rate-limited this IP: {msg}",
                  "Common from datacenter/VPN IPs. Try a residential connection, "
-                 "wait 30 min, or use Polygon.io free tier - see README.")
+                 "wait 30 min, or use demo mode. See README for the optional Tradier source.")
         else:
             fail(f"yfinance error: {msg}",
                  "Check internet connection and try again.")
@@ -230,32 +228,20 @@ def check_macro() -> tuple[bool, str]:
 
 
 def maybe_setup_fred() -> str:
-    banner("FRED API key - optional (richer macro data)")
+    banner("FRED macro data - keyless by default")
     existing = os.environ.get("FRED_API_KEY")
     if existing:
         ok("FRED_API_KEY already set (value hidden)")
         return existing
-    print(f"  {DIM}FRED is optional. Adds CPI, unemployment, and more macro series.{RESET}")
-    print(f"  {DIM}Get a free key in 30s: https://fredaccount.stlouisfed.org/apikey{RESET}")
-    try:
-        ans = getpass.getpass(
-            "  Have a FRED key now? Paste it securely (or press Enter to skip): "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        ans = ""
-    if ans:
-        ok("Saved FRED_API_KEY for this session (value hidden).")
-        os.environ["FRED_API_KEY"] = ans
-        print(
-            f"    {DIM}To make it permanent, store FRED_API_KEY in your shell "
-            f"profile or OS secret store.{RESET}"
-        )
-        print(
-            f"    {DIM}Never paste the key into a shared command, log, screenshot, "
-            f"or Codex task.{RESET}"
-        )
-        return ans
-    warn("FRED skipped - macro engine will run on yfinance VIX/yields only")
+    ok("Keyless FRED CSV fallback is available for public macro series")
+    print(
+        f"    {DIM}An API key is optional. To use one, set FRED_API_KEY in your "
+        f"shell profile or OS secret store before launching Optedge.{RESET}"
+    )
+    print(
+        f"    {DIM}Never paste a key into a shared command, log, screenshot, "
+        f"or Codex task.{RESET}"
+    )
     return ""
 
 
@@ -274,7 +260,7 @@ def main():
     reddit_ok, reddit_state = check_reddit()
     sec_ok, sec_state = check_sec()
     macro_ok, macro_state = check_macro()
-    fred = maybe_setup_fred() if sys.stdin.isatty() else os.environ.get("FRED_API_KEY", "")
+    fred = maybe_setup_fred()
 
     status = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -288,19 +274,19 @@ def main():
 
     banner("Summary")
     if yf_ok and yf_state == "full":
-        ok("Live mode is fully operational. Run: python3 run.py")
+        ok("Yahoo history and option-chain checks passed. Run: python3 run.py")
     elif yf_ok:
         warn("Live mode partially working - options chain may be impaired.")
         print(f"    {DIM}Run: python3 run.py - system will degrade gracefully.{RESET}")
     else:
         fail("Live mode unavailable from this network/IP.",
-             "Run `python3 run.py --demo` to use synthetic data, or "
-             "set up Polygon.io free tier (see README) and run with --polygon.")
+             "Run `python3 run.py --demo` to use synthetic data while providers recover. "
+             "See README for the optional Tradier option-chain source.")
 
     if not reddit_ok:
         print(f"    {DIM}Sentiment: will be skipped automatically. Use --skip-sentiment to silence.{RESET}")
     if not sec_ok:
-        print(f"    {DIM}Insider: will be empty. The other 4 engines still produce signals.{RESET}")
+        print(f"    {DIM}Insider: will be empty. Other available engines can still produce signals.{RESET}")
 
     print(f"\n{DIM}Status saved to: {STATUS_FILE}{RESET}\n")
     return 0

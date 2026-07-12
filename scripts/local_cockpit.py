@@ -57,7 +57,7 @@ from risk.trade_plan import (
     size_long_option_trade,
     size_share_trade,
 )
-from scripts.lookup_symbol import DATA_DIR, ROOT, lookup_symbol, rich_lookup_kwargs, save_lookup
+from scripts.lookup_symbol import DATA_DIR, lookup_symbol, rich_lookup_kwargs, save_lookup
 from scripts.normalize_robinhood_broker_snapshot import (
     RAW_BUNDLE_SCHEMA,
     SNAPSHOT_SCHEMA,
@@ -5104,7 +5104,7 @@ def _add_broker_snapshot_suggestions(
     for raw in direct_equities:
         if isinstance(raw, dict):
             add_equity(raw)
-    for account_index, account in enumerate(accounts):
+    for account in accounts:
         if not isinstance(account, dict):
             continue
         account_label = account.get("nickname") or account.get("label") or account.get("account_mask")

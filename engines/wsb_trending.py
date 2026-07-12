@@ -36,7 +36,7 @@ _STOPWORDS = {
     "AMA", "TIL", "CEO", "CFO", "COO", "CTO", "VP",
     # Trading slang that matches pattern
     "FOMO", "ATM", "ITM", "OTM", "IV", "EOD", "AH", "PM", "EPS", "YOLO",
-    "WSB", "HFT", "GTFO", "LOL", "LMAO", "WTF", "OMG", "TBD", "IIRC", "AF",
+    "WSB", "HFT", "GTFO", "LOL", "LMAO", "WTF", "OMG", "TBD", "AF",
     # Common false positives
     "GO", "OF", "ON", "AT", "OR", "AND", "BUY", "SELL", "HOLD", "LONG",
     "PUT", "CALL", "NEW", "OLD", "BIG", "ALL", "ANY",

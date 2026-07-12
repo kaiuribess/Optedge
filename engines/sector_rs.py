@@ -12,7 +12,7 @@ Adds a new fusion factor `sector_rs_score` (already side-aligned via z-score sig
 from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 
 import pandas as pd
 
