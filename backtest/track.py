@@ -1,3 +1,4 @@
+# Purpose: Signal logging — writes per-asset-type signal logs with entry_time.
 """Signal logging — writes per-asset-type signal logs with entry_time stamped in.
 
 Three writers, one schema convention:
