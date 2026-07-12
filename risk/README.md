@@ -1,3 +1,5 @@
+<!-- Purpose: Explain research gates and manual trade-plan safeguards. -->
+
 # Research and Trade-Plan Guardrails
 
 This package enforces conservative research gates and deterministic trade-planning rules.
