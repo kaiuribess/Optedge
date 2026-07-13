@@ -1,10 +1,11 @@
 # Purpose: Pure trade sizing and approval-gated Robinhood review packets.
 """Pure trade sizing and approval-gated Robinhood review packets.
 
-This module deliberately has no filesystem, network, broker, credential, clock,
-or automation dependency.  It turns explicit risk inputs into a deterministic
+This module deliberately has no filesystem, network, broker, credential, or
+automation dependency.  It turns explicit risk inputs into a deterministic
 whole-unit trade plan, then converts an actionable plan into manual Robinhood
-MCP review instructions.  A review packet never places an order.
+MCP review instructions.  The packet boundary checks the current clock only to
+reject stale or overlong review packets.  A review packet never places an order.
 """
 from __future__ import annotations
 
@@ -12,20 +13,23 @@ import hashlib
 import json
 import math
 import re
-from datetime import date
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 TRADE_PLAN_SCHEMA = "optedge_trade_plan_v1"
 ACCOUNT_LIMITS_SCHEMA = "optedge_account_limits_v1"
 ROBINHOOD_EQUITY_REVIEW_SCHEMA = "optedge_robinhood_equity_review_plan_v1"
 ROBINHOOD_OPTION_REVIEW_SCHEMA = "optedge_robinhood_option_review_plan_v1"
-MANUAL_REVIEW_PACKET_SCHEMA = "optedge_manual_robinhood_review_packet_v1"
+MANUAL_REVIEW_PACKET_SCHEMA = "optedge_manual_robinhood_review_packet_v2"
+MANUAL_REVIEW_PACKET_INTEGRITY_SCHEMA = "optedge_manual_review_integrity_v1"
 
 ACCOUNT_NUMBER_PLACEHOLDER = "<explicit_user_confirmed_account_number>"
 OPTION_ID_PLACEHOLDER = "<option_id_from_get_option_instruments>"
 REF_ID_PLACEHOLDER = "<fresh_uuid_generated_once_after_exact_confirmation>"
 SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
+MAX_MANUAL_REVIEW_PACKET_TTL_SECONDS = 15 * 60
+MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS = 60
 
 __all__ = [
     "calculate_account_limits",
@@ -34,6 +38,7 @@ __all__ = [
     "build_robinhood_equity_review_plan",
     "build_robinhood_option_review_plan",
     "build_manual_robinhood_review_packet",
+    "validate_manual_robinhood_review_packet",
     "render_manual_robinhood_review_prompt",
 ]
 
@@ -679,7 +684,7 @@ def _review_errors(trade_plan: Any, expected_asset: str) -> list[dict[str, str]]
         )
     if trade_plan.get("status") != "ready_for_manual_review":
         errors.append(_issue("invalid_trade_plan_status", "status", "Trade plan is not ready for manual review."))
-    if not trade_plan.get("is_actionable"):
+    if trade_plan.get("is_actionable") is not True:
         errors.append(_issue("trade_plan_not_actionable", "status", "Trade plan is not actionable."))
     validation = trade_plan.get("validation") if isinstance(trade_plan.get("validation"), dict) else {}
     if validation.get("ok") is not True or validation.get("errors"):
@@ -711,6 +716,22 @@ def _review_errors(trade_plan: Any, expected_asset: str) -> list[dict[str, str]]
             )
         )
     risk = trade_plan.get("risk") if isinstance(trade_plan.get("risk"), dict) else {}
+    if risk.get("max_loss_is_unbounded") is not False:
+        errors.append(
+            _issue(
+                "unbounded_or_unproven_maximum_loss",
+                "risk.max_loss_is_unbounded",
+                "Manual review requires maximum loss to be explicitly bounded.",
+            )
+        )
+    if risk.get("stop_is_not_broker_order") is not True:
+        errors.append(
+            _issue(
+                "ambiguous_stop_execution",
+                "risk.stop_is_not_broker_order",
+                "The planning stop must be explicitly identified as not resting at the broker.",
+            )
+        )
     planned_max_loss = _number(risk.get("planned_max_loss_dollars"))
     if planned_max_loss is None or planned_max_loss <= 0:
         errors.append(_issue("missing_max_loss", "planned_max_loss_dollars", "A positive maximum-loss reference is required."))
@@ -771,6 +792,14 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                     "Long-share capital-loss reference does not reconcile to the entry order.",
                 )
             )
+        if not _same_money(risk.get("planned_max_loss_dollars"), expected_notional):
+            errors.append(
+                _issue(
+                    "share_planned_max_loss_mismatch",
+                    "planned_max_loss_dollars",
+                    "Long-share maximum loss must reconcile to the full entry notional.",
+                )
+            )
         allocation_cap = _number(risk.get("allocation_cap_dollars"))
         if allocation_cap is None or expected_notional > allocation_cap + 0.01:
             errors.append(
@@ -778,6 +807,88 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                     "equity_notional_exceeds_allocation_cap",
                     "allocation_cap_dollars",
                     "Share notional must fit inside the allocation cap.",
+                )
+            )
+        entry_price = _number(order.get("entry_price"))
+        stop_price = _number(order.get("stop_price"))
+        target_price = _number(order.get("target_price"))
+        planned_risk_per_unit = _number(risk.get("planned_risk_per_unit_dollars"))
+        planned_stop_risk_per_unit = _number(
+            risk.get("planned_stop_risk_per_unit_dollars")
+        )
+        planned_stop_loss = _number(risk.get("planned_stop_loss_dollars"))
+        risk_budget = _number(risk.get("risk_budget_dollars"))
+        if entry_price is None or not _same_money(entry_price, limit_price):
+            errors.append(
+                _issue(
+                    "equity_entry_price_mismatch",
+                    "order.entry_price",
+                    "Share entry price must match the reviewed limit price.",
+                )
+            )
+        if stop_price is None or stop_price < 0 or stop_price >= limit_price:
+            errors.append(
+                _issue(
+                    "invalid_review_stop_price",
+                    "order.stop_price",
+                    "A long-share planning stop must be non-negative and below entry.",
+                )
+            )
+        if target_price is None or target_price <= limit_price:
+            errors.append(
+                _issue(
+                    "invalid_review_target_price",
+                    "order.target_price",
+                    "A long-share planning target must be finite and above entry.",
+                )
+            )
+        if (
+            planned_risk_per_unit is None
+            or planned_risk_per_unit <= 0
+            or planned_stop_risk_per_unit is None
+            or not _same_money(planned_stop_risk_per_unit, planned_risk_per_unit)
+        ):
+            errors.append(
+                _issue(
+                    "share_stop_risk_per_unit_mismatch",
+                    "risk.planned_stop_risk_per_unit_dollars",
+                    "Per-share stop risk fields must be positive and reconcile exactly.",
+                )
+            )
+        elif stop_price is not None and planned_risk_per_unit + 0.011 < limit_price - stop_price:
+            errors.append(
+                _issue(
+                    "share_stop_risk_understates_price_distance",
+                    "risk.planned_stop_risk_per_unit_dollars",
+                    "Per-share stop risk cannot be smaller than entry minus the planning stop.",
+                )
+            )
+        if (
+            planned_risk_per_unit is None
+            or planned_stop_loss is None
+            or not _same_money(planned_stop_loss, planned_risk_per_unit * quantity)
+        ):
+            errors.append(
+                _issue(
+                    "share_planned_stop_loss_mismatch",
+                    "risk.planned_stop_loss_dollars",
+                    "Planned stop loss must equal per-share stop risk times quantity.",
+                )
+            )
+        if risk_budget is None or planned_stop_loss is None or planned_stop_loss > risk_budget + 0.01:
+            errors.append(
+                _issue(
+                    "share_stop_loss_exceeds_risk_budget",
+                    "risk.planned_stop_loss_dollars",
+                    "Planned stop loss must fit inside the trade-plan risk budget.",
+                )
+            )
+        if risk.get("risk_budget_basis") != "planned_stop_loss":
+            errors.append(
+                _issue(
+                    "unsafe_share_risk_budget_basis",
+                    "risk.risk_budget_basis",
+                    "Share review must size risk from the planned stop loss.",
                 )
             )
     if errors:
@@ -824,6 +935,8 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             "get_equity_tradability",
             "get_equity_positions",
             "get_equity_orders",
+            "get_option_positions",
+            "get_option_orders",
         ],
         "review_tool": "review_equity_order",
         "place_tool_after_explicit_confirmation": "place_equity_order",
@@ -1020,6 +1133,8 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             "get_option_quotes",
             "get_option_positions",
             "get_option_orders",
+            "get_equity_positions",
+            "get_equity_orders",
         ],
         "contract_lookup": {
             "chain_symbol": order["symbol"],
@@ -1077,14 +1192,905 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
     }
 
 
-def _packet_id(trade_plan: dict[str, Any], snapshot_id: str | None) -> str:
+def _parse_aware_utc_timestamp(value: Any) -> datetime | None:
+    """Parse one timezone-aware ISO timestamp without guessing a timezone."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _manual_review_context_errors(
+    trade_plan: Any,
+    *,
+    snapshot_id: Any,
+    issued_at: Any,
+    expires_at: Any,
+    review_gate_attested: bool,
+    now: datetime,
+) -> list[dict[str, str]]:
+    """Require the Trade Desk's bounded account, quote, and gate context."""
+    errors: list[dict[str, str]] = []
+    asset = trade_plan.get("asset") if isinstance(trade_plan, dict) else None
+
+    clean_snapshot_id = _prompt_text(snapshot_id, limit=160)
+    if not isinstance(snapshot_id, str) or not snapshot_id.strip() or clean_snapshot_id != snapshot_id.strip():
+        errors.append(
+            _issue(
+                "missing_or_invalid_snapshot_id",
+                "snapshot_id",
+                "A non-empty, single-line Trade Desk snapshot ID is required.",
+            )
+        )
+
+    issued = _parse_aware_utc_timestamp(issued_at)
+    expires = _parse_aware_utc_timestamp(expires_at)
+    if issued is None:
+        errors.append(
+            _issue(
+                "missing_or_invalid_issued_at",
+                "issued_at",
+                "A timezone-aware ISO packet issue time is required.",
+            )
+        )
+    if expires is None:
+        errors.append(
+            _issue(
+                "missing_or_invalid_expires_at",
+                "expires_at",
+                "A timezone-aware ISO packet expiry time is required.",
+            )
+        )
+    if issued is not None and expires is not None:
+        ttl_seconds = (expires - issued).total_seconds()
+        if ttl_seconds <= 0:
+            errors.append(
+                _issue(
+                    "invalid_review_window",
+                    "expires_at",
+                    "Packet expiry must be later than its issue time.",
+                )
+            )
+        elif ttl_seconds > MAX_MANUAL_REVIEW_PACKET_TTL_SECONDS:
+            errors.append(
+                _issue(
+                    "review_window_too_long",
+                    "expires_at",
+                    "Manual review packets may remain valid for at most 15 minutes.",
+                )
+            )
+        if issued > now and (issued - now).total_seconds() > MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS:
+            errors.append(
+                _issue(
+                    "issued_at_in_future",
+                    "issued_at",
+                    "Packet issue time is too far in the future.",
+                )
+            )
+        if expires <= now:
+            errors.append(
+                _issue(
+                    "review_packet_expired",
+                    "expires_at",
+                    "The manual review packet has expired; rebuild it from fresh local and broker state.",
+                )
+            )
+
+    if not review_gate_attested:
+        errors.append(
+            _issue(
+                "review_gate_not_attested",
+                "external_blockers",
+                "The caller must attest that the external Trade Desk review gate ran, even when it found no blockers.",
+            )
+        )
+
+    assumptions = (
+        trade_plan.get("account_assumptions")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("account_assumptions"), dict)
+        else None
+    )
+    if assumptions is None:
+        errors.append(
+            _issue(
+                "missing_account_assumptions",
+                "account_assumptions",
+                "Timestamped account-equity and risk assumptions from Trade Desk are required.",
+            )
+        )
+        assumptions = {}
+
+    equity = _number(assumptions.get("account_equity_dollars"))
+    risk_fraction = _number(assumptions.get("risk_fraction"))
+    allocation_fraction = _number(assumptions.get("allocation_fraction"))
+    risk_budget = _number(assumptions.get("risk_budget_dollars"))
+    allocation_cap = _number(assumptions.get("allocation_cap_dollars"))
+    for field, value in (
+        ("account_equity_dollars", equity),
+        ("risk_fraction", risk_fraction),
+        ("allocation_fraction", allocation_fraction),
+        ("risk_budget_dollars", risk_budget),
+        ("allocation_cap_dollars", allocation_cap),
+    ):
+        if value is None or value <= 0:
+            errors.append(
+                _issue(
+                    f"missing_or_invalid_{field}",
+                    f"account_assumptions.{field}",
+                    f"A positive finite {field} assumption is required.",
+                )
+            )
+    if risk_fraction is not None and risk_fraction > 1:
+        errors.append(_issue("risk_fraction_above_one", "account_assumptions.risk_fraction", "Risk fraction cannot exceed 1.0."))
+    if allocation_fraction is not None and allocation_fraction > 1:
+        errors.append(_issue("allocation_fraction_above_one", "account_assumptions.allocation_fraction", "Allocation fraction cannot exceed 1.0."))
+    if equity is not None and risk_fraction is not None and risk_budget is not None:
+        if not _same_money(risk_budget, equity * risk_fraction):
+            errors.append(
+                _issue(
+                    "account_risk_budget_mismatch",
+                    "account_assumptions.risk_budget_dollars",
+                    "Risk budget must reconcile to assumed account equity times risk fraction.",
+                )
+            )
+    if equity is not None and allocation_fraction is not None and allocation_cap is not None:
+        if allocation_cap > equity * allocation_fraction + 0.011:
+            errors.append(
+                _issue(
+                    "account_allocation_cap_mismatch",
+                    "account_assumptions.allocation_cap_dollars",
+                    "Allocation cap cannot exceed assumed account equity times allocation fraction.",
+                )
+            )
+
+    risk = (
+        trade_plan.get("risk")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict)
+        else {}
+    )
+    if risk_budget is not None and not _same_money(risk_budget, risk.get("risk_budget_dollars")):
+        errors.append(
+            _issue(
+                "trade_plan_risk_budget_context_mismatch",
+                "risk.risk_budget_dollars",
+                "Trade-plan risk budget does not match the account context.",
+            )
+        )
+    plan_allocation_cap = _number(risk.get("allocation_cap_dollars"))
+    if (
+        allocation_cap is not None
+        and (
+            plan_allocation_cap is None
+            or plan_allocation_cap <= 0
+            or plan_allocation_cap > allocation_cap + 0.011
+        )
+    ):
+        errors.append(
+            _issue(
+                "trade_plan_allocation_cap_exceeds_context",
+                "risk.allocation_cap_dollars",
+                "Trade-plan allocation capacity must be positive and no greater than the account context cap.",
+            )
+        )
+
+    constraints = (
+        trade_plan.get("review_constraints")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("review_constraints"), dict)
+        else None
+    )
+    if constraints is None:
+        errors.append(
+            _issue(
+                "missing_review_constraints",
+                "review_constraints",
+                "Account and live-quote review constraints from Trade Desk are required.",
+            )
+        )
+        constraints = {}
+    evidence = constraints.get("evidence") if isinstance(constraints.get("evidence"), dict) else {}
+    account = constraints.get("account") if isinstance(constraints.get("account"), dict) else {}
+    portfolio = constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
+    quote = constraints.get("quote") if isinstance(constraints.get("quote"), dict) else {}
+    if not evidence:
+        errors.append(
+            _issue(
+                "missing_edge_evidence_constraints",
+                "review_constraints.evidence",
+                "A validated asset-specific Edge Lab attestation is required.",
+            )
+        )
+    if not account:
+        errors.append(_issue("missing_account_review_constraints", "review_constraints.account", "Account review constraints are required."))
+    if not portfolio:
+        errors.append(
+            _issue(
+                "missing_portfolio_review_constraints",
+                "review_constraints.portfolio",
+                "Same-account post-trade portfolio constraints are required.",
+            )
+        )
+    if not quote:
+        errors.append(_issue("missing_quote_review_constraints", "review_constraints.quote", "Live-quote review constraints are required."))
+
+    expected_evidence_asset = "option" if asset == "option" else "share"
+    if evidence.get("schema") != "optedge_edge_lab_review_attestation_v1":
+        errors.append(_issue("invalid_edge_evidence_schema", "review_constraints.evidence.schema", "The Edge Lab review attestation schema is unsupported."))
+    if evidence.get("source_schema") != "optedge_edge_lab_v1":
+        errors.append(_issue("invalid_edge_evidence_source", "review_constraints.evidence.source_schema", "Review evidence must come from the Edge Lab report."))
+    evidence_digest = evidence.get("report_digest_sha256")
+    if not isinstance(evidence_digest, str) or re.fullmatch(r"[0-9a-f]{64}", evidence_digest) is None:
+        errors.append(_issue("invalid_edge_evidence_digest", "review_constraints.evidence.report_digest_sha256", "A full lowercase SHA-256 digest must bind the packet to one Edge Lab report."))
+    if evidence.get("asset") != expected_evidence_asset:
+        errors.append(_issue("edge_evidence_asset_mismatch", "review_constraints.evidence.asset", "Edge evidence must match the proposed asset class."))
+    if evidence.get("edge_lab_status") != "validated":
+        errors.append(_issue("edge_lab_not_validated", "review_constraints.evidence.edge_lab_status", "Edge Lab must have at least one validated live-capital lane."))
+    if evidence.get("asset_lane_status") != "validated":
+        errors.append(_issue("asset_edge_lane_not_validated", "review_constraints.evidence.asset_lane_status", "The proposed asset lane must be validated."))
+    if evidence.get("asset_lane_live_capital_eligible") is not True:
+        errors.append(_issue("asset_edge_lane_not_eligible", "review_constraints.evidence.asset_lane_live_capital_eligible", "The proposed asset lane must explicitly pass the live-capital evidence gate."))
+    if evidence.get("evidence_lane") != "current_method_executable":
+        errors.append(_issue("non_executable_edge_evidence", "review_constraints.evidence.evidence_lane", "Only current-method executable outcomes can authorize manual review."))
+    if evidence.get("require_current_method_executable") is not True:
+        errors.append(_issue("missing_current_method_edge_requirement", "review_constraints.evidence.require_current_method_executable", "The review must explicitly require current-method executable evidence."))
+    headline_horizon = evidence.get("headline_horizon_sessions")
+    if (
+        not isinstance(headline_horizon, int)
+        or isinstance(headline_horizon, bool)
+        or headline_horizon <= 0
+    ):
+        errors.append(_issue("invalid_edge_evidence_horizon", "review_constraints.evidence.headline_horizon_sessions", "A positive integer evidence horizon is required."))
+
+    if equity is not None and not _same_money(account.get("assumed_equity_dollars"), equity):
+        errors.append(_issue("review_equity_context_mismatch", "review_constraints.account.assumed_equity_dollars", "Review equity must match the trade-plan account assumption."))
+    for field, expected in (("risk_fraction", risk_fraction), ("allocation_fraction", allocation_fraction)):
+        actual = _number(account.get(field))
+        if expected is not None and (actual is None or abs(actual - expected) > 1e-9):
+            errors.append(_issue(f"review_{field}_context_mismatch", f"review_constraints.account.{field}", f"Review {field} must match the trade-plan account assumption."))
+    match_count = account.get("eligible_same_account_match_count")
+    if not isinstance(match_count, int) or isinstance(match_count, bool) or match_count < 1:
+        errors.append(
+            _issue(
+                "no_eligible_same_account_match",
+                "review_constraints.account.eligible_same_account_match_count",
+                "At least one single eligible account must pass equity, approval, risk, and buying-power checks.",
+            )
+        )
+    for field in ("require_active", "require_agentic_allowed", "use_conservative_buying_power"):
+        if account.get(field) is not True:
+            errors.append(_issue(f"missing_{field}", f"review_constraints.account.{field}", f"{field} must be explicitly enabled."))
+    if asset == "option" and account.get("require_options_approval") is not True:
+        errors.append(_issue("missing_options_approval_gate", "review_constraints.account.require_options_approval", "Option review must require options approval on the selected account."))
+    overstatement = _number(account.get("max_equity_overstatement_fraction"))
+    if overstatement is None or overstatement < 0 or overstatement > 0.05:
+        errors.append(_issue("unsafe_equity_overstatement_tolerance", "review_constraints.account.max_equity_overstatement_fraction", "Equity overstatement tolerance must be between 0% and 5%."))
+
+    if portfolio.get("schema") != "optedge_portfolio_review_constraints_v1":
+        errors.append(
+            _issue(
+                "invalid_portfolio_review_schema",
+                "review_constraints.portfolio.schema",
+                "The portfolio review constraint schema is missing or unsupported.",
+            )
+        )
+    if portfolio.get("source") != "optedge_robinhood_broker_snapshot_v1":
+        errors.append(
+            _issue(
+                "untrusted_portfolio_review_source",
+                "review_constraints.portfolio.source",
+                "Portfolio exposure must come from the normalized Robinhood broker snapshot.",
+            )
+        )
+    if portfolio.get("raw_bundle_schema") != "optedge_robinhood_mcp_read_bundle_v2":
+        errors.append(
+            _issue(
+                "untrusted_portfolio_raw_bundle",
+                "review_constraints.portfolio.raw_bundle_schema",
+                "Portfolio exposure requires a complete Robinhood read bundle.",
+            )
+        )
+    snapshot_generated = _parse_aware_utc_timestamp(
+        portfolio.get("broker_snapshot_generated_at")
+    )
+    if snapshot_generated is None:
+        errors.append(
+            _issue(
+                "missing_portfolio_snapshot_timestamp",
+                "review_constraints.portfolio.broker_snapshot_generated_at",
+                "A timezone-aware broker snapshot timestamp is required.",
+            )
+        )
+    elif issued is not None and snapshot_generated > issued + timedelta(seconds=MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS):
+        errors.append(
+            _issue(
+                "portfolio_snapshot_after_packet_issue",
+                "review_constraints.portfolio.broker_snapshot_generated_at",
+                "Broker snapshot time cannot be materially later than packet issue time.",
+            )
+        )
+    snapshot_digest = portfolio.get("broker_snapshot_digest_sha256")
+    if not isinstance(snapshot_digest, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_digest) is None:
+        errors.append(
+            _issue(
+                "invalid_portfolio_snapshot_digest",
+                "review_constraints.portfolio.broker_snapshot_digest_sha256",
+                "A full lowercase SHA-256 digest must bind the portfolio review to one snapshot.",
+            )
+        )
+    for field, expected in (
+        ("same_account_only", True),
+        ("local_research_counted_as_live", False),
+    ):
+        if portfolio.get(field) is not expected:
+            errors.append(
+                _issue(
+                    f"unsafe_portfolio_{field}",
+                    f"review_constraints.portfolio.{field}",
+                    f"Portfolio constraint {field} must be explicitly {expected}.",
+                )
+            )
+    if portfolio.get("nonterminal_order_policy") != "block":
+        errors.append(
+            _issue(
+                "unsafe_portfolio_working_order_policy",
+                "review_constraints.portfolio.nonterminal_order_policy",
+                "Any same-account nonterminal order must block portfolio review.",
+            )
+        )
+    if portfolio.get("cap_method") != (
+        "min_assumed_and_live_same_account_equity_times_allocation_fraction"
+    ):
+        errors.append(
+            _issue(
+                "unsafe_portfolio_cap_method",
+                "review_constraints.portfolio.cap_method",
+                "The total-open cap must use the lower of assumed and live same-account equity.",
+            )
+        )
+    expected_capital_basis = (
+        "full_option_debit_at_risk_dollars"
+        if asset == "option"
+        else "full_share_notional_at_risk_dollars"
+    )
+    if portfolio.get("proposed_capital_basis") != expected_capital_basis:
+        errors.append(
+            _issue(
+                "unsafe_portfolio_proposed_capital_basis",
+                "review_constraints.portfolio.proposed_capital_basis",
+                f"Portfolio proposed exposure must use {expected_capital_basis}.",
+            )
+        )
+
+    portfolio_count = portfolio.get("eligible_account_count")
+    portfolio_rows = portfolio.get("eligible_accounts")
+    if not isinstance(portfolio_rows, list):
+        errors.append(
+            _issue(
+                "missing_portfolio_attestations",
+                "review_constraints.portfolio.eligible_accounts",
+                "At least one same-account portfolio attestation is required.",
+            )
+        )
+        portfolio_rows = []
+    if (
+        not isinstance(portfolio_count, int)
+        or isinstance(portfolio_count, bool)
+        or portfolio_count < 1
+        or portfolio_count != len(portfolio_rows)
+    ):
+        errors.append(
+            _issue(
+                "portfolio_attestation_count_mismatch",
+                "review_constraints.portfolio.eligible_account_count",
+                "Portfolio attestation count must match a non-empty eligible-account list.",
+            )
+        )
+    if isinstance(match_count, int) and not isinstance(match_count, bool):
+        if portfolio_count != match_count:
+            errors.append(
+                _issue(
+                    "portfolio_account_match_count_mismatch",
+                    "review_constraints.portfolio.eligible_account_count",
+                    "Portfolio attestations must match the eligible same-account count.",
+                )
+            )
+
+    expected_proposed = _number(
+        risk.get("full_option_debit_at_risk_dollars")
+        if asset == "option"
+        else risk.get("full_share_notional_at_risk_dollars")
+    )
+    seen_account_keys: set[str] = set()
+    for index, row in enumerate(portfolio_rows):
+        field = f"review_constraints.portfolio.eligible_accounts[{index}]"
+        if not isinstance(row, dict):
+            errors.append(
+                _issue(
+                    "invalid_portfolio_attestation",
+                    field,
+                    "Each portfolio attestation must be an object.",
+                )
+            )
+            continue
+        if row.get("schema") != "optedge_post_trade_portfolio_gate_v1":
+            errors.append(
+                _issue(
+                    "invalid_post_trade_portfolio_schema",
+                    f"{field}.schema",
+                    "The post-trade portfolio attestation schema is unsupported.",
+                )
+            )
+        if row.get("status") != "allowed" or row.get("allowed") is not True:
+            errors.append(
+                _issue(
+                    "portfolio_attestation_not_allowed",
+                    f"{field}.allowed",
+                    "Every included portfolio attestation must explicitly allow the proposal.",
+                )
+            )
+        if row.get("exposure_schema") != "optedge_broker_portfolio_exposure_v1":
+            errors.append(
+                _issue(
+                    "invalid_portfolio_exposure_schema",
+                    f"{field}.exposure_schema",
+                    "The account exposure summary schema is unsupported.",
+                )
+            )
+        position_count = row.get("position_count")
+        if (
+            not isinstance(position_count, int)
+            or isinstance(position_count, bool)
+            or position_count < 0
+        ):
+            errors.append(
+                _issue(
+                    "invalid_portfolio_position_count",
+                    f"{field}.position_count",
+                    "Portfolio position count must be a non-negative integer.",
+                )
+            )
+        working_order_count = row.get("same_account_nonterminal_order_count")
+        if working_order_count != 0:
+            errors.append(
+                _issue(
+                    "portfolio_working_orders_present",
+                    f"{field}.same_account_nonterminal_order_count",
+                    "The same account must have zero nonterminal broker orders.",
+                )
+            )
+        if row.get("blockers") != []:
+            errors.append(
+                _issue(
+                    "portfolio_attestation_has_blockers",
+                    f"{field}.blockers",
+                    "An eligible portfolio attestation must contain an explicit empty blocker list.",
+                )
+            )
+        account_key = _prompt_text(row.get("account_key"), limit=96)
+        if (
+            not isinstance(row.get("account_key"), str)
+            or not account_key
+            or account_key != row.get("account_key", "").strip()
+            or account_key in seen_account_keys
+        ):
+            errors.append(
+                _issue(
+                    "invalid_or_duplicate_portfolio_account_key",
+                    f"{field}.account_key",
+                    "Each portfolio attestation needs one unique pseudonymous account key.",
+                )
+            )
+        else:
+            seen_account_keys.add(account_key)
+        asof_text = row.get("asof")
+        try:
+            asof_date = date.fromisoformat(asof_text) if isinstance(asof_text, str) else None
+        except ValueError:
+            asof_date = None
+        if (
+            asof_date is None
+            or asof_text != asof_date.isoformat()
+            or (issued is not None and asof_date != issued.date())
+        ):
+            errors.append(
+                _issue(
+                    "invalid_portfolio_attestation_asof",
+                    f"{field}.asof",
+                    "Portfolio exposure must be recomputed for the packet issue date.",
+                )
+            )
+        if row.get("equity_basis_method") != "min_assumed_and_live_same_account_equity":
+            errors.append(
+                _issue(
+                    "unsafe_portfolio_equity_basis_method",
+                    f"{field}.equity_basis_method",
+                    "Portfolio capacity must use the lower of assumed and live same-account equity.",
+                )
+            )
+
+        assumed = _number(row.get("assumed_equity_dollars"))
+        live = _number(row.get("live_equity_dollars"))
+        basis = _number(row.get("equity_basis_dollars"))
+        row_allocation = _number(row.get("allocation_fraction"))
+        cap = _number(row.get("allocation_cap_dollars"))
+        current = _number(row.get("current_capital_at_risk_dollars"))
+        proposed = _number(row.get("proposed_capital_at_risk_dollars"))
+        post_trade = _number(row.get("post_trade_capital_at_risk_dollars"))
+        headroom_before = _number(row.get("headroom_before_trade_dollars"))
+        headroom_after = _number(row.get("headroom_after_trade_dollars"))
+        if any(value is None or value <= 0 for value in (assumed, live, basis, row_allocation, cap, proposed)):
+            errors.append(
+                _issue(
+                    "missing_portfolio_attestation_capacity",
+                    field,
+                    "Portfolio attestation equity, allocation, cap, and proposed exposure must be positive and finite.",
+                )
+            )
+            continue
+        if current is None or current < 0 or post_trade is None:
+            errors.append(
+                _issue(
+                    "missing_portfolio_attestation_exposure",
+                    field,
+                    "Portfolio attestation current and post-trade exposure must be finite and non-negative.",
+                )
+            )
+            continue
+        assert assumed is not None and live is not None and basis is not None
+        assert row_allocation is not None and cap is not None and proposed is not None
+        assert current is not None and post_trade is not None
+        if not _same_money(assumed, equity):
+            errors.append(_issue("portfolio_assumed_equity_mismatch", f"{field}.assumed_equity_dollars", "Portfolio assumed equity must match the planner context."))
+        if not _same_money(basis, min(assumed, live)):
+            errors.append(_issue("portfolio_equity_basis_mismatch", f"{field}.equity_basis_dollars", "Portfolio equity basis must equal the lower of assumed and live equity."))
+        if allocation_fraction is None or abs(row_allocation - allocation_fraction) > 1e-9:
+            errors.append(_issue("portfolio_allocation_fraction_mismatch", f"{field}.allocation_fraction", "Portfolio allocation fraction must match the planner context."))
+        if not _same_money(cap, basis * row_allocation):
+            errors.append(_issue("portfolio_allocation_cap_mismatch", f"{field}.allocation_cap_dollars", "Portfolio allocation cap arithmetic does not reconcile."))
+        if expected_proposed is None or not _same_money(proposed, expected_proposed):
+            errors.append(_issue("portfolio_proposed_exposure_mismatch", f"{field}.proposed_capital_at_risk_dollars", "Proposed portfolio exposure must match the full option debit or share notional."))
+        if not _same_money(post_trade, current + proposed):
+            errors.append(_issue("portfolio_post_trade_exposure_mismatch", f"{field}.post_trade_capital_at_risk_dollars", "Post-trade exposure must equal current plus proposed exposure."))
+        if post_trade > cap + 0.011:
+            errors.append(_issue("portfolio_allocation_cap_exceeded", f"{field}.post_trade_capital_at_risk_dollars", "Post-trade exposure exceeds the total-open allocation cap."))
+        if headroom_before is None or not _same_money(headroom_before, cap - current):
+            errors.append(_issue("portfolio_headroom_before_mismatch", f"{field}.headroom_before_trade_dollars", "Pre-trade portfolio headroom arithmetic does not reconcile."))
+        if headroom_after is None or not _same_money(headroom_after, cap - post_trade):
+            errors.append(_issue("portfolio_headroom_after_mismatch", f"{field}.headroom_after_trade_dollars", "Post-trade portfolio headroom arithmetic does not reconcile."))
+
+    expected_quote_tool = "get_option_quotes" if asset == "option" else "get_equity_quotes"
+    if quote.get("quote_tool") != expected_quote_tool:
+        errors.append(_issue("missing_exact_quote_tool", "review_constraints.quote.quote_tool", f"Review must require {expected_quote_tool}."))
+    max_quote_age = _number(quote.get("max_live_quote_age_seconds"))
+    if max_quote_age is None or max_quote_age <= 0 or max_quote_age > 120:
+        errors.append(_issue("unsafe_live_quote_age", "review_constraints.quote.max_live_quote_age_seconds", "Live quote age must be capped between 1 and 120 seconds."))
+    max_spread = _number(quote.get("max_spread_fraction"))
+    if max_spread is None or max_spread <= 0 or max_spread > 0.25:
+        errors.append(_issue("unsafe_spread_cap", "review_constraints.quote.max_spread_fraction", "The bid/ask spread cap must be positive and no greater than 25%."))
+    if quote.get("require_positive_bid_ask") is not True:
+        errors.append(_issue("missing_positive_quote_gate", "review_constraints.quote.require_positive_bid_ask", "Review must require a positive, ordered bid and ask."))
+    if quote.get("require_live_tick_validation") is not True:
+        errors.append(_issue("missing_live_tick_gate", "review_constraints.quote.require_live_tick_validation", "Review must validate the live instrument tick size before preview."))
+    if quote.get("limit_price_may_increase") is not False:
+        errors.append(_issue("unsafe_limit_price_policy", "review_constraints.quote.limit_price_may_increase", "The packet limit price may never increase."))
+    return errors
+
+
+def _packet_id(
+    trade_plan: dict[str, Any],
+    snapshot_id: str | None,
+    issued_at: str | None,
+    expires_at: str | None,
+) -> str:
     canonical = json.dumps(
-        {"snapshot_id": snapshot_id, "trade_plan": trade_plan},
+        {
+            "snapshot_id": snapshot_id,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+            "trade_plan": trade_plan,
+        },
         sort_keys=True,
         separators=(",", ":"),
         default=str,
     ).encode("utf-8")
     return "manual-review-" + hashlib.sha256(canonical).hexdigest()[:16]
+
+
+def _expected_confirmation_summary(trade_plan: Any) -> dict[str, Any]:
+    """Derive the human confirmation fields from the canonical trade plan."""
+    order = (
+        trade_plan.get("order")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("order"), dict)
+        else {}
+    )
+    risk = (
+        trade_plan.get("risk")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict)
+        else {}
+    )
+    assumptions = (
+        trade_plan.get("account_assumptions")
+        if isinstance(trade_plan, dict)
+        and isinstance(trade_plan.get("account_assumptions"), dict)
+        else {}
+    )
+    return {
+        "account_number": ACCOUNT_NUMBER_PLACEHOLDER,
+        "symbol": order.get("symbol"),
+        "contract": order.get("contract_label"),
+        "underlying_type": order.get("underlying_type"),
+        "intent": order.get("intent"),
+        "side": order.get("side"),
+        "quantity": order.get("quantity"),
+        "order_type": order.get("order_type"),
+        "limit_price": order.get("limit_price"),
+        "stop_price": order.get("stop_price"),
+        "target_price": order.get("target_price"),
+        "contract_multiplier": order.get("contract_multiplier"),
+        "account_equity_assumption_dollars": assumptions.get("account_equity_dollars"),
+        "risk_fraction": assumptions.get("risk_fraction"),
+        "allocation_fraction": assumptions.get("allocation_fraction"),
+        "risk_budget_dollars": assumptions.get("risk_budget_dollars"),
+        "allocation_cap_dollars": assumptions.get("allocation_cap_dollars"),
+        "planned_stop_loss_dollars": risk.get("planned_stop_loss_dollars"),
+        "planned_max_loss_dollars": risk.get("planned_max_loss_dollars"),
+        "full_share_notional_at_risk_dollars": risk.get(
+            "full_share_notional_at_risk_dollars"
+        ),
+        "full_option_debit_at_risk_dollars": risk.get(
+            "full_option_debit_at_risk_dollars"
+        ),
+        "max_loss_is_unbounded": risk.get("max_loss_is_unbounded") is True,
+        "stop_is_not_broker_order": risk.get("stop_is_not_broker_order") is True,
+    }
+
+
+def _packet_content_digest(packet: Any) -> str | None:
+    """Hash every semantic packet field, excluding rendered text and digests."""
+    if not isinstance(packet, dict):
+        return None
+    canonical_packet = {
+        key: value
+        for key, value in packet.items()
+        if key not in {"content_digest_sha256", "prompt", "prompt_digest_sha256"}
+    }
+    canonical = json.dumps(
+        canonical_packet,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def validate_manual_robinhood_review_packet(
+    packet: Any,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Revalidate a ready packet's structure, arithmetic binding, age, and digests.
+
+    The digests detect accidental or post-build modification; they are not a
+    cryptographic signature and do not replace the mandatory fresh broker reads,
+    preview, and explicit confirmation.
+    """
+    errors: list[dict[str, str]] = []
+    if not isinstance(packet, dict):
+        return {
+            "schema": MANUAL_REVIEW_PACKET_INTEGRITY_SCHEMA,
+            "ok": False,
+            "errors": [
+                _issue("invalid_manual_review_packet", "packet", "Packet must be an object.")
+            ],
+        }
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None or current.utcoffset() is None:
+        errors.append(
+            _issue(
+                "invalid_validation_clock",
+                "now",
+                "Packet validation requires a timezone-aware clock.",
+            )
+        )
+        current = current.replace(tzinfo=UTC)
+    else:
+        current = current.astimezone(UTC)
+
+    if packet.get("schema") != MANUAL_REVIEW_PACKET_SCHEMA:
+        errors.append(
+            _issue(
+                "invalid_manual_review_packet_schema",
+                "schema",
+                "Manual review packet schema is missing or unsupported.",
+            )
+        )
+    if packet.get("content_digest_algorithm") != "sha256-canonical-json-v1":
+        errors.append(
+            _issue(
+                "invalid_packet_digest_algorithm",
+                "content_digest_algorithm",
+                "Packet content must use the supported canonical SHA-256 digest.",
+            )
+        )
+    expected_content_digest = _packet_content_digest(packet)
+    if (
+        not isinstance(packet.get("content_digest_sha256"), str)
+        or packet.get("content_digest_sha256") != expected_content_digest
+    ):
+        errors.append(
+            _issue(
+                "manual_review_packet_content_changed",
+                "content_digest_sha256",
+                "Packet content no longer matches the digest created by Trade Desk.",
+            )
+        )
+    prompt = packet.get("prompt")
+    expected_prompt_digest = (
+        hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if isinstance(prompt, str) and prompt
+        else None
+    )
+    if (
+        expected_prompt_digest is None
+        or packet.get("prompt_digest_sha256") != expected_prompt_digest
+    ):
+        errors.append(
+            _issue(
+                "manual_review_packet_prompt_changed",
+                "prompt_digest_sha256",
+                "Rendered review instructions are missing or no longer match their digest.",
+            )
+        )
+
+    expected_id = _packet_id(
+        packet.get("trade_plan") if isinstance(packet.get("trade_plan"), dict) else {},
+        packet.get("snapshot_id"),
+        packet.get("issued_at"),
+        packet.get("expires_at"),
+    )
+    if packet.get("packet_id") != expected_id:
+        errors.append(
+            _issue(
+                "manual_review_packet_id_mismatch",
+                "packet_id",
+                "Packet identity does not match its trade plan and review window.",
+            )
+        )
+
+    for field, expected in (
+        ("does_not_place_orders", True),
+        ("automation_allowed", False),
+        ("repeat_orders_allowed", False),
+        ("contains_credentials", False),
+        ("requires_explicit_user_confirmation", True),
+        ("standalone_broker_authority", False),
+    ):
+        if packet.get(field) is not expected:
+            errors.append(
+                _issue(
+                    f"unsafe_packet_{field}",
+                    field,
+                    f"Packet field {field} must be explicitly {expected}.",
+                )
+            )
+
+    ready = packet.get("status") == "manual_review_required"
+    review = packet.get("review_plan") if isinstance(packet.get("review_plan"), dict) else {}
+    if not ready or review.get("review_allowed") is not True:
+        errors.append(
+            _issue(
+                "manual_review_packet_not_actionable",
+                "status",
+                "Only an unexpired packet that is explicitly ready for manual review is actionable.",
+            )
+        )
+    if packet.get("review_gate_attested") is not True:
+        errors.append(
+            _issue(
+                "manual_review_gate_not_attested",
+                "review_gate_attested",
+                "A ready packet must attest that the local review gate ran.",
+            )
+        )
+    if packet.get("external_review_gate_blockers") != []:
+        errors.append(
+            _issue(
+                "manual_review_packet_has_external_blockers",
+                "external_review_gate_blockers",
+                "A ready packet must contain an explicit empty external blocker list.",
+            )
+        )
+
+    trade_plan = packet.get("trade_plan") if isinstance(packet.get("trade_plan"), dict) else {}
+    asset = trade_plan.get("asset")
+    expected_review = (
+        build_robinhood_equity_review_plan(trade_plan)
+        if asset == "share"
+        else build_robinhood_option_review_plan(trade_plan)
+        if asset == "option"
+        else {}
+    )
+    if review != expected_review:
+        errors.append(
+            _issue(
+                "manual_review_plan_changed",
+                "review_plan",
+                "Broker review instructions do not match the validated trade plan.",
+            )
+        )
+    if packet.get("confirmation_summary") != _expected_confirmation_summary(trade_plan):
+        errors.append(
+            _issue(
+                "manual_review_confirmation_changed",
+                "confirmation_summary",
+                "Confirmation fields do not match the validated trade plan.",
+            )
+        )
+    plan_constraints = (
+        trade_plan.get("review_constraints")
+        if isinstance(trade_plan.get("review_constraints"), dict)
+        else {}
+    )
+    if packet.get("review_constraints") != plan_constraints:
+        errors.append(
+            _issue(
+                "manual_review_constraints_changed",
+                "review_constraints",
+                "Packet review constraints do not match the validated trade plan.",
+            )
+        )
+
+    context_errors = _manual_review_context_errors(
+        trade_plan,
+        snapshot_id=packet.get("snapshot_id"),
+        issued_at=packet.get("issued_at"),
+        expires_at=packet.get("expires_at"),
+        review_gate_attested=packet.get("review_gate_attested") is True,
+        now=current,
+    )
+    errors.extend(context_errors)
+
+    controls = packet.get("manual_controls") if isinstance(packet.get("manual_controls"), dict) else {}
+    for field, expected in (
+        ("one_logical_order_only", True),
+        ("review_must_precede_place", True),
+        ("exact_confirmation_must_follow_review", True),
+        ("place_arguments_must_match_review", True),
+        ("query_order_state_if_result_uncertain", True),
+        ("never_collect_credentials", True),
+        ("never_schedule_or_loop", True),
+        ("entry_order_only", True),
+        ("stop_and_target_are_not_placed", True),
+        ("fresh_broker_quote_required", True),
+        ("live_account_risk_recalculation_required", True),
+        ("live_total_open_portfolio_recalculation_required", True),
+        ("live_tick_validation_required", True),
+        ("limit_price_may_increase", False),
+    ):
+        if controls.get(field) is not expected:
+            errors.append(
+                _issue(
+                    f"unsafe_manual_control_{field}",
+                    f"manual_controls.{field}",
+                    f"Manual control {field} must be explicitly {expected}.",
+                )
+            )
+
+    return {
+        "schema": MANUAL_REVIEW_PACKET_INTEGRITY_SCHEMA,
+        "ok": not errors,
+        "checked_at": current.isoformat(),
+        "errors": errors,
+        "content_digest_sha256": expected_content_digest,
+        "digest_is_authentication": False,
+    }
 
 
 def build_manual_robinhood_review_packet(
@@ -1095,7 +2101,12 @@ def build_manual_robinhood_review_packet(
     expires_at: str | None = None,
     external_blockers: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Package a trade plan for one manual, approval-gated broker review."""
+    """Package one fresh Trade Desk plan for manual, approval-gated review.
+
+    ``external_blockers`` must be passed explicitly.  An empty list is the
+    caller's attestation that the external Trade Desk gate ran and found no
+    blockers; omitting it blocks the packet.
+    """
     asset = trade_plan.get("asset") if isinstance(trade_plan, dict) else None
     if asset == "share":
         review_plan = build_robinhood_equity_review_plan(trade_plan)
@@ -1110,39 +2121,64 @@ def build_manual_robinhood_review_packet(
             [_issue("unsupported_asset", "asset", "Only share and long-option review packets are supported.")],
         )
 
-    blocker_messages = [
-        _prompt_text(value)
-        for value in (external_blockers or [])
-        if _prompt_text(value)
+    review_gate_attested = isinstance(external_blockers, list)
+    blocker_messages: list[str] = []
+    gate_input_errors: list[dict[str, str]] = []
+    if review_gate_attested:
+        for value in external_blockers:
+            clean_value = _prompt_text(value)
+            if not isinstance(value, str) or not clean_value:
+                gate_input_errors.append(
+                    _issue(
+                        "invalid_external_review_gate_blocker",
+                        "external_blockers",
+                        "External review-gate blockers must be non-empty strings.",
+                    )
+                )
+                continue
+            blocker_messages.append(clean_value)
+
+    context_errors = _manual_review_context_errors(
+        trade_plan,
+        snapshot_id=snapshot_id,
+        issued_at=issued_at,
+        expires_at=expires_at,
+        review_gate_attested=review_gate_attested,
+        now=datetime.now(UTC),
+    )
+    context_errors.extend(gate_input_errors)
+    external_gate_errors = [
+        _issue("external_review_gate_blocked", "review_gate", message)
+        for message in blocker_messages
     ]
-    if blocker_messages:
+    if context_errors or external_gate_errors:
+        existing_errors = (
+            (review_plan.get("validation") or {}).get("errors") or []
+            if isinstance(review_plan, dict)
+            else []
+        )
         review_plan = _blocked_review_plan(
             str(review_plan.get("schema") or "optedge_robinhood_blocked_review_plan_v1"),
             str(asset or "unknown"),
             str(review_plan.get("review_tool") or "unknown"),
             str(review_plan.get("place_tool_after_explicit_confirmation") or "unknown"),
-            [
-                _issue("external_review_gate_blocked", "review_gate", message)
-                for message in blocker_messages
-            ],
+            [*existing_errors, *context_errors, *external_gate_errors],
         )
 
-    order = trade_plan.get("order") if isinstance(trade_plan, dict) and isinstance(trade_plan.get("order"), dict) else {}
-    risk = trade_plan.get("risk") if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict) else {}
-    assumptions = (
-        trade_plan.get("account_assumptions")
-        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("account_assumptions"), dict)
-        else {}
-    )
     review_constraints = (
         trade_plan.get("review_constraints")
         if isinstance(trade_plan, dict) and isinstance(trade_plan.get("review_constraints"), dict)
         else {}
     )
-    ready = bool(review_plan.get("review_allowed"))
+    ready = review_plan.get("review_allowed") is True
     packet = {
         "schema": MANUAL_REVIEW_PACKET_SCHEMA,
-        "packet_id": _packet_id(trade_plan if isinstance(trade_plan, dict) else {}, snapshot_id),
+        "packet_id": _packet_id(
+            trade_plan if isinstance(trade_plan, dict) else {},
+            snapshot_id,
+            issued_at,
+            expires_at,
+        ),
         "snapshot_id": snapshot_id,
         "issued_at": issued_at,
         "expires_at": expires_at,
@@ -1152,36 +2188,15 @@ def build_manual_robinhood_review_packet(
         "automation_allowed": False,
         "repeat_orders_allowed": False,
         "contains_credentials": False,
+        "standalone_broker_authority": False,
         "requires_explicit_user_confirmation": True,
+        "review_gate_attested": review_gate_attested,
         "external_review_gate_blockers": blocker_messages,
+        "context_validation": _validation(context_errors, []),
         "trade_plan": trade_plan,
         "review_constraints": review_constraints,
         "review_plan": review_plan,
-        "confirmation_summary": {
-            "account_number": ACCOUNT_NUMBER_PLACEHOLDER,
-            "symbol": order.get("symbol"),
-            "contract": order.get("contract_label"),
-            "underlying_type": order.get("underlying_type"),
-            "intent": order.get("intent"),
-            "side": order.get("side"),
-            "quantity": order.get("quantity"),
-            "order_type": order.get("order_type"),
-            "limit_price": order.get("limit_price"),
-            "stop_price": order.get("stop_price"),
-            "target_price": order.get("target_price"),
-            "contract_multiplier": order.get("contract_multiplier"),
-            "account_equity_assumption_dollars": assumptions.get("account_equity_dollars"),
-            "risk_fraction": assumptions.get("risk_fraction"),
-            "allocation_fraction": assumptions.get("allocation_fraction"),
-            "risk_budget_dollars": assumptions.get("risk_budget_dollars"),
-            "allocation_cap_dollars": assumptions.get("allocation_cap_dollars"),
-            "planned_stop_loss_dollars": risk.get("planned_stop_loss_dollars"),
-            "planned_max_loss_dollars": risk.get("planned_max_loss_dollars"),
-            "full_share_notional_at_risk_dollars": risk.get("full_share_notional_at_risk_dollars"),
-            "full_option_debit_at_risk_dollars": risk.get("full_option_debit_at_risk_dollars"),
-            "max_loss_is_unbounded": bool(risk.get("max_loss_is_unbounded")),
-            "stop_is_not_broker_order": bool(risk.get("stop_is_not_broker_order", True)),
-        },
+        "confirmation_summary": _expected_confirmation_summary(trade_plan),
         "next_step": (
             f"Run {review_plan.get('review_tool')} and present its full preview; then ask for exact confirmation."
             if ready
@@ -1199,19 +2214,28 @@ def build_manual_robinhood_review_packet(
             "stop_and_target_are_not_placed": True,
             "fresh_broker_quote_required": True,
             "live_account_risk_recalculation_required": True,
+            "live_total_open_portfolio_recalculation_required": True,
+            "live_tick_validation_required": True,
             "limit_price_may_increase": False,
         },
+        "content_digest_algorithm": "sha256-canonical-json-v1",
     }
-    packet["prompt"] = render_manual_robinhood_review_prompt(packet)
+    packet["content_digest_sha256"] = _packet_content_digest(packet)
+    packet["prompt"] = _render_manual_robinhood_review_prompt_unchecked(packet)
+    packet["prompt_digest_sha256"] = hashlib.sha256(
+        packet["prompt"].encode("utf-8")
+    ).hexdigest()
     return packet
 
 
-def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
+def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> str:
     """Render strict instructions for one manual Codex/Robinhood review."""
     review = packet.get("review_plan") if isinstance(packet.get("review_plan"), dict) else {}
     summary = packet.get("confirmation_summary") if isinstance(packet.get("confirmation_summary"), dict) else {}
     constraints = packet.get("review_constraints") if isinstance(packet.get("review_constraints"), dict) else {}
+    evidence_constraints = constraints.get("evidence") if isinstance(constraints.get("evidence"), dict) else {}
     account_constraints = constraints.get("account") if isinstance(constraints.get("account"), dict) else {}
+    portfolio_constraints = constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
     quote_constraints = constraints.get("quote") if isinstance(constraints.get("quote"), dict) else {}
     ready = packet.get("status") == "manual_review_required" and review.get("review_allowed") is True
     if not ready:
@@ -1247,6 +2271,17 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
     max_quote_age_seconds = int(_number(quote_constraints.get("max_live_quote_age_seconds")) or 0)
     max_spread_fraction = _number(quote_constraints.get("max_spread_fraction"))
     max_equity_overstatement = _number(account_constraints.get("max_equity_overstatement_fraction"))
+    portfolio_rows = (
+        portfolio_constraints.get("eligible_accounts")
+        if isinstance(portfolio_constraints.get("eligible_accounts"), list)
+        else []
+    )
+    evidence_lines = (
+        f"- Edge evidence: {_prompt_text(evidence_constraints.get('asset'))} "
+        f"{_prompt_text(evidence_constraints.get('evidence_lane'))} lane, "
+        f"{_prompt_text(evidence_constraints.get('headline_horizon_sessions'))}-session horizon, "
+        "validated for manual review\n"
+    )
     stop_line = (
         f"- Planned stop-loss risk (not guaranteed): ${planned_stop:.2f}\n"
         if planned_stop is not None
@@ -1281,9 +2316,30 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
     account_assumption_lines = (
         f"- Planner account-equity assumption: ${assumed_equity:.2f}\n"
         f"- Per-trade risk fraction: {risk_fraction:.2%}\n"
-        f"- Allocation fraction: {allocation_fraction:.2%}\n"
+        f"- Maximum total-open allocation fraction: {allocation_fraction:.2%}\n"
         if assumed_equity is not None and risk_fraction is not None and allocation_fraction is not None
         else ""
+    )
+    portfolio_lines = "".join(
+        (
+            f"- Eligible snapshot account {index + 1} "
+            f"({_prompt_text(row.get('account_mask') or row.get('account_key'))}): "
+            f"current ${float(row.get('current_capital_at_risk_dollars')):.2f} + "
+            f"proposed ${float(row.get('proposed_capital_at_risk_dollars')):.2f} = "
+            f"post-trade ${float(row.get('post_trade_capital_at_risk_dollars')):.2f} "
+            f"against cap ${float(row.get('allocation_cap_dollars')):.2f}\n"
+        )
+        for index, row in enumerate(portfolio_rows)
+        if isinstance(row, dict)
+        and all(
+            _number(row.get(field)) is not None
+            for field in (
+                "current_capital_at_risk_dollars",
+                "proposed_capital_at_risk_dollars",
+                "post_trade_capital_at_risk_dollars",
+                "allocation_cap_dollars",
+            )
+        )
     )
     quote_policy_lines = (
         f"- Live quote maximum age: {max_quote_age_seconds} seconds\n"
@@ -1296,7 +2352,9 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
     if asset == "option":
         live_risk_rule = (
             "For the chosen account, require full option debit <= total_value x risk_fraction, "
-            "full option debit <= total_value x allocation_fraction, and full option debit <= conservative buying power."
+            "existing same-account broker capital at risk + full option debit <= "
+            "min(planner equity, live total_value) x the total-open allocation fraction, and "
+            "full option debit <= conservative buying power."
         )
         live_quote_rule = (
             "Call get_option_quotes for the resolved option_id. Require quote.updated_at no older than the packet's "
@@ -1305,8 +2363,9 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
         )
     else:
         live_risk_rule = (
-            "For the chosen account, require planned stop loss <= total_value x risk_fraction, full share notional "
-            "<= total_value x allocation_fraction, and order notional <= conservative buying power."
+            "For the chosen account, require planned stop loss <= total_value x risk_fraction, existing "
+            "same-account broker capital at risk + full share notional <= min(planner equity, live total_value) "
+            "x the total-open allocation fraction, and order notional <= conservative buying power."
         )
         live_quote_rule = (
             "Call get_equity_quotes for the exact symbol. Require venue_bid_time and venue_ask_time no older than the "
@@ -1314,6 +2373,7 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
             "(ask_price - bid_price) / ((ask_price + bid_price) / 2) <= the packet spread cap."
         )
     packet_id = _prompt_text(packet.get("packet_id"))
+    content_digest = _prompt_text(packet.get("content_digest_sha256"))
     issued_at = _prompt_text(packet.get("issued_at") or "not recorded")
     expires_at = _prompt_text(packet.get("expires_at") or "not recorded")
     review_template = json.dumps(review.get("review_arguments_template"), indent=2, sort_keys=True)
@@ -1323,8 +2383,10 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
         "MANUAL, ONE-ORDER WORKFLOW ONLY. This packet never authorizes automation.\n\n"
         "## Packet identity\n"
         f"- Packet: {packet_id}\n"
+        f"- Content digest: {content_digest}\n"
         f"- Issued: {issued_at}\n"
         f"- Expires: {expires_at}\n"
+        "- The digest detects modification; it is not a signature or broker authorization.\n"
         "- If the expiry is missing or has passed, stop. Recalculate from a fresh Optedge and broker snapshot.\n\n"
         "## Exact local plan\n"
         f"- Instrument: {order_label}\n"
@@ -1333,7 +2395,7 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
         f"- Quantity: {_prompt_text(summary.get('quantity'))}\n"
         f"- Entry order: {_prompt_text(summary.get('order_type'))} at ${float(summary.get('limit_price')):.2f}\n"
         f"{stop_target_lines}{stop_line}{max_loss_line}{notional_line}{debit_line}{multiplier_line}"
-        f"{account_assumption_lines}{quote_policy_lines}"
+        f"{evidence_lines}{account_assumption_lines}{portfolio_lines}{quote_policy_lines}"
         "- Stop and target are planning references only; this packet does not place either exit order.\n\n"
         "## Exact review template\n"
         f"{review_template}\n\n"
@@ -1346,15 +2408,15 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
         +
         "## Mandatory sequence\n"
         "1. Use get_accounts and have the user choose or clearly identify the account. Never default an account.\n"
-        "2. Call get_portfolio for that exact account. Use total_value as live equity and the smaller of buying_power and unleveraged_buying_power as conservative buying power. Require the same account to be active, agentic_allowed, sufficiently funded, and options-approved when applicable.\n"
+        "2. The chosen account must match an eligible snapshot account above. Call get_portfolio for that exact account. Use total_value as live equity and the smaller of buying_power and unleveraged_buying_power as conservative buying power. Require the same account to be active, agentic_allowed, sufficiently funded, and options-approved when applicable.\n"
         f"   {live_risk_rule}\n"
         + (
             f"   STOP if planner equity exceeds live total_value by more than max($1, {max_equity_overstatement:.2%} of live total_value).\n"
             if max_equity_overstatement is not None
             else ""
         )
-        + f"3. Perform the read-only preflight with: {preflight}. If the same position exposure or logical working order already exists, STOP and do not review or place another order.\n"
-        f"4. Resolve the exact active/tradable instrument. Require its underlying_type to exactly match the packet. {live_quote_rule} If any field or timestamp is missing or the underlying type differs, STOP. If the live ask is above the packet limit, STOP and rebuild; never raise the limit.\n"
+        + f"3. Perform the read-only preflight with: {preflight}. Read both equity and option positions and orders for the same account. Block any short, ambiguous, pending assignment/exercise/expiration, missing mark, or nonterminal order. Recompute total open capital at risk using absolute share market value and long-option quantity x 100 x max(live ask, mark/current). If it differs from the packet or breaches the cap after this proposal, STOP and rebuild. If the same position exposure or logical working order already exists, STOP.\n"
+        f"4. Resolve the exact active/tradable instrument. Require its underlying_type to exactly match the packet. {live_quote_rule} Validate the live instrument's minimum tick/tick-size rules before preview. If the packet limit is not valid, STOP and rebuild at an equal or lower valid buy limit; never round upward. If any field or timestamp is missing or the underlying type differs, STOP. If the live ask is above the packet limit, STOP and rebuild; never raise the limit.\n"
         f"5. Call {review_tool} FIRST with the review template. Never send a placeholder account number or option_id.\n"
         "6. Present the complete broker preview, compliance quote disclosure, alerts, fees, collateral, and estimated cost exactly as returned.\n"
         "7. Ask the user to confirm the exact reviewed account, instrument, side, quantity, type, and limit price.\n"
@@ -1368,3 +2430,28 @@ def render_manual_robinhood_review_prompt(packet: dict[str, Any]) -> str:
         "- Never change account, instrument, side, quantity, order type, or price between review and placement.\n"
         "- Never describe the planning stop as guaranteed or imply that this entry-only packet placed an exit order.\n"
     )
+
+
+def render_manual_robinhood_review_prompt(
+    packet: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Render a ready packet only after rechecking integrity and expiry."""
+    if isinstance(packet, dict) and packet.get("status") == "manual_review_required":
+        integrity = validate_manual_robinhood_review_packet(packet, now=now)
+        if integrity.get("ok") is not True:
+            error_lines = "\n".join(
+                f"- {_prompt_text(row.get('code'))}: {_prompt_text(row.get('message'))}"
+                for row in (integrity.get("errors") or [])
+                if isinstance(row, dict)
+            ) or "- Packet integrity or freshness could not be proven."
+            return (
+                "# Optedge Manual Robinhood Review\n\n"
+                "STATUS: BLOCKED\n\n"
+                "DO NOT CALL any Robinhood review or placement tool.\n"
+                "Do not schedule, loop, repeat, or automate this packet.\n"
+                "Rebuild it from the current Trade Desk and fresh broker state.\n\n"
+                f"Packet validation errors:\n{error_lines}\n"
+            )
+    return _render_manual_robinhood_review_prompt_unchecked(packet)

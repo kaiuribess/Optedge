@@ -9,3 +9,5 @@ This package builds the self-contained HTML market-research dashboard.
 - Converts research tables into readable cards, panels, and summaries.
 
 Generated dashboards live under ignored `data/` paths and may contain private local research context.
+
+The decision-first Trade Desk is served separately by `scripts/local_cockpit.py`. It adds Edge Lab, exact candidate handoff, stop-based sizing, broker reconciliation, and the approval-gated Robinhood review boundary. Neither dashboard places orders.

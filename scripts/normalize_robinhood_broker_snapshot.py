@@ -12,7 +12,7 @@ import hashlib
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -63,7 +63,7 @@ ROW_HINT_KEYS = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _text(value: Any) -> str:
@@ -73,6 +73,10 @@ def _text(value: Any) -> str:
 
 
 def _float(value: Any, default: float | None = None) -> float | None:
+    # ``bool`` is a subclass of ``int`` in Python.  Broker money/quantity
+    # fields must never turn JSON true/false into $1/$0.
+    if isinstance(value, bool):
+        return default
     try:
         if value is None or value == "":
             return default
@@ -80,6 +84,181 @@ def _float(value: Any, default: float | None = None) -> float | None:
     except Exception:
         return default
     return out if math.isfinite(out) else default
+
+
+def _first_finite_field(
+    raw: dict[str, Any],
+    fields: tuple[str, ...],
+    default: float | None = None,
+) -> float | None:
+    for field in fields:
+        if field not in raw or raw.get(field) is None or raw.get(field) == "":
+            continue
+        value = raw.get(field)
+        number = None if isinstance(value, bool) else _float(value)
+        if number is not None:
+            return number
+    return default
+
+
+def _max_finite_field(
+    raw: dict[str, Any],
+    fields: tuple[str, ...],
+) -> float | None:
+    values = [
+        number
+        for field in fields
+        if field in raw and raw.get(field) is not None and raw.get(field) != ""
+        for number in (
+            None
+            if isinstance(raw.get(field), bool)
+            else _float(raw.get(field)),
+        )
+        if number is not None
+    ]
+    return max(values) if values else None
+
+
+def _numeric_field_issues(
+    raw: dict[str, Any],
+    fields: tuple[str, ...],
+    *,
+    label: str,
+    require_positive: bool = False,
+    reconcile_aliases: bool = False,
+) -> list[str]:
+    """Reject invalid critical values without rejecting valid quote alternatives."""
+    observed: list[tuple[str, float]] = []
+    invalid: list[str] = []
+    for field in fields:
+        if field not in raw or raw.get(field) is None or raw.get(field) == "":
+            continue
+        value = raw.get(field)
+        number = None if isinstance(value, bool) else _float(value)
+        if number is None or (require_positive and number <= 0):
+            invalid.append(field)
+        else:
+            observed.append((field, number))
+    issues = [f"invalid {label} field(s): {', '.join(invalid)}"] if invalid else []
+    if reconcile_aliases and observed:
+        reference = observed[0][1]
+        if any(
+            not math.isclose(number, reference, rel_tol=1e-9, abs_tol=1e-9)
+            for _, number in observed[1:]
+        ):
+            issues.append(
+                f"{label} fields disagree: "
+                + ", ".join(field for field, _ in observed)
+            )
+    return issues
+
+
+def _position_type_issues(
+    raw: dict[str, Any],
+    *,
+    allowed: frozenset[str],
+) -> list[str]:
+    """Reject explicit unknown or contradictory long/short aliases."""
+    observed: list[tuple[str, str]] = []
+    invalid: list[str] = []
+    for field in ("position_type", "type"):
+        if field not in raw or raw.get(field) is None or raw.get(field) == "":
+            continue
+        value = _text(raw.get(field)).lower()
+        if value not in allowed:
+            invalid.append(field)
+        else:
+            observed.append((field, value))
+    issues = [f"invalid position-type field(s): {', '.join(invalid)}"] if invalid else []
+    if observed and any(value != observed[0][1] for _, value in observed[1:]):
+        issues.append(
+            "position-type fields disagree: "
+            + ", ".join(field for field, _ in observed)
+        )
+    return issues
+
+
+def _position_sign_issues(
+    raw: dict[str, Any],
+    *,
+    unsigned_quantity_fields: tuple[str, ...],
+) -> list[str]:
+    """Reject sign/direction contradictions while allowing unsigned shorts."""
+    directions = {
+        _text(raw.get(field)).lower()
+        for field in ("position_type", "type")
+        if field in raw
+        and raw.get(field) not in (None, "")
+        and _text(raw.get(field)).lower() in {"long", "short"}
+    }
+    if len(directions) != 1:
+        return []
+    direction = next(iter(directions))
+    signed = _first_finite_field(raw, ("signed_quantity",))
+    if signed is not None and (
+        (direction == "long" and signed < 0)
+        or (direction == "short" and signed > 0)
+    ):
+        return ["signed quantity contradicts explicit position type"]
+    if direction == "long":
+        for field in unsigned_quantity_fields:
+            value = _first_finite_field(raw, (field,))
+            if value is not None and value < 0:
+                return [f"negative {field} contradicts explicit long position type"]
+    return []
+
+
+def _position_numeric_issues(
+    raw: dict[str, Any],
+    quantity_fields: tuple[str, ...],
+    *,
+    pending_fields: tuple[str, ...] = (),
+) -> list[str]:
+    """Return fail-closed issues before lossy numeric normalization.
+
+    Position quantities determine both duplicate exposure and the total-open
+    capital cap.  Invalid values must not collapse to zero, and contradictory
+    aliases must not be reduced to whichever field happens to be read first.
+    """
+    issues: list[str] = []
+    observed: list[tuple[str, float]] = []
+    invalid: list[str] = []
+    for field in quantity_fields:
+        if field not in raw or raw.get(field) is None or raw.get(field) == "":
+            continue
+        value = raw.get(field)
+        number = None if isinstance(value, bool) else _float(value)
+        if number is None:
+            invalid.append(field)
+        else:
+            observed.append((field, number))
+    if invalid:
+        issues.append(f"invalid quantity field(s): {', '.join(invalid)}")
+    if not observed and not invalid:
+        issues.append("quantity is missing")
+    if observed:
+        reference = abs(observed[0][1])
+        if any(
+            not math.isclose(abs(number), reference, rel_tol=1e-9, abs_tol=1e-9)
+            for _, number in observed[1:]
+        ):
+            issues.append(
+                "quantity fields disagree: "
+                + ", ".join(field for field, _ in observed)
+            )
+
+    invalid_pending: list[str] = []
+    for field in pending_fields:
+        if field not in raw or raw.get(field) is None or raw.get(field) == "":
+            continue
+        value = raw.get(field)
+        if isinstance(value, bool) or _float(value) is None:
+            invalid_pending.append(field)
+    if invalid_pending:
+        issues.append(
+            f"invalid pending quantity field(s): {', '.join(invalid_pending)}"
+        )
+    return issues
 
 
 def _bool(value: Any) -> bool | None:
@@ -231,7 +410,7 @@ def _account_key(account_number: str, raw: dict[str, Any]) -> str:
     ])
     if not basis.strip("|"):
         return ""
-    digest = hashlib.sha256(f"optedge-robinhood-account-v1|{basis}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"optedge-robinhood-account-v1|{basis}".encode()).hexdigest()
     return f"acct_{digest[:16]}"
 
 
@@ -351,12 +530,20 @@ def _expiration(raw: dict[str, Any]) -> str:
 
 
 def _normalize_equity_position(raw: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
-    quantity = _float(raw.get("quantity") or raw.get("shares") or raw.get("qty"), 0.0) or 0.0
+    quantity = _first_finite_field(
+        raw,
+        ("signed_quantity", "quantity", "shares", "qty"),
+        0.0,
+    ) or 0.0
     position_type = _text(raw.get("position_type") or raw.get("type")).lower()
     if position_type not in {"long", "short", "boxed", "empty"}:
         position_type = "short" if quantity < 0 else "long" if quantity > 0 else "empty"
     avg = _float(raw.get("average_buy_price") or raw.get("average_price") or raw.get("avg_price"))
-    current = _float(raw.get("current_price") or raw.get("mark_price") or raw.get("last_price"))
+    current = _max_finite_field(
+        raw,
+        ("current_price", "mark_price", "last_price"),
+    )
+    market_value = _first_finite_field(raw, ("market_value",))
     return {
         "symbol": _find_symbol(raw),
         "quantity": quantity,
@@ -365,7 +552,13 @@ def _normalize_equity_position(raw: dict[str, Any], account: dict[str, Any]) -> 
         "average_buy_price": avg,
         "average_price": avg,
         "current_price": current,
-        "market_value": _float(raw.get("market_value")) or (quantity * current if current is not None else None),
+        "market_value": (
+            market_value
+            if market_value not in (None, 0)
+            else quantity * current
+            if current is not None
+            else None
+        ),
         "account_mask": account.get("account_mask"),
         "account_key": account.get("account_key"),
         "account_label": account.get("label"),
@@ -374,9 +567,16 @@ def _normalize_equity_position(raw: dict[str, Any], account: dict[str, Any]) -> 
 
 
 def _normalize_option_position(raw: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
-    quantity = _float(raw.get("quantity") or raw.get("contracts") or raw.get("qty"), 0.0) or 0.0
+    quantity = _first_finite_field(
+        raw,
+        ("signed_quantity", "quantity", "contracts", "qty"),
+        0.0,
+    ) or 0.0
     avg = _float(raw.get("average_price") or raw.get("avg_price") or raw.get("average_buy_price"))
-    current = _float(raw.get("current_price") or raw.get("mark_price") or raw.get("last_price") or raw.get("adjusted_mark_price"))
+    current = _max_finite_field(
+        raw,
+        ("current_price", "mark_price", "last_price", "adjusted_mark_price"),
+    )
     option_type = _option_right(raw)
     raw_position_type = _text(raw.get("position_type") or raw.get("type")).lower()
     position_type = raw_position_type if raw_position_type in {"long", "short"} else ""
@@ -395,14 +595,17 @@ def _normalize_option_position(raw: dict[str, Any], account: dict[str, Any]) -> 
         "average_price": avg,
         "current_price": current,
         "mark_price": current,
-        "bid_price": _float(raw.get("bid_price") or raw.get("bid")),
-        "ask_price": _float(raw.get("ask_price") or raw.get("ask")),
+        "bid_price": _max_finite_field(raw, ("bid_price", "bid")),
+        "ask_price": _max_finite_field(raw, ("ask_price", "ask")),
         "instrument_id": _text(raw.get("instrument_id") or raw.get("option_id") or raw.get("id")),
         "instrument_state": _text(raw.get("option_state") or raw.get("instrument_state")),
         "tradability": _text(raw.get("tradability")),
         "underlying_type": _text(raw.get("underlying_type")),
         "chain_id": _text(raw.get("chain_id")),
-        "trade_value_multiplier": _float(raw.get("trade_value_multiplier")),
+        "trade_value_multiplier": _first_finite_field(
+            raw,
+            ("trade_value_multiplier", "multiplier"),
+        ),
         "pending_buy_quantity": _float(raw.get("pending_buy_quantity")),
         "pending_sell_quantity": _float(raw.get("pending_sell_quantity")),
         "pending_exercise_quantity": _float(raw.get("pending_exercise_quantity")),
@@ -711,6 +914,20 @@ def normalize_broker_snapshot(
         normalization_blockers.append(
             f"{RAW_BUNDLE_SCHEMA} requires the complete get_accounts result before account-scoped reads."
         )
+    if is_v2_bundle and account_rows:
+        account_identities = [_account_number(row) for row in account_rows]
+        blank_identity_count = sum(1 for value in account_identities if not value)
+        if blank_identity_count:
+            normalization_blockers.append(
+                "get_accounts capture contains "
+                f"{blank_identity_count} row(s) without a stable account identity."
+            )
+        nonempty_identities = [value for value in account_identities if value]
+        if len(nonempty_identities) != len(set(nonempty_identities)):
+            normalization_blockers.append(
+                "get_accounts capture contains duplicate account identities; "
+                "account scope is ambiguous."
+            )
     accounts: dict[str, dict[str, Any]] = {}
     for row in account_rows:
         raw_account_number = _account_number(row, fallback_account)
@@ -875,7 +1092,99 @@ def normalize_broker_snapshot(
         forced_account: str = "",
         option_contracts: bool = False,
     ) -> None:
-        for raw_row in _unwrap_rows(raw_value):
+        for row_index, raw_row in enumerate(_unwrap_rows(raw_value), start=1):
+            numeric_issues: list[str] = []
+            if attr == "equity_positions":
+                numeric_issues = _position_numeric_issues(
+                    raw_row,
+                    ("signed_quantity", "quantity", "shares", "qty"),
+                )
+                numeric_issues.extend(
+                    _position_type_issues(
+                        raw_row,
+                        allowed=frozenset({"long", "short", "boxed", "empty"}),
+                    )
+                )
+                numeric_issues.extend(
+                    _position_sign_issues(
+                        raw_row,
+                        unsigned_quantity_fields=("quantity", "shares", "qty"),
+                    )
+                )
+                numeric_issues.extend(
+                    _numeric_field_issues(
+                        raw_row,
+                        ("current_price", "mark_price", "last_price"),
+                        label="current price",
+                        require_positive=True,
+                    )
+                )
+                numeric_issues.extend(
+                    _numeric_field_issues(
+                        raw_row,
+                        ("market_value",),
+                        label="market value",
+                    )
+                )
+            elif attr == "option_positions":
+                numeric_issues = _position_numeric_issues(
+                    raw_row,
+                    ("signed_quantity", "quantity", "contracts", "qty"),
+                    pending_fields=(
+                        "pending_buy_quantity",
+                        "pending_sell_quantity",
+                        "pending_exercise_quantity",
+                        "pending_assignment_quantity",
+                        "pending_expiration_quantity",
+                    ),
+                )
+                numeric_issues.extend(
+                    _position_type_issues(
+                        raw_row,
+                        allowed=frozenset({"long", "short"}),
+                    )
+                )
+                numeric_issues.extend(
+                    _position_sign_issues(
+                        raw_row,
+                        unsigned_quantity_fields=("quantity", "contracts", "qty"),
+                    )
+                )
+                numeric_issues.extend(
+                    _numeric_field_issues(
+                        raw_row,
+                        (
+                            "current_price",
+                            "mark_price",
+                            "last_price",
+                            "adjusted_mark_price",
+                        ),
+                        label="current mark",
+                        require_positive=True,
+                    )
+                )
+                numeric_issues.extend(
+                    _numeric_field_issues(
+                        raw_row,
+                        ("ask_price", "ask"),
+                        label="ask price",
+                        require_positive=True,
+                        reconcile_aliases=True,
+                    )
+                )
+                numeric_issues.extend(
+                    _numeric_field_issues(
+                        raw_row,
+                        ("trade_value_multiplier", "multiplier"),
+                        label="trade-value multiplier",
+                        require_positive=True,
+                        reconcile_aliases=True,
+                    )
+                )
+            normalization_blockers.extend(
+                f"{attr} row {row_index} is unsafe: {issue}."
+                for issue in numeric_issues
+            )
             acct_num = resolve_account(raw_row, forced_account, attr)
             account = _pick_account(accounts, acct_num, "unscoped")
             row = dict(raw_row)
@@ -886,9 +1195,17 @@ def normalize_broker_snapshot(
                     else _enrich_option_contract(row, instruments)
                 )
             if asset:
-                account[attr].append(normalizer(row, account, asset))
+                normalized = normalizer(row, account, asset)
             else:
-                account[attr].append(normalizer(row, account))
+                normalized = normalizer(row, account)
+            if numeric_issues:
+                # Keep the malformed row visible but make its canonical
+                # quantity unusable. This remains fail-closed even if a caller
+                # accidentally strips the snapshot-level blocker list.
+                normalized["quantity"] = None
+                normalized["signed_quantity"] = None
+                normalized["position_validation_errors"] = list(numeric_issues)
+            account[attr].append(normalized)
 
     def attach_account_scope(scope: dict[str, Any]) -> None:
         scoped_account = _account_number(scope)
