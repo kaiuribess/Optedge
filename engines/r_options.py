@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import outbound_headers
 
 log = logging.getLogger("optedge.r_options")
 
@@ -46,7 +47,7 @@ def _fetch_sticky_comments(sub: str) -> List[Dict]:
     # Get the sticky JSON
     url = f"https://www.reddit.com/r/{sub}/about/sticky.json"
     sess = data_provider.get_session()
-    headers = {"User-Agent": "optedge-research/0.1"}
+    headers = outbound_headers(accept="application/json")
     try:
         r = sess.get(url, timeout=15, headers=headers)
         if r.status_code != 200:

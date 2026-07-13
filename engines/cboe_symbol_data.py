@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 import logging
 import math
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,11 +25,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import outbound_headers
 
 log = logging.getLogger("optedge.cboe_symbol_data")
 
 CBOE_SYMBOL_DATA_CSV = "https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt={market}"
-DEFAULT_USER_AGENT = os.environ.get("OPTEDGE_USER_AGENT", "Optedge research contact@example.com")
 CBOE_OPTION_MARKETS = {
     "cone": "Cboe Options",
     "opt": "BZX Options",
@@ -55,7 +54,7 @@ MONTHS = {
 
 
 def _headers() -> dict[str, str]:
-    return {"User-Agent": DEFAULT_USER_AGENT, "Accept": "text/csv,text/plain,*/*"}
+    return outbound_headers(accept="text/csv,text/plain,*/*")
 
 
 def _num(value: Any) -> float | None:

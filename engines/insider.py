@@ -29,10 +29,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
-from config import (INSIDER_LOOKBACK_DAYS, USER_AGENT, INSIDER_PRIORITY_TITLES,
+from config import (INSIDER_LOOKBACK_DAYS, INSIDER_PRIORITY_TITLES,
                     INSIDER_MAX_FILINGS_PER_TICKER, WORKERS_INSIDER,
                     INSIDER_FAST_MODE)
 from engines import finnhub_provider as fh
+from optedge.http_identity import SecContactRequiredError, sec_headers
 
 log = logging.getLogger("optedge.insider")
 
@@ -40,7 +41,9 @@ EDGAR_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
 EDGAR_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{primary_doc}"
 
-_HDRS = {"User-Agent": USER_AGENT, "Accept-Encoding": "gzip, deflate"}
+
+def _sec_headers() -> dict[str, str]:
+    return sec_headers()
 
 
 def _ticker_to_cik() -> Dict[str, str]:
@@ -55,7 +58,7 @@ def _ticker_to_cik() -> Dict[str, str]:
 
     for attempt in range(4):
         try:
-            r = requests.get(EDGAR_TICKERS, headers=_HDRS, timeout=20)
+            r = requests.get(EDGAR_TICKERS, headers=_sec_headers(), timeout=20)
             if r.status_code == 429:
                 wait = 2 ** attempt
                 log.warning("EDGAR 429 on attempt %d — backing off %ds", attempt + 1, wait)
@@ -66,6 +69,9 @@ def _ticker_to_cik() -> Dict[str, str]:
             mapping = {row["ticker"].upper(): str(row["cik_str"]).zfill(10) for row in data.values()}
             data_provider.cache_put("edgar_cik_map", mapping)
             return mapping
+        except SecContactRequiredError as e:
+            log.warning("SEC insider source disabled: %s", e)
+            return {}
         except Exception as e:
             log.warning("EDGAR ticker map attempt %d failed: %s", attempt + 1, e)
             time.sleep(2 ** attempt)
@@ -79,7 +85,7 @@ def _fetch_submissions(cik: str) -> Optional[dict]:
     if cached:
         return cached
     try:
-        r = requests.get(EDGAR_SUBMISSIONS.format(cik=cik), headers=_HDRS, timeout=15)
+        r = requests.get(EDGAR_SUBMISSIONS.format(cik=cik), headers=_sec_headers(), timeout=15)
         if r.status_code != 200:
             return None
         data = r.json()
@@ -139,7 +145,7 @@ def _parse_form4(cik: str, acc: str, primary: str) -> List[Dict[str, Any]]:
     for cand in candidates:
         url = EDGAR_ARCHIVE.format(cik=cik_int, acc_nodash=acc_nodash, primary_doc=cand)
         try:
-            r = requests.get(url, headers=_HDRS, timeout=10)
+            r = requests.get(url, headers=_sec_headers(), timeout=10)
             if r.status_code == 200:
                 content = r.text.lstrip()
                 # Skip if we got the HTML wrapper instead of raw XML
@@ -306,7 +312,13 @@ def run(universe: List[str], max_workers: int = None, fast_mode: bool = None,
     """
     if fast_mode is None:
         fast_mode = INSIDER_FAST_MODE
-    cik_map = _ticker_to_cik()
+    try:
+        _sec_headers()
+    except SecContactRequiredError as e:
+        log.warning("SEC insider source disabled: %s", e)
+        cik_map = {}
+    else:
+        cik_map = _ticker_to_cik()
     cutoff = datetime.now(timezone.utc) - timedelta(days=INSIDER_LOOKBACK_DAYS)
     workers = max_workers or WORKERS_INSIDER
 

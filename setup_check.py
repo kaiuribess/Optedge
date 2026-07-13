@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
+from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
+
 ROOT = Path(__file__).resolve().parent
 STATUS_FILE = ROOT / ".optedge_status.json"
 
@@ -148,7 +150,7 @@ def check_reddit() -> tuple[bool, str]:
         import requests
         r = requests.get(
             "https://www.reddit.com/r/wallstreetbets/new.json?limit=5",
-            headers={"User-Agent": "optedge-research/0.1"},
+            headers=outbound_headers(accept="application/json"),
             timeout=15,
         )
         if r.status_code == 200:
@@ -179,9 +181,10 @@ def check_sec() -> tuple[bool, str]:
     banner("SEC EDGAR - insider Form 4 data (no auth required)")
     try:
         import requests
+        headers = sec_headers(accept="application/json")
         r = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "optedge-research/0.1 (research@optedge.local)"},
+            headers=headers,
             timeout=15,
         )
         if r.status_code == 200:
@@ -191,7 +194,7 @@ def check_sec() -> tuple[bool, str]:
             time.sleep(0.2)
             r2 = requests.get(
                 "https://data.sec.gov/submissions/CIK0000320193.json",  # AAPL
-                headers={"User-Agent": "optedge-research/0.1 (research@optedge.local)"},
+                headers=headers,
                 timeout=15,
             )
             if r2.status_code == 200:
@@ -202,6 +205,9 @@ def check_sec() -> tuple[bool, str]:
         fail(f"EDGAR ticker map returned HTTP {r.status_code}",
              "SEC sometimes throttles. Wait a minute and retry.")
         return False, f"http_{r.status_code}"
+    except SecContactRequiredError as e:
+        fail(str(e), "Configure your contact, then rerun this check before using SEC engines.")
+        return False, "contact_required"
     except Exception as e:
         fail(f"EDGAR error: {str(e)[:100]}")
         return False, "error"

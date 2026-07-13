@@ -46,7 +46,7 @@ Why it helps:
 - Keeps SEC filings as context first, not an automatic trade signal.
 
 Notes:
-- Set `SEC_USER_AGENT` if you want a custom SEC-compliant user agent.
+- Set `OPTEDGE_CONTACT` to a real operator email before using SEC-backed paths. A real email inside legacy `SEC_USER_AGENT` remains supported, but placeholder, example, `.local`, and `.test` addresses are rejected and the request fails closed when no honest contact is configured.
 - SEC filings do not replace a fresh Optedge scan; if SEC filings are the only hit, lookup still recommends a focused scan.
 - SEC companyfacts are standardized XBRL facts, so some metrics can be missing or use company-specific reporting choices.
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 import logging
 import math
-import os
 import re
 import zipfile
 from pathlib import Path
@@ -29,18 +28,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import SecContactRequiredError, sec_headers
 
 log = logging.getLogger("optedge.sec_ftd")
 
 SEC_FTD_PAGE = "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data"
-DEFAULT_USER_AGENT = os.environ.get(
-    "SEC_USER_AGENT",
-    "Optedge research contact@example.com",
-)
 
 
 def _sec_headers() -> dict[str, str]:
-    return {"User-Agent": DEFAULT_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
+    return sec_headers()
 
 
 def _latest_zip_urls(html: str, limit: int = 2) -> list[str]:
@@ -200,6 +196,9 @@ def run(universe: list[str], max_files: int = 2) -> pd.DataFrame:
     try:
         html = _fetch_ftd_page()
         urls = _latest_zip_urls(html, limit=max(1, int(max_files or 2)))
+    except SecContactRequiredError as exc:
+        log.warning("SEC fails-to-deliver source disabled: %s", exc)
+        return pd.DataFrame()
     except Exception as exc:
         log.debug("sec_ftd page lookup failed: %s", exc)
         return pd.DataFrame()

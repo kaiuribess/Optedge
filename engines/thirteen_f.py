@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import SecContactRequiredError, sec_headers
 
 log = logging.getLogger("optedge.13f")
 
@@ -52,12 +53,6 @@ SMART_FUNDS = [
     {"cik": "1709323", "name": "Light Street Capital",          "weight": 1.0},
 ]
 
-SEC_HEADERS = {
-    "User-Agent": "optedge-research/0.1 (research@optedge.local)",
-    "Accept-Encoding": "gzip, deflate",
-}
-
-
 def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
     """List recent 13F-HR filings for a CIK via data.sec.gov submissions JSON."""
     cik_padded = cik.lstrip("0").zfill(10)
@@ -69,7 +64,7 @@ def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
     try:
         import requests
         # data.sec.gov is the right host for submissions — Host header must match
-        h = {**SEC_HEADERS, "Host": "data.sec.gov"}
+        h = sec_headers(accept="application/json", host="data.sec.gov")
         r = requests.get(url, headers=h, timeout=20)
         if r.status_code != 200:
             log.debug("13f subs %s -> %d", cik, r.status_code)
@@ -95,6 +90,9 @@ def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
                 break
         data_provider.cache_put(key, results)
         return results
+    except SecContactRequiredError as e:
+        log.warning("13F SEC submissions disabled: %s", e)
+        return []
     except Exception as e:
         log.debug("13f subs %s: %s", cik, e)
         return []
@@ -115,7 +113,8 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
     base = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/"
     try:
         # The filing index lists every file in the submission
-        idx = requests.get(base + "index.json", headers={**SEC_HEADERS, "Host": "www.sec.gov"},
+        headers = sec_headers(host="www.sec.gov")
+        idx = requests.get(base + "index.json", headers=headers,
                             timeout=20)
         if idx.status_code != 200:
             return []
@@ -130,7 +129,7 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
                 info_file = it["name"]
         if not info_file:
             return []
-        r = requests.get(base + info_file, headers={**SEC_HEADERS, "Host": "www.sec.gov"},
+        r = requests.get(base + info_file, headers=headers,
                           timeout=30)
         if r.status_code != 200:
             return []
@@ -163,6 +162,9 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
                 })
         data_provider.cache_put(key, rows)
         return rows
+    except SecContactRequiredError as e:
+        log.warning("13F SEC filing download disabled: %s", e)
+        return []
     except Exception as e:
         log.debug("13f xml fail %s: %s", accession, e)
         return []
@@ -196,6 +198,11 @@ def _name_to_ticker(name: str, universe_set: set) -> Optional[str]:
 
 def run(universe: List[str]) -> pd.DataFrame:
     if not universe:
+        return pd.DataFrame()
+    try:
+        sec_headers()
+    except SecContactRequiredError as e:
+        log.warning("13F SEC source disabled: %s", e)
         return pd.DataFrame()
     universe_set = {t.upper() for t in universe}
     ticker_deltas: Dict[str, Dict] = {}

@@ -28,13 +28,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import SecContactRequiredError, sec_headers
 
 log = logging.getLogger("optedge.form_144")
 
-SEC_HEADERS = {
-    "User-Agent": "optedge-research/0.2 (research@optedge.local)",
-    "Accept": "application/json, text/plain, */*",
-}
+
+
+def _sec_headers() -> dict[str, str]:
+    return sec_headers(accept="application/json, text/plain, */*")
 
 # Display names look like: 'BLACKLINE, INC.  (BL)  (CIK 0001666134)'
 _TICKER_PAREN_RE = re.compile(r'\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK')
@@ -84,7 +85,7 @@ def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> Dict[str, str]:
     sess = data_provider.get_session()
     try:
         r = sess.get("https://www.sec.gov/files/company_tickers.json",
-                     headers=SEC_HEADERS, timeout=20)
+                     headers=_sec_headers(), timeout=20)
         if r.status_code != 200:
             return {}
         data = r.json()
@@ -97,6 +98,9 @@ def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> Dict[str, str]:
         if out:
             data_provider.cache_put(key, out)
         return out
+    except SecContactRequiredError as e:
+        log.warning("form 144 SEC CIK map disabled: %s", e)
+        return {}
     except Exception as e:
         log.debug("CIK map fetch: %s", e)
         return {}
@@ -116,7 +120,7 @@ def _search_form_144(days_back: int = 30) -> List[Dict]:
     )
     sess = data_provider.get_session()
     try:
-        r = sess.get(url, headers=SEC_HEADERS, timeout=25)
+        r = sess.get(url, headers=_sec_headers(), timeout=25)
         if r.status_code != 200:
             log.info("form 144: EDGAR %d", r.status_code)
             return []
@@ -134,6 +138,9 @@ def _search_form_144(days_back: int = 30) -> List[Dict]:
         if out:   # only cache non-empty
             data_provider.cache_put(key, out)
         return out
+    except SecContactRequiredError as e:
+        log.warning("form 144 SEC search disabled: %s", e)
+        return []
     except Exception as e:
         log.debug("form 144 search: %s", e)
         return []

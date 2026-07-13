@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +25,8 @@ NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.tx
 NASDAQ_OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt"
 NASDAQ_SYMBOL_CACHE = DATA_DIR / "nasdaq_symbol_directory.json"
 NASDAQ_SYMBOL_CACHE_MAX_AGE_DAYS = 3
+
+log = logging.getLogger("optedge.symbol_resolver")
 
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}(=F)?$")
 _OCCISH_RE = re.compile(
@@ -423,7 +428,7 @@ def fetch_nasdaq_symbol_directory(timeout: float = 8.0) -> list[dict[str, Any]]:
         (NASDAQ_LISTED_URL, "nasdaq"),
         (NASDAQ_OTHER_LISTED_URL, "other"),
     ):
-        req = Request(url, headers={"User-Agent": "optedge-research/0.1"})
+        req = Request(url, headers=outbound_headers())
         with urlopen(req, timeout=timeout) as resp:
             text = resp.read().decode("utf-8", errors="replace")
         rows.extend(_parse_nasdaq_symbol_text(text, source))
@@ -480,7 +485,7 @@ def load_nasdaq_symbol_directory(
 def fetch_sec_company_tickers(timeout: float = 6.0) -> list[dict[str, Any]]:
     req = Request(
         SEC_TICKER_URL,
-        headers={"User-Agent": "optedge-research contact@example.com"},
+        headers=sec_headers(accept="application/json"),
     )
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -515,6 +520,8 @@ def load_sec_company_tickers(
                 }
                 cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
                 return rows
+        except SecContactRequiredError as exc:
+            log.warning("SEC ticker refresh skipped: %s", exc)
         except Exception:
             pass
 
@@ -643,7 +650,7 @@ def _candidate_from_quote(quote: dict[str, Any]) -> dict[str, Any] | None:
 def yahoo_search(query: str, limit: int = 8, timeout: float = 6.0) -> list[dict[str, Any]]:
     params = urlencode({"q": query, "quotesCount": limit, "newsCount": 0})
     url = f"https://query1.finance.yahoo.com/v1/finance/search?{params}"
-    req = Request(url, headers={"User-Agent": "optedge-research/0.1"})
+    req = Request(url, headers=outbound_headers(accept="application/json"))
     with urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", errors="replace"))
     quotes = data.get("quotes") if isinstance(data, dict) else []
