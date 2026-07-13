@@ -1815,7 +1815,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     else:
         pnl_dates = pnl_cumulative = pnl_daily = []
 
-    #  5. Win rate by bucket 
+    #  5. Win rate by bucket
     if not closed.empty:
         bucket_stats = (
             closed.groupby("bucket")
@@ -1830,7 +1830,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     else:
         bucket_labels = bucket_wr = []
 
-    #  6. Confidence vs win rate scatter 
+    #  6. Confidence vs win rate scatter
     if not closed.empty and "confidence" in closed.columns:
         conf_bins = pd.cut(closed["confidence"], bins=[0, 55, 65, 75, 85, 100], labels=["<55", "55-65", "65-75", "75-85", ">85"])
         conf_wr = (
@@ -1942,7 +1942,7 @@ def _build_analytics_html(forward_summary=None) -> str:
             for v in age_stats["avg_unrealized"].tolist()
         ]
 
-    #  9. Outcome pie 
+    #  9. Outcome pie
     if not closed.empty:
         oc = closed["outcome"].value_counts()
         pie_labels = oc.index.tolist()
@@ -1950,7 +1950,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     else:
         pie_labels = pie_values = []
 
-    #  10. Overall stats 
+    #  10. Overall stats
     total_closed = len(closed) if not closed.empty else 0
     overall_wr = round(closed["is_win"].mean() * 100, 1) if not closed.empty and "is_win" in closed.columns else 0
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
@@ -2457,7 +2457,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     <div class="lookup-grid" id="lookup-results"></div>
   </div>
   <div class="muted" style="font-size:11px; margin-bottom:16px; font-family:'JetBrains Mono', monospace;">
-    Bankroll: <strong>${bankroll:,.0f}</strong>  - 
+    Bankroll: <strong>${bankroll:,.0f}</strong>  -
     {'<strong style="color:#f87171">AGGRESSIVE MODE</strong>  -  1/2 Kelly  -  Cap 10% per option / 15% per share' if aggressive else '1/4 Kelly  -  Cap 5% per option / 8% per share'}
   </div>
 

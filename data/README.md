@@ -9,3 +9,5 @@ This directory holds private, machine-generated Optedge state. The guide and pla
 - Holds bounded Robinhood research queues and read-only broker snapshots.
 
 Never commit live contents. Raw broker captures may contain full account identifiers. Versioned fallback weights belong in `optedge/default_weights/`.
+
+See the [complete project map](../docs/PROJECT_MAP.md) for the purpose of each tracked placeholder and guide.

@@ -24,7 +24,9 @@ data/*.md
 !data/README.md
 data/lookup_reports/
 logs/*.parquet
+logs/*.json
 telemetry/*.parquet
+telemetry/*.jsonl
 archive/
 
 # Python environments, caches, coverage, and builds
@@ -41,6 +43,7 @@ env/
 .coverage
 .coverage.*
 htmlcov/
+coverage.xml
 .tox/
 .nox/
 build/

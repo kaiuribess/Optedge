@@ -9,3 +9,5 @@ This directory stores local, timestamped research output from Optedge scans.
 - Preserves a stable runtime location without publishing generated artifacts.
 
 Everything except this guide and `.keep` is private runtime data and remains ignored by Git.
+
+See the [complete project map](../docs/PROJECT_MAP.md) for the purpose of each tracked file.

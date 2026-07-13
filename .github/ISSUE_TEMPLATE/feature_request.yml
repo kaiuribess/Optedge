@@ -1,0 +1,50 @@
+# Purpose: Collect evidence-aware feature proposals within project boundaries.
+name: Feature request
+description: Propose a focused research, dashboard, data, or safety improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Optedge prioritizes inspectable evidence and explicit user control. Requests for guaranteed profit, credential scraping, or unattended broker execution are out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or research problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful change and its user-visible workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and validation plan
+      description: Explain data lineage, test fixtures, comparison criteria, and how false confidence will be avoided.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Risk, privacy, and broker boundaries
+      description: State how the proposal handles stale data, missing fields, private data, account scope, and explicit confirmation.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Scope checks
+      options:
+        - label: This proposal does not promise returns or treat a model score as proof of profit.
+          required: true
+        - label: This proposal does not add unattended broker actions or automatic order retries.
+          required: true
+        - label: I searched existing issues and documentation first.
+          required: true

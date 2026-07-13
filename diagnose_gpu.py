@@ -4,7 +4,7 @@ Usage:
     python diagnose_gpu.py
 
 Prints whether PyTorch sees a GPU, its compiled CUDA runtime, the installed
-NVIDIA driver state, and targeted installation or driver remediation.
+NVIDIA driver state, and platform-neutral remediation guidance.
 """
 import platform
 import subprocess
@@ -18,8 +18,10 @@ def main() -> int:
     try:
         import torch
     except ImportError:
-        print("[FAIL] torch is not installed. Install with:")
-        print("       pip install torch --index-url https://download.pytorch.org/whl/cu121")
+        print("[FAIL] torch is not installed. From the repository root, run:")
+        print('       python -m pip install -e ".[sentiment]"')
+        print("For NVIDIA acceleration, use the official PyTorch install selector")
+        print("for the wheel matching this machine's OS, Python, and driver.")
         return 1
 
     print(f"torch version    : {torch.__version__}")
@@ -45,7 +47,7 @@ def main() -> int:
                 print("  " + line)
             print()
     except FileNotFoundError:
-        print("nvidia-smi not found — either no NVIDIA GPU, or the driver isn't installed.")
+        print("nvidia-smi not found - either no NVIDIA GPU is present or its driver is missing.")
         print()
     except Exception as e:
         print(f"nvidia-smi error: {e}\n")
@@ -53,22 +55,17 @@ def main() -> int:
     cv = getattr(torch.version, "cuda", None)
     if cv is None:
         print("DIAGNOSIS: your torch is the CPU-only build.")
-        print("FIX:")
-        print("  pip uninstall -y torch")
-        print("  pip install torch --index-url https://download.pytorch.org/whl/cu121")
-        print()
-        print("(Use cu118 if your NVIDIA driver only supports CUDA 11.8;")
-        print(" cu124 if you're on a brand-new driver with CUDA 12.4 support.)")
+        print("CPU inference remains supported. For GPU inference, use the official")
+        print("PyTorch install selector to replace torch with a wheel compatible with")
+        print("this machine's current NVIDIA driver.")
     else:
         print(f"DIAGNOSIS: torch was built against CUDA {cv} but the runtime "
               "isn't reachable.")
         print("Most common cause: NVIDIA driver too old.")
         print("FIX OPTIONS:")
         print(f"  1) Update your NVIDIA driver to support CUDA {cv} or newer.")
-        print("  2) Install a torch wheel that matches your driver:")
-        print("       pip uninstall -y torch")
-        print("       pip install torch --index-url https://download.pytorch.org/whl/cu118")
-        print("       (or cu121 / cu124 — pick the one ≤ your driver's CUDA version)")
+        print("  2) Use the official PyTorch install selector to choose a torch wheel")
+        print("     compatible with the driver currently installed on this machine.")
     return 2
 
 

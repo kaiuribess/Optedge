@@ -1,24 +1,22 @@
 # Purpose: Score financial headlines with optional FinBERT.
-"""FinBERT financial sentiment engine — v20.3 (optional, GPU-aware).
+"""Score financial text with an optional, GPU-aware FinBERT model.
 
-OPT-IN. Disabled by default. Returns empty if torch+transformers aren't
-installed, so requirements.txt is unaffected for the typical install.
+This engine is opt-in. It returns an empty result when the optional model
+dependencies are unavailable. Install the supported extra from the repository
+root before enabling the engine:
 
-To enable:
-  pip install torch transformers
-  # OR with CUDA (GPU):
-  pip install torch --index-url https://download.pytorch.org/whl/cu121
-  pip install transformers
+    python -m pip install -e ".[sentiment]"
 
-Once installed, this engine wakes up automatically — it auto-detects CUDA
-and falls back to CPU if no GPU is present. State-pack doc estimated +30%
-accuracy vs VADER on financial text, with a ~10x throughput win on GPU
-batched encoding.
+The default extra follows the standard PyTorch package index. GPU operators
+should install the wheel selected for their current driver and platform by the
+official PyTorch installer, then run ``python diagnose_gpu.py``. The engine
+auto-detects CUDA and otherwise uses CPU.
 
 Reads from the news engine's output (headlines per ticker) and emits a
 finbert_score in [-1, +1] per ticker. Fusion treats it as an additive
-factor next to the existing VADER-based news sentiment, NOT a replacement —
-disagreements between VADER and FinBERT are themselves informative.
+factor next to the existing VADER-based news sentiment, not a replacement.
+These classifications are fallible research inputs, not expected returns or
+evidence of trading profitability.
 """
 from __future__ import annotations
 import logging
