@@ -1,5 +1,11 @@
-# Purpose: Evaluate factor weights with chronological holdouts.
-"""Backtest module — Optedge v16. Walk-forward backtest + per-factor attribution.
+# Purpose: Preserve a legacy chronological factor diagnostic for compatibility.
+"""Legacy chronological factor diagnostic with per-factor attribution.
+
+This module consumes the older ``forward_outcomes_<bucket>`` artifacts. Those
+variable-schema outcomes are not the current policy-bound evidence set, so all
+results are diagnostic-only and cannot promote weights, clear Edge Lab, or
+authorize live review. Current decision evidence comes from
+``backtest.fixed_horizon`` and ``backtest.edge_lab``.
 
 Per bucket:
   1. Pull realized outcomes from data/forward_outcomes_<bucket>.parquet
@@ -9,8 +15,10 @@ Per bucket:
   5. Per-factor attribution: how much realized PnL each factor contributes
 
 Output:
-  data/backtest_summary.json  — light summary for dashboard
-  data/backtest_<asof>.parquet — full per-trade results
+  data/backtest_summary.json   — labeled legacy diagnostic summary
+  data/backtest_<asof>.parquet — labeled local diagnostic curve data
+
+No current dashboard or broker-review gate consumes these files.
 """
 from __future__ import annotations
 import json
@@ -32,6 +40,23 @@ from engines import learning
 
 log = logging.getLogger("optedge.backtest_engine")
 DATA_DIR = ROOT / "data"
+
+EVIDENCE_STATUS = "diagnostic_only_legacy_forward_outcomes"
+ELIGIBLE_FOR_MODEL_PROMOTION = False
+ELIGIBLE_FOR_LIVE_REVIEW = False
+
+
+def diagnostic_metadata() -> Dict[str, Any]:
+    """Return the immutable evidence restrictions for this diagnostic."""
+    return {
+        "evidence_status": EVIDENCE_STATUS,
+        "eligible_for_model_promotion": ELIGIBLE_FOR_MODEL_PROMOTION,
+        "eligible_for_live_review": ELIGIBLE_FOR_LIVE_REVIEW,
+    }
+
+
+def _diagnostic_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {**diagnostic_metadata(), **payload}
 
 
 # ---------------------------------------------------------------------------
@@ -70,23 +95,27 @@ def walk_forward_one_bucket(bucket: str, train_frac: float = 0.8) -> Dict[str, A
     """Walk-forward backtest of one bucket. Returns stats + per-factor attribution."""
     out_path = DATA_DIR / f"forward_outcomes_{bucket}.parquet"
     if not out_path.exists():
-        return {"bucket": bucket, "n": 0, "status": "no_outcomes"}
+        return _diagnostic_payload({"bucket": bucket, "n": 0, "status": "no_outcomes"})
 
     try:
         df = pd.read_parquet(out_path)
     except Exception as e:
         log.warning("read %s failed: %s", out_path, e)
-        return {"bucket": bucket, "n": 0, "status": "read_failed"}
+        return _diagnostic_payload({"bucket": bucket, "n": 0, "status": "read_failed"})
 
     if df.empty:
-        return {"bucket": bucket, "n": 0, "status": "empty"}
+        return _diagnostic_payload({"bucket": bucket, "n": 0, "status": "empty"})
 
     df = df.copy()
     df["log_time"] = pd.to_datetime(df["log_time"], utc=True, errors="coerce")
     df = df.sort_values("log_time").dropna(subset=["log_time"])
     n = len(df)
     if n < 20:
-        return {"bucket": bucket, "n": n, "status": "insufficient_samples"}
+        return _diagnostic_payload({
+            "bucket": bucket,
+            "n": n,
+            "status": "insufficient_samples",
+        })
 
     priors = learning.get_factor_priors(bucket)
     factor_cols = [f"factor_{k}" for k in priors.keys() if f"factor_{k}" in df.columns]
@@ -102,7 +131,11 @@ def walk_forward_one_bucket(bucket: str, train_frac: float = 0.8) -> Dict[str, A
             df[target] = df[zcol]
     factor_cols = [f"factor_{k}" for k in priors.keys() if f"factor_{k}" in df.columns]
     if not factor_cols:
-        return {"bucket": bucket, "n": n, "status": "no_factor_columns"}
+        return _diagnostic_payload({
+            "bucket": bucket,
+            "n": n,
+            "status": "no_factor_columns",
+        })
 
     fmat = df[factor_cols].fillna(0.0).copy()
     fmat.columns = [c.replace("factor_", "") for c in fmat.columns]
@@ -148,7 +181,12 @@ def walk_forward_one_bucket(bucket: str, train_frac: float = 0.8) -> Dict[str, A
     # Realized PnL is just the bucket's recorded outcome (already directional from is_long).
     trades = pd.DataFrame({"score": test_scores, "pnl": test_y.values})
     if len(trades) == 0:
-        return {"bucket": bucket, "n": n, "status": "no_oos_trades", "fit_mode": fit_mode}
+        return _diagnostic_payload({
+            "bucket": bucket,
+            "n": n,
+            "status": "no_oos_trades",
+            "fit_mode": fit_mode,
+        })
 
     # Out-of-sample summary
     n_oos = len(trades)
@@ -178,7 +216,7 @@ def walk_forward_one_bucket(bucket: str, train_frac: float = 0.8) -> Dict[str, A
         })
     attribution.sort(key=lambda r: abs(r["pnl_contribution_proxy"]), reverse=True)
 
-    return {
+    return _diagnostic_payload({
         "bucket": bucket,
         "n": n,
         "n_train": len(train_X),
@@ -195,11 +233,11 @@ def walk_forward_one_bucket(bucket: str, train_frac: float = 0.8) -> Dict[str, A
         "equity_curve": equity_curve,
         "factor_attribution": attribution,
         "status": "ok",
-    }
+    })
 
 
 def run_full_backtest() -> Dict[str, Any]:
-    """Backtest every bucket. Persist data/backtest_summary.json + per-asof parquet."""
+    """Run every legacy bucket and persist explicitly labeled diagnostics."""
     DATA_DIR.mkdir(exist_ok=True)
     results = {}
     for b in learning.BUCKET_KEYS:
@@ -209,8 +247,12 @@ def run_full_backtest() -> Dict[str, Any]:
             log.warning("[%s] backtest failed: %s", b, e)
             results[b] = {"bucket": b, "status": f"error: {e}"}
 
-    # Light summary for dashboard
-    summary = {"asof": datetime.now(timezone.utc).isoformat(), "buckets": {}}
+    # Compatibility artifact for explicit local inspection only.
+    summary = {
+        **diagnostic_metadata(),
+        "asof": datetime.now(timezone.utc).isoformat(),
+        "buckets": {},
+    }
     for b, r in results.items():
         if r.get("status") != "ok":
             summary["buckets"][b] = {"status": r.get("status", "no_data"),
@@ -249,19 +291,26 @@ def run_full_backtest() -> Dict[str, Any]:
             rows.append({"bucket": b, "trade_idx": i, "cum_pnl": eq})
     if rows:
         try:
-            pd.DataFrame(rows).to_parquet(DATA_DIR / f"backtest_{asof_tag}.parquet", index=False)
+            detail = pd.DataFrame(rows)
+            detail["evidence_status"] = EVIDENCE_STATUS
+            detail["eligible_for_model_promotion"] = ELIGIBLE_FOR_MODEL_PROMOTION
+            detail["eligible_for_live_review"] = ELIGIBLE_FOR_LIVE_REVIEW
+            detail.to_parquet(DATA_DIR / f"backtest_{asof_tag}.parquet", index=False)
         except Exception as e:
             log.debug("save backtest detail: %s", e)
 
-    return {"summary_path": str(summary_path), "results": results}
+    return _diagnostic_payload({"summary_path": str(summary_path), "results": results})
 
 
 def load_backtest_summary() -> Optional[Dict[str, Any]]:
-    """Read data/backtest_summary.json for the dashboard panel."""
+    """Read the compatibility summary and enforce diagnostic labels in memory."""
     p = DATA_DIR / "backtest_summary.json"
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        return _diagnostic_payload(payload)
     except Exception:
         return None

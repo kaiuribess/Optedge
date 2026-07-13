@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-strategy_version = "2026.07-policy-v2"
+strategy_version = "2026.07-evidence-portfolio-v3"
 STRATEGY_VERSION = strategy_version
 
 
@@ -49,7 +49,7 @@ UNSUPPORTED_INDEX_OPTION_ROOTS = frozenset({
 
 
 def is_known_index_option_symbol(value: object) -> bool:
-    """Return whether a symbol is an index/index-option root excluded from v2 review."""
+    """Return whether a symbol is an index/index-option root excluded from review."""
     symbol = str(value or "").strip().upper()
     return symbol.startswith("^") or symbol in UNSUPPORTED_INDEX_OPTION_ROOTS
 

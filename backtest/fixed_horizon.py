@@ -9,6 +9,7 @@ Shares and futures use observed historical closes. Options prefer exact,
 non-interpolated Robinhood option trade bars from the read-only MCP cache and
 fall back to a deliberately labeled Black-Scholes constant-entry-IV proxy.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -31,6 +32,7 @@ if str(ROOT) not in sys.path:
 
 import data_provider  # noqa: E402
 from backtest import option_history  # noqa: E402
+from optedge.strategy_profile import STRATEGY_VERSION  # noqa: E402
 from utils import bs_price  # noqa: E402
 
 log = logging.getLogger("optedge.fixed_horizon")
@@ -46,6 +48,15 @@ MIN_RELIABLE_DAYS = 10
 SHARE_SLIPPAGE_PCT = 0.002
 FUTURES_SLIPPAGE_PCT = 0.001
 DEFAULT_SIGNAL_ALLOCATION_PCT = 0.01
+EVIDENCE_PROVENANCE_SCHEMA = "optedge_fixed_horizon_provenance_v1"
+EVIDENCE_ELIGIBILITY_VERSION = "frozen_signal_policy_v2"
+EVIDENCE_PROVENANCE_COLUMNS = (
+    "evidence_provenance_schema",
+    "strategy_version",
+    "fixed_horizon_methodology_version",
+    "fixed_horizon_policy_digest",
+    "experiment_id",
+)
 
 HistoryLoader = Callable[[str, str], pd.DataFrame]
 
@@ -116,6 +127,80 @@ def _option_slippage_pct() -> float:
         return 0.04
 
 
+def evidence_policy_payload() -> dict[str, Any]:
+    """Return the immutable policy inputs stamped onto every new signal log."""
+    return {
+        "schema": EVIDENCE_PROVENANCE_SCHEMA,
+        "strategy_version": STRATEGY_VERSION,
+        "methodology_version": METHODOLOGY_VERSION,
+        "eligibility_version": EVIDENCE_ELIGIBILITY_VERSION,
+        "default_horizons": list(DEFAULT_HORIZONS),
+        "headline_horizon": HEADLINE_HORIZON,
+        "slippage": {
+            "option": _option_slippage_pct(),
+            "share": SHARE_SLIPPAGE_PCT,
+            "futures": FUTURES_SLIPPAGE_PCT,
+        },
+        "independence_key": "asset|symbol|direction|utc_entry_date",
+        "outcome_order": "strictly_completed_market_sessions",
+    }
+
+
+def evidence_policy_digest() -> str:
+    """Return a stable digest binding outcomes to the exact evidence policy."""
+    encoded = json.dumps(
+        evidence_policy_payload(),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def current_evidence_provenance() -> dict[str, Any]:
+    """Return the provenance fields frozen when a recommendation is logged."""
+    digest = evidence_policy_digest()
+    return {
+        "evidence_provenance_schema": EVIDENCE_PROVENANCE_SCHEMA,
+        "strategy_version": STRATEGY_VERSION,
+        "fixed_horizon_methodology_version": METHODOLOGY_VERSION,
+        "fixed_horizon_policy_digest": digest,
+        "experiment_id": f"{STRATEGY_VERSION}:{digest[:16]}",
+    }
+
+
+def _provenance_status(row: pd.Series) -> tuple[bool, str]:
+    """Require exact log-time provenance before a row can enter current lanes."""
+    expected = current_evidence_provenance()
+    for column in EVIDENCE_PROVENANCE_COLUMNS:
+        actual = row.get(column)
+        wanted = expected[column]
+        if column == "fixed_horizon_methodology_version":
+            actual = _optional_float(actual)
+            if actual is None:
+                return False, "missing_fixed_horizon_methodology_version"
+            if int(actual) != int(wanted) or actual != int(actual):
+                return False, "fixed_horizon_methodology_version_mismatch"
+            continue
+        actual_text = _text(actual)
+        if not actual_text:
+            return False, f"missing_{column}"
+        if actual_text != str(wanted):
+            return False, f"{column}_mismatch"
+    return True, "passed"
+
+
+def outcome_has_current_provenance(row: pd.Series) -> bool:
+    """Return whether a persisted outcome is bound to today's full policy."""
+    provenance_ok, _ = _provenance_status(row)
+    methodology = _optional_float(row.get("methodology_version"))
+    return bool(
+        provenance_ok
+        and methodology is not None
+        and methodology == int(methodology)
+        and int(methodology) == METHODOLOGY_VERSION
+    )
+
+
 def _asset_symbol(row: pd.Series) -> str:
     return _text(row.get("ticker"), row.get("symbol")).upper()
 
@@ -144,12 +229,14 @@ def _contract_key(row: pd.Series, asset: str) -> str:
         contract = _text(row.get("contract"))
         if contract:
             return contract
-        return "|".join([
-            symbol,
-            str(row.get("expiry") or ""),
-            str(row.get("side") or ""),
-            str(row.get("strike") or ""),
-        ])
+        return "|".join(
+            [
+                symbol,
+                str(row.get("expiry") or ""),
+                str(row.get("side") or ""),
+                str(row.get("strike") or ""),
+            ]
+        )
     if asset == "futures":
         return _text(row.get("contract"), row.get("micro_contract"), symbol)
     return symbol
@@ -158,12 +245,18 @@ def _contract_key(row: pd.Series, asset: str) -> str:
 def _signal_id(row: pd.Series) -> str:
     asset = str(row.get("asset") or "").lower()
     entry = pd.to_datetime(row.get("entry_time"), errors="coerce", utc=True)
-    payload = "|".join([
+    parts = [
         asset,
         _contract_key(row, asset),
         _direction(row, asset),
         entry.isoformat() if not pd.isna(entry) else str(row.get("entry_time") or ""),
-    ])
+    ]
+    provenance = [_text(row.get(column)) for column in EVIDENCE_PROVENANCE_COLUMNS]
+    # Preserve historical IDs for unstamped legacy logs while separating every
+    # newly frozen experiment from an otherwise identical recommendation.
+    if any(provenance):
+        parts.extend(provenance)
+    payload = "|".join(parts)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
@@ -200,6 +293,9 @@ def _execution_eligibility(row: pd.Series, asset: str) -> tuple[bool, str]:
         return False, f"status_{status}"
     if not status and actionable is not True:
         return False, "legacy_unverified_actionability"
+    provenance_ok, provenance_reason = _provenance_status(row)
+    if not provenance_ok:
+        return False, provenance_reason
     return True, "passed"
 
 
@@ -214,18 +310,24 @@ def _shadow_eligibility(row: pd.Series, asset: str) -> tuple[bool, str]:
         if buyer_edge < 0 or _truthy(row.get("pricing_edge_ok")) is False:
             return False, "negative_buyer_edge_after_spread"
         size = _first_number(
-            row.get("pre_guard_suggested_contracts"), row.get("suggested_contracts"),
+            row.get("pre_guard_suggested_contracts"),
+            row.get("suggested_contracts"),
         )
     elif asset == "futures":
         size = _first_number(
-            row.get("pre_guard_suggested_contracts"), row.get("suggested_contracts"),
+            row.get("pre_guard_suggested_contracts"),
+            row.get("suggested_contracts"),
         )
     else:
         size = _first_number(
-            row.get("pre_guard_suggested_dollars"), row.get("suggested_dollars"),
+            row.get("pre_guard_suggested_dollars"),
+            row.get("suggested_dollars"),
         )
     if size is None or size <= 0:
         return False, "non_positive_pre_guard_size"
+    provenance_ok, provenance_reason = _provenance_status(row)
+    if not provenance_ok:
+        return False, provenance_reason
     return True, "passed"
 
 
@@ -240,7 +342,20 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
             "option",
             "share",
         )
-    out["asset"] = out["asset"].fillna("").astype(str).str.lower()
+    out["asset"] = (
+        out["asset"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .replace(
+            {
+                "options": "option",
+                "shares": "share",
+                "future": "futures",
+            }
+        )
+    )
     out["entry_time"] = pd.to_datetime(out.get("entry_time"), errors="coerce", utc=True)
     out = out[out["asset"].isin(["option", "share", "futures"])].copy()
     out = out.dropna(subset=["entry_time"])
@@ -250,7 +365,8 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
     out = out[out["symbol"].ne("")].copy()
     out["direction"] = out.apply(lambda row: _direction(row, str(row["asset"])), axis=1)
     out["contract_key"] = out.apply(
-        lambda row: _contract_key(row, str(row["asset"])), axis=1,
+        lambda row: _contract_key(row, str(row["asset"])),
+        axis=1,
     )
     out["signal_id"] = out.apply(_signal_id, axis=1)
     out = out.drop_duplicates("signal_id", keep="first")
@@ -260,14 +376,13 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
     )
     out = out.sort_values(["entry_time", "signal_id"]).reset_index(drop=True)
     out["is_independent"] = ~out.duplicated("independent_key", keep="first")
-    eligibility = [
-        _execution_eligibility(row, str(row["asset"])) for _, row in out.iterrows()
-    ]
+    provenance = [_provenance_status(row) for _, row in out.iterrows()]
+    out["evidence_provenance_valid"] = [value[0] for value in provenance]
+    out["evidence_provenance_reason"] = [value[1] for value in provenance]
+    eligibility = [_execution_eligibility(row, str(row["asset"])) for _, row in out.iterrows()]
     out["eligible_for_executable_metrics"] = [value[0] for value in eligibility]
     out["execution_eligibility_reason"] = [value[1] for value in eligibility]
-    shadow = [
-        _shadow_eligibility(row, str(row["asset"])) for _, row in out.iterrows()
-    ]
+    shadow = [_shadow_eligibility(row, str(row["asset"])) for _, row in out.iterrows()]
     out["eligible_for_shadow_metrics"] = [value[0] for value in shadow]
     out["shadow_eligibility_reason"] = [value[1] for value in shadow]
     return out
@@ -432,11 +547,26 @@ def _slippage(asset: str) -> float:
 
 def _carry_fields(row: pd.Series, outcome: dict[str, Any]) -> None:
     exact = {
-        "confidence", "rank_score", "fused_score", "share_score", "futures_score",
-        "ev_pct", "kelly_pct", "trade_status", "is_actionable",
-        "suggested_contracts", "suggested_dollars", "research_guard_status",
-        "buyer_edge_pct", "pricing_direction", "dte", "spread_pct",
-        "strike", "expiry", "side",
+        "confidence",
+        "rank_score",
+        "fused_score",
+        "share_score",
+        "futures_score",
+        "ev_pct",
+        "kelly_pct",
+        "trade_status",
+        "is_actionable",
+        "suggested_contracts",
+        "suggested_dollars",
+        "research_guard_status",
+        "buyer_edge_pct",
+        "pricing_direction",
+        "dte",
+        "spread_pct",
+        "strike",
+        "expiry",
+        "side",
+        *EVIDENCE_PROVENANCE_COLUMNS,
     }
     for column in row.index:
         if column in exact or str(column).startswith(("z_", "factor_")):
@@ -452,7 +582,8 @@ def _upgradeable_outcome_ids(
         return set()
     asset = outcomes.get("asset", pd.Series("", index=outcomes.index)).astype(str).str.lower()
     quality = outcomes.get(
-        "outcome_quality", pd.Series("", index=outcomes.index),
+        "outcome_quality",
+        pd.Series("", index=outcomes.index),
     ).astype(str)
     candidates = outcomes[asset.eq("option") & quality.eq("modeled_option_proxy")]
     upgradeable: set[str] = set()
@@ -461,7 +592,10 @@ def _upgradeable_outcome_ids(
         target = pd.to_datetime(row.get("target_date"), errors="coerce")
         if not key or pd.isna(target):
             continue
-        if option_history.observed_option_close(option_histories.get(key), target.date()) is not None:
+        if (
+            option_history.observed_option_close(option_histories.get(key), target.date())
+            is not None
+        ):
             outcome_id = _text(row.get("outcome_id"))
             if outcome_id:
                 upgradeable.add(outcome_id)
@@ -487,7 +621,9 @@ def evaluate_fixed_horizons(
     horizon_values = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
     old = existing.copy() if existing is not None and not existing.empty else pd.DataFrame()
     if not old.empty:
-        old = old[pd.to_numeric(old.get("methodology_version"), errors="coerce") == METHODOLOGY_VERSION]
+        old = old[
+            pd.to_numeric(old.get("methodology_version"), errors="coerce") == METHODOLOGY_VERSION
+        ]
     option_histories = option_histories or {}
     upgradeable_ids = _upgradeable_outcome_ids(old, option_histories)
     known = set(old.get("outcome_id", pd.Series(dtype=str)).dropna().astype(str))
@@ -507,7 +643,8 @@ def evaluate_fixed_horizons(
         proxy_used = False
         option_record = (
             option_histories.get(option_history.contract_key_from_row(row))
-            if asset == "option" else None
+            if asset == "option"
+            else None
         )
         if primary is None or primary.empty:
             proxy = _text(row.get("etf")).upper()
@@ -516,7 +653,9 @@ def evaluate_fixed_horizons(
                 source_symbol = proxy
                 proxy_used = primary is not None and not primary.empty
         if primary is None or primary.empty:
-            exclusions["missing_history"] = exclusions.get("missing_history", 0) + len(horizon_values)
+            exclusions["missing_history"] = exclusions.get("missing_history", 0) + len(
+                horizon_values
+            )
             continue
 
         for horizon in horizon_values:
@@ -532,19 +671,28 @@ def evaluate_fixed_horizons(
             option_metadata: dict[str, Any] = {}
             if asset == "option":
                 target_price, pnl, method, option_metadata = _observed_option_outcome(
-                    row, option_record, target_date,
+                    row,
+                    option_record,
+                    target_date,
                 )
                 if target_price is None or pnl is None:
                     target_price, pnl, method = _option_outcome(
-                        row, target_underlying, target_date,
+                        row,
+                        target_underlying,
+                        target_date,
                     )
             elif asset == "futures" and proxy_used:
                 target_price, pnl, method = _proxy_futures_outcome(
-                    row, primary, entry_date, target_date,
+                    row,
+                    primary,
+                    entry_date,
+                    target_date,
                 )
             else:
                 target_price, pnl, method = _market_outcome(
-                    row, asset, target_underlying,
+                    row,
+                    asset,
+                    target_underlying,
                 )
             if target_price is None or pnl is None:
                 resolution = {
@@ -553,9 +701,7 @@ def evaluate_fixed_horizons(
                     "signal_id": row["signal_id"],
                     "independent_key": row["independent_key"],
                     "is_independent": bool(row["is_independent"]),
-                    "eligible_for_executable_metrics": bool(
-                        row["eligible_for_executable_metrics"]
-                    ),
+                    "eligible_for_executable_metrics": bool(row["eligible_for_executable_metrics"]),
                     "execution_eligibility_reason": row["execution_eligibility_reason"],
                     "eligible_for_shadow_metrics": bool(row["eligible_for_shadow_metrics"]),
                     "shadow_eligibility_reason": row["shadow_eligibility_reason"],
@@ -578,12 +724,16 @@ def evaluate_fixed_horizons(
                 known.add(outcome_id)
                 continue
 
-            entry_underlying = _first_number(
-                row.get("spot"), row.get("entry"), row.get("entry_price"),
-            ) or 0.0
+            entry_underlying = (
+                _first_number(
+                    row.get("spot"),
+                    row.get("entry"),
+                    row.get("entry_price"),
+                )
+                or 0.0
+            )
             underlying_return = (
-                target_underlying / entry_underlying - 1.0
-                if entry_underlying > 0 else None
+                target_underlying / entry_underlying - 1.0 if entry_underlying > 0 else None
             )
             directional_underlying = underlying_return
             if underlying_return is not None and _direction(row, asset) in {"short", "long_put"}:
@@ -591,9 +741,9 @@ def evaluate_fixed_horizons(
             spy_return = _benchmark_return(spy, entry_date, target_date)
             qqq_return = _benchmark_return(qqq, entry_date, target_date)
             slippage = _slippage(asset)
-            contracts = max(0, int(
-                _first_number(row.get("suggested_contracts"), row.get("n_contracts")) or 0
-            ))
+            contracts = max(
+                0, int(_first_number(row.get("suggested_contracts"), row.get("n_contracts")) or 0)
+            )
             point_value = _float(row.get("point_value"))
             pnl_points = None
             pnl_dollars = None
@@ -635,21 +785,31 @@ def evaluate_fixed_horizons(
                 "directional_underlying_return_pct": directional_underlying,
                 "spy_return_pct": spy_return,
                 "qqq_return_pct": qqq_return,
-                "excess_vs_spy_pct": pnl - slippage - spy_return if spy_return is not None else None,
-                "excess_vs_qqq_pct": pnl - slippage - qqq_return if qqq_return is not None else None,
+                "excess_vs_spy_pct": pnl - slippage - spy_return
+                if spy_return is not None
+                else None,
+                "excess_vs_qqq_pct": pnl - slippage - qqq_return
+                if qqq_return is not None
+                else None,
                 "valuation_method": method,
                 "outcome_quality": (
-                    "broker_market_observed" if observed_option
-                    else "modeled_option_proxy" if asset == "option"
-                    else "market_proxy" if proxy_used else "market_observed"
+                    "broker_market_observed"
+                    if observed_option
+                    else "modeled_option_proxy"
+                    if asset == "option"
+                    else "market_proxy"
+                    if proxy_used
+                    else "market_observed"
                 ),
                 "history_symbol": source_symbol,
                 "history_source": (
-                    "robinhood_option_historicals" if observed_option
+                    "robinhood_option_historicals"
+                    if observed_option
                     else primary.attrs.get("history_source", "unknown")
                 ),
                 "history_quality": (
-                    "exact_non_interpolated_trade_bar" if observed_option
+                    "exact_non_interpolated_trade_bar"
+                    if observed_option
                     else primary.attrs.get("history_quality", "unknown")
                 ),
                 "pnl_points": pnl_points,
@@ -709,10 +869,16 @@ def _max_drawdown(returns: pd.Series) -> float | None:
 def _stats(frame: pd.DataFrame) -> dict[str, Any]:
     if frame is None or frame.empty or "pnl_pct_after_slippage" not in frame.columns:
         return {
-            "n": 0, "unique_entry_days": 0, "win_rate": None,
-            "win_rate_ci_low": None, "win_rate_ci_high": None,
-            "avg_return": None, "median_return": None, "profit_factor": None,
-            "max_drawdown": None, "avg_excess_vs_spy": None,
+            "n": 0,
+            "unique_entry_days": 0,
+            "win_rate": None,
+            "win_rate_ci_low": None,
+            "win_rate_ci_high": None,
+            "avg_return": None,
+            "median_return": None,
+            "profit_factor": None,
+            "max_drawdown": None,
+            "avg_excess_vs_spy": None,
             "avg_excess_vs_qqq": None,
         }
     values = pd.to_numeric(frame["pnl_pct_after_slippage"], errors="coerce")
@@ -753,7 +919,9 @@ def _factor_ic(frame: pd.DataFrame) -> list[dict[str, Any]]:
     target = "pnl_pct_after_slippage"
     factors = [column for column in frame.columns if str(column).startswith(("z_", "factor_"))]
     rows: list[dict[str, Any]] = []
-    for horizon in sorted(pd.to_numeric(frame["horizon_sessions"], errors="coerce").dropna().unique()):
+    for horizon in sorted(
+        pd.to_numeric(frame["horizon_sessions"], errors="coerce").dropna().unique()
+    ):
         horizon_frame = frame[pd.to_numeric(frame["horizon_sessions"], errors="coerce") == horizon]
         for factor in factors:
             sample = horizon_frame[[factor, target, "entry_time"]].copy()
@@ -767,15 +935,170 @@ def _factor_ic(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 continue
             days = int(pd.to_datetime(sample["entry_time"], utc=True).dt.date.nunique())
             reliable = len(sample) >= MIN_RELIABLE_SAMPLES and days >= MIN_RELIABLE_DAYS
-            rows.append({
-                "factor": factor,
-                "horizon_sessions": int(horizon),
-                "n": int(len(sample)),
-                "unique_entry_days": days,
-                "ic": float(ic),
-                "is_reliable": reliable,
-            })
+            rows.append(
+                {
+                    "factor": factor,
+                    "horizon_sessions": int(horizon),
+                    "n": int(len(sample)),
+                    "unique_entry_days": days,
+                    "ic": float(ic),
+                    "is_reliable": reliable,
+                }
+            )
     return sorted(rows, key=lambda row: (row["horizon_sessions"], -abs(row["ic"])))
+
+
+_OUTCOME_DIGEST_COLUMNS = (
+    "outcome_id",
+    "methodology_version",
+    *EVIDENCE_PROVENANCE_COLUMNS,
+    "independent_key",
+    "horizon_sessions",
+    "is_scored",
+    "resolution_status",
+    "resolution_reason",
+    "pnl_pct",
+    "slippage_assumption_pct",
+    "pnl_pct_after_slippage",
+    "excess_vs_spy_pct",
+    "outcome_quality",
+)
+
+
+def outcome_set_digest(outcomes: pd.DataFrame | None) -> str:
+    """Hash the evidence-bearing outcome fields independently of parquet bytes."""
+    if outcomes is None or outcomes.empty:
+        return hashlib.sha256(b"[]").hexdigest()
+    available = [column for column in _OUTCOME_DIGEST_COLUMNS if column in outcomes.columns]
+    work = outcomes[available].copy()
+    if "outcome_id" in work.columns:
+        work = work.sort_values("outcome_id", kind="stable")
+    records: list[dict[str, Any]] = []
+    for record in work.to_dict(orient="records"):
+        normalized: dict[str, Any] = {}
+        for key in available:
+            value = record.get(key)
+            try:
+                if pd.isna(value):
+                    value = None
+            except (TypeError, ValueError):
+                pass
+            if isinstance(value, (np.bool_,)):
+                value = bool(value)
+            elif isinstance(value, (np.integer,)):
+                value = int(value)
+            elif isinstance(value, (np.floating,)):
+                value = float(value)
+            normalized[key] = value
+        records.append(normalized)
+    encoded = json.dumps(
+        records,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resolution_coverage_rows(
+    prepared: pd.DataFrame,
+    outcomes: pd.DataFrame,
+    horizons: Iterable[int],
+    *,
+    asof: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Reconcile every matured independent signal/horizon pair to one resolution."""
+    if prepared is None or prepared.empty:
+        return []
+    independent = prepared[
+        prepared.get(
+            "is_independent",
+            pd.Series(False, index=prepared.index),
+        )
+        .fillna(False)
+        .astype(bool)
+    ].copy()
+    if independent.empty:
+        return []
+    executable = (
+        independent.get(
+            "eligible_for_executable_metrics",
+            pd.Series(False, index=independent.index),
+        )
+        .fillna(False)
+        .astype(bool)
+    )
+    shadow = (
+        independent.get(
+            "eligible_for_shadow_metrics",
+            pd.Series(False, index=independent.index),
+        )
+        .fillna(False)
+        .astype(bool)
+    )
+    independent["_evidence_lane"] = np.where(
+        executable,
+        "current_method_executable",
+        np.where(shadow, "current_method_shadow", "legacy_research_only"),
+    )
+    outcome_lookup: dict[str, pd.Series] = {}
+    if outcomes is not None and not outcomes.empty and "outcome_id" in outcomes.columns:
+        for _, outcome in outcomes.drop_duplicates("outcome_id", keep="last").iterrows():
+            outcome_lookup[str(outcome.get("outcome_id") or "")] = outcome
+
+    rows: list[dict[str, Any]] = []
+    cutoff = asof or datetime.now(UTC)
+    horizon_values = sorted({int(value) for value in horizons if int(value) > 0})
+    for asset in ("option", "share", "futures"):
+        for horizon in horizon_values:
+            for lane in (
+                "current_method_executable",
+                "current_method_shadow",
+                "legacy_research_only",
+            ):
+                group = independent[
+                    independent["asset"].eq(asset) & independent["_evidence_lane"].eq(lane)
+                ]
+                if group.empty:
+                    continue
+                expected = scored = excluded = pending = immature = 0
+                exclusion_reasons: dict[str, int] = {}
+                for _, signal in group.iterrows():
+                    entry_date = pd.Timestamp(signal["entry_time"]).date()
+                    try:
+                        completed_weekdays = int(np.busday_count(entry_date, cutoff.date()))
+                    except Exception:
+                        completed_weekdays = 0
+                    if completed_weekdays < horizon:
+                        immature += 1
+                        continue
+                    expected += 1
+                    outcome_id = f"{signal['signal_id']}:{horizon}"
+                    outcome = outcome_lookup.get(outcome_id)
+                    if outcome is None:
+                        pending += 1
+                        continue
+                    if _truthy(outcome.get("is_scored")) is True:
+                        scored += 1
+                        continue
+                    excluded += 1
+                    reason = _text(outcome.get("resolution_reason")) or "unknown"
+                    exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
+                rows.append(
+                    {
+                        "asset": asset,
+                        "horizon_sessions": horizon,
+                        "evidence_lane": lane,
+                        "expected": expected,
+                        "scored": scored,
+                        "excluded": excluded,
+                        "pending": pending,
+                        "immature": immature,
+                        "resolution_coverage": scored / expected if expected else None,
+                        "exclusion_reasons": exclusion_reasons,
+                    }
+                )
+    return rows
 
 
 def build_summary(
@@ -790,85 +1113,157 @@ def build_summary(
     now = asof or datetime.now(UTC)
     prepared = prepare_signals(signals)
     if outcomes is not None and not outcomes.empty:
-        scored_mask = outcomes.get(
-            "is_scored", pd.Series(True, index=outcomes.index),
-        ).fillna(False).astype(bool)
+        scored_mask = (
+            outcomes.get(
+                "is_scored",
+                pd.Series(True, index=outcomes.index),
+            )
+            .fillna(False)
+            .astype(bool)
+        )
         scored = outcomes[scored_mask].copy()
     else:
         scored = pd.DataFrame()
-    independent = scored[
-        scored.get("is_independent", pd.Series(False, index=scored.index)).fillna(False).astype(bool)
-    ].copy() if not scored.empty else pd.DataFrame()
-    executable = independent[
-        independent.get(
-            "eligible_for_executable_metrics", pd.Series(False, index=independent.index),
-        ).fillna(False).astype(bool)
-    ].copy() if not independent.empty else pd.DataFrame()
-    shadow = independent[
-        independent.get(
-            "eligible_for_shadow_metrics", pd.Series(False, index=independent.index),
-        ).fillna(False).astype(bool)
-    ].copy() if not independent.empty else pd.DataFrame()
+    independent = (
+        scored[
+            scored.get("is_independent", pd.Series(False, index=scored.index))
+            .fillna(False)
+            .astype(bool)
+        ].copy()
+        if not scored.empty
+        else pd.DataFrame()
+    )
+    current_provenance = (
+        independent.apply(outcome_has_current_provenance, axis=1).astype(bool)
+        if not independent.empty
+        else pd.Series(dtype=bool)
+    )
+    executable = (
+        independent[
+            current_provenance
+            & independent.get(
+                "eligible_for_executable_metrics",
+                pd.Series(False, index=independent.index),
+            )
+            .fillna(False)
+            .astype(bool)
+        ].copy()
+        if not independent.empty
+        else pd.DataFrame()
+    )
+    shadow = (
+        independent[
+            current_provenance
+            & independent.get(
+                "eligible_for_shadow_metrics",
+                pd.Series(False, index=independent.index),
+            )
+            .fillna(False)
+            .astype(bool)
+        ].copy()
+        if not independent.empty
+        else pd.DataFrame()
+    )
 
     by_horizon = []
     by_asset_horizon = []
     for horizon in sorted({int(value) for value in horizons}):
-        all_h = independent[
-            pd.to_numeric(independent.get("horizon_sessions"), errors="coerce") == horizon
-        ] if not independent.empty else pd.DataFrame()
-        exe_h = executable[
-            pd.to_numeric(executable.get("horizon_sessions"), errors="coerce") == horizon
-        ] if not executable.empty else pd.DataFrame()
-        shadow_h = shadow[
-            pd.to_numeric(shadow.get("horizon_sessions"), errors="coerce") == horizon
-        ] if not shadow.empty else pd.DataFrame()
-        by_horizon.append({
-            "horizon_sessions": horizon,
-            "all_recommendations": _stats(all_h),
-            "executable": _stats(exe_h),
-            "shadow_current_method": _stats(shadow_h),
-        })
+        all_h = (
+            independent[
+                pd.to_numeric(independent.get("horizon_sessions"), errors="coerce") == horizon
+            ]
+            if not independent.empty
+            else pd.DataFrame()
+        )
+        exe_h = (
+            executable[
+                pd.to_numeric(executable.get("horizon_sessions"), errors="coerce") == horizon
+            ]
+            if not executable.empty
+            else pd.DataFrame()
+        )
+        shadow_h = (
+            shadow[pd.to_numeric(shadow.get("horizon_sessions"), errors="coerce") == horizon]
+            if not shadow.empty
+            else pd.DataFrame()
+        )
+        by_horizon.append(
+            {
+                "horizon_sessions": horizon,
+                "all_recommendations": _stats(all_h),
+                "executable": _stats(exe_h),
+                "shadow_current_method": _stats(shadow_h),
+            }
+        )
         for asset in ("option", "share", "futures"):
-            asset_all = all_h[all_h.get("asset", "") == asset] if not all_h.empty else pd.DataFrame()
-            asset_exe = exe_h[exe_h.get("asset", "") == asset] if not exe_h.empty else pd.DataFrame()
+            asset_all = (
+                all_h[all_h.get("asset", "") == asset] if not all_h.empty else pd.DataFrame()
+            )
+            asset_exe = (
+                exe_h[exe_h.get("asset", "") == asset] if not exe_h.empty else pd.DataFrame()
+            )
             asset_shadow = (
                 shadow_h[shadow_h.get("asset", "") == asset]
-                if not shadow_h.empty else pd.DataFrame()
+                if not shadow_h.empty
+                else pd.DataFrame()
             )
-            by_asset_horizon.append({
-                "asset": asset,
-                "horizon_sessions": horizon,
-                "all_recommendations": _stats(asset_all),
-                "executable": _stats(asset_exe),
-                "shadow_current_method": _stats(asset_shadow),
-            })
+            by_asset_horizon.append(
+                {
+                    "asset": asset,
+                    "horizon_sessions": horizon,
+                    "all_recommendations": _stats(asset_all),
+                    "executable": _stats(asset_exe),
+                    "shadow_current_method": _stats(asset_shadow),
+                }
+            )
 
-    headline_rows = [
-        row for row in by_horizon if row["horizon_sessions"] == HEADLINE_HORIZON
-    ]
+    headline_rows = [row for row in by_horizon if row["horizon_sessions"] == HEADLINE_HORIZON]
     headline = headline_rows[0]["executable"] if headline_rows else _stats(pd.DataFrame())
     headline_shadow = (
         headline_rows[0]["shadow_current_method"] if headline_rows else _stats(pd.DataFrame())
     )
-    headline_all = headline_rows[0]["all_recommendations"] if headline_rows else _stats(pd.DataFrame())
+    headline_all = (
+        headline_rows[0]["all_recommendations"] if headline_rows else _stats(pd.DataFrame())
+    )
     quality = (
-        scored.get("outcome_quality", pd.Series(dtype=str)).fillna("unknown").astype(str).value_counts().to_dict()
-        if not scored.empty else {}
+        scored.get("outcome_quality", pd.Series(dtype=str))
+        .fillna("unknown")
+        .astype(str)
+        .value_counts()
+        .to_dict()
+        if not scored.empty
+        else {}
     )
     option_scored = (
         scored[scored.get("asset", pd.Series("", index=scored.index)).astype(str).eq("option")]
-        if not scored.empty else pd.DataFrame()
+        if not scored.empty
+        else pd.DataFrame()
     )
-    observed_option_count = int(
-        option_scored.get("outcome_quality", pd.Series(dtype=str))
-        .astype(str).eq("broker_market_observed").sum()
-    ) if not option_scored.empty else 0
+    observed_option_count = (
+        int(
+            option_scored.get("outcome_quality", pd.Series(dtype=str))
+            .astype(str)
+            .eq("broker_market_observed")
+            .sum()
+        )
+        if not option_scored.empty
+        else 0
+    )
     option_outcome_count = int(len(option_scored))
     persisted_exclusions = (
-        outcomes.loc[~outcomes.get(
-            "is_scored", pd.Series(True, index=outcomes.index),
-        ).fillna(False).astype(bool), "resolution_reason"]
-        .fillna("unknown").astype(str).value_counts().to_dict()
+        outcomes.loc[
+            ~outcomes.get(
+                "is_scored",
+                pd.Series(True, index=outcomes.index),
+            )
+            .fillna(False)
+            .astype(bool),
+            "resolution_reason",
+        ]
+        .fillna("unknown")
+        .astype(str)
+        .value_counts()
+        .to_dict()
         if outcomes is not None and not outcomes.empty and "resolution_reason" in outcomes.columns
         else {}
     )
@@ -903,13 +1298,25 @@ def build_summary(
             "constant-entry-IV proxy because no exact broker trade bar matched the target date."
         )
 
+    provenance = current_evidence_provenance()
+    resolution_coverage = _resolution_coverage_rows(
+        prepared,
+        outcomes,
+        horizons,
+        asof=now,
+    )
+
     return {
         "generated_at": now.isoformat(),
         "methodology_version": METHODOLOGY_VERSION,
+        **provenance,
+        "outcomes_digest_sha256": outcome_set_digest(outcomes),
         "basis": "independent_fixed_session_outcomes_after_slippage",
         "headline_horizon_sessions": HEADLINE_HORIZON,
         "raw_logged_signals": int(len(prepared)),
-        "independent_logged_signals": int(prepared.get("is_independent", pd.Series(dtype=bool)).sum()),
+        "independent_logged_signals": int(
+            prepared.get("is_independent", pd.Series(dtype=bool)).sum()
+        ),
         "resolved_outcome_pairs": int(len(outcomes) if outcomes is not None else 0),
         "matured_outcome_pairs": int(len(scored)),
         "independent_matured_outcome_pairs": int(len(independent)),
@@ -917,6 +1324,7 @@ def build_summary(
         "shadow_matured_outcome_pairs": int(len(shadow)),
         "matured_signals": int(scored["signal_id"].nunique()) if not scored.empty else 0,
         "pending_by_horizon": pending,
+        "resolution_coverage": resolution_coverage,
         "exclusions_by_reason": combined_exclusions,
         "outcome_quality": quality,
         "option_market_data": {
@@ -1023,7 +1431,8 @@ def _unresolved_candidates(
     horizon_values = tuple(sorted({int(value) for value in horizons if int(value) > 0}))
     known = set(
         existing.get("outcome_id", pd.Series(dtype=str)).dropna().astype(str)
-        if existing is not None and not existing.empty else []
+        if existing is not None and not existing.empty
+        else []
     )
     known.difference_update(_upgradeable_outcome_ids(existing, option_histories or {}))
     pending = {str(horizon): 0 for horizon in horizon_values}
@@ -1082,7 +1491,11 @@ def run_fixed_horizon_test(
     option_histories = option_history.load_option_histories(option_history_path)
     upgradeable_before = _upgradeable_outcome_ids(existing, option_histories)
     candidates, pending = _unresolved_candidates(
-        prepared, existing, horizons, now, option_histories,
+        prepared,
+        existing,
+        horizons,
+        now,
+        option_histories,
     )
     before = len(existing)
     if candidates.empty:
@@ -1104,10 +1517,19 @@ def run_fixed_horizon_test(
             option_histories=option_histories,
         )
         _, pending = _unresolved_candidates(
-            prepared, outcomes, horizons, now, option_histories,
+            prepared,
+            outcomes,
+            horizons,
+            now,
+            option_histories,
         )
     summary = build_summary(
-        outcomes, signals, pending, exclusions, horizons=horizons, asof=now,
+        outcomes,
+        signals,
+        pending,
+        exclusions,
+        horizons=horizons,
+        asof=now,
     )
     if write:
         outcomes_path.parent.mkdir(parents=True, exist_ok=True)
