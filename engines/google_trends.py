@@ -28,13 +28,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import outbound_headers
 
 log = logging.getLogger("optedge.gtrends")
 
 MAX_TICKERS_PER_RUN = 60   # rate-limit safety (pytrends path)
 BATCH_SIZE = 5             # pytrends limit per request
 WIKI_MAX_WORKERS = 6
-WIKI_UA = "optedge-research/0.2 (research@optedge.local)"
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ def _wiki_pageviews(article: str, days: int = 30) -> Optional[List[int]]:
     )
     sess = data_provider.get_session()
     try:
-        r = sess.get(url, headers={"User-Agent": WIKI_UA}, timeout=15)
+        r = sess.get(url, headers=outbound_headers(accept="application/json"), timeout=15)
         if r.status_code != 200:
             return None
         data = r.json()

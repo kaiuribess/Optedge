@@ -20,9 +20,9 @@ The sizing layer uses:
 The Trade Desk adds a separate deterministic sizing layer for manual review. It does not use conviction or Kelly to increase size:
 
 - `risk budget = account equity x risk per trade`
-- `allocation cap = min(account equity x max allocation, available buying power when supplied)`
-- `shares = floor(min(risk budget / planned stop loss per share, allocation cap / entry price))`
-- `contracts = floor(min(risk budget / full debit per contract, allocation cap / full debit per contract))`
+- `proposal sizing ceiling = min(account equity x total-open allocation fraction, available buying power when supplied)`
+- `shares = floor(min(risk budget / planned stop loss per share, proposal sizing ceiling / entry price))`
+- `contracts = floor(min(risk budget / full debit per contract, proposal sizing ceiling / full debit per contract))`
 
 For shares, planned stop loss per share is the entry-to-stop distance plus round-trip slippage. For long options, the full debit, not the planned premium stop, is the risk-budget basis. This prevents a stop assumption from permitting more contracts than the account-level risk budget can absorb if the option loses its entire value. Round-trip slippage is still added to the planned stop loss and removed from planned reward.
 
@@ -34,13 +34,37 @@ The planner keeps stop-risk and maximum capital-loss measures separate:
 
 Stops are not guaranteed fills. A gap, trading halt, liquidity failure, or option expiry can produce a loss greater than the planned stop loss. Missing entry, stop, target, multiplier, or account limits makes size unavailable rather than silently treating the value as zero.
 
-The resulting Robinhood packet is review-only and entry-only. It contains no broker credentials or selected account number, expires 10 minutes after creation, and does not place the planning stop or target. The local gate requires healthy validation evidence, fresh broker and research snapshots, no duplicate exposure or logical working order, and one same active account that satisfies portfolio-equity, risk-fraction, allocation-fraction, permission, and conservative buying-power checks. It never combines equity from one account with buying power or permissions from another.
+The proposal sizing ceiling bounds the new order before broker exposure is known. It is not the final portfolio check. The final gate also accounts for capital already at risk in the same broker account.
 
-The connected task repeats that math against the chosen account's live `total_value`. For options, full debit must fit live equity times both the risk and allocation fractions. For shares, planned stop loss must fit live equity times the risk fraction and full notional must fit live equity times the allocation fraction. Cost must also fit the smaller of reported buying power and unleveraged buying power. A planner equity assumption may be lower than live equity, but it may not materially overstate it.
+## Same-Account Total-Open Portfolio Gate
+
+For each otherwise eligible account, `risk/portfolio.py` evaluates only the normalized broker rows carrying that exact pseudonymous `account_key`:
+
+- Existing long shares reconcile absolute market value against absolute quantity times a valid current price. A materially conflicting pair blocks review instead of choosing the smaller exposure; when only one complete basis is available, that basis is used.
+- Existing long options contribute whole-contract quantity times `100` times the highest valid ask, mark, or current price.
+- The proposed share contributes full entry notional, not its smaller planned stop loss.
+- The proposed long option contributes full debit.
+- The capacity basis is the lower of the planner's assumed equity and that same account's live `portfolio.total_value`.
+- `post-trade capital at risk = current same-account broker capital at risk + proposed capital at risk`.
+- `total-open allocation cap = equity basis x allocation fraction`.
+
+The proposal passes this layer only when post-trade capital at risk is no greater than the total-open allocation cap. Conservative buying power remains a separate affordability constraint on the new order; it does not increase the portfolio cap.
+
+The exposure calculation fails closed when a position has an invalid or contradictory quantity alias, a duplicate/blank account identity, conflicting valuation, a short or boxed state, missing account scope, nonzero expired quantity, missing usable price, or any other ambiguity. It also blocks malformed pending assignment/exercise/expiry fields or transitions, nonstandard option multipliers, malformed contract identity, and any nonzero same-account nonterminal order because exposure may be changing. The separate trade-plan layer blocks adjusted option deliverables. Zero positions, terminal orders, and positions from other accounts do not consume this account's cap.
+
+Research lifecycle recommendations and Agentic paper rows are not counted as broker capital. Only fresh normalized same-account broker positions can establish existing live exposure. Broker-linked local lifecycle rows are used for reconciliation, not as a substitute source for portfolio math.
+
+The resulting Robinhood packet is review-only and entry-only. It contains no broker credentials or selected account number, expires 10 minutes after creation, and does not place the planning stop or target. Packet v2 binds the semantic packet and rendered prompt to separate SHA-256 digests and revalidates schema, safety controls, calculations, gate context, confirmation summary, content, prompt, and expiry before rendering. A digest detects modification but is not a signature, authentication, or standalone broker authority; a downloaded copy is inspection-only. The local gate requires the planned asset's Edge Lab row to be `live_capital_eligible`, healthy lifecycle validation, fresh broker and research snapshots, no duplicate exposure or logical working order, and one same active account that satisfies portfolio equity, per-trade risk, total-open allocation, permission, and conservative buying-power checks. It never lets evidence from one asset authorize another or combines equity, buying power, permissions, or exposure across accounts. The broker snapshot is read once into an immutable request-local capture so account readiness, exposure, duplicates, and the recorded snapshot digest cannot come from different reads.
+
+The connected task repeats the per-trade and total-open math against the chosen account's freshly read `total_value`, positions, and orders. For options, full debit is both the proposed capital-at-risk amount and the maximum-loss reference. For shares, planned stop loss must fit the risk fraction while full notional is the proposed capital-at-risk amount. Order cost must also fit the smaller of reported buying power and unleveraged buying power. A planner equity assumption may be lower than live equity, but it may not materially overstate it.
 
 The live quote gate is numeric: bid and ask must be positive, ask must be at least bid, quote timestamps must be no more than 120 seconds old, and `(ask - bid) / ((ask + bid) / 2)` must be no greater than the packet cap. The hard cap is 15% for options and 1% for shares; an option candidate may carry a stricter cap. The task stops when any field or timestamp is missing or when the live ask exceeds the packet limit. It cannot raise the limit or place anything until the user confirms the exact broker preview.
 
 The packet supports one logical order at a time. It prohibits batches, scheduled tasks, loops, automatic retries, and field changes between review and placement. If placement status is uncertain, the broker order state must be queried before any further action.
+
+For supported long calls and puts, that same account must report options level 2 or 3. Permission is only one prerequisite. It cannot bypass Edge Lab, portfolio risk, full-debit sizing, exact contract identity, quote freshness, spread, tradability, duplicate exposure, buying power, preview alerts, or explicit confirmation.
+
+The packet does not automate position management. Cancellation, sell-to-close, exercise, assignment, expiration, and emergency risk actions must be verified through Robinhood's supported surfaces. A stop or target shown by the planner is not resting at the broker.
 
 ## Guardrails
 

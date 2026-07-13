@@ -6,24 +6,21 @@ Uses SEC's public data.sec.gov submissions API. No API key required.
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 import data_provider
+from optedge.http_identity import sec_headers
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/{doc}"
-SEC_HEADERS = {
-    "User-Agent": os.environ.get(
-        "SEC_USER_AGENT",
-        "Optedge research cockpit contact local@example.com",
-    ),
-    "Accept": "application/json",
-}
+
+
+def _sec_headers() -> dict[str, str]:
+    return sec_headers(accept="application/json")
 
 IMPORTANT_FORMS = {
     "8-K", "10-Q", "10-K", "S-1", "S-3", "S-8", "424B5", "424B2",
@@ -93,7 +90,7 @@ def _sec_get_json(url: str, cache_key: str, max_age_sec: int, timeout: float = 8
     if cached is not None:
         return cached
     session = data_provider.get_session()
-    resp = session.get(url, headers=SEC_HEADERS, timeout=timeout)
+    resp = session.get(url, headers=_sec_headers(), timeout=timeout)
     if getattr(resp, "status_code", 0) != 200:
         raise RuntimeError(f"SEC request failed {getattr(resp, 'status_code', 'unknown')}")
     data = resp.json() if hasattr(resp, "json") else json.loads(resp.text)

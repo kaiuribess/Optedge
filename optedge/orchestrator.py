@@ -1,5 +1,5 @@
 # Purpose: Coordinate engines ranking risk logging and reports.
-"""Optedge — orchestrator. Long-only options + small-cap shares + futures + value plays.
+"""Optedge orchestrator for options, shares, directional futures, and value research.
 
 Engines run in parallel. WSB trending tickers added at runtime. Each engine
 internally parallelizes per-ticker work.
@@ -318,7 +318,9 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Optedge — long-only options/shares/futures/value ranker")
+    ap = argparse.ArgumentParser(
+        description="Optedge evidence-first options/shares/futures/value research ranker"
+    )
     ap.add_argument(
         "--cockpit",
         action="store_true",
@@ -389,11 +391,11 @@ def main():
     ap.add_argument("--forward", action="store_true",
                     help="Forward test only — replay logged signals with current prices")
     ap.add_argument("--backtest", action="store_true",
-                    help="Historical backtest — IC analysis on 7/30/60/90d forward returns")
+                    help="Diagnostic-only look-ahead IC analysis on 7/30/60/90d forward returns; not promotion eligible")
     ap.add_argument("--validation-report", action="store_true",
                     help="Build the formal validation report from local logs/positions")
     ap.add_argument("--validation-all-time", action="store_true",
-                    help="Validation report: include stale historical data instead of current model era only")
+                    help="Validation report: include archived/stale history instead of the current unarchived experiment only")
     ap.add_argument("--heston-stability", action="store_true",
                     help="Run a Heston numerical stability report without enabling Heston")
     ap.add_argument("--lookup", metavar="SYMBOL",
@@ -610,8 +612,9 @@ def main():
                 print("This usually means factor scores didn't merge in.")
                 print("Run without --demo for live factor scores.")
             return 0
-        print("\n=== HISTORICAL BACKTEST — Information Coefficient ===")
-        print("(IC > 0.05 is meaningful, > 0.10 is strong)")
+        print("\n=== LOOK-AHEAD DIAGNOSTIC — NOT BACKTEST EVIDENCE ===")
+        print("Current factor scores are compared with already-realized returns.")
+        print("Use this for exploration only; it cannot validate edge or update weights.")
         for h in [7, 30, 60, 90]:
             sub = ic[ic["horizon_days"] == h].sort_values("ic", ascending=False)
             if sub.empty:
@@ -872,15 +875,10 @@ def main():
     except Exception as e:
         log.debug("pre-fusion retrain skipped: %s", e)
 
-    # v20.3: refit per-model ensemble weights from realized mid moves
-    try:
-        from backtest import model_accuracy as bt_model_acc
-        new_weights = bt_model_acc.refit_weights()
-        if new_weights:
-            log.info("model-ensemble auto-refit: regimes updated = %s",
-                     list(new_weights.keys()))
-    except Exception as e:
-        log.debug("model-accuracy refit skipped: %s", e)
+    # Variable-age current-mid matching is not fixed-horizon out-of-sample
+    # evidence. It may be inspected manually, but it cannot promote live
+    # pricing weights.
+    log.info("model-ensemble auto-refit quarantined; using source-controlled weights")
 
     # v17: derive UOA from already-fetched chains (free, no extra network)
     try:
@@ -1359,18 +1357,20 @@ def main():
                 if eligible.empty:
                     raise ValueError("no matured fixed-horizon current-method shadow outcomes")
                 calibration_summary = diagnostic_summary(eligible)
-                overall_cal = calibration_summary.get("overall", {}).get("overall", {})
-                if overall_cal.get("rank_correlation") is not None:
-                    log.info("calibration: rank_corr=%.2f bias=%+0.3f verdict=%s",
-                             overall_cal["rank_correlation"],
-                             overall_cal.get("avg_bias", 0),
-                             overall_cal.get("verdict", "")[:60])
+                primary_cal = calibration_summary.get("primary", {})
+                asset_verdicts = primary_cal.get("asset_verdicts", {})
+                if asset_verdicts:
+                    log.info(
+                        "asset-isolated calibration: %s",
+                        {asset: str(verdict)[:60] for asset, verdict in asset_verdicts.items()},
+                    )
             except Exception as e:
                 log.debug("calibration skipped: %s", e)
     except Exception as e:
         log.debug("forward test skipped: %s", e)
 
-    # Refresh IC from a fresh backtest if possible (best-effort)
+    # Refresh the look-ahead IC diagnostic for inspection only. Predictor
+    # guards reject this schema, so it cannot promote runtime weights.
     try:
         from backtest.historical import run_historical_backtest
         factor_dfs = {
@@ -1380,7 +1380,7 @@ def main():
         bt = run_historical_backtest(universe_all, factor_dfs)
         if bt is not None and not bt.get("ic", pd.DataFrame()).empty:
             bt_predictor.cache_ic(bt["ic"])
-            log.info("backtest IC refreshed and cached")
+            log.info("look-ahead IC diagnostic refreshed and quarantined")
     except Exception as e:
         log.debug("post-run IC refresh skipped: %s", e)
 

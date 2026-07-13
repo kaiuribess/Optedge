@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from risk.portfolio import summarize_broker_account_capital_at_risk  # noqa: E402
 from scripts.local_cockpit import build_broker_reconciliation  # noqa: E402
 from scripts.normalize_robinhood_broker_snapshot import (  # noqa: E402
     RAW_BUNDLE_SCHEMA,
@@ -278,6 +279,7 @@ def _write_matching_local_position(data_dir: Path) -> None:
                 "expiry": "2026-12-18",
                 "quantity": 1,
                 "trade_status": "open",
+                "tracking_scope": "broker_linked",
             }
         ]),
         encoding="utf-8",
@@ -292,6 +294,7 @@ def _write_v2_matching_local_position(data_dir: Path) -> None:
         "expiry": "2027-01-15",
         "quantity": 1,
         "trade_status": "open",
+        "tracking_scope": "broker_linked",
     }]), encoding="utf-8")
 
 
@@ -380,6 +383,255 @@ def test_v2_normalizes_current_mcp_account_snapshots_and_joins_option_instrument
     encoded = json.dumps(snapshot, sort_keys=True)
     assert "AGT11112222" not in encoded
     assert "RHS99992222" not in encoded
+
+
+def test_v2_invalid_option_quantity_blocks_instead_of_becoming_zero_exposure():
+    raw = _mcp_v2_bundle()
+    raw["account_snapshots"][0]["get_option_orders"]["data"]["orders"] = []
+    position = raw["account_snapshots"][0]["get_option_positions"]["data"]["positions"][0]
+    position["quantity"] = "not-a-number"
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert snapshot["option_positions"][0]["quantity"] is None
+    assert snapshot["option_positions"][0]["signed_quantity"] is None
+    assert snapshot["option_positions"][0]["position_validation_errors"]
+    assert any(
+        "option_positions row 1 is unsafe: invalid quantity field(s): quantity"
+        in value
+        for value in snapshot["normalization_blockers"]
+    )
+    exposure = summarize_broker_account_capital_at_risk(
+        snapshot,
+        snapshot["accounts"][0]["account_key"],
+    )
+    assert exposure["eligible"] is False
+    assert "broker snapshot has unresolved normalization blockers" in exposure["blockers"]
+
+
+def test_v2_contradictory_option_quantity_aliases_block_normalization():
+    raw = _mcp_v2_bundle()
+    position = raw["account_snapshots"][0]["get_option_positions"]["data"]["positions"][0]
+    position["contracts"] = "2.00"
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert any(
+        "quantity fields disagree: quantity, contracts" in value
+        for value in snapshot["normalization_blockers"]
+    )
+
+
+def test_v2_invalid_equity_quantity_and_option_pending_fields_block_normalization():
+    invalid_equity = _mcp_v2_bundle()
+    invalid_equity["account_snapshots"][0]["get_equity_positions"][0]["data"][
+        "positions"
+    ] = [{
+        "symbol": "AAPL",
+        "quantity": "unknown",
+        "current_price": "200.00",
+    }]
+    equity_snapshot = normalize_broker_snapshot(invalid_equity)
+    assert any(
+        "equity_positions row 1 is unsafe: invalid quantity field(s): quantity"
+        in value
+        for value in equity_snapshot["normalization_blockers"]
+    )
+
+    invalid_pending = _mcp_v2_bundle()
+    option_position = invalid_pending["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
+    option_position["pending_assignment_quantity"] = "unknown"
+    pending_snapshot = normalize_broker_snapshot(invalid_pending)
+    assert any(
+        "invalid pending quantity field(s): pending_assignment_quantity" in value
+        for value in pending_snapshot["normalization_blockers"]
+    )
+
+
+def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
+    invalid_mark = _mcp_v2_bundle()
+    option_position = invalid_mark["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
+    option_position["mark_price"] = "unknown"
+    mark_snapshot = normalize_broker_snapshot(invalid_mark)
+    assert any(
+        "invalid current mark field(s): mark_price" in value
+        for value in mark_snapshot["normalization_blockers"]
+    )
+
+    invalid_multiplier = _mcp_v2_bundle()
+    option_position = invalid_multiplier["account_snapshots"][0][
+        "get_option_positions"
+    ]["data"]["positions"][0]
+    option_position["trade_value_multiplier"] = "unknown"
+    multiplier_snapshot = normalize_broker_snapshot(invalid_multiplier)
+    assert any(
+        "invalid trade-value multiplier field(s): trade_value_multiplier" in value
+        for value in multiplier_snapshot["normalization_blockers"]
+    )
+
+    invalid_equity_price = _mcp_v2_bundle()
+    invalid_equity_price["account_snapshots"][0]["get_equity_positions"][0][
+        "data"
+    ]["positions"] = [{
+        "symbol": "AAPL",
+        "quantity": "1",
+        "current_price": "unknown",
+        "market_value": "200.00",
+    }]
+    equity_price_snapshot = normalize_broker_snapshot(invalid_equity_price)
+    assert any(
+        "invalid current price field(s): current_price" in value
+        for value in equity_price_snapshot["normalization_blockers"]
+    )
+
+    invalid_equity_value = _mcp_v2_bundle()
+    invalid_equity_value["account_snapshots"][0]["get_equity_positions"][0][
+        "data"
+    ]["positions"] = [{
+        "symbol": "AAPL",
+        "quantity": "1",
+        "current_price": "200.00",
+        "market_value": "unknown",
+    }]
+    equity_value_snapshot = normalize_broker_snapshot(invalid_equity_value)
+    assert any(
+        "invalid market value field(s): market_value" in value
+        for value in equity_value_snapshot["normalization_blockers"]
+    )
+
+
+def test_v2_valid_price_and_multiplier_alternatives_remain_compatible():
+    raw = _mcp_v2_bundle()
+    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
+    option_position["current_price"] = "1.20"
+    option_position["mark_price"] = "1.25"
+    option_position["trade_value_multiplier"] = None
+    option_position["multiplier"] = "100"
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert snapshot["normalization_blockers"] == []
+    assert snapshot["option_positions"][0]["current_price"] == 1.25
+    assert snapshot["option_positions"][0]["trade_value_multiplier"] == 100.0
+
+
+def test_v2_contradictory_multiplier_aliases_block_normalization():
+    raw = _mcp_v2_bundle()
+    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
+    option_position["multiplier"] = "50"
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert any(
+        "trade-value multiplier fields disagree" in value
+        for value in snapshot["normalization_blockers"]
+    )
+
+
+def test_v2_unknown_or_contradictory_position_type_aliases_block():
+    invalid_equity_type = _mcp_v2_bundle()
+    invalid_equity_type["account_snapshots"][0]["get_equity_positions"][0][
+        "data"
+    ]["positions"] = [{
+        "symbol": "AAPL",
+        "quantity": "1",
+        "position_type": "unknown",
+        "current_price": "200.00",
+    }]
+    equity_snapshot = normalize_broker_snapshot(invalid_equity_type)
+    assert any(
+        "invalid position-type field(s): position_type" in value
+        for value in equity_snapshot["normalization_blockers"]
+    )
+
+    contradictory_option_type = _mcp_v2_bundle()
+    option_position = contradictory_option_type["account_snapshots"][0][
+        "get_option_positions"
+    ]["data"]["positions"][0]
+    option_position["position_type"] = "long"
+    option_position["type"] = "short"
+    option_snapshot = normalize_broker_snapshot(contradictory_option_type)
+    assert any(
+        "position-type fields disagree: position_type, type" in value
+        for value in option_snapshot["normalization_blockers"]
+    )
+
+
+def test_v2_option_signed_quantity_must_reconcile_with_explicit_direction():
+    negative_long = _mcp_v2_bundle()
+    option_position = negative_long["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
+    option_position["signed_quantity"] = "-1"
+    option_position["type"] = "long"
+    negative_long_snapshot = normalize_broker_snapshot(negative_long)
+    assert any(
+        "signed quantity contradicts explicit position type" in value
+        for value in negative_long_snapshot["normalization_blockers"]
+    )
+    assert negative_long_snapshot["option_positions"][0]["quantity"] is None
+
+    negative_unsigned_long = _mcp_v2_bundle()
+    option_position = negative_unsigned_long["account_snapshots"][0][
+        "get_option_positions"
+    ]["data"]["positions"][0]
+    option_position["quantity"] = "-1"
+    option_position["type"] = "long"
+    negative_unsigned_snapshot = normalize_broker_snapshot(negative_unsigned_long)
+    assert any(
+        "negative quantity contradicts explicit long position type" in value
+        for value in negative_unsigned_snapshot["normalization_blockers"]
+    )
+
+    positive_short = _mcp_v2_bundle()
+    option_position = positive_short["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
+    option_position["signed_quantity"] = "1"
+    option_position["type"] = "short"
+    positive_short_snapshot = normalize_broker_snapshot(positive_short)
+    assert any(
+        "signed quantity contradicts explicit position type" in value
+        for value in positive_short_snapshot["normalization_blockers"]
+    )
+
+    legitimate_unsigned_short = _mcp_v2_bundle()
+    option_position = legitimate_unsigned_short["account_snapshots"][0][
+        "get_option_positions"
+    ]["data"]["positions"][0]
+    option_position["type"] = "short"
+    unsigned_short_snapshot = normalize_broker_snapshot(legitimate_unsigned_short)
+    assert unsigned_short_snapshot["normalization_blockers"] == []
+    assert unsigned_short_snapshot["option_positions"][0]["signed_quantity"] == -1.0
+
+
+def test_v2_duplicate_or_blank_account_identities_block_normalization():
+    duplicate = _mcp_v2_bundle()
+    account_rows = duplicate["get_accounts"]["data"]["accounts"]
+    account_rows.append(dict(account_rows[0]))
+    duplicate_snapshot = normalize_broker_snapshot(duplicate)
+    assert any(
+        "get_accounts capture contains duplicate account identities" in value
+        for value in duplicate_snapshot["normalization_blockers"]
+    )
+
+    blank = _mcp_v2_bundle()
+    blank_account = blank["get_accounts"]["data"]["accounts"][0]
+    blank_account["account_number"] = ""
+    blank_account["rhs_account_number"] = ""
+    blank_snapshot = normalize_broker_snapshot(blank)
+    assert any(
+        "row(s) without a stable account identity" in value
+        for value in blank_snapshot["normalization_blockers"]
+    )
 
 
 def test_v2_multi_account_unscoped_reads_fail_closed_instead_of_guessing_account():
@@ -1094,6 +1346,7 @@ def test_normalized_snapshot_feeds_broker_reconciliation():
                     "expiry": "2026-12-18",
                     "quantity": 1,
                     "trade_status": "open",
+                    "tracking_scope": "broker_linked",
                 }
             ]),
             encoding="utf-8",
@@ -1165,6 +1418,61 @@ def test_reconciliation_flags_split_agentic_and_options_permissions():
         assert len(report["account_readiness_rows"]) == 2
         assert report["execution_capture_ready"] is False
         assert any("optedge_robinhood_mcp_read_bundle_v2" in warning for warning in report["warnings"])
+
+
+def test_reconciliation_rejects_truthy_string_agentic_permission():
+    snapshot = normalize_broker_snapshot(
+        _mcp_v2_bundle(),
+        generated_at=datetime.now(UTC).isoformat(),
+    )
+    snapshot["accounts"][0]["agentic_allowed"] = "false"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        report = build_broker_reconciliation(
+            data_dir,
+            snapshot_override=snapshot,
+        )
+
+    assert report["agentic_account_count"] == 0
+    assert report["agentic_option_ready"] is False
+    assert report["agentic_readiness_status"] != "ready"
+    assert report["account_readiness_rows"][0]["agentic_allowed"] is False
+
+
+def test_boolean_portfolio_money_cannot_authorize_a_funded_account():
+    raw = _mcp_v2_bundle()
+    portfolio = raw["account_snapshots"][0]["get_portfolio"]["data"]
+    portfolio["total_value"] = True
+    portfolio["buying_power"] = {
+        "buying_power": True,
+        "unleveraged_buying_power": True,
+    }
+    snapshot = normalize_broker_snapshot(
+        raw,
+        generated_at=datetime.now(UTC).isoformat(),
+    )
+
+    normalized_portfolio = snapshot["accounts"][0]["portfolio"]
+    assert normalized_portfolio.get("total_value") is None
+    assert normalized_portfolio.get("buying_power") is None
+    assert normalized_portfolio.get("unleveraged_buying_power") is None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
+        report = build_broker_reconciliation(
+            data_dir,
+            snapshot_override=snapshot,
+        )
+
+    readiness = report["account_readiness_rows"][0]
+    assert readiness["account_equity"] is None
+    assert readiness["buying_power"] is None
+    assert readiness["funded"] is False
+    assert report["funded_agentic_option_count"] == 0
+    assert report["agentic_option_ready"] is False
 
 
 def test_reconciliation_does_not_treat_inactive_agentic_options_account_as_ready():

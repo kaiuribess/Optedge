@@ -9,3 +9,5 @@ This package turns local signal and position history into conservative research-
 - Evaluates option-pricing stability with clearly labeled live or synthetic inputs.
 
 Generated reports remain local. Validation evidence is not a guarantee of future returns.
+
+See the [complete project map](../docs/PROJECT_MAP.md) for the responsibility of every report module.

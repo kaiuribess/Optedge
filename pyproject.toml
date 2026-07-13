@@ -2,10 +2,33 @@
 
 [project]
 name = "optedge"
-description = "Free multi-factor options, shares, futures, and value research cockpit."
+description = "Local-first, evidence-driven swing-trading research workstation."
 requires-python = ">=3.11,<3.14"
 readme = "README.md"
 dynamic = ["version"]
+license = {file = "LICENSE"}
+authors = [
+  {name = "kaiuribess"},
+]
+keywords = [
+  "backtesting",
+  "finance",
+  "options",
+  "portfolio-risk",
+  "swing-trading",
+  "trading-research",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
   "aiohttp>=3.9.0",
   "beautifulsoup4>=4.12",
@@ -16,6 +39,7 @@ dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
   "pdfplumber>=0.10",
+  "psutil>=5.9",
   "pyarrow>=14.0",
   "pytrends>=4.9.0",
   "requests>=2.31",
@@ -25,11 +49,25 @@ dependencies = [
   "yfinance>=0.2.40",
 ]
 
+[project.urls]
+Homepage = "https://github.com/kaiuribess/Optedge"
+Documentation = "https://github.com/kaiuribess/Optedge/tree/main/docs"
+Issues = "https://github.com/kaiuribess/Optedge/issues"
+Repository = "https://github.com/kaiuribess/Optedge.git"
+
 [project.scripts]
 optedge = "optedge.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = [
+  "build>=1.2",
+  "pytest>=8",
+  "ruff>=0.6",
+]
+sentiment = [
+  "torch>=2.6",
+  "transformers>=4.48",
+]
 
 [build-system]
 requires = ["setuptools>=69"]

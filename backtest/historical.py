@@ -1,5 +1,5 @@
 # Purpose: Compare factor scores with prior multi-horizon returns.
-"""Historical backtest — Information Coefficient analysis.
+"""Look-ahead diagnostic — not an eligible backtest or edge estimate.
 
 For each ticker in the universe:
   - fetch the spot price 7d / 30d / 60d / 90d ago
@@ -8,10 +8,11 @@ For each ticker in the universe:
   - compute the Information Coefficient (Spearman rank correlation) between
     each factor's score TODAY and the forward return realized OVER the window
 
-This isn't a perfect backtest — the factor scores aren't from those past
-dates, they're from today. But fundamentals and macro tilts move slowly,
-and the IC analysis still tells you which factors have predictive power
-over different horizons.
+The factor scores are from today while the returns were already realized.
+That is direct look-ahead and cannot measure predictive power. The output is
+kept only as an exploratory cross-sectional diagnostic and is explicitly
+quarantined from adaptive weights, validation gates, sizing, and performance
+claims.
 
 Run: python run.py --backtest
 """
@@ -70,7 +71,10 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
         'insider_score': ins_df,
     }
     """
-    log.info("historical backtest: %d tickers x %d horizons", len(universe), len(HORIZONS))
+    log.warning(
+        "look-ahead diagnostic only: current factor scores x already-realized returns; "
+        "output is ineligible for edge claims or model promotion"
+    )
     rows = []
     completed = 0
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -86,7 +90,16 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
 
     rets = pd.DataFrame(rows)
     if rets.empty:
-        return {"returns": rets, "ic": pd.DataFrame()}
+        return {
+            "returns": rets,
+            "ic": pd.DataFrame(),
+            "legs": pd.DataFrame(),
+            "evidence_status": "diagnostic_only_lookahead",
+            "eligible_for_model_promotion": False,
+            "warning": (
+                "Uses current factor scores against already-realized returns; never treat as backtest evidence."
+            ),
+        }
 
     # Merge factor scores
     for factor_name, fdf in factor_dfs.items():
@@ -125,6 +138,9 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
                 "top_quintile_avg": round(top_avg, 4),
                 "bot_quintile_avg": round(bot_avg, 4),
                 "spread": round(top_avg - bot_avg, 4),
+                "basis": "current_scores_vs_already_realized_returns",
+                "evidence_status": "diagnostic_only_lookahead",
+                "eligible_for_model_promotion": False,
             })
 
     # Per-leg analysis: for each factor, compute top-quintile call-leg and put-leg P&L.
@@ -150,10 +166,18 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
                 "share_leg_avg": round(share_avg, 4),
                 "call_win_rate": float((top_q["fwd_return"] > 0).mean()),
                 "put_win_rate": float((top_q["fwd_return"] < 0).mean()),
+                "basis": "current_scores_vs_already_realized_returns",
+                "evidence_status": "diagnostic_only_lookahead",
+                "eligible_for_model_promotion": False,
             })
 
     return {
         "returns": rets,
         "ic": pd.DataFrame(ic_rows),
         "legs": pd.DataFrame(leg_rows),
+        "evidence_status": "diagnostic_only_lookahead",
+        "eligible_for_model_promotion": False,
+        "warning": (
+            "Uses current factor scores against already-realized returns; never treat as backtest evidence."
+        ),
     }

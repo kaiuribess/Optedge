@@ -62,7 +62,7 @@ Default run caps:
 
 These caps exist so the external journal stays readable and executable.
 
-## Research-Only Robinhood Option Shortlist
+## Robinhood Option Research Shortlist
 
 Optedge can create an options-focused research queue:
 
@@ -77,7 +77,7 @@ Outputs:
 - `data/robinhood_agentic_cycle.json`
 - `data/robinhood_agentic_cycle_prompt.md`
 
-This queue is options-only and loss-capped, but it is not an execution packet. Manual-review candidates are limited to equity/ETF underlyings and must carry `underlying_type=equity`; index roots and missing or non-equity types are rejected. The exporter sets `execution_enabled=false` and `max_orders_to_submit=0`. Its cycle file keeps `entry_candidates` empty and exposes only `manual_review_candidates` when the validation entry gate is open. Generated queue prompts explicitly prohibit Robinhood review and placement tools. They may compare candidates, record paper decisions, or tell the user why a row was skipped.
+This queue is an options-only, premium-filtered research shortlist. It is not an execution packet and cannot authorize a Robinhood tool. The schema name `manual_review_candidates` means only that, while the validation entry gate is open, an exact row may be loaded into Trade Desk for a new calculation; the row itself is not broker-ready. When that gate is closed, the list remains empty. Candidates are limited to equity/ETF underlyings and must carry `underlying_type=equity`; index roots and missing or non-equity types are rejected. The exporter sets `execution_enabled=false` and `max_orders_to_submit=0`, and its cycle file keeps `entry_candidates` empty. Generated queue prompts explicitly prohibit Robinhood review and placement tools. They may compare candidates, record paper decisions, or explain why a row was skipped.
 
 Optedge writes a bounded read sequence into `robinhood_agentic_cycle.json` as `robinhood_mcp_read_plan`. It can guide research, live-data checks, and reconciliation, but it grants no authority to use broker write tools. If the user chooses a candidate, rebuild that exact contract in **Trade Desk** to create a separate, fresh manual review packet.
 
@@ -126,7 +126,7 @@ python scripts/export_robinhood_agentic_queue.py --account-budget 500 --min-dte 
 
 ## One-Packet Robinhood Manual Review
 
-The only live-order handoff is a user-initiated packet built in **Trade Desk**. Each packet represents one logical entry order, expires 10 minutes after creation, contains no broker credentials or selected account number, and says `automation_allowed=false` and `repeat_orders_allowed=false`.
+The only live-order handoff is a user-initiated packet built in **Trade Desk**. Each packet represents one logical entry order, expires 10 minutes after creation, contains no broker credentials or selected account number, and says `automation_allowed=false`, `repeat_orders_allowed=false`, and `standalone_broker_authority=false`. Packet v2 hashes its canonical semantic content and its rendered prompt separately, then revalidates schema, calculations, safety flags, gate context, confirmation summary, content, prompt, and expiry before display. These SHA-256 digests detect modification; they are not signatures, authentication, or broker authorization. A downloaded packet is an inspection copy and must be rebuilt if changed or expired.
 
 Start the local cockpit:
 
@@ -139,12 +139,13 @@ The local gate fails closed unless all applicable checks pass:
 - The local kill switch is absent, validation evidence is cleared for fresh entries, and data health has no blocking failure.
 - A normalized broker snapshot has a real source timestamp and is no more than 45 minutes old. The time at which a stale raw file was normalized does not make it fresh.
 - One same active account must provide an explicit positive portfolio `total_value`, agentic access, both explicit `buying_power` and `unleveraged_buying_power`, and options approval when applicable. The gate uses the smaller buying-power figure. V2 readiness does not substitute `equity`, `equity_value`, cash, or another alias for missing portfolio fields.
-- The planner equity assumption may be conservative, but it may not exceed that account's live value by more than the greater of `$1` or `1%`. The gate recomputes risk and allocation caps from the same account instead of mixing capacity across accounts.
-- Existing Robinhood positions, working orders, and local lifecycle state do not show duplicate exposure. For an option entry, any same-symbol broker position or working open order in the same long-call/long-put direction blocks the plan even when strike or expiry differs.
+- The planner equity assumption may be conservative, but it may not exceed that account's live value by more than the greater of `$1` or `1%`. The gate recomputes per-trade risk and total-open capacity from the same account instead of mixing capacity across accounts.
+- One immutable request-local read of fresh normalized same-account broker positions produces the readiness, reconciliation, duplicate, and conservative exposure result recorded in the packet. Current broker capital at risk plus the proposal's full share notional or full long-option debit must fit `min(planner equity, live same-account total_value) x allocation fraction`. Research recommendations and local paper rows are excluded because they do not prove live capital.
+- Any nonzero same-account nonterminal order blocks the total-open calculation until the order resolves. Duplicate-exposure checks separately reject a same-symbol broker position or working order in the proposed direction; for an option entry, that direction check applies even when strike or expiry differs.
 - For options, the queue and cycle are also no more than 45 minutes old, the entry gate is open, and the exact contract is in `manual_review_candidates`. The candidate must retain a source quote timestamp no more than 45 minutes old plus positive bid/ask values; a freshly reserialized queue cannot make an old quote fresh. Planner price and quantity cannot exceed that candidate's caps.
 - For options, the contract is at least 90 DTE, uses a standard `100x` multiplier, and explicitly identifies an equity/ETF underlying with `underlying_type=equity`. Known index roots and symbols beginning with `^` are blocked.
 
-A green local gate still does not authorize placement. Paste the unexpired packet into one connected Robinhood task. That task must refresh the chosen account's portfolio, positions, working orders, exact instrument, tradability, and quote. For options, the live instrument's `underlying_type` must exactly match the packet's expected `equity` type. It recomputes the packet's risk/allocation formulas against that same account, rejects a bid or ask that is missing/zero, rejects a quote older than 120 seconds, and rejects a computed bid/ask spread above the packet cap (`15%` maximum for options and `1%` for shares). It must stop if the live ask is above the packet limit; it may never raise the limit. Only then may it call the broker review tool, present the complete preview, disclosure, alerts, fees, collateral, and estimated cost, and ask the user to confirm the exact reviewed order. After that exact confirmation it may call the matching placement tool once with unchanged fields.
+A green local gate still does not authorize placement. Paste the unexpired packet into one connected Robinhood task. That task must refresh the chosen account's portfolio, positions, working orders, exact instrument, tradability, and quote. For options, the live instrument's `underlying_type` must exactly match the packet's expected `equity` type. It recomputes the packet's per-trade and total-open formulas against that same account, rejects any unresolved nonterminal order or exposure ambiguity, rejects a bid or ask that is missing/zero, rejects a quote older than 120 seconds, and rejects a computed bid/ask spread above the packet cap (`15%` maximum for options and `1%` for shares). It must stop if the live ask is above the packet limit; it may never raise the limit. Only then may it call the broker review tool, present the complete preview, disclosure, alerts, fees, collateral, and estimated cost, and ask the user to confirm the exact reviewed order. After that exact confirmation it may call the matching placement tool once with unchanged fields.
 
 If the placement result is uncertain, query current broker orders before doing anything else. Never create a second logical order as a retry. Submission is not a fill; use Robinhood's returned order state.
 
@@ -161,7 +162,7 @@ It blocks index options (including `^` symbols and known roots such as SPX, NDX,
 
 See Robinhood's official [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/), [trading-with-your-agent workflow](https://robinhood.com/us/en/support/articles/trading-with-your-agent/), and [options-level guide](https://robinhood.com/us/en/support/articles/360001227566/) for the broker-side requirements and disclosures.
 
-The packet places the entry only. Stop and target values are planning references, not broker orders. Long-option maximum loss is the full debit, which must fit inside both the risk budget and the allocation cap. Long-share planning shows both stop-based loss and full entry notional. No stop is a guaranteed fill.
+The packet places the entry only. Stop and target values are planning references, not broker orders. Long-option maximum loss is the full debit, while a long share contributes its full entry notional to portfolio exposure. The proposed amount must fit per-trade rules and the remaining total-open same-account cap. No stop is a guaranteed fill.
 
 Optedge also exposes a local decision journal path in the cycle packet:
 
@@ -175,7 +176,7 @@ The optional Optedge scanner loop remains separate. It may refresh research arti
 
 ### Read-Only Broker Snapshot Reconciliation
 
-The cockpit can compare local Optedge/paper positions against a read-only Robinhood Agentic/MCP snapshot. This keeps local lifecycle state honest without adding broker credentials or automatic order placement to the codebase.
+The cockpit compares only explicitly broker-linked Optedge lifecycle rows against a read-only Robinhood Agentic/MCP snapshot. Ordinary research recommendations and local Agentic paper positions are reported separately and do not create a matched, broker-only, or local-only live reconciliation result. This keeps state domains honest without adding broker credentials or automatic order placement to the codebase.
 
 Robinhood's MCP capability surface may include real order tools, but Optedge treats tool support and account readiness as separate checks:
 
@@ -219,7 +220,7 @@ Capture rules:
 - Set `generated_at` to the actual UTC time when the read capture finished. The normalizer writes a separate `normalized_at` value for auditability but never uses it to manufacture freshness.
 - Use read tools only for this capture. Do not call a review, placement, cancellation, exercise, or other broker-write tool.
 
-The raw file contains full account identifiers because downstream reads require them. It is ignored by Git; keep it under `data/`, do not paste it into issues or logs, and never commit it. The normalized output replaces each full identifier with a stable pseudonymous `account_key`, retains only a masked account label and safe numeric readiness fields, and never emits the original account number. Only an `optedge_robinhood_broker_snapshot_v1` output whose `raw_bundle_schema` is `optedge_robinhood_mcp_read_bundle_v2` can support manual review; legacy/flexible snapshots remain visible for diagnosis but are execution-ineligible.
+The raw file contains full account identifiers because downstream reads require them. It is ignored by Git; keep it under `data/`, do not paste it into issues or logs, and never commit it. The normalized output replaces each full identifier with a stable pseudonymous `account_key`, retains only a masked account label and safe numeric readiness fields, and never emits the original account number. The normalizer blocks invalid numeric fields instead of coercing them to zero or omitting them, rejects contradictory nonempty quantity aliases, and rejects duplicate or blank account identities; this prevents malformed input from erasing exposure. Only an `optedge_robinhood_broker_snapshot_v1` output whose `raw_bundle_schema` is `optedge_robinhood_mcp_read_bundle_v2` can support manual review; legacy/flexible snapshots remain visible for diagnosis but are execution-ineligible.
 
 Normalize the raw bundle into the cockpit's expected snapshot shape:
 
@@ -245,7 +246,7 @@ Then open the local cockpit or call:
 python -c "from scripts.local_cockpit import build_broker_reconciliation; import json; print(json.dumps(build_broker_reconciliation(), indent=2))"
 ```
 
-The reconciliation is still local and read-only. It compares signed position type and aggregate quantity per stable account key and exact option contract; contract-key existence alone is never treated as a match. This keeps two same-nickname accounts distinct and surfaces quantity or long/short differences. A nonterminal option order must contain exactly one object leg to establish exact identity. Multi-leg, missing-leg, or malformed-leg orders remain visible but are unresolved and block manual review, so a later spread leg cannot disappear from duplicate-exposure checks. Reconciliation can show matched positions, broker-only positions, local-only positions, stale snapshots, account readiness, and nonterminal orders, but it does not submit, cancel, or replace broker orders. Keep both raw and normalized snapshots under the ignored `data/` directory; never commit private broker data.
+The reconciliation is still local and read-only. It compares signed position type and aggregate quantity per stable account key and exact option contract; contract-key existence alone is never treated as a match. This keeps two same-nickname accounts distinct and surfaces quantity or long/short differences. Share market value must reconcile with quantity times current price when both are present, and malformed quantities, pending transitions, or account identities become blockers rather than zero exposure. A nonterminal option order must contain exactly one object leg to establish exact identity. Multi-leg, missing-leg, or malformed-leg orders remain visible but unresolved and block manual review, so a later spread leg cannot disappear from duplicate-exposure checks. Reconciliation can show matched, broker-only, and local-only results for the explicitly broker-linked subset, plus separate research/paper counts, stale snapshots, account readiness, and nonterminal orders. It does not submit, cancel, or replace broker orders. Keep both raw and normalized snapshots under the ignored `data/` directory; never commit private broker data.
 
 ### Local Paper Tracker (Explicit Command)
 

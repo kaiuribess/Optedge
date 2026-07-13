@@ -1,0 +1,9 @@
+# Purpose: Route public issues, private vulnerabilities, and documentation questions.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/kaiuribess/Optedge/security/advisories/new
+    about: Report security issues privately; never post credentials or broker data.
+  - name: Documentation
+    url: https://github.com/kaiuribess/Optedge/tree/main/docs
+    about: Review the architecture, risk, validation, data-source, and broker-boundary guides.

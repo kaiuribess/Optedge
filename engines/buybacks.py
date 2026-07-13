@@ -23,13 +23,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
+from optedge.http_identity import SecContactRequiredError, sec_headers
 
 log = logging.getLogger("optedge.buybacks")
 
-SEC_HEADERS = {
-    "User-Agent": "optedge-research/0.1 (research@optedge.local)",
-    "Accept": "application/json, text/plain, */*",
-}
+
+
+def _sec_headers() -> dict[str, str]:
+    return sec_headers(accept="application/json, text/plain, */*")
 
 BUYBACK_PHRASES = [
     "repurchase program",
@@ -82,7 +83,7 @@ def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
         return cached
     try:
         import requests
-        r = requests.get(url, headers=SEC_HEADERS, timeout=20)
+        r = requests.get(url, headers=_sec_headers(), timeout=20)
         if r.status_code != 200:
             log.debug("efts %s -> %d", query, r.status_code)
             return []
@@ -100,6 +101,9 @@ def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
             })
         data_provider.cache_put(key, out)
         return out
+    except SecContactRequiredError as e:
+        log.warning("buybacks SEC lookup disabled: %s", e)
+        return []
     except Exception as e:
         log.debug("efts %s: %s", query, e)
         return []

@@ -1,10 +1,11 @@
-# Purpose: Refit pricing-model weights from logged predictions.
-"""Per-model accuracy tracker — v20.3.
+# Purpose: Compute quarantined diagnostic pricing-model weights without promotion.
+"""Quarantined current-mid pricing-model diagnostic.
 
 Reads `logs/model_predictions_*.parquet` (written by engines/mispricing.py)
 and the current options chain, then computes mean-absolute-error per pricing
-model for each volatility regime. Writes adaptive ensemble weights to
-`data/model_weights.json` which mispricing.py reads on the next run.
+model for each volatility regime. The result is diagnostic-only and is returned
+to the caller in memory. This module never writes runtime pricing weights or
+their production history.
 
 Workflow:
   1. Collect all model_predictions logs from the last 14 days (~672 files
@@ -15,23 +16,24 @@ Workflow:
   3. Group by regime (low_vol / normal / high_vol).
   4. Weight[model, regime] ∝ 1 / mean_abs_error[model, regime]
      Normalize so weights sum to 1.
-  5. Persist + log.
+  5. Return the diagnostic weights without persisting them.
 
-Self-improvement: as the system runs more iterations, the weights stabilize
-around whichever model best predicts realized mid in each vol regime. CBOE's
-proprietary theo is included as another "model" — over time we'll learn
-whether it beats BS/CRR/BJS or whether our home-rolled ensemble is better.
+Comparing an old theoretical value with a variable-age current mid is not a
+fixed-horizon, out-of-sample forecast test. It must not update live pricing
+weights. The legacy scorer remains available only behind an explicit
+diagnostic flag while a fill-grade immutable outcome ledger is developed.
 """
+
 from __future__ import annotations
+
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -45,18 +47,20 @@ WEIGHTS_FILE = DATA_DIR / "model_weights.json"
 MODELS = ("bs", "crr", "bjs", "cboe")
 LOOKBACK_DAYS = 14
 MAX_FILES = 2000
-MAX_CONTRACTS_TO_REPRICE = 800   # cap network calls per refit
+MAX_CONTRACTS_TO_REPRICE = 800  # cap network calls per refit
 
 
 def _load_recent_predictions(lookback_days: int = LOOKBACK_DAYS) -> pd.DataFrame:
     """Read both .parquet and .json prediction logs from the last N days."""
     if not LOG_DIR.exists():
         return pd.DataFrame()
-    files = sorted(list(LOG_DIR.glob("model_predictions_*.parquet")) +
-                    list(LOG_DIR.glob("model_predictions_*.json")))
+    files = sorted(
+        list(LOG_DIR.glob("model_predictions_*.parquet"))
+        + list(LOG_DIR.glob("model_predictions_*.json"))
+    )
     if not files:
         return pd.DataFrame()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
     cutoff_str = cutoff.strftime("%Y%m%d_%H%M%S")
     recent = [f for f in files if f.stem.split("_", 2)[-1] >= cutoff_str]
     if len(recent) > MAX_FILES:
@@ -89,11 +93,10 @@ def _current_mid_for(predictions: pd.DataFrame) -> pd.DataFrame:
     # Cap to avoid hammering the chain providers for a stale prediction set
     if len(tickers) > 100:
         # Prefer the most-recently-predicted tickers
-        recent_ts = (predictions.groupby("ticker")["asof"].max()
-                                  .sort_values(ascending=False))
+        recent_ts = predictions.groupby("ticker")["asof"].max().sort_values(ascending=False)
         tickers = list(recent_ts.head(100).index)
 
-    chain_blobs: Dict[str, dict] = {}
+    chain_blobs: dict[str, dict] = {}
     for tk in tickers:
         try:
             b = chain_provider.fetch_chain(tk, cache_age=300)
@@ -102,7 +105,7 @@ def _current_mid_for(predictions: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             continue
 
-    def _mid_lookup(row) -> Optional[float]:
+    def _mid_lookup(row) -> float | None:
         tk = str(row["ticker"]).upper()
         blob = chain_blobs.get(tk)
         if not blob:
@@ -110,8 +113,9 @@ def _current_mid_for(predictions: pd.DataFrame) -> pd.DataFrame:
         df = blob["chains"].get(str(row["expiry"]))
         if df is None or df.empty:
             return None
-        hit = df[(df["strike"].round(2) == round(float(row["strike"]), 2)) &
-                 (df["side"] == row["side"])]
+        hit = df[
+            (df["strike"].round(2) == round(float(row["strike"]), 2)) & (df["side"] == row["side"])
+        ]
         if hit.empty:
             return None
         r = hit.iloc[0]
@@ -124,9 +128,9 @@ def _current_mid_for(predictions: pd.DataFrame) -> pd.DataFrame:
     return predictions.assign(market_mid_now=predictions.apply(_mid_lookup, axis=1))
 
 
-def _compute_mae_by_regime(scored: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+def _compute_mae_by_regime(scored: pd.DataFrame) -> dict[str, dict[str, float]]:
     """Per (regime, model) mean absolute % error."""
-    out: Dict[str, Dict[str, float]] = {}
+    out: dict[str, dict[str, float]] = {}
     for regime, group in scored.groupby("regime"):
         per_model = {}
         for m in MODELS:
@@ -143,7 +147,7 @@ def _compute_mae_by_regime(scored: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     return out
 
 
-def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+def _mae_to_weights(mae_by_regime: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
     """Convert per-model MAE to normalized weights (∝ 1 / MAE), with a
     meaningful floor and ceiling so no single model dominates the ensemble.
 
@@ -161,9 +165,9 @@ def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dic
       - Floor:  every model gets at least 10% weight
       - Ceiling: no model exceeds 65% weight
     """
-    weights: Dict[str, Dict[str, float]] = {}
+    weights: dict[str, dict[str, float]] = {}
     FLOOR = 0.10
-    CEILING = 0.55       # 4 models: 0.55 + 3*0.10 = 0.85 leaves 0.15 buffer
+    CEILING = 0.55  # 4 models: 0.55 + 3*0.10 = 0.85 leaves 0.15 buffer
     EPS = 1e-9
     for regime, mae in mae_by_regime.items():
         inv = {m: 1.0 / max(e, 0.01) for m, e in mae.items()}
@@ -183,8 +187,7 @@ def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dic
                 w = capped
                 break
             # Models not pinned to a boundary -> redistribute the gap to them
-            free = [m for m, v in capped.items()
-                     if FLOOR + EPS < v < CEILING - EPS]
+            free = [m for m, v in capped.items() if FLOOR + EPS < v < CEILING - EPS]
             if not free:
                 # Everything pinned — distribute the gap (1 - s) equally to
                 # all models that AREN'T at the ceiling (they have room up).
@@ -194,8 +197,7 @@ def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dic
                     w = {m: v / s for m, v in capped.items()}
                     break
                 bump = (1.0 - s) / len(up_room)
-                w = {m: (v + bump if m in up_room else v)
-                      for m, v in capped.items()}
+                w = {m: (v + bump if m in up_room else v) for m, v in capped.items()}
             else:
                 fixed_sum = sum(v for m, v in capped.items() if m not in free)
                 free_target = 1.0 - fixed_sum
@@ -204,8 +206,7 @@ def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dic
                     w = {m: v / s for m, v in capped.items()}
                     break
                 scale = free_target / free_current
-                w = {m: (v * scale if m in free else capped[m])
-                      for m, v in capped.items()}
+                w = {m: (v * scale if m in free else capped[m]) for m, v in capped.items()}
         else:
             # Hit iteration cap — final normalize
             s = sum(w.values())
@@ -215,15 +216,32 @@ def _mae_to_weights(mae_by_regime: Dict[str, Dict[str, float]]) -> Dict[str, Dic
     return weights
 
 
-def refit_weights() -> Optional[Dict[str, Dict[str, float]]]:
-    """Score recent model predictions against current market mid, recompute
-    regime-conditional weights, persist to data/model_weights.json."""
+def refit_weights(
+    *,
+    allow_lookahead_diagnostic: bool = False,
+) -> dict[str, dict[str, float]] | None:
+    """Return diagnostic weights computed from variable-age current mids.
+
+    This legacy calculation is deliberately compute-only. Even with the
+    explicit opt-in flag it cannot promote its result to ``model_weights.json``
+    or append to the runtime weight history. Production model updates require
+    fixed-horizon, out-of-sample evidence through a separate promotion path.
+    """
+    if not allow_lookahead_diagnostic:
+        log.warning(
+            "model_accuracy promotion quarantined: variable-age current-mid scoring "
+            "is not fixed-horizon out-of-sample evidence"
+        )
+        return None
     preds = _load_recent_predictions()
     if preds.empty:
         log.info("model_accuracy: no recent model_predictions logs to score")
         return None
-    log.info("model_accuracy: scoring %d predictions across %d tickers",
-             len(preds), preds["ticker"].nunique())
+    log.info(
+        "model_accuracy: scoring %d predictions across %d tickers",
+        len(preds),
+        preds["ticker"].nunique(),
+    )
     # Cap rows we'll round-trip — most actionable per ticker
     if len(preds) > MAX_CONTRACTS_TO_REPRICE:
         # Prefer recently-predicted, OI-rich contracts via sort by asof
@@ -240,61 +258,29 @@ def refit_weights() -> Optional[Dict[str, Dict[str, float]]]:
     weights = _mae_to_weights(mae)
     if not weights:
         return None
-    # Save
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    blob = {**weights, "_meta": {
-        "scored_at": datetime.now(timezone.utc).isoformat(),
-        "scored_rows": int(len(scored)),
-        "mae": mae,
-    }}
-    WEIGHTS_FILE.write_text(json.dumps(blob, indent=2))
-    # v20.7 — append to rolling weight history so the dashboard can visualise
-    # how the ensemble has evolved (useful for catching overfitting).
-    try:
-        _append_weight_history(weights, mae)
-    except Exception as e:
-        log.debug("weight history append failed: %s", e)
-    log.info("model_accuracy: updated %s with regimes=%s",
-             WEIGHTS_FILE.name, list(weights.keys()))
+    log.info(
+        "model_accuracy: computed diagnostic-only weights for regimes=%s; "
+        "production artifacts were not modified",
+        list(weights.keys()),
+    )
     for regime, w in weights.items():
         log.info("  %s: %s", regime, {k: round(v, 3) for k, v in w.items()})
     return weights
 
 
 WEIGHT_HISTORY_FILE = DATA_DIR / "model_weights_history.jsonl"
-MAX_HISTORY_ROWS = 1000
 
 
-def _append_weight_history(weights: Dict[str, Dict[str, float]],
-                             mae: Dict[str, Dict[str, float]]) -> None:
-    """Append one timestamped weight snapshot to the rolling history JSONL."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    row = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "weights": weights,
-        "mae": mae,
-    }
-    # Append + trim
-    existing = []
-    if WEIGHT_HISTORY_FILE.exists():
-        try:
-            existing = [json.loads(line) for line in
-                        WEIGHT_HISTORY_FILE.read_text().splitlines() if line.strip()]
-        except Exception:
-            existing = []
-    existing.append(row)
-    if len(existing) > MAX_HISTORY_ROWS:
-        existing = existing[-MAX_HISTORY_ROWS:]
-    WEIGHT_HISTORY_FILE.write_text("\n".join(json.dumps(r, default=str) for r in existing))
-
-
-def load_weight_history(limit: int = 200) -> List[Dict]:
+def load_weight_history(limit: int = 200) -> list[dict]:
     """Read the rolling weight history. Returns a list of {ts, weights, mae}."""
     if not WEIGHT_HISTORY_FILE.exists():
         return []
     try:
-        rows = [json.loads(line) for line in
-                WEIGHT_HISTORY_FILE.read_text().splitlines() if line.strip()]
+        rows = [
+            json.loads(line)
+            for line in WEIGHT_HISTORY_FILE.read_text().splitlines()
+            if line.strip()
+        ]
         return rows[-limit:]
     except Exception:
         return []

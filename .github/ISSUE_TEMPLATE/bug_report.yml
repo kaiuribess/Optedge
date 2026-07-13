@@ -1,0 +1,72 @@
+# Purpose: Collect reproducible bug reports without private financial data.
+name: Bug report
+description: Report a reproducible Optedge defect using sanitized evidence.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Never attach credentials, account numbers, holdings, raw broker captures, or unsanitized files from `data/`, `logs/`, `telemetry/`, or `archive/`.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Installation or CLI
+        - Market data or research engine
+        - Signal fusion or lifecycle tracking
+        - Validation or Edge Lab
+        - Dashboard or Trade Desk
+        - Risk or portfolio gate
+        - Read-only Robinhood reconciliation
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Actual and expected behavior
+      description: Explain what happened and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic or sanitized inputs and include the smallest reliable sequence.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Optedge version or commit
+      placeholder: "20.8.0 or a commit SHA"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Python version, install method, and relevant optional providers.
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized_output
+    attributes:
+      label: Sanitized output
+      description: Paste the smallest useful error or log excerpt after removing all private data.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed credentials, account identifiers, holdings, orders, and private runtime data.
+          required: true
+        - label: Reproducing this report does not require a real broker order.
+          required: true

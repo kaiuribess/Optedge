@@ -1,5 +1,5 @@
 # Purpose: Record loop health and enforce memory and cache limits.
-"""Whole-day reliability harness — v20.4.
+"""Record whole-day process reliability and bound local cache growth.
 
 Per-iter health record so silent degradation over a 13-iter market day is
 visible. Writes to `telemetry/health.parquet` (or `.jsonl` fallback when no
@@ -14,12 +14,12 @@ import json
 import logging
 import os
 import platform
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+import psutil
 
 log = logging.getLogger("optedge.health")
 
@@ -30,18 +30,9 @@ MAX_ROWS = 500
 
 
 def _mem_rss_mb() -> Optional[float]:
-    """RSS in MB. Tries psutil → resource (POSIX) → None."""
+    """Return this process's resident memory in MiB, or ``None`` on OS error."""
     try:
-        import psutil
         return float(psutil.Process(os.getpid()).memory_info().rss) / (1024 * 1024)
-    except Exception:
-        pass
-    try:
-        import resource
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        if sys.platform == "darwin":
-            return rss / (1024 * 1024)
-        return rss / 1024.0
     except Exception:
         return None
 

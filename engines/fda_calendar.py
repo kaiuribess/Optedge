@@ -32,17 +32,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import data_provider
-from config import USER_AGENT
+from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
 
 log = logging.getLogger("optedge.fda")
 
 CACHE_KEY_PRIMARY = "fda_calendar"
 CACHE_TTL_SEC = 86400      # FDA calendar updates ~once per day
 
-SEC_HEADERS = {
-    "User-Agent": "optedge-research/0.2 (research@optedge.local)",
-    "Accept": "application/json, text/plain, */*",
-}
+
+
+def _sec_headers() -> dict[str, str]:
+    return sec_headers(accept="application/json, text/plain, */*")
 
 BIOTECH_TICKERS = {
     "MRNA", "BNTX", "NVAX", "OCGN", "VKTX", "SAVA", "SRPT", "BLUE", "FATE",
@@ -59,7 +59,7 @@ BIOTECH_TICKERS = {
 def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
     url = "https://www.biopharmcatalyst.com/calendars/fda-calendar"
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        r = requests.get(url, headers=outbound_headers(), timeout=20)
         if r.status_code != 200:
             log.debug("biopharmcatalyst -> %d", r.status_code)
             return []
@@ -109,7 +109,7 @@ def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
 def _fetch_rttnews() -> List[Dict[str, Any]]:
     url = "https://www.rttnews.com/CorpInfo/FDACalendar.aspx"
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        r = requests.get(url, headers=outbound_headers(), timeout=20)
         if r.status_code != 200:
             log.debug("rttnews -> %d", r.status_code)
             return []
@@ -157,7 +157,7 @@ def _fetch_rttnews() -> List[Dict[str, Any]]:
 def _fetch_drugscom() -> List[Dict[str, Any]]:
     url = "https://www.drugs.com/new-drugs.html"
     try:
-        r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+        r = requests.get(url, headers=outbound_headers(), timeout=20)
         if r.status_code != 200:
             log.debug("drugs.com -> %d", r.status_code)
             return []
@@ -194,8 +194,12 @@ def _fetch_openfda() -> List[Dict[str, Any]]:
     url = "https://api.fda.gov/drug/drugsfda.json"
     sess = data_provider.get_session()
     try:
-        r = sess.get(url, params={"limit": 100,
-                                  "search": "submissions.submission_status:'AP'"}, timeout=20)
+        r = sess.get(
+            url,
+            params={"limit": 100, "search": "submissions.submission_status:'AP'"},
+            headers=outbound_headers(accept="application/json"),
+            timeout=20,
+        )
         if r.status_code != 200:
             return []
         data = r.json()
@@ -269,7 +273,7 @@ def _fetch_sec_8k_pdufa() -> List[Dict[str, Any]]:
     )
     sess = data_provider.get_session()
     try:
-        r = sess.get(url, headers=SEC_HEADERS, timeout=25)
+        r = sess.get(url, headers=_sec_headers(), timeout=25)
         if r.status_code != 200:
             return []
         data = r.json()
@@ -299,6 +303,9 @@ def _fetch_sec_8k_pdufa() -> List[Dict[str, Any]]:
             data_provider.cache_put(cache_key, rows)
         log.info("fda: sec 8-K PDUFA mentions -> %d rows", len(rows))
         return rows
+    except SecContactRequiredError as e:
+        log.warning("FDA calendar SEC source disabled: %s", e)
+        return []
     except Exception as e:
         log.debug("sec 8-K fetch failed: %s", e)
         return []

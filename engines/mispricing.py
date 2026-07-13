@@ -132,8 +132,8 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     chain at once. v20.4: fully vectorized — BS, CRR (80 steps), BJS all run
     on numpy arrays over the filtered contracts. No per-row Python loops.
 
-    Per-model theos are logged so backtest.model_accuracy can adapt the
-    ensemble weights from realized P&L over time."""
+    Per-model theoretical values are logged for a quarantined current-mid
+    diagnostic. They cannot update production ensemble weights."""
     if not blob:
         return pd.DataFrame()
     df = blob["chain"]
@@ -442,9 +442,11 @@ def _process_ticker(t: str, regime: str = "normal") -> Dict[str, Any]:
 
 
 def _log_model_predictions(contracts: pd.DataFrame) -> None:
-    """Log per-model predictions to logs/model_predictions_YYYYMMDD_HHMMSS.parquet
-    (or .json fallback) so backtest.model_accuracy can score them later
-    against the next iter's realized mid."""
+    """Log per-model predictions for a compute-only current-mid diagnostic.
+
+    The diagnostic is intentionally ineligible to update production weights;
+    fixed-horizon, out-of-sample evidence is required for model promotion.
+    """
     if contracts is None or contracts.empty:
         return
     cols_needed = ["ticker","expiry","strike","side","spot","mid",
@@ -477,9 +479,9 @@ def run(universe: List[str], max_workers: int = None) -> Dict[str, Any]:
     """Parallel per-ticker processing. yfinance is rate-sensitive, so keep
     workers low (default 6).
 
-    v20.3: detects VIX regime, runs the multi-model pricing ensemble in
-    _enrich_chain, and logs per-model predictions so backtest.model_accuracy
-    can adapt ensemble weights from realized mid moves over time.
+    Detects the VIX regime, runs the multi-model pricing ensemble in
+    ``_enrich_chain``, and logs per-model values for quarantined diagnostics.
+    The diagnostic output never changes the production ensemble.
     """
     workers = max_workers or WORKERS_MISPRICING
     regime = _detect_regime()

@@ -1,17 +1,24 @@
-# Purpose: Replay logged signals to produce learning outcomes.
-"""Forward-test framework — Optedge v16.
+# Purpose: Preserve a legacy forward-replay diagnostic for compatibility.
+"""Legacy variable-age forward replay retained for compatibility.
 
-Replays prior signals (options, shares, futures) against historical price
-to compute realized PnL with explicit target/stop/time-stop logic, then
-hands realized outcomes to the learning module for per-bucket weight refit.
+This module predates the current policy-bound fixed-horizon evidence path. Its
+mixed schemas, variable ages, and modeled option marks make every output
+diagnostic-only. Nothing produced here may promote model weights, clear Edge
+Lab, or authorize live-capital review. The supported current-mark telemetry
+entry point is ``backtest.forward.run_forward_test``; promotion evidence is
+settled and evaluated by ``backtest.fixed_horizon`` and ``backtest.edge_lab``.
+
+Callable functions remain available for downstream compatibility. The former
+refit helper now returns explicit no-refit results and never writes production
+weights.
 
 Files written:
-  data/forward_outcomes_<bucket>.parquet  — every replayed signal with outcome
-  data/forward_test_status.parquet        — rolling 30/60/90d hit rate per bucket
+  data/forward_outcomes_<bucket>.parquet  — legacy diagnostic replay rows
+  data/forward_test_status.parquet        — legacy rolling diagnostic statistics
 
 Files read:
   logs/signals_*.parquet                  — options + shares signal log (existing)
-  logs/futures_signals_*.parquet          — futures signal log (NEW in v16)
+  logs/futures_signals_*.parquet          — futures signal log
 
 Replay logic per bucket:
   - options_call/put: BS-reprice at current spot (existing logic, kept).
@@ -41,6 +48,19 @@ from engines import learning
 log = logging.getLogger("optedge.forward_test")
 LOGS_DIR = ROOT / "logs"
 DATA_DIR = ROOT / "data"
+
+EVIDENCE_STATUS = "diagnostic_only_legacy_variable_age"
+ELIGIBLE_FOR_MODEL_PROMOTION = False
+ELIGIBLE_FOR_LIVE_REVIEW = False
+
+
+def diagnostic_metadata() -> Dict[str, Any]:
+    """Return the immutable evidence restrictions for this legacy module."""
+    return {
+        "evidence_status": EVIDENCE_STATUS,
+        "eligible_for_model_promotion": ELIGIBLE_FOR_MODEL_PROMOTION,
+        "eligible_for_live_review": ELIGIBLE_FOR_LIVE_REVIEW,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +552,10 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
     bucket_dfs: Dict[str, pd.DataFrame] = {}
     for bucket, rows in out.items():
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        if not df.empty:
+            df["evidence_status"] = EVIDENCE_STATUS
+            df["eligible_for_model_promotion"] = ELIGIBLE_FOR_MODEL_PROMOTION
+            df["eligible_for_live_review"] = ELIGIBLE_FOR_LIVE_REVIEW
         bucket_dfs[bucket] = df
         if not df.empty:
             try:
@@ -578,6 +602,9 @@ def compute_rolling_stats(bucket_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         rows.append(bucket_row)
 
     out_df = pd.DataFrame(rows)
+    out_df["evidence_status"] = EVIDENCE_STATUS
+    out_df["eligible_for_model_promotion"] = ELIGIBLE_FOR_MODEL_PROMOTION
+    out_df["eligible_for_live_review"] = ELIGIBLE_FOR_LIVE_REVIEW
     DATA_DIR.mkdir(exist_ok=True)
     try:
         out_df.to_parquet(DATA_DIR / "forward_test_status.parquet", index=False)
@@ -591,55 +618,30 @@ def compute_rolling_stats(bucket_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def refit_all_buckets(bucket_dfs: Dict[str, pd.DataFrame],
                        min_lasso: int = 50, min_ic: int = 20) -> Dict[str, Dict[str, Any]]:
-    """For each bucket with enough realized outcomes, refit weights via the learning module."""
-    results: Dict[str, Dict[str, Any]] = {}
-    for bucket in learning.BUCKET_KEYS:
-        df = bucket_dfs.get(bucket)
-        if df is None or df.empty:
-            results[bucket] = {"mode": "no_data", "n": 0}
-            continue
-
-        # Pull factor columns relevant to this bucket
-        priors = learning.get_factor_priors(bucket)
-        factor_cols = [c for c in df.columns if c.startswith("factor_") and c[7:] in priors]
-
-        # Map z_cols → factor_*  (only when factor_ form not already present)
-        # The legacy options/shares logs use z_mispricing etc. — we copy them with factor_ prefix
-        zcol_to_factor = {
-            "z_mispricing": "mispricing", "z_iv_rank": "iv_rank", "z_skew": "skew",
-            "z_sent": "sentiment_d", "z_fund": "fundamentals", "z_insider": "insider",
-            "z_macro": "macro", "z_news": "news", "z_earnings": "earnings", "z_value": "value",
+    """Preserve the old return shape while refusing legacy weight promotion."""
+    _ = (min_lasso, min_ic)
+    return {
+        bucket: {
+            "mode": "diagnostic_only_no_refit",
+            "n": len(bucket_dfs.get(bucket))
+            if isinstance(bucket_dfs.get(bucket), pd.DataFrame)
+            else 0,
+            **diagnostic_metadata(),
+            "reason": (
+                "Legacy variable-age outcomes are ineligible for model promotion; "
+                "use the current fixed-horizon evidence pipeline."
+            ),
         }
-        df = df.copy()
-        for zcol, fname in zcol_to_factor.items():
-            target_col = f"factor_{fname}"
-            if zcol in df.columns and target_col not in df.columns:
-                df[target_col] = df[zcol]
-
-        factor_cols = [f"factor_{k}" for k in priors.keys() if f"factor_{k}" in df.columns]
-        if not factor_cols:
-            results[bucket] = {"mode": "no_factors", "n": len(df)}
-            continue
-
-        # Build factor matrix renamed to the factor name (no factor_ prefix)
-        fmat = df[factor_cols].copy()
-        fmat.columns = [c.replace("factor_", "") for c in fmat.columns]
-
-        pnl_col = "realized_dollars" if "realized_dollars" in df.columns else "pnl_pct"
-        pnl = pd.to_numeric(df[pnl_col], errors="coerce").fillna(0.0)
-
-        result = learning.refit_bucket(bucket, fmat, pnl,
-                                        min_lasso=min_lasso, min_ic=min_ic)
-        results[bucket] = result or {"mode": "no_change", "n": len(df)}
-    return results
+        for bucket in learning.BUCKET_KEYS
+    }
 
 
 # ---------------------------------------------------------------------------
-# Public orchestrator — wired into run.py post-cycle
+# Compatibility orchestrator for explicit legacy diagnostic callers
 # ---------------------------------------------------------------------------
 def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
                        lookback_days: int = 60) -> Dict[str, Any]:
-    """One end-to-end pass: replay → rolling stats → refit per bucket."""
+    """Replay legacy outcomes and report the enforced no-refit decision."""
     log.info("forward-test cycle: replaying logs (lookback=%dd)", lookback_days)
     bucket_dfs = replay_outcomes(lookback_days=lookback_days)
     n_total = sum(len(df) for df in bucket_dfs.values())
@@ -651,6 +653,7 @@ def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
 
     # Summarize for caller
     summary = {
+        **diagnostic_metadata(),
         "n_total_outcomes": n_total,
         "buckets_with_data": sum(1 for df in bucket_dfs.values() if not df.empty),
         "refit_results": refit_results,
@@ -660,13 +663,10 @@ def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
 
 
 # ---------------------------------------------------------------------------
-# Legacy compatibility — keeps the old `--forward` CLI working
+# Legacy compatibility for callers that imported this module directly
 # ---------------------------------------------------------------------------
 def run_forward_test_legacy() -> Dict[str, Any]:
-    """Drop-in replacement for backtest.forward.run_forward_test().
-
-    Reproduces the v15 dashboard summary shape (overall / by_confidence / by_type).
-    """
+    """Return the historical summary shape with explicit diagnostic labels."""
     bucket_dfs = replay_outcomes()
     all_rows = []
     for b, df in bucket_dfs.items():
@@ -676,12 +676,21 @@ def run_forward_test_legacy() -> Dict[str, Any]:
         df["bucket"] = b
         all_rows.append(df)
     if not all_rows:
-        return {"signals": pd.DataFrame(), "summary": pd.DataFrame()}
+        return {
+            **diagnostic_metadata(),
+            "signals": pd.DataFrame(),
+            "summary": pd.DataFrame(),
+        }
     pnl = pd.concat(all_rows, ignore_index=True)
     if pnl.empty or "pnl_pct" not in pnl.columns:
-        return {"signals": pnl, "summary": pd.DataFrame()}
+        return {
+            **diagnostic_metadata(),
+            "signals": pnl,
+            "summary": pd.DataFrame(),
+        }
 
     overall = {
+        **diagnostic_metadata(),
         "n_signals": len(pnl),
         "win_rate": float((pnl["pnl_pct"] > 0).mean()),
         "avg_pnl_pct": float(pnl["pnl_pct"].mean()),
@@ -719,6 +728,7 @@ def run_forward_test_legacy() -> Dict[str, Any]:
         })
 
     return {
+        **diagnostic_metadata(),
         "signals": pnl,
         "overall": overall,
         "by_confidence": pd.DataFrame(buckets),

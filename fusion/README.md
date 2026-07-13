@@ -9,3 +9,5 @@ This package combines engine evidence into ranked option, share, value, and futu
 - Explains the strongest contributions, risks, and watchlist selections.
 
 This layer ranks research only; it does not place orders or prove future profitability.
+
+See the [complete project map](../docs/PROJECT_MAP.md) for the responsibility of every fusion module.

@@ -6,6 +6,7 @@ output defaults used across the research pipeline.
 """
 from datetime import datetime, timezone
 
+from optedge.http_identity import outbound_user_agent
 from optedge.strategy_profile import DISCOVERY_PROFILE
 
 # ---- Universe ----------------------------------------------------------
@@ -168,7 +169,7 @@ HESTON_ENABLED = False  # experimental; enable only after a stability validation
 SUBREDDITS = ["wallstreetbets", "stocks", "investing", "options", "smallstreetbets"]
 SENTIMENT_LOOKBACK_HOURS = 48
 SENTIMENT_HALF_LIFE_HOURS = 6.0
-USER_AGENT = "optedge-research/0.1 (research@optedge.local)"
+USER_AGENT = outbound_user_agent()
 
 # ---- Insider ----------------------------------------------------------
 INSIDER_LOOKBACK_DAYS = 90

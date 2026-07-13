@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import contextvars
+import functools
+import hashlib
 import io
 import json
 import math
@@ -51,6 +54,10 @@ from optedge.strategy_profile import (
     SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
+)
+from risk.portfolio import (
+    evaluate_post_trade_portfolio,
+    summarize_broker_account_capital_at_risk,
 )
 from risk.trade_plan import (
     build_manual_robinhood_review_packet,
@@ -97,6 +104,39 @@ LIVE_QUOTE_MAX_AGE_SECONDS = 120
 EQUITY_REVIEW_MAX_SPREAD_PCT = 0.01
 ACCOUNT_EQUITY_OVERSTATEMENT_TOLERANCE_PCT = 0.01
 COCKPIT_CSRF_TOKEN = secrets.token_urlsafe(32)
+_REPORT_MEMO: contextvars.ContextVar[dict[tuple[str, str], Any] | None] = (
+    contextvars.ContextVar("optedge_report_memo", default=None)
+)
+
+
+def _memoized_report(func):
+    """Reuse identical report builds only inside one command-center request."""
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        cache = _REPORT_MEMO.get()
+        if cache is None:
+            return func(*args, **kwargs)
+        key = (func.__name__, repr((args, sorted(kwargs.items()))))
+        if key not in cache:
+            cache[key] = func(*args, **kwargs)
+        return cache[key]
+
+    return wrapped
+
+
+def _with_report_memo(func):
+    """Create a thread-safe request-local memo scope for nested report builders."""
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        if _REPORT_MEMO.get() is not None:
+            return func(*args, **kwargs)
+        token = _REPORT_MEMO.set({})
+        try:
+            return func(*args, **kwargs)
+        finally:
+            _REPORT_MEMO.reset(token)
+
+    return wrapped
 
 ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
@@ -995,11 +1035,18 @@ def _clean_watchlist_context(context: Any) -> dict[str, Any]:
 
 
 def _float_value(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
     try:
         out = float(value)
     except Exception:
         return default
     return out if math.isfinite(out) else default
+
+
+def _optional_float_value(value: Any) -> float | None:
+    number = _float_value(value, default=math.nan)
+    return number if math.isfinite(number) else None
 
 
 def _position_identity(row: dict[str, Any]) -> tuple:
@@ -1142,6 +1189,7 @@ def _watchlist_sort_key(row: dict[str, Any]) -> tuple[int, float, float, float, 
     )
 
 
+@_memoized_report
 def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str, Any]:
     rows = _read_json(_watchlist_file(data_dir))
     if not isinstance(rows, list):
@@ -1612,6 +1660,7 @@ def _saved_contract_triage(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@_memoized_report
 def build_saved_option_contracts(
     data_dir: Path = DATA_DIR,
     enrich: bool = True,
@@ -1974,15 +2023,34 @@ def _position_pnl_pct(row: dict[str, Any]) -> float:
     return (cur - entry) / entry if entry > 0 and cur > 0 else 0.0
 
 
+def _position_is_expired(row: dict[str, Any], asset: str, now: datetime | None = None) -> bool:
+    if str(asset or "").strip().lower() != "option":
+        return False
+    expiry_value = row.get("expiry") or row.get("expiration_date")
+    expiry = _parse_iso_utc(expiry_value)
+    if expiry is None:
+        return False
+    asof = now or datetime.now(timezone.utc)
+    if isinstance(expiry_value, str) and "T" not in expiry_value:
+        return asof.date() > expiry.date()
+    return asof >= expiry
+
+
 def _normalize_position(row: dict[str, Any], asset: str) -> dict[str, Any]:
     out = dict(row)
     out.setdefault("asset", asset)
+    tracking_scope = (
+        _local_option_tracking_scope(out)
+        if str(asset or "").strip().lower() == "option"
+        else "research_lifecycle"
+    )
     symbol = out.get("ticker") or out.get("symbol") or "-"
     current_price = out.get("current_mid", out.get("current_price", out.get("last_price")))
     pnl_pct = _position_pnl_pct(out)
     exit_pressure = _float_value(out.get("latest_exit_pressure"), default=0.0)
     reprice_failed = _float_value(out.get("reprice_failed_count"), default=0.0)
-    attention = exit_pressure >= 60 or reprice_failed >= 2 or pnl_pct <= -0.30
+    is_expired = _position_is_expired(out, asset)
+    attention = not is_expired and (exit_pressure >= 60 or reprice_failed >= 2 or pnl_pct <= -0.30)
     return {
         "asset": out.get("asset"),
         "position_label": _position_label(out),
@@ -1990,6 +2058,9 @@ def _normalize_position(row: dict[str, Any], asset: str) -> dict[str, Any]:
         "side_or_direction": out.get("side") or out.get("direction") or out.get("asset"),
         "strike_or_contract": out.get("strike", out.get("contract")),
         "expiry": out.get("expiry"),
+        "lifecycle_state": "expired" if is_expired else "active",
+        "is_expired": is_expired,
+        "tracking_scope": tracking_scope,
         "trade_status": out.get("trade_status") or "Open",
         "entry_time": out.get("entry_time"),
         "age_days": round(_position_age_days(out), 2),
@@ -4033,6 +4104,91 @@ def _setup_gate_priority(record: dict[str, Any]) -> tuple[int, float]:
     return priority, _float_value(record.get("score"), default=0.0)
 
 
+def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> dict[str, Any] | None:
+    """Normalize one immutable idea for safe planner prefill without asset fallback."""
+    if asset not in {"option", "share"}:
+        return None
+    symbol = str(record.get("ticker_or_symbol") or "").strip().upper()
+    entry = _optional_float_value(record.get("entry_price"))
+    stop = _optional_float_value(record.get("stop_price"))
+    target = _optional_float_value(record.get("target_price"))
+    blockers: list[str] = []
+    if not symbol:
+        blockers.append("missing symbol")
+    if entry is None or entry <= 0:
+        blockers.append("missing positive entry")
+    if stop is None or stop <= 0:
+        blockers.append("missing positive stop")
+    if target is None or target <= 0:
+        blockers.append("missing positive target")
+
+    candidate: dict[str, Any] = {
+        "asset": asset,
+        "symbol": symbol,
+        "direction": "long",
+        "entry_price": entry,
+        "stop_price": stop,
+        "target_price": target,
+        "max_units": _clean_value(record.get("suggested_contracts")),
+        "identity_label": record.get("setup"),
+        "source_file": record.get("source_file"),
+        "source_generated_at": _clean_value(row.get("generated_at")),
+        "source_quote_at": _clean_value(row.get("source_quote_at")),
+        "source_quote_time_basis": _clean_value(row.get("source_quote_time_basis")),
+        "quote_quality": _clean_value(row.get("quote_quality")),
+        "data_delay": _clean_value(row.get("data_delay")),
+        "bid": _clean_value(row.get("bid")),
+        "ask": _clean_value(row.get("ask")),
+        "mid": _clean_value(row.get("mid")),
+        "spread_pct": _clean_value(row.get("spread_pct")),
+    }
+    if asset == "option":
+        side = str(row.get("side") or record.get("action") or "").strip().lower()
+        strike = _optional_float_value(row.get("strike"))
+        expiry = str(row.get("expiry") or record.get("expiry") or "").strip()
+        underlying_type = str(row.get("underlying_type") or "").strip().lower()
+        if side not in {"call", "put"}:
+            blockers.append("missing call/put identity")
+        if strike is None or strike <= 0:
+            blockers.append("missing positive strike")
+        if not expiry:
+            blockers.append("missing expiry")
+        if underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
+            blockers.append("missing explicit equity underlying type")
+        candidate.update({
+            "option_type": side or None,
+            "strike": strike,
+            "expiry": expiry or None,
+            "underlying_type": underlying_type or None,
+            "contract_multiplier": 100,
+            "contract": record.get("contract") or row.get("contract_query"),
+        })
+    else:
+        candidate.update({
+            "underlying_type": "equity",
+            "contract_multiplier": 1,
+        })
+
+    identity = {
+        key: candidate.get(key)
+        for key in (
+            "asset", "symbol", "direction", "option_type", "strike", "expiry",
+            "underlying_type", "contract_multiplier", "entry_price", "stop_price",
+            "target_price", "max_units", "source_file", "source_generated_at",
+            "source_quote_at", "bid", "ask", "mid",
+        )
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:24]
+    candidate.update({
+        "candidate_fingerprint": fingerprint,
+        "plan_ready": not blockers,
+        "blockers": blockers,
+    })
+    return candidate
+
+
 def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> dict[str, Any]:
     spec = OPPORTUNITY_SPECS[asset]
     symbol = _setup_symbol(row, asset, spec)
@@ -4079,9 +4235,13 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
                 record[key] = _clean_value(row.get(key))
     record.update(readiness)
     record.update(_setup_gate(record))
+    candidate = _planner_candidate(row, record, asset)
+    if candidate is not None:
+        record["planner_candidate"] = candidate
     return record
 
 
+@_memoized_report
 def build_best_setups(
     data_dir: Path = DATA_DIR,
     per_asset: int = 3,
@@ -4879,6 +5039,7 @@ def _append_nasdaq_mover_scout_rows(
     return added, "nasdaq_screener"
 
 
+@_memoized_report
 def build_swing_scout(
     data_dir: Path = DATA_DIR,
     limit: int = 18,
@@ -5583,7 +5744,7 @@ def _agentic_ticket_preflight(
     gate_status = str(entry_gate.get("status") or "").strip().lower()
     if gate_status == "blocked" or blockers:
         add("block", "Entry gate", "Fresh entries are blocked by validation, guardrail, stale-data, or kill-switch checks.")
-    elif entry_gate.get("new_entries_allowed_after_live_checks"):
+    elif entry_gate.get("new_entries_allowed_after_live_checks") is True:
         add("pass", "Entry gate", "Local gate allows review after live broker/quote checks.")
     else:
         add("warn", "Entry gate", "Entry gate is not explicitly open; treat this as review-only.")
@@ -5615,9 +5776,9 @@ def _agentic_ticket_preflight(
     funded_option_accounts = [
         row for row in account_readiness_rows
         if isinstance(row, dict)
-        and row.get("agentic_allowed")
-        and row.get("options_ready")
-        and row.get("funded")
+        and row.get("agentic_allowed") is True
+        and row.get("options_ready") is True
+        and row.get("funded") is True
     ]
     buying_power_values = [
         _float_value(row.get("buying_power"), default=math.nan)
@@ -6062,6 +6223,25 @@ def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, 
     return {k: _clean_value(v) for k, v in row.items()}
 
 
+def _local_option_tracking_scope(raw: dict[str, Any]) -> str:
+    """Separate broker-linked lifecycle state from research/paper positions."""
+    explicit = str(
+        raw.get("tracking_scope")
+        or raw.get("position_scope")
+        or raw.get("execution_scope")
+        or ""
+    ).strip().lower()
+    if explicit in {"broker", "broker_linked", "live", "robinhood", "robinhood_live"}:
+        return "broker_linked"
+    broker_identity = any(
+        str(raw.get(field) or "").strip()
+        for field in ("broker_position_id", "broker_order_id", "broker_fill_id")
+    )
+    if broker_identity and str(raw.get("account_key") or "").strip():
+        return "broker_linked"
+    return "research_lifecycle"
+
+
 def _aggregate_option_records(
     records: list[dict[str, Any]],
     *,
@@ -6127,7 +6307,9 @@ def _broker_account_readiness(
     for account in accounts:
         if not isinstance(account, dict):
             continue
-        agentic_allowed = bool(account.get("agentic_allowed"))
+        # Broker permissions are typed attestations.  Do not let truthy strings
+        # such as "false" become execution permission.
+        agentic_allowed = account.get("agentic_allowed") is True
         state = str(account.get("state") or account.get("status") or "").strip().lower()
         if not state and isinstance(account.get("deactivated"), bool):
             state = "deactivated" if account.get("deactivated") else "active"
@@ -6210,14 +6392,18 @@ def _broker_account_readiness(
             "detail": detail,
         })
 
-    agentic_count = sum(1 for row in rows if row.get("agentic_allowed"))
-    option_ready_count = sum(1 for row in rows if row.get("options_ready"))
+    agentic_count = sum(1 for row in rows if row.get("agentic_allowed") is True)
+    option_ready_count = sum(1 for row in rows if row.get("options_ready") is True)
     agentic_option_rows = [
         row for row in rows
-        if row.get("agentic_allowed") and row.get("options_ready")
+        if row.get("agentic_allowed") is True and row.get("options_ready") is True
     ]
-    active_agentic_option_rows = [row for row in agentic_option_rows if row.get("active")]
-    funded_agentic_option_rows = [row for row in active_agentic_option_rows if row.get("funded")]
+    active_agentic_option_rows = [
+        row for row in agentic_option_rows if row.get("active") is True
+    ]
+    funded_agentic_option_rows = [
+        row for row in active_agentic_option_rows if row.get("funded") is True
+    ]
     if funded_agentic_option_rows:
         status = "ready"
         label = "Agentic options ready"
@@ -6266,7 +6452,9 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
     has_agentic = bool(readiness.get("agentic_account_count"))
     has_funded_agentic_options = bool(readiness.get("funded_agentic_option_count"))
     funded_agentic_equity = any(
-        bool(row.get("active")) and bool(row.get("agentic_allowed")) and bool(row.get("funded"))
+        row.get("active") is True
+        and row.get("agentic_allowed") is True
+        and row.get("funded") is True
         for row in rows
         if isinstance(row, dict)
     )
@@ -6370,20 +6558,44 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
             "Robinhood supports single-leg options here, but the account must be agentic, options-approved, and funded.",
         ),
         row(
-            "Order cancellation / option exercise",
+            "Order cancellation",
             "write supported",
             option_status,
             "explicit approval required",
-            "Cancels and exercises are real broker actions; exercises are irreversible once accepted.",
+            "Cancellation is a real broker action and needs exact order review and confirmation.",
+        ),
+        row(
+            "Option exercise",
+            "not exposed by the connected MCP",
+            "use Robinhood app/support",
+            "outside Optedge",
+            "Do not imply programmatic exercise support; use Robinhood's official exercise workflow.",
         ),
     ]
 
 
-def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> dict[str, Any]:
-    """Compare local Optedge/paper option state with an optional broker snapshot."""
+def build_broker_reconciliation(
+    data_dir: Path = DATA_DIR,
+    limit: int = 80,
+    *,
+    snapshot_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compare local state with one optional, caller-frozen broker snapshot."""
     data_dir = Path(data_dir)
     snapshot_path = data_dir / "robinhood_broker_snapshot.json"
-    snapshot = _read_json(snapshot_path)
+    snapshot = (
+        snapshot_override
+        if snapshot_override is not None
+        else _read_json(snapshot_path)
+    )
+    snapshot_digest = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
     open_positions = _read_json(data_dir / "open_positions.json")
     paper_positions = _read_json(data_dir / "agentic_paper_positions.json")
     open_positions = open_positions if isinstance(open_positions, list) else []
@@ -6393,11 +6605,28 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         if isinstance(row, dict) and str(row.get("status") or "").lower() != "closed"
     ]
 
+    broker_linked_positions = [
+        row for row in open_positions
+        if isinstance(row, dict) and _local_option_tracking_scope(row) == "broker_linked"
+    ]
+    research_positions = [
+        row for row in open_positions
+        if isinstance(row, dict) and _local_option_tracking_scope(row) == "research_lifecycle"
+    ]
     local_rows = _aggregate_option_records([
         _agentic_local_option_record(row, "optedge")
-        for row in open_positions
-        if isinstance(row, dict)
+        for row in broker_linked_positions
     ], by_account=True)
+    research_rows = _aggregate_option_records([
+        _agentic_local_option_record(row, "research")
+        for row in research_positions
+    ], by_account=False)
+    research_expired_count = sum(
+        1 for row in research_rows
+        if math.isfinite(_float_value(row.get("dte"), default=math.nan))
+        and _float_value(row.get("dte"), default=math.nan) < 0
+    )
+    research_active_count = len(research_rows) - research_expired_count
     paper_rows = _aggregate_option_records([
         _agentic_local_option_record(row, "paper")
         for row in active_paper
@@ -6412,11 +6641,15 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
             "status": "missing_snapshot",
             "label": "Broker snapshot missing",
             "snapshot_path": str(snapshot_path),
+            "snapshot_digest_sha256": snapshot_digest,
             "snapshot_exists": False,
             "snapshot_age": "missing",
             "snapshot_age_minutes": None,
             "broker_option_count": 0,
             "optedge_option_count": len(local_rows),
+            "research_lifecycle_option_count": len(research_rows),
+            "research_lifecycle_active_count": research_active_count,
+            "research_lifecycle_expired_count": research_expired_count,
             "paper_option_count": len(paper_rows),
             "matched_count": 0,
             "broker_only_count": 0,
@@ -6450,6 +6683,7 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
             "notes": [
                 "This reconciliation is local/offline and does not connect to a broker.",
                 "A broker snapshot should contain current option positions with symbol, side, strike, expiry, and quantity.",
+                "Research and paper lifecycle rows are not broker holdings and are reported separately.",
             ],
         }
 
@@ -6656,7 +6890,11 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         row for row in accounts
         if isinstance(row, dict) and _account_options_ready(row.get("option_level"))
     ]
-    agentic_accounts = [row for row in accounts if isinstance(row, dict) and bool(row.get("agentic_allowed"))]
+    agentic_accounts = [
+        row
+        for row in accounts
+        if isinstance(row, dict) and row.get("agentic_allowed") is True
+    ]
     agentic_option_ready = bool(account_readiness.get("agentic_option_ready"))
     warnings: list[str] = []
     normalization_blockers = [
@@ -6701,8 +6939,14 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         warnings.append(f"{local_only_count} local Optedge option position(s) are not in the broker snapshot.")
     if local_expired_count:
         warnings.append(f"{local_expired_count} expired Optedge option position(s) are still open locally.")
+    if research_rows:
+        warnings.append(
+            f"{len(research_rows)} Optedge research lifecycle option row(s) are tracked separately from broker holdings."
+        )
     if paper_only_count:
-        warnings.append(f"{paper_only_count} local paper option position(s) are not in the broker snapshot.")
+        warnings.append(
+            f"{paper_only_count} agentic paper option position(s) are tracked separately from broker holdings."
+        )
     if paper_expired_count:
         warnings.append(f"{paper_expired_count} expired paper option position(s) are still open locally.")
     if missing_contract_fields_count:
@@ -6725,16 +6969,16 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         )
 
     if (
-        broker_only_count or local_only_count or paper_only_count
-        or local_expired_count or paper_expired_count or missing_contract_fields_count
+        broker_only_count or local_only_count
+        or local_expired_count or missing_contract_fields_count
         or quantity_mismatch_count or type_mismatch_count or account_scope_mismatch_count
         or unresolved_working_option_order_count or normalization_blockers
     ):
         status = "mismatch"
         label = "Broker/local mismatch"
-    elif not broker_rows and not local_rows and not paper_rows:
+    elif not broker_rows and not local_rows:
         status = "empty"
-        label = "No option positions"
+        label = "No broker-linked option positions"
     elif warnings:
         status = "review"
         label = "Broker sync review"
@@ -6747,12 +6991,16 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         "status": status,
         "label": label,
         "snapshot_path": str(snapshot_path),
+        "snapshot_digest_sha256": snapshot_digest,
         "snapshot_exists": True,
         "snapshot_generated_at": _clean_value(snapshot.get("generated_at")),
         "snapshot_age": _short_age_label(snapshot_age),
         "snapshot_age_minutes": round(snapshot_age, 1) if snapshot_age is not None else None,
         "broker_option_count": len(broker_rows),
         "optedge_option_count": len(local_rows),
+        "research_lifecycle_option_count": len(research_rows),
+        "research_lifecycle_active_count": research_active_count,
+        "research_lifecycle_expired_count": research_expired_count,
         "paper_option_count": len(paper_rows),
         "matched_count": matched_count,
         "broker_only_count": broker_only_count,
@@ -6787,7 +7035,8 @@ def build_broker_reconciliation(data_dir: Path = DATA_DIR, limit: int = 80) -> d
         "rows": rows[: max(1, min(int(limit or 80), 250))],
         "notes": [
             "This is a local reconciliation view; it does not submit, cancel, or replace broker orders.",
-            "Use it to make sure live Robinhood positions match Optedge before reviewing new entries or exits.",
+            "Only explicitly broker-linked local rows participate in broker reconciliation; research and paper lifecycle rows are reported separately.",
+            "Use it to make sure live Robinhood positions match broker-linked Optedge state before reviewing new entries or exits.",
         ],
     }
 
@@ -7185,7 +7434,10 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "ticket_packet_age": _short_age_label(ticket_packet_age),
         "entry_gate_status": _clean_value(entry_gate.get("status")),
         "entry_gate_label": _clean_value(entry_gate.get("label")),
-        "fresh_entries_allowed": bool(entry_gate.get("new_entries_allowed_after_live_checks")) and not blockers,
+        "fresh_entries_allowed": (
+            entry_gate.get("new_entries_allowed_after_live_checks") is True
+            and not blockers
+        ),
         "auto_submit_allowed": bool(cycle.get("auto_submit_allowed")),
         "hard_pause": bool(cycle.get("hard_pause")),
         "kill_switch": kill_switch,
@@ -7203,6 +7455,9 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "broker_matched_count": broker_reconciliation.get("matched_count"),
         "broker_only_count": broker_reconciliation.get("broker_only_count"),
         "local_only_count": broker_reconciliation.get("local_only_count"),
+        "research_lifecycle_option_count": broker_reconciliation.get("research_lifecycle_option_count"),
+        "research_lifecycle_active_count": broker_reconciliation.get("research_lifecycle_active_count"),
+        "research_lifecycle_expired_count": broker_reconciliation.get("research_lifecycle_expired_count"),
         "paper_only_count": broker_reconciliation.get("paper_only_count"),
         "local_expired_count": broker_reconciliation.get("local_expired_count"),
         "paper_expired_count": broker_reconciliation.get("paper_expired_count"),
@@ -7358,6 +7613,7 @@ def build_opportunities(
     }
 
 
+@_memoized_report
 def build_positions(
     data_dir: Path = DATA_DIR,
     asset: str = "all",
@@ -7393,6 +7649,8 @@ def build_positions(
         ]
     if status_norm == "attention":
         rows = [row for row in rows if row.get("attention")]
+    elif status_norm in {"active", "expired"}:
+        rows = [row for row in rows if row.get("lifecycle_state") == status_norm]
     elif status_norm != "all":
         rows = [
             row for row in rows
@@ -7496,7 +7754,25 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
     for pos in open_positions:
         if not isinstance(pos, dict):
             continue
-        contract = _agentic_local_option_record(pos, "optedge").get("contract")
+        local_record = _agentic_local_option_record(pos, "optedge")
+        contract = local_record.get("contract")
+        dte = _float_value(local_record.get("dte"), default=math.nan)
+        if math.isfinite(dte) and dte < 0:
+            if str(contract or "") not in existing_contracts:
+                add({
+                    "status": "local_expired",
+                    "severity": "cleanup",
+                    "action": "close_or_archive_expired_local_record",
+                    "contract": contract,
+                    "symbol": local_record.get("symbol"),
+                    "expiry": local_record.get("expiry"),
+                    "dte": dte,
+                    "reason": "Research lifecycle option is past expiry but still appears in open_positions.json.",
+                    "safe_next_step": "Move it to closed research history; do not treat it as live broker exposure.",
+                    "source": "open_positions.json",
+                })
+                existing_contracts.add(str(contract or ""))
+            continue
         if str(contract or "") in existing_contracts:
             continue
         fail_count = int(_float_value(pos.get("reprice_failed_count"), default=0.0))
@@ -7537,7 +7813,8 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
         "broker_option_count": reconciliation.get("broker_option_count"),
         "broker_only_count": reconciliation.get("broker_only_count"),
         "local_only_count": reconciliation.get("local_only_count"),
-        "local_expired_count": reconciliation.get("local_expired_count"),
+        "research_lifecycle_option_count": reconciliation.get("research_lifecycle_option_count"),
+        "local_expired_count": counts.get("local_expired", 0),
         "paper_only_count": reconciliation.get("paper_only_count"),
         "paper_expired_count": reconciliation.get("paper_expired_count"),
         "action_count": len(rows),
@@ -9122,6 +9399,7 @@ def _swing_climate_from_pulses(
     }
 
 
+@_memoized_report
 def build_swing_climate(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
     """Combine free context panels into a single swing-trading posture."""
     market = build_market_pulse(data_dir, period=period)
@@ -9204,6 +9482,7 @@ def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_
     }
 
 
+@_memoized_report
 def build_climate_gated_setups(
     data_dir: Path = DATA_DIR,
     per_asset: int = 4,
@@ -9301,9 +9580,14 @@ def _avg(values: list[float]) -> float | None:
     return (sum(clean) / len(clean)) if clean else None
 
 
+@_memoized_report
 def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Summarize current open-position risk from local lifecycle state."""
-    positions = build_positions(data_dir, asset="all", status="all", limit=2000).get("rows", [])
+    lifecycle_rows = build_positions(data_dir, asset="all", status="all", limit=2000).get("rows", [])
+    expired_positions = [row for row in lifecycle_rows if row.get("lifecycle_state") == "expired"]
+    positions = [row for row in lifecycle_rows if row.get("lifecycle_state") != "expired"]
+    broker_linked_positions = [row for row in positions if row.get("tracking_scope") == "broker_linked"]
+    research_positions = [row for row in positions if row.get("tracking_scope") != "broker_linked"]
     by_asset: dict[str, dict[str, Any]] = {}
     by_symbol: dict[str, dict[str, Any]] = {}
     pnl_values: list[float] = []
@@ -9408,10 +9692,22 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         risk_level = "high" if risk_level == "high" else "medium"
         warnings.append(f"{reprice_trouble} open position(s) have repeated repricing trouble.")
 
+    hygiene_warnings: list[str] = []
+    if expired_positions:
+        hygiene_warnings.append(
+            f"{len(expired_positions)} expired option lifecycle row(s) need cleanup; they are excluded from active risk."
+        )
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "risk_level": risk_level,
         "total_open": total,
+        "research_lifecycle_open": len(research_positions),
+        "broker_linked_lifecycle_open": len(broker_linked_positions),
+        "risk_scope": "local_research_lifecycle",
+        "total_lifecycle_rows": len(lifecycle_rows),
+        "expired_lifecycle_count": len(expired_positions),
+        "hygiene_status": "needs_cleanup" if expired_positions else "clean",
         "attention_count": attention,
         "high_exit_pressure_count": high_pressure,
         "reprice_trouble_count": reprice_trouble,
@@ -9422,8 +9718,10 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "worst_positions": worst_positions,
         "highest_exit_pressure": exit_pressure_rows,
         "warnings": warnings,
+        "hygiene_warnings": hygiene_warnings,
         "notes": [
-            "Risk summary uses current local open position state only.",
+            "Risk summary uses current local research lifecycle state; it is not a Robinhood portfolio balance.",
+            "Broker-linked lifecycle rows are labeled separately and live holdings remain authoritative in the broker snapshot.",
             "Concentration is position-count based when dollar exposure is unavailable.",
             "This is decision support only; no trades are placed.",
         ],
@@ -9460,6 +9758,7 @@ def _latest_finbert_device(data_dir: Path) -> dict[str, Any]:
     }
 
 
+@_memoized_report
 def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Summarize local speed, cache, and engine health telemetry for the cockpit."""
     try:
@@ -10122,6 +10421,7 @@ def _fetch_option_chain_for_provider_status(symbol: str) -> dict[str, Any]:
         return _fetch_option_chain(symbol, cache_age=600)
 
 
+@_memoized_report
 def build_free_data_sources(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Return the built-in free/no-key data source map used by the local cockpit."""
     sec_meta = sec_company_cache_meta(Path(data_dir) / "sec_company_tickers.json")
@@ -10801,6 +11101,7 @@ def _dedupe_queue_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+@_memoized_report
 def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, Any]:
     """Prioritize the next research actions from local cockpit state."""
     items: list[dict[str, Any]] = []
@@ -11127,6 +11428,7 @@ def _today_review_item(
     query: Any = None,
     source: str | None = None,
     asset: Any = None,
+    planner_candidate: Any = None,
 ) -> dict[str, Any]:
     return {
         "priority": int(max(0, min(100, round(_float_value(priority))))),
@@ -11139,6 +11441,10 @@ def _today_review_item(
         "query": _clean_value(query or symbol),
         "asset": _clean_value(asset),
         "source": source or category,
+        "planner_candidate": (
+            {k: _clean_value(v) for k, v in planner_candidate.items()}
+            if isinstance(planner_candidate, dict) else None
+        ),
     }
 
 
@@ -11452,6 +11758,11 @@ def _command_next_action(
         "symbol": first_action.get("symbol"),
         "query": first_action.get("query") or first_action.get("symbol"),
         "source": first_action.get("source"),
+        "planner_candidate": first_action.get("planner_candidate"),
+        "entry_blocked": bool(
+            first_action.get("guarded_by_validation")
+            or str(route).strip().lower() in {"data_health", "positions"}
+        ),
         "session_gate_applied": False,
         "validation_guard_applied": False,
     }
@@ -11521,6 +11832,7 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
                 query=symbol,
                 source="climate_gated_setups",
                 asset=asset,
+                planner_candidate=row.get("planner_candidate"),
             ))
         if not gated.get("rows") and gated.get("held"):
             held = gated.get("held", [])[0]
@@ -11866,6 +12178,7 @@ def _cached_robinhood_queue_report(data_dir: Path) -> dict[str, Any]:
     return report
 
 
+@_with_report_memo
 def build_command_center(
     data_dir: Path = DATA_DIR,
     *,
@@ -12047,6 +12360,7 @@ def _local_snapshot_id(data_dir: Path) -> str:
     data_dir = Path(data_dir)
     tracked = [
         data_dir / "validation_summary.json",
+        data_dir / "fixed_horizon_outcomes.parquet",
         data_dir / "research_guard.json",
         data_dir / "robinhood_agentic_queue.json",
         data_dir / "robinhood_agentic_cycle.json",
@@ -12055,6 +12369,13 @@ def _local_snapshot_id(data_dir: Path) -> str:
     ]
     mtimes = [path.stat().st_mtime_ns for path in tracked if path.exists()]
     return f"local-{max(mtimes):x}" if mtimes else "local-empty"
+
+
+def build_edge_lab_report(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Build the cost- and correlation-aware edge evidence payload."""
+    from backtest.edge_lab import build_edge_lab
+
+    return build_edge_lab(Path(data_dir))
 
 
 def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
@@ -12072,6 +12393,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             include_live_discovery=False,
             refresh_trade_queue=False,
         ),
+        "edge": build_edge_lab_report(data_dir),
         "robinhood": build_agentic_autopilot_status(data_dir),
         "notes": [
             "This view prepares research and risk context; it does not submit broker orders.",
@@ -12083,6 +12405,15 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
 def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
     """Fail closed unless local evidence and the broker snapshot support review."""
     data_dir = Path(data_dir)
+
+    def broker_position_quantity(row: dict[str, Any]) -> float:
+        """Read the first normalized quantity alias used by portfolio controls."""
+        for field in ("signed_quantity", "quantity", "contracts", "shares", "qty"):
+            value = row.get(field)
+            if value is not None and value != "":
+                return _float_value(value, default=0.0)
+        return 0.0
+
     blockers: list[str] = []
     warnings: list[str] = []
     if (data_dir / "agentic_trading_disabled.flag").exists():
@@ -12096,14 +12427,62 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     if str(health.get("status") or "warn").lower() == "bad":
         blockers.append("Local data health has a blocking failure; refresh and reconcile artifacts first.")
 
-    broker = build_broker_reconciliation(data_dir)
+    edge = build_edge_lab_report(data_dir)
+    edge_digest = hashlib.sha256(
+        json.dumps(
+            edge,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    edge_status = str(edge.get("status") or "unavailable").strip().lower()
+    edge_rows = edge.get("asset_rows") if isinstance(edge.get("asset_rows"), list) else []
+    edge_asset = "share" if asset == "share" else asset
+    edge_asset_row = next(
+        (
+            row for row in edge_rows
+            if isinstance(row, dict)
+            and str(row.get("asset") or "").strip().lower() == edge_asset
+        ),
+        None,
+    )
+    edge_asset_eligible = bool(
+        isinstance(edge_asset_row, dict)
+        and edge_asset_row.get("live_capital_eligible") is True
+    )
+    if not edge_asset_eligible:
+        edge_asset_blocker = (
+            edge_asset_row.get("primary_blocker")
+            if isinstance(edge_asset_row, dict)
+            else None
+        )
+        blockers.append(
+            f"{edge_asset.title()} Edge Lab lane is not validated for live-capital review: "
+            f"{edge_asset_blocker or edge.get('primary_blocker') or 'current-method executable evidence is unavailable.'}"
+        )
+
+    snapshot = _read_json(data_dir / "robinhood_broker_snapshot.json")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    # Account readiness, exposure, duplicate checks, and the packet digest must
+    # all derive from this one in-memory read. A concurrent file replacement
+    # cannot combine account capacity from one capture with positions from another.
+    broker = build_broker_reconciliation(data_dir, snapshot_override=snapshot)
+    snapshot_digest = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
     broker_age = broker.get("snapshot_age_minutes")
     broker_normalization_blockers = [
         str(value)
         for value in (broker.get("normalization_blockers") or [])
         if str(value).strip()
     ]
-    if not broker.get("snapshot_exists"):
+    if broker.get("snapshot_exists") is not True:
         blockers.append("A normalized read-only Robinhood broker snapshot is required.")
     elif broker_age is None:
         blockers.append("The Robinhood broker snapshot timestamp is missing.")
@@ -12117,7 +12496,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         blockers.append(
             "The Robinhood read capture is incomplete or account scope is untrusted; rebuild the v2 snapshot."
         )
-    if not broker.get("execution_capture_ready"):
+    if broker.get("execution_capture_ready") is not True:
         blockers.append(
             f"Manual review requires {SNAPSHOT_SCHEMA} normalized from a complete "
             f"{RAW_BUNDLE_SCHEMA} capture."
@@ -12139,6 +12518,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             else EQUITY_REVIEW_MAX_SPREAD_PCT
         ),
         "require_positive_bid_ask": True,
+        "require_live_tick_validation": True,
         "limit_price_may_increase": False,
     }
     planned_cost = _float_value(
@@ -12174,7 +12554,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             blockers.append(
                 f"Option queue/entry gate is older than the {AGENTIC_FRESH_MINUTES:g}-minute review limit."
             )
-        if not entry_gate.get("new_entries_allowed_after_live_checks"):
+        if entry_gate.get("new_entries_allowed_after_live_checks") is not True:
             blockers.append("The current Optedge option-entry gate does not allow a fresh broker review.")
         plan_candidate_key = _agentic_contract_key({
             "symbol": order.get("symbol"),
@@ -12282,18 +12662,18 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         eligible_rows = [
             row for row in account_rows
             if isinstance(row, dict)
-            and row.get("active")
-            and row.get("agentic_allowed")
-            and row.get("options_ready")
-            and row.get("funded")
+            and row.get("active") is True
+            and row.get("agentic_allowed") is True
+            and row.get("options_ready") is True
+            and row.get("funded") is True
         ]
     else:
         eligible_rows = [
             row for row in account_rows
             if isinstance(row, dict)
-            and row.get("active")
-            and row.get("agentic_allowed")
-            and row.get("funded")
+            and row.get("active") is True
+            and row.get("agentic_allowed") is True
+            and row.get("funded") is True
         ]
         if not eligible_rows:
             blockers.append("No active, funded, agentic-accessible equity account appears in the fresh broker snapshot.")
@@ -12305,15 +12685,25 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     ):
         blockers.append("Valid account-equity, risk-fraction, and allocation-fraction assumptions are required.")
 
+    terminal_order_states = {
+        "filled", "cancelled", "canceled", "rejected", "failed", "voided",
+        "expired", "partially_filled_rest_cancelled",
+    }
     matching_account_rows: list[dict[str, Any]] = []
+    portfolio_attestations: list[dict[str, Any]] = []
+    portfolio_failure_details: list[str] = []
     account_failure_codes: set[str] = set()
     planned_stop_loss = _float_value(risk.get("planned_stop_loss_dollars"), default=math.nan)
     share_notional = _float_value(risk.get("full_share_notional_at_risk_dollars"), default=math.nan)
     option_debit = _float_value(risk.get("full_option_debit_at_risk_dollars"), default=math.nan)
     for row in eligible_rows:
+        account_key = str(row.get("account_key") or "").strip()
         live_equity = _float_value(row.get("account_equity"), default=math.nan)
         live_buying_power = _float_value(row.get("buying_power"), default=math.nan)
         failures: set[str] = set()
+        portfolio_attestation: dict[str, Any] | None = None
+        if not account_key:
+            failures.add("missing_account_key")
         if not math.isfinite(live_equity) or live_equity <= 0:
             failures.add("missing_equity")
         if not math.isfinite(live_buying_power) or live_buying_power <= 0:
@@ -12344,10 +12734,60 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             failures.add("buying_power")
         if not math.isfinite(planned_cost):
             failures.add("missing_cost")
+        if not failures:
+            exposure_summary = summarize_broker_account_capital_at_risk(
+                snapshot,
+                account_key,
+            )
+            proposed_capital = option_debit if asset == "option" else share_notional
+            portfolio_attestation = evaluate_post_trade_portfolio(
+                exposure_summary,
+                proposed_capital_at_risk=(
+                    proposed_capital if math.isfinite(proposed_capital) else None
+                ),
+                assumed_equity=assumed_equity,
+                live_equity=live_equity,
+                allocation_fraction=allocation_fraction,
+            )
+            if portfolio_attestation.get("allowed") is not True:
+                failures.add(
+                    "portfolio_exposure"
+                    if exposure_summary.get("eligible") is not True
+                    else "portfolio_allocation_cap"
+                )
+                if asset == "option" and any(
+                    str(broker_order.get("account_key") or "").strip() == account_key
+                    and str(
+                        broker_order.get("state") or broker_order.get("status") or ""
+                    ).strip().lower() not in terminal_order_states
+                    and str(broker_order.get("contract_identity_status") or "").strip()
+                    == "unresolved_multi_leg"
+                    for broker_order in (snapshot.get("option_orders") or [])
+                    if isinstance(broker_order, dict)
+                ):
+                    portfolio_failure_details.append(
+                        "Robinhood has a nonterminal multi-leg option order; "
+                        "duplicate exposure cannot be verified safely."
+                    )
+                portfolio_failure_details.extend(
+                    str(value)
+                    for value in (exposure_summary.get("blockers") or [])
+                    if str(value).strip()
+                )
+                portfolio_failure_details.extend(
+                    str(value)
+                    for value in (portfolio_attestation.get("blockers") or [])
+                    if str(value).strip()
+                )
         if failures:
             account_failure_codes.update(failures)
         else:
             matching_account_rows.append(row)
+            assert portfolio_attestation is not None
+            portfolio_attestations.append({
+                **portfolio_attestation,
+                "account_mask": _clean_value(row.get("account_mask")),
+            })
 
     if eligible_rows and not matching_account_rows:
         blockers.append(
@@ -12360,11 +12800,43 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         if "risk_cap" in account_failure_codes:
             blockers.append("The planned loss exceeds the live account-equity risk fraction on every eligible account.")
         if "allocation_cap" in account_failure_codes:
-            blockers.append("The planned debit/notional exceeds the live account-equity allocation fraction.")
+            blockers.append("The proposed debit/notional exceeds the live total-open allocation fraction.")
         if "buying_power" in account_failure_codes or "missing_buying_power" in account_failure_codes:
             blockers.append("The planned cost does not fit verified buying power on the same eligible account.")
+        if "missing_account_key" in account_failure_codes:
+            blockers.append("An eligible account is missing its pseudonymous broker account key.")
+        if "portfolio_exposure" in account_failure_codes:
+            blockers.append(
+                "Same-account broker portfolio exposure could not be proven from normalized positions and orders."
+            )
+        if "portfolio_allocation_cap" in account_failure_codes:
+            blockers.append(
+                "Existing broker exposure plus the proposed trade exceeds the total-open allocation cap."
+            )
+        blockers.extend(
+            f"Portfolio gate: {value}"
+            for value in list(dict.fromkeys(portfolio_failure_details))[:3]
+        )
 
     review_constraints = {
+        "evidence": {
+            "schema": "optedge_edge_lab_review_attestation_v1",
+            "source_schema": edge.get("schema"),
+            "report_digest_sha256": edge_digest,
+            "asset": edge_asset,
+            "edge_lab_status": edge_status,
+            "asset_lane_status": (
+                edge_asset_row.get("status") if isinstance(edge_asset_row, dict) else "unavailable"
+            ),
+            "asset_lane_live_capital_eligible": edge_asset_eligible,
+            "evidence_lane": (
+                edge_asset_row.get("evidence_lane")
+                if isinstance(edge_asset_row, dict)
+                else None
+            ),
+            "headline_horizon_sessions": edge.get("headline_horizon_sessions"),
+            "require_current_method_executable": True,
+        },
         "account": {
             "assumed_equity_dollars": _clean_value(assumed_equity if math.isfinite(assumed_equity) else None),
             "risk_fraction": _clean_value(risk_fraction if math.isfinite(risk_fraction) else None),
@@ -12378,14 +12850,31 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             "require_options_approval": asset == "option",
             "use_conservative_buying_power": True,
         },
+        "portfolio": {
+            "schema": "optedge_portfolio_review_constraints_v1",
+            "source": SNAPSHOT_SCHEMA,
+            "raw_bundle_schema": RAW_BUNDLE_SCHEMA,
+            "broker_snapshot_generated_at": snapshot.get("generated_at"),
+            "broker_snapshot_digest_sha256": snapshot_digest,
+            "same_account_only": True,
+            "local_research_counted_as_live": False,
+            "nonterminal_order_policy": "block",
+            "cap_method": "min_assumed_and_live_same_account_equity_times_allocation_fraction",
+            "proposed_capital_basis": (
+                "full_option_debit_at_risk_dollars"
+                if asset == "option"
+                else "full_share_notional_at_risk_dollars"
+            ),
+            "eligible_account_count": len(portfolio_attestations),
+            "eligible_accounts": portfolio_attestations,
+        },
         "quote": quote_constraints,
     }
 
-    snapshot = _read_json(data_dir / "robinhood_broker_snapshot.json")
-    snapshot = snapshot if isinstance(snapshot, dict) else {}
-    terminal_order_states = {
-        "filled", "cancelled", "canceled", "rejected", "failed", "voided",
-        "expired", "partially_filled_rest_cancelled",
+    passing_account_keys = {
+        str(row.get("account_key") or "").strip()
+        for row in matching_account_rows
+        if str(row.get("account_key") or "").strip()
     }
     symbol = str(order.get("symbol") or "").strip().upper()
     if asset == "option":
@@ -12399,7 +12888,11 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             row
             for row in (snapshot.get("option_positions") or [])
             if isinstance(row, dict)
-            and _float_value(row.get("quantity"), default=0.0) > 0
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in passing_account_keys
+            )
+            and broker_position_quantity(row) > 0
             and str(row.get("state") or "open").strip().lower() not in {"closed", "expired", "cancelled"}
         ]
         broker_position_keys = {
@@ -12410,8 +12903,15 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             for row in active_broker_option_positions
             if all(_agentic_direction_key(row).split("|"))
         }
+        broker_linked_local_options = [
+            row
+            for row in (_read_json(data_dir / POSITION_FILES["option"]) or [])
+            if isinstance(row, dict)
+            and _local_option_tracking_scope(row) == "broker_linked"
+            and str(row.get("account_key") or "").strip() in passing_account_keys
+        ]
         local_contract_keys, local_direction_keys = _agentic_open_option_keys(
-            _read_json(data_dir / POSITION_FILES["option"]) or []
+            broker_linked_local_options
         )
         plan_direction = _agentic_direction_key({
             "symbol": symbol,
@@ -12429,6 +12929,10 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         nonterminal_option_orders = [
             row for row in (snapshot.get("option_orders") or [])
             if isinstance(row, dict)
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in passing_account_keys
+            )
             and str(row.get("state") or row.get("status") or "").strip().lower()
             not in terminal_order_states
         ]
@@ -12469,16 +12973,26 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             str(row.get("symbol") or "").strip().upper()
             for row in (snapshot.get("equity_positions") or [])
             if isinstance(row, dict)
-            and abs(_float_value(row.get("signed_quantity", row.get("quantity")), default=0.0)) > 0
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in passing_account_keys
+            )
+            and abs(broker_position_quantity(row)) > 0
         }
         local_share_symbols = {
             str(row.get("symbol") or row.get("ticker") or "").strip().upper()
             for row in (_read_json(data_dir / POSITION_FILES["share"]) or [])
             if isinstance(row, dict)
+            and _local_option_tracking_scope(row) == "broker_linked"
+            and str(row.get("account_key") or "").strip() in passing_account_keys
         }
         nonterminal_equity_orders = [
             row for row in (snapshot.get("equity_orders") or [])
             if isinstance(row, dict)
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in passing_account_keys
+            )
             and str(row.get("state") or row.get("status") or "").strip().lower()
             not in terminal_order_states
         ]
@@ -12514,6 +13028,13 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         "blockers": unique_blockers,
         "warnings": unique_warnings,
         "validation_level": guard_level,
+        "edge_status": edge_status,
+        "edge_live_capital_eligible": edge_asset_eligible,
+        "edge_primary_blocker": (
+            edge_asset_row.get("primary_blocker")
+            if isinstance(edge_asset_row, dict)
+            else edge.get("primary_blocker")
+        ),
         "data_health_status": health.get("status"),
         "broker_snapshot_status": broker.get("status"),
         "broker_snapshot_age_minutes": broker_age,
@@ -12543,7 +13064,24 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
     risk_pct = number(payload.get("risk_pct"))
     allocation_pct = number(payload.get("allocation_pct"))
     buying_power = number(payload.get("buying_power"))
-    unit_cap = number(payload.get("max_units"))
+    raw_unit_cap = payload.get("max_units")
+    unit_cap_supplied = (
+        "max_units" in payload
+        and raw_unit_cap is not None
+        and str(raw_unit_cap).strip() != ""
+    )
+    unit_cap = number(raw_unit_cap)
+    unit_cap_invalid = bool(
+        unit_cap_supplied
+        and (
+            isinstance(raw_unit_cap, bool)
+            or unit_cap is None
+            or unit_cap <= 0
+            or not math.isclose(unit_cap, round(unit_cap), abs_tol=1e-9)
+        )
+    )
+    if unit_cap_invalid:
+        unit_cap = None
     slippage_pct = number(payload.get("slippage_pct"))
     slippage_pct = max(0.0, slippage_pct or 0.0)
 
@@ -12667,6 +13205,16 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             },
         }
 
+    if unit_cap_invalid:
+        plan.setdefault("validation", {}).setdefault("errors", []).append({
+            "code": "invalid_max_units",
+            "field": "max_units",
+            "message": "When supplied, max_units must be a positive whole number.",
+        })
+        plan["status"] = "invalid"
+        plan["is_actionable"] = False
+        plan["validation"]["ok"] = False
+
     plan["account_assumptions"] = {
         "account_equity_dollars": limits.get("account_equity"),
         "risk_fraction": limits.get("risk_fraction"),
@@ -12686,7 +13234,7 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         expires_at=expires_at.isoformat(),
         external_blockers=review_gate.get("blockers") or [],
     )
-    calculation_ok = bool(plan.get("is_actionable"))
+    calculation_ok = plan.get("is_actionable") is True
     return {
         "schema": "optedge_trade_plan_report_v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -14570,6 +15118,7 @@ def _opportunity_quality_audit(data_dir: Path) -> dict[str, Any]:
     }
 
 
+@_memoized_report
 def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Check whether the dashboard-facing artifacts agree with current state."""
     open_counts = _direct_open_counts(data_dir)
@@ -14898,7 +15447,8 @@ a, button { color:var(--text); }
 .btn.danger { border-color:rgba(239,68,68,.42); background:rgba(239,68,68,.09); }
 .btn.danger:hover { border-color:var(--bad); background:rgba(239,68,68,.16); }
 .btn:active { transform:translateY(1px); }
-.view-nav { position:sticky; top:0; z-index:20; display:flex; gap:8px; overflow:auto; max-width:100%; padding:10px 0 12px; margin:0 0 8px; background:rgba(9,10,10,.94); backdrop-filter:blur(12px); border-bottom:1px solid rgba(44,51,48,.72); }
+.view-nav { position:sticky; top:0; z-index:20; display:flex; gap:8px; overflow:auto; max-width:100%; padding:10px 0 12px; margin:0 0 8px; background:rgba(9,10,10,.94); backdrop-filter:blur(12px); border-bottom:1px solid rgba(44,51,48,.72); scrollbar-width:none; -ms-overflow-style:none; }
+.view-nav::-webkit-scrollbar { display:none; }
 .view-tab { flex:0 0 auto; white-space:nowrap; border:1px solid var(--border); background:var(--panel3); color:var(--muted); border-radius:8px; padding:9px 13px; font-size:13px; cursor:pointer; transition:border-color .16s ease, background .16s ease, color .16s ease; }
 .view-tab.active { color:var(--text); border-color:var(--accent); background:rgba(32,201,151,.13); }
 body:not(.view-all) .panel[data-view] { display:none; }
@@ -14942,6 +15492,23 @@ body.view-desk .wrap > .global-command { display:none; }
 .desk-card { border:1px solid var(--border); background:var(--panel3); border-radius:8px; padding:14px; min-width:0; }
 .desk-card h3 { margin:0; font-size:16px; }
 .desk-card > p { margin:7px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.edge-lab { margin-top:12px; border-color:rgba(91,141,239,.42); background:linear-gradient(145deg,rgba(17,24,39,.96),rgba(13,17,23,.98)); }
+.edge-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.edge-head-copy { max-width:820px; }
+.edge-head-copy p { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.edge-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.edge-lane { border:1px solid var(--border); background:rgba(8,10,12,.58); border-radius:8px; padding:11px; min-width:0; }
+.edge-lane.good { border-color:rgba(32,201,151,.48); }
+.edge-lane.bad { border-color:rgba(248,113,113,.48); }
+.edge-lane.warn { border-color:rgba(245,158,11,.38); }
+.edge-lane header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.edge-lane h4 { margin:0; font-size:14px; }
+.edge-lane > p { min-height:34px; margin:7px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
+.edge-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:9px; }
+.edge-metric { border-top:1px solid rgba(255,255,255,.07); padding-top:7px; min-width:0; }
+.edge-metric span { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.35px; }
+.edge-metric strong { display:block; margin-top:3px; font-size:13px; overflow-wrap:anywhere; }
+.edge-foot { margin-top:10px; color:var(--soft); font-size:11px; line-height:1.45; }
 .planner-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin-top:14px; }
 .planner-field { min-width:0; display:grid; gap:5px; }
 .planner-field.wide { grid-column:span 2; }
@@ -15094,7 +15661,7 @@ tr.clickable-row:hover { background:#18201d; }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } .edge-grid { grid-template-columns:1fr; } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width:560px) { .wrap { padding:16px 10px 56px; } .grid, .desk-flow, .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .planner-field.wide { grid-column:span 2; } .desk-title { font-size:23px; } .btn { min-height:40px; } .view-tab[data-view="all"] { display:none; } }
 </style>
 </head>
@@ -15108,10 +15675,10 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="muted" id="asof">Loading...</div>
   </header>
   <div class="grid">
-    <div class="tile"><span>Active options</span><strong id="open-options">-</strong><small id="open-options-meta">-</small></div>
-    <div class="tile"><span>Active shares</span><strong id="open-shares">-</strong><small id="open-shares-meta">-</small></div>
-    <div class="tile"><span>Active futures</span><strong id="open-futures">-</strong><small id="open-futures-meta">-</small></div>
-    <div class="tile risk"><span>Active positions</span><strong id="total-open">-</strong><small id="total-open-meta">-</small></div>
+    <div class="tile"><span>Research options</span><strong id="open-options">-</strong><small id="open-options-meta">-</small></div>
+    <div class="tile"><span>Research shares</span><strong id="open-shares">-</strong><small id="open-shares-meta">-</small></div>
+    <div class="tile"><span>Research futures</span><strong id="open-futures">-</strong><small id="open-futures-meta">-</small></div>
+    <div class="tile risk"><span>Research positions</span><strong id="total-open">-</strong><small id="total-open-meta">-</small></div>
     <div class="tile"><span>Data health</span><strong id="data-health">-</strong></div>
   </div>
   <details class="utility-drawer">
@@ -15178,6 +15745,17 @@ tr.clickable-row:hover { background:#18201d; }
       </div>
     </div>
     <div id="trade-desk-flow" class="desk-flow" aria-label="Trade review stages"></div>
+    <article class="desk-card edge-lab" aria-labelledby="edge-lab-title">
+      <div class="edge-head">
+        <div class="edge-head-copy">
+          <h3 id="edge-lab-title">Edge Lab</h3>
+          <p>After-cost evidence, confidence by independent entry day, time stability, and option outcome realism. Research volume alone cannot unlock live-capital review.</p>
+        </div>
+        <span id="trade-desk-edge-status" class="pill warn">Loading evidence</span>
+      </div>
+      <div id="trade-desk-edge" class="edge-grid"></div>
+      <div id="trade-desk-edge-foot" class="edge-foot"></div>
+    </article>
     <div class="desk-grid">
       <article class="desk-card">
         <h3>Best current review</h3>
@@ -15202,7 +15780,7 @@ tr.clickable-row:hover { background:#18201d; }
       <div class="planner-field"><label for="plan-account-equity">Account equity</label><input id="plan-account-equity" type="number" min="1" step="100" value="10000"></div>
       <div class="planner-field"><label for="plan-buying-power">Buying power</label><input id="plan-buying-power" type="number" min="0" step="100" placeholder="optional"></div>
       <div class="planner-field"><label for="plan-risk-pct">Risk per trade %</label><input id="plan-risk-pct" type="number" min="0.1" max="10" step="0.1" value="1"></div>
-      <div class="planner-field"><label for="plan-allocation-pct">Max allocation %</label><input id="plan-allocation-pct" type="number" min="1" max="100" step="1" value="10"></div>
+      <div class="planner-field"><label for="plan-allocation-pct">Max total open allocation %</label><input id="plan-allocation-pct" type="number" min="1" max="100" step="1" value="10" title="Caps existing same-account broker exposure plus this proposed trade."></div>
       <div class="planner-field"><label for="plan-slippage-pct">Slippage buffer %</label><input id="plan-slippage-pct" type="number" min="0" max="25" step="0.1" value="0.5"></div>
       <div class="planner-field"><label for="plan-entry">Entry / limit</label><input id="plan-entry" type="number" min="0" step="0.01" placeholder="required"></div>
       <div class="planner-field"><label for="plan-stop">Stop / invalidation</label><input id="plan-stop" type="number" min="0" step="0.01" placeholder="required"></div>
@@ -15219,7 +15797,7 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="planner-actions">
       <button class="btn primary" type="button" id="plan-calculate">Calculate plan</button>
       <button class="btn" type="button" id="plan-copy-review" disabled>Copy Robinhood review request</button>
-      <button class="btn" type="button" id="plan-download" disabled>Download review packet</button>
+      <button class="btn" type="button" id="plan-download" disabled>Download inspection copy</button>
       <button class="btn" type="button" id="plan-reset">Reset</button>
     </div>
     <div class="status" id="plan-status-text" role="status" aria-live="polite"></div>
@@ -15332,8 +15910,8 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="section" style="margin-top:12px"><div id="macro-stress-results"></div></div>
   </section>
   <section class="panel" data-view="overview">
-    <h2 style="margin:0 0 8px;font-size:18px">Portfolio risk</h2>
-    <div class="muted">Current open-position risk: concentration, exit pressure, repricing trouble, and worst open P&amp;L.</div>
+    <h2 style="margin:0 0 8px;font-size:18px">Research lifecycle risk</h2>
+    <div class="muted">Local paper/research positions: concentration, exit pressure, repricing trouble, and worst modeled open P&amp;L. This is separate from the live Robinhood portfolio.</div>
     <div class="status" id="risk-status-text"></div>
     <div class="section" style="margin-top:12px"><div id="risk-results"></div></div>
   </section>
@@ -15780,8 +16358,8 @@ function moneyShort(v) {
 }
 function toneClass(v) {
   const tone = String(v || '').toLowerCase();
-  if (['good','ready','pass','open','synced','ticket_ready'].includes(tone)) return 'good';
-  if (['bad','blocked','disabled','stale','paused','fix_first'].includes(tone)) return 'bad';
+  if (['good','ready','pass','open','synced','ticket_ready','validated'].includes(tone)) return 'good';
+  if (['bad','blocked','disabled','stale','paused','fix_first','adverse'].includes(tone)) return 'bad';
   return 'warn';
 }
 function compactMoney(v, digits=0) {
@@ -15790,26 +16368,54 @@ function compactMoney(v, digits=0) {
   if (!Number.isFinite(n)) return '-';
   return new Intl.NumberFormat('en-US', {style:'currency', currency:'USD', maximumFractionDigits:digits}).format(n);
 }
-function tradeDeskFlow(command, broker) {
+function tradeDeskFlow(command, broker, edge) {
   const cards = Array.isArray(command.cards) ? command.cards : [];
   const card = (label) => cards.find(row => String(row.label || '').toLowerCase() === label) || {};
   const market = card('market posture');
-  const trust = card('data trust');
   const risk = command.validation_guardrail || {};
   const entry = broker.entry_gate_label || broker.entry_gate_status || 'unknown';
   const stages = [
     {label:'1 | Regime', value:labelText(market.value || command.climate_label), detail:market.detail || 'Market posture is not available.', tone:market.tone || 'warn'},
-    {label:'2 | Evidence', value:labelText(trust.value || command.data_health_status), detail:trust.detail || 'Check source freshness and validation.', tone:trust.tone || 'warn'},
+    {label:'2 | Edge', value:labelText(edge.label || edge.status), detail:edge.primary_blocker || 'After-cost evidence is being evaluated.', tone:edge.tone || edge.status || 'warn'},
     {label:'3 | Risk gate', value:labelText(risk.label || risk.level), detail:risk.detail || 'Size only after the validation gate clears.', tone:risk.level || 'warn'},
     {label:'4 | Robinhood review', value:labelText(entry), detail:broker.detail || 'Review remains manual and confirmation-required.', tone:broker.tone || broker.status || 'warn'}
   ];
   return stages.map(row => `<div class="flow-step ${toneClass(row.tone)}"><span>${cell(row.label)}</span><strong>${cell(row.value)}</strong><p>${cell(row.detail)}</p></div>`).join('');
+}
+function tradeDeskEdge(edge) {
+  const rows = Array.isArray(edge.asset_rows) ? edge.asset_rows : [];
+  if (!rows.length) return '<div class="privacy-note">No independent fixed-horizon evidence is available. Run the validation report before trusting a new entry.</div>';
+  return rows.map(row => {
+    const tone = toneClass(row.tone || row.status);
+    const optionCoverage = row.asset === 'option'
+      ? `<div class="edge-metric"><span>Broker-observed</span><strong>${pct(row.broker_observed_coverage)}</strong></div>`
+      : '';
+    return `<article class="edge-lane ${tone}">
+      <header><h4>${cell(labelText(row.asset))} | ${cell(row.horizon_sessions)} sessions</h4><span class="pill ${tone}">${cell(labelText(row.status))}</span></header>
+      <p>${cell(row.label)}. ${cell(row.primary_blocker ? `Next gate: ${row.primary_blocker}.` : 'All evidence gates cleared.')}</p>
+      <div class="edge-metrics">
+        <div class="edge-metric"><span>Evidence lane</span><strong>${cell(labelText(row.evidence_lane))}</strong></div>
+        <div class="edge-metric"><span>Outcomes</span><strong>${cell(row.n)} / 200</strong></div>
+        <div class="edge-metric"><span>Independent days</span><strong>${cell(row.unique_entry_days)} / 30</strong></div>
+        <div class="edge-metric"><span>Horizon blocks</span><strong>${cell(row.effective_horizon_blocks)} / 30</strong></div>
+        <div class="edge-metric"><span>After-cost mean</span><strong>${pct(row.avg_return_after_costs)}</strong></div>
+        <div class="edge-metric"><span>90% horizon-block CI</span><strong>${pct(row.daily_block_ci_90_low)} to ${pct(row.daily_block_ci_90_high)}</strong></div>
+        <div class="edge-metric"><span>Profit factor</span><strong>${row.profit_factor_no_losses === true ? 'no losses' : ratio(row.profit_factor)}</strong></div>
+        <div class="edge-metric"><span>SPY excess</span><strong>${pct(row.avg_excess_vs_spy)}</strong></div>
+        <div class="edge-metric"><span>Return at 2x costs</span><strong>${pct(row.avg_return_at_2x_costs)}</strong></div>
+        <div class="edge-metric"><span>Recent-half daily avg</span><strong>${pct(row.recent_half_daily_avg)}</strong></div>
+        ${optionCoverage}
+      </div>
+    </article>`;
+  }).join('');
 }
 function tradeDeskFocus(command) {
   const next = command.next_action || {};
   const guard = command.validation_guardrail || {};
   const action = next.action || '';
   const query = next.query || next.symbol || '';
+  const candidate = next.planner_candidate || null;
+  const canPlan = Boolean(candidate && candidate.plan_ready && !next.entry_blocked);
   return `<div class="plan-callout ${toneClass(command.status)}">
     <h3>${cell(next.label || command.status_detail || 'No review item')}</h3>
     <p>${cell(next.detail || command.status_detail || 'Refresh the local snapshot before choosing a setup.')}</p>
@@ -15821,20 +16427,13 @@ function tradeDeskFocus(command) {
     </div>
     <div class="planner-actions">
       ${action ? `<button class="btn desk-focus-action" type="button" data-action="${escAttr(action)}" data-query="${escAttr(query)}" data-symbol="${escAttr(next.symbol || '')}">Open next review</button>` : ''}
-      ${next.symbol ? `<button class="btn desk-plan-action" type="button" data-symbol="${escAttr(next.symbol)}">Plan ${cell(next.symbol)}</button>` : ''}
+      ${canPlan ? `<button class="btn desk-plan-action" type="button">Plan exact ${cell(candidate.identity_label || candidate.symbol)}</button>` : ''}
     </div>
   </div>`;
 }
-function prefillTradePlanner(symbol) {
-  const clean = String(symbol || '').trim().toUpperCase();
-  if (!clean) return;
-  $('plan-symbol').value = clean;
-  invalidateTradePlan();
-  scrollToId('plan-symbol');
-  $('plan-entry').focus();
-  $('plan-status-text').textContent = `${clean} loaded. Add a fresh entry, stop, and target, then calculate.`;
-}
 let latestTradeDeskBroker = {};
+let latestTradeDeskCandidate = null;
+let latestPlannerCandidate = null;
 function applySnapshotAccountDefaults(asset) {
   const rows = (latestTradeDeskBroker.account_readiness_rows || []).filter(row =>
     row && row.active && row.agentic_allowed && row.funded && (asset !== 'option' || row.options_ready)
@@ -15850,27 +16449,64 @@ function prefillTradePlannerFromCandidate(index) {
   const candidates = latestTradeDeskBroker.manual_review_candidates || [];
   const row = candidates[Number(index)];
   if (!row) return;
-  if (String(row.underlying_type || '').trim().toLowerCase() !== 'equity') {
-    $('plan-status-text').textContent = 'Blocked: Trade Desk supports equity/ETF options only; refresh this candidate with explicit underlying_type=equity.';
-    return;
+  loadCandidateIntoPlanner({
+    asset: 'option',
+    symbol: row.symbol || row.ticker_or_symbol,
+    direction: 'long',
+    option_type: row.option_side,
+    entry_price: row.reference_entry_price ?? row.source_ask ?? row.max_limit_price,
+    stop_price: row.stop_price_reference,
+    target_price: row.target_price_reference,
+    strike: row.strike,
+    expiry: row.expiry,
+    max_units: row.quantity,
+    contract_multiplier: 100,
+    underlying_type: row.underlying_type,
+    identity_label: row.contract || row.contract_label || row.symbol,
+    candidate_fingerprint: row.candidate_fingerprint || null,
+    plan_ready: true,
+    blockers: []
+  }, 'current manual shortlist');
+}
+function loadCandidateIntoPlanner(candidate, sourceLabel='decision workspace') {
+  if (!candidate || !candidate.plan_ready) {
+    const blockers = (candidate && candidate.blockers) || ['exact candidate identity is incomplete'];
+    $('plan-status-text').textContent = `Blocked: ${blockers.join('; ')}. Refresh the exact setup instead of falling back to a different asset.`;
+    return false;
   }
-  $('plan-symbol').value = String(row.symbol || row.ticker_or_symbol || '').trim().toUpperCase();
-  $('plan-asset').value = 'option';
-  $('plan-direction').value = 'long';
-  $('plan-option-side').value = String(row.option_side || 'call').toLowerCase();
-  $('plan-entry').value = row.reference_entry_price ?? row.source_ask ?? '';
-  $('plan-stop').value = row.stop_price_reference ?? '';
-  $('plan-target').value = row.target_price_reference ?? '';
-  $('plan-strike').value = row.strike ?? '';
-  $('plan-expiry').value = row.expiry || '';
-  $('plan-unit-cap').value = row.quantity ?? '';
+  const asset = String(candidate.asset || '').trim().toLowerCase();
+  const symbol = String(candidate.symbol || '').trim().toUpperCase();
+  if (!['share', 'option'].includes(asset) || !symbol) {
+    $('plan-status-text').textContent = 'Blocked: planner candidate is missing an exact supported asset and symbol.';
+    return false;
+  }
+  if (asset === 'option' && String(candidate.underlying_type || '').trim().toLowerCase() !== 'equity') {
+    $('plan-status-text').textContent = 'Blocked: Trade Desk supports equity/ETF options only and requires explicit underlying_type=equity.';
+    return false;
+  }
+  if (asset === 'option' && (!candidate.option_type || !candidate.strike || !candidate.expiry)) {
+    $('plan-status-text').textContent = 'Blocked: exact option side, strike, and expiry are required; no share fallback is allowed.';
+    return false;
+  }
+  latestPlannerCandidate = candidate;
+  $('plan-symbol').value = symbol;
+  $('plan-asset').value = asset;
+  $('plan-direction').value = candidate.direction || 'long';
+  $('plan-entry').value = candidate.entry_price ?? '';
+  $('plan-stop').value = candidate.stop_price ?? '';
+  $('plan-target').value = candidate.target_price ?? '';
+  $('plan-unit-cap').value = candidate.max_units ?? '';
+  $('plan-option-side').value = candidate.option_type || 'call';
+  $('plan-strike').value = candidate.strike ?? '';
+  $('plan-expiry').value = candidate.expiry || '';
   $('plan-multiplier').value = '100';
-  const accountLoaded = applySnapshotAccountDefaults('option');
+  const accountLoaded = applySnapshotAccountDefaults(asset);
   togglePlannerAsset();
-  invalidateTradePlan();
+  invalidateTradePlan(false);
   scrollToId('plan-symbol');
   $('plan-entry').focus();
-  $('plan-status-text').textContent = `${$('plan-symbol').value} contract loaded from the current manual shortlist${accountLoaded ? ' with the single eligible snapshot account values' : ''}. Recheck every field, then calculate.`;
+  $('plan-status-text').textContent = `${candidate.identity_label || symbol} loaded exactly from ${sourceLabel}${accountLoaded ? ' with the single eligible snapshot account values' : ''}. Recheck every field, then calculate.`;
+  return true;
 }
 function tradeDeskRobinhood(broker) {
   const blocks = Number(broker.ticket_preflight_block_count || 0);
@@ -15908,15 +16544,21 @@ async function loadTradeDesk(force=false) {
   }
   const command = data.command || {};
   const broker = data.robinhood || {};
+  const edge = data.edge || {};
   latestTradeDeskBroker = broker;
   const next = command.next_action || {};
+  latestTradeDeskCandidate = next.planner_candidate || null;
   $('trade-desk-hero').innerHTML = `<div><div class="desk-kicker">Today&apos;s decision</div><h2 class="desk-title">${cell(labelText(command.status || 'review'))}</h2><p class="desk-copy">${cell(command.status_detail || 'Review the latest snapshot before planning risk.')}</p></div><div class="desk-hero-side"><span>Next action</span><strong>${cell(next.label || 'Review local evidence')}</strong><div class="muted">${cell(next.detail || 'No order is sent from this page.')}</div></div>`;
-  $('trade-desk-flow').innerHTML = tradeDeskFlow(command, broker);
+  $('trade-desk-flow').innerHTML = tradeDeskFlow(command, broker, edge);
+  $('trade-desk-edge').innerHTML = tradeDeskEdge(edge);
+  $('trade-desk-edge-status').className = `pill ${toneClass(edge.tone || edge.status)}`;
+  $('trade-desk-edge-status').textContent = labelText(edge.label || edge.status || 'unavailable');
+  $('trade-desk-edge-foot').textContent = `${edge.primary_blocker || 'All live-capital evidence requirements are clear.'} Same-day ideas are averaged, then confidence is resampled in circular blocks at least as long as the holding horizon; option live gates use broker-observed outcomes only.`;
   $('trade-desk-focus').innerHTML = tradeDeskFocus(command);
   $('trade-desk-robinhood').innerHTML = tradeDeskRobinhood(broker);
   $('trade-desk-status-text').textContent = `Snapshot ${cell(data.snapshot_id || 'local')} | strategy ${cell(data.strategy_version || 'current')} | ${cell(data.generated_at || '')}`;
   document.querySelectorAll('.desk-focus-action').forEach(btn => btn.addEventListener('click', () => routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '')));
-  document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => prefillTradePlanner(btn.dataset.symbol || '')));
+  document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => loadCandidateIntoPlanner(latestTradeDeskCandidate)));
   document.querySelectorAll('.desk-candidate-plan').forEach(btn => btn.addEventListener('click', () => prefillTradePlannerFromCandidate(btn.dataset.candidateIndex)));
   const openReview = $('desk-open-review');
   if (openReview) openReview.addEventListener('click', () => { setView('paper'); scrollToId('autopilot-summary'); });
@@ -15944,7 +16586,10 @@ function tradePlanPayload() {
     strike: plannerNumber('plan-strike'),
     expiry: $('plan-expiry').value || null,
     contract_multiplier: plannerNumber('plan-multiplier') || 100,
-    underlying_type: 'equity'
+    underlying_type: 'equity',
+    candidate_fingerprint: latestPlannerCandidate && latestPlannerCandidate.candidate_fingerprint,
+    candidate_source_file: latestPlannerCandidate && latestPlannerCandidate.source_file,
+    candidate_source_generated_at: latestPlannerCandidate && latestPlannerCandidate.source_generated_at
   };
 }
 function planIssuesHtml(validation) {
@@ -16020,7 +16665,7 @@ function tradePlanResultHtml(report) {
     <div class="brief-list"><h4>Live review gate</h4>${reviewGateIssuesHtml(gate)}</div>
     <div class="brief-list"><h4>Manual control</h4><ul class="plan-list"><li>Entry order only; stop and target are not placed.</li><li>Review in Robinhood first.</li><li>Confirm the exact reviewed order once.</li><li>No loop, recurring task, or automatic retry.</li><li>Submission is not a fill.</li></ul></div>
   </div>
-  <div class="privacy-note">Packet ${cell(packet.packet_id || '-')} expires ${cell(packet.expires_at || 'before use if freshness is unknown')}. It contains no broker credentials or account number and uses placeholders that the connected Robinhood task must resolve with you.</div>`;
+  <div class="privacy-note">Packet ${cell(packet.packet_id || '-')} expires ${cell(packet.expires_at || 'before use if freshness is unknown')}. Digest ${cell(String(packet.content_digest_sha256 || '-').slice(0, 16))}… detects modification but is not broker authorization. A downloaded copy is inspection-only, contains no credentials or account number, and still requires fresh live review plus exact confirmation.</div>`;
 }
 async function calculateTradePlan() {
   $('plan-status-text').textContent = 'Calculating risk capacity and review packet...';
@@ -16047,7 +16692,8 @@ async function calculateTradePlan() {
       ? 'Sizing complete, but broker review is blocked by the listed live gate(s). Nothing was written or submitted.'
       : 'Plan blocked. Fix the listed inputs; nothing was written or submitted.';
 }
-function invalidateTradePlan() {
+function invalidateTradePlan(clearCandidate=true) {
+  if (clearCandidate) latestPlannerCandidate = null;
   if (!lastTradePlanReport) return;
   lastTradePlanReport = null;
   $('plan-copy-review').disabled = true;
@@ -16057,6 +16703,7 @@ function invalidateTradePlan() {
 }
 async function copyTradeReviewPrompt() {
   if (!lastTradePlanReport || !lastTradePlanReport.review_prompt) return;
+  if (!tradePacketIsFresh()) return;
   try {
     await navigator.clipboard.writeText(lastTradePlanReport.review_prompt);
     $('plan-status-text').textContent = 'Manual Robinhood review request copied. Paste it into one connected Robinhood task when you are ready; it will review before asking for confirmation.';
@@ -16064,8 +16711,21 @@ async function copyTradeReviewPrompt() {
     $('plan-status-text').textContent = 'Clipboard access failed. Download the packet instead.';
   }
 }
+function tradePacketIsFresh() {
+  const packet = lastTradePlanReport && lastTradePlanReport.review_packet;
+  const expiry = packet && Date.parse(packet.expires_at || '');
+  if (!packet || packet.status !== 'manual_review_required' || !Number.isFinite(expiry) || expiry <= Date.now()) {
+    lastTradePlanReport = null;
+    $('plan-copy-review').disabled = true;
+    $('plan-download').disabled = true;
+    $('plan-status-text').textContent = 'Review packet expired or became invalid. Recalculate from fresh evidence and broker state.';
+    return false;
+  }
+  return true;
+}
 function downloadTradePlanPacket() {
   if (!lastTradePlanReport || !lastTradePlanReport.review_packet) return;
+  if (!tradePacketIsFresh()) return;
   const blob = new Blob([JSON.stringify(lastTradePlanReport.review_packet, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -16075,7 +16735,7 @@ function downloadTradePlanPacket() {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-  $('plan-status-text').textContent = 'Review packet downloaded locally. It did not contact Robinhood or Codex.';
+  $('plan-status-text').textContent = 'Inspection copy downloaded. It is not broker authority and still expires; nothing contacted Robinhood or Codex.';
 }
 function togglePlannerAsset() {
   const isOption = $('plan-asset').value === 'option';
@@ -16084,6 +16744,7 @@ function togglePlannerAsset() {
   if (isOption) $('plan-direction').value = 'long';
 }
 function resetTradePlan() {
+  latestPlannerCandidate = null;
   $('plan-symbol').value = '';
   $('plan-asset').value = 'share';
   $('plan-direction').value = 'long';
@@ -17185,7 +17846,8 @@ function riskSummaryHtml(risk) {
   if (!risk) return '<div class="empty">No risk summary available.</div>';
   const tiles = `<div class="brief-grid">
     <div class="brief-tile"><span>Risk level</span><strong>${cell(risk.risk_level)}</strong></div>
-    <div class="brief-tile"><span>Total open</span><strong>${cell(risk.total_open)}</strong></div>
+    <div class="brief-tile"><span>Research open</span><strong>${cell(risk.research_lifecycle_open)}</strong></div>
+    <div class="brief-tile"><span>Broker-linked local</span><strong>${cell(risk.broker_linked_lifecycle_open)}</strong></div>
     <div class="brief-tile"><span>Needs attention</span><strong>${cell(risk.attention_count)}</strong></div>
     <div class="brief-tile"><span>High exit pressure</span><strong>${cell(risk.high_exit_pressure_count)}</strong></div>
     <div class="brief-tile"><span>Reprice trouble</span><strong>${cell(risk.reprice_trouble_count)}</strong></div>
@@ -17194,7 +17856,10 @@ function riskSummaryHtml(risk) {
   const warnings = (risk.warnings && risk.warnings.length)
     ? `<div class="brief-list" style="margin-top:10px"><h4>Warnings</h4><ul>${risk.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
     : '<div class="empty">No concentration or exit-pressure warnings surfaced.</div>';
-  return `${tiles}${warnings}
+  const hygiene = (risk.hygiene_warnings && risk.hygiene_warnings.length)
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Lifecycle hygiene</h4><ul>${risk.hygiene_warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+  return `${tiles}${warnings}${hygiene}
     <div class="brief-cols">
       <div class="brief-list"><h4>Asset breakdown</h4>${table(risk.asset_breakdown || [])}</div>
       <div class="brief-list"><h4>Concentration</h4>${table(risk.concentration || [], true)}</div>
@@ -18364,10 +19029,10 @@ async function loadMacroStress() {
   $('macro-stress-results').innerHTML = macroStressHtml(data);
 }
 async function loadRiskSummary() {
-  $('risk-status-text').textContent = 'Loading portfolio risk...';
+  $('risk-status-text').textContent = 'Loading research lifecycle risk...';
   const res = await fetch('/api/risk-summary');
   const data = await res.json();
-  $('risk-status-text').textContent = `Risk level: ${data.risk_level || 'unknown'} across ${data.total_open || 0} open position(s).`;
+  $('risk-status-text').textContent = `Research risk: ${data.risk_level || 'unknown'} across ${data.research_lifecycle_open || 0} active research position(s); ${data.broker_linked_lifecycle_open || 0} broker-linked local row(s).`;
   $('risk-results').innerHTML = riskSummaryHtml(data);
   wireClickableRows($('risk-results'));
 }
@@ -18591,7 +19256,8 @@ function autopilotSummary(data) {
     ['Broker sync', data.broker_reconciliation_label || data.broker_reconciliation_status || '-'],
     ['Broker matched', `${data.broker_matched_count || 0}/${data.broker_option_count || 0}`],
     ['Broker-only', data.broker_only_count || 0],
-    ['Local-only', data.local_only_count || 0],
+    ['Broker-linked local-only', data.local_only_count || 0],
+    ['Research lifecycle', data.research_lifecycle_option_count || 0],
     ['Expired local', data.local_expired_count || 0],
     ['Broker age', data.broker_snapshot_age || 'missing'],
     ['Agentic options', data.agentic_readiness_label || (data.agentic_option_ready ? 'ready' : 'not ready')],
@@ -19952,6 +20618,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/trade-desk":
             self._send_json(build_trade_desk(self.data_dir))
+            return
+        if parsed.path == "/api/edge-lab":
+            self._send_json(build_edge_lab_report(self.data_dir))
             return
         if parsed.path == "/api/command-center":
             self._send_json(build_command_center(self.data_dir))
