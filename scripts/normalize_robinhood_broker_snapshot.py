@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,9 +22,16 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from risk.account_drawdown import (  # noqa: E402
+    append_snapshot_observation,
+    eligible_snapshot_account_keys,
+    validate_equity_ledger,
+)
+
 DATA_DIR = ROOT / "data"
 DEFAULT_INPUT = DATA_DIR / "robinhood_mcp_snapshot_raw.json"
 DEFAULT_OUTPUT = DATA_DIR / "robinhood_broker_snapshot.json"
+EQUITY_LEDGER_DIRNAME = "robinhood_account_equity_ledgers"
 SNAPSHOT_SCHEMA = "optedge_robinhood_broker_snapshot_v1"
 RAW_BUNDLE_SCHEMA = "optedge_robinhood_mcp_read_bundle_v2"
 SAFE_PORTFOLIO_FIELDS = (
@@ -291,6 +299,214 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(_clean(payload), indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    """Atomically replace one local ledger after its complete chain is sealed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.tmp")
+    encoded = json.dumps(_clean(payload), indent=2, sort_keys=True)
+    with temp.open("w", encoding="utf-8") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    temp.replace(path)
+
+
+def default_account_equity_ledger_dir(data_dir: Path) -> Path:
+    """Return a durable default without leaking test state outside custom dirs.
+
+    The repository's real ``data/`` directory uses per-user application state
+    so a checkout cleanup cannot silently erase the drawdown high-water mark.
+    Explicit temporary or custom data directories stay self-contained.
+    ``OPTEDGE_STATE_DIR`` is an explicit override for the real-data ledger
+    directory.
+    """
+    candidate = Path(data_dir).expanduser()
+    if candidate.resolve(strict=False) != DATA_DIR.resolve(strict=False):
+        return candidate / EQUITY_LEDGER_DIRNAME
+
+    override = os.environ.get("OPTEDGE_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = (
+            Path(local_app_data).expanduser()
+            if local_app_data
+            else Path.home() / "AppData" / "Local"
+        )
+        return base / "Optedge" / "risk"
+    xdg_state_home = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = (
+        Path(xdg_state_home).expanduser()
+        if xdg_state_home
+        else Path.home() / ".local" / "state"
+    )
+    return base / "optedge" / "risk"
+
+
+def account_equity_ledger_path(ledger_dir: Path, account_key: str) -> Path:
+    """Map a pseudonymous account key to a non-identifying stable filename."""
+    digest = hashlib.sha256(
+        f"optedge-account-equity-ledger-v1|{account_key}".encode()
+    ).hexdigest()
+    return Path(ledger_dir) / f"account_{digest[:16]}.json"
+
+
+def account_equity_ledger_backup_path(ledger_path: Path) -> Path:
+    """Return the stable sidecar used to detect deletion and rollback."""
+    path = Path(ledger_path)
+    return path.with_name(f"{path.name}.bak")
+
+
+def _load_consistent_account_equity_ledger(
+    path: Path,
+    *,
+    allow_backup_lag: bool,
+) -> dict[str, Any] | None:
+    """Load a ledger whose primary and sidecar form one safe history.
+
+    A write interrupted after replacing the primary can leave a valid backup
+    that is a strict prefix.  Only the explicit append path may accept and
+    repair that condition.  Review reads require the two durable copies to
+    agree exactly.
+    """
+    backup_path = account_equity_ledger_backup_path(path)
+    if not path.exists():
+        if backup_path.exists():
+            raise ValueError(
+                "equity ledger primary is missing while its .bak exists; "
+                "restore the primary or explicitly rebaseline"
+            )
+        return None
+
+    primary = _read_json(path)
+    primary_validation = validate_equity_ledger(primary)
+    if primary_validation.get("valid") is not True:
+        raise ValueError(
+            "existing equity ledger is unsafe: "
+            + "; ".join(primary_validation.get("blockers") or [])
+        )
+    if not backup_path.exists():
+        observations = primary.get("observations")
+        if isinstance(observations, list) and len(observations) >= 2:
+            raise ValueError(
+                "equity ledger .bak is missing for a multi-observation chain; "
+                "restore the sidecar or explicitly rebaseline"
+            )
+        return primary
+
+    backup = _read_json(backup_path)
+    backup_validation = validate_equity_ledger(backup)
+    if backup_validation.get("valid") is not True:
+        raise ValueError(
+            "equity ledger .bak is unsafe: "
+            + "; ".join(backup_validation.get("blockers") or [])
+        )
+
+    primary_observations = primary.get("observations")
+    backup_observations = backup.get("observations")
+    assert isinstance(primary_observations, list)
+    assert isinstance(backup_observations, list)
+    backup_is_primary_prefix = (
+        primary.get("account_key") == backup.get("account_key")
+        and len(backup_observations) <= len(primary_observations)
+        and primary_observations[: len(backup_observations)] == backup_observations
+    )
+    if not backup_is_primary_prefix:
+        raise ValueError(
+            "equity ledger .bak proves primary rollback or divergent history; "
+            "restore the newest valid chain or explicitly rebaseline"
+        )
+    if len(backup_observations) < len(primary_observations) and not allow_backup_lag:
+        raise ValueError(
+            "equity ledger .bak lags the primary; rerun explicit normalization "
+            "to reseal durable state before review"
+        )
+    return primary
+
+
+def load_consistent_account_equity_ledger(path: Path) -> dict[str, Any] | None:
+    """Fail-closed loader for account-loss evaluation and manual review."""
+    return _load_consistent_account_equity_ledger(path, allow_backup_lag=False)
+
+
+def _write_equity_ledger_with_backup(
+    path: Path,
+    previous: dict[str, Any] | None,
+    ledger: dict[str, Any],
+) -> None:
+    """Atomically replace the primary and leave a newest-chain sidecar.
+
+    The previous primary is written first so an interrupted primary replace is
+    recoverable.  After the primary succeeds, the sidecar is advanced to the
+    same newest chain.  In the normal state both copies therefore carry the
+    latest tail, so replacing only the primary with its immediately preceding
+    version is detectable instead of looking like a valid backup restore.
+    """
+    if previous is not None:
+        _write_json_atomic(account_equity_ledger_backup_path(path), previous)
+    _write_json_atomic(path, ledger)
+    if previous is not None:
+        _write_json_atomic(account_equity_ledger_backup_path(path), ledger)
+
+
+def append_account_equity_ledgers(
+    snapshot: dict[str, Any],
+    ledger_dir: Path,
+) -> dict[str, Any]:
+    """Persist chained observations after an explicit normalized snapshot write.
+
+    One file is maintained per pseudonymous account so every hash chain remains
+    single-account.  Invalid or incomplete account state is never guessed and
+    never overwrites an existing ledger.
+    """
+    appended = 0
+    deduplicated = 0
+    blockers: list[str] = []
+    account_keys = eligible_snapshot_account_keys(snapshot)
+    if not account_keys:
+        blockers.append(
+            "No account has a timezone-aware source time, pseudonymous key, and positive portfolio total_value."
+        )
+    for account_key in account_keys:
+        path = account_equity_ledger_path(ledger_dir, account_key)
+        try:
+            existing = _load_consistent_account_equity_ledger(
+                path,
+                allow_backup_lag=True,
+            )
+            ledger, was_appended = append_snapshot_observation(
+                existing,
+                snapshot,
+                account_key,
+            )
+            if was_appended:
+                _write_equity_ledger_with_backup(path, existing, ledger)
+            elif existing is not None:
+                # A retry after an interrupted final sidecar replace can safely
+                # reseal the already-validated primary without inventing data.
+                backup_path = account_equity_ledger_backup_path(path)
+                backup = _read_json(backup_path) if backup_path.exists() else None
+                if backup != existing:
+                    _write_json_atomic(backup_path, existing)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            blockers.append(f"{account_key}: {exc}")
+            continue
+        if was_appended:
+            appended += 1
+        else:
+            deduplicated += 1
+    return {
+        "schema": "optedge_robinhood_account_equity_ledger_update_v1",
+        "status": "updated" if appended and not blockers else "unchanged" if not blockers else "blocked",
+        "eligible_account_count": len(account_keys),
+        "observations_appended": appended,
+        "identical_observations_deduplicated": deduplicated,
+        "blockers": blockers,
+        "does_not_place_orders": True,
+    }
+
+
 def _unwrap_rows(value: Any, preferred_keys: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """Accept direct lists, paginated API shapes, or keyed account maps."""
     if value is None:
@@ -390,18 +606,22 @@ def _account_number(raw: dict[str, Any], fallback: str = "") -> str:
 
 
 def _account_mask(account_number: str, raw: dict[str, Any]) -> str:
+    if account_number:
+        return f"...{account_number[-4:]}"
     explicit = _text(raw.get("account_mask") or raw.get("mask"))
     if explicit:
         return f"...{explicit[-4:]}"
-    if not account_number:
-        return ""
-    return f"...{account_number[-4:]}"
+    return ""
 
 
 def _account_key(account_number: str, raw: dict[str, Any]) -> str:
     """Return a stable non-secret pseudonymous key without persisting the account number."""
     explicit = _text(raw.get("account_key"))
-    if explicit:
+    if not account_number and (
+        explicit.startswith("acct_")
+        and len(explicit) == 21
+        and all(char in "0123456789abcdef" for char in explicit[5:])
+    ):
         return explicit
     basis = account_number or "|".join([
         _text(raw.get("account_mask") or raw.get("mask")),
@@ -1324,22 +1544,41 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Normalize a read-only Robinhood snapshot for Optedge.")
     ap.add_argument("--input", default=str(DEFAULT_INPUT), help="Raw JSON bundle to normalize.")
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Normalized broker snapshot output path.")
+    ap.add_argument(
+        "--equity-ledger-dir",
+        default="",
+        help=(
+            "Directory for chained pseudonymous account-equity ledgers. "
+            "Defaults to durable per-user state for the repository data directory, "
+            f"or {EQUITY_LEDGER_DIRNAME}/ beside a custom --output."
+        ),
+    )
     ap.add_argument("--account-number", default="", help="Fallback account number when raw rows omit it.")
     ap.add_argument("--dry-run", action="store_true", help="Print summary without writing the output file.")
     args = ap.parse_args(argv)
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    ledger_dir = (
+        Path(args.equity_ledger_dir)
+        if str(args.equity_ledger_dir).strip()
+        else default_account_equity_ledger_dir(output_path.parent)
+    )
     raw = _read_json(input_path)
     snapshot = normalize_broker_snapshot(raw, account_number=args.account_number)
     summary = {
         "input": str(input_path),
         "output": str(output_path),
+        "equity_ledger_dir": str(ledger_dir),
         "dry_run": bool(args.dry_run),
         **snapshot["counts"],
     }
     if not args.dry_run:
+        # Ledger state is a consequence of a successfully persisted explicit
+        # normalization.  Dry runs and failed snapshot writes cannot mutate it.
         _write_json(output_path, snapshot)
+        ledger_update = append_account_equity_ledgers(snapshot, ledger_dir)
+        summary["equity_ledger_update"] = ledger_update
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

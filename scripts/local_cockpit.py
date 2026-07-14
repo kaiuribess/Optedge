@@ -55,11 +55,20 @@ from optedge.strategy_profile import (
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
 )
+from risk.account_drawdown import (
+    POLICY_VERSION as ACCOUNT_DRAWDOWN_POLICY_VERSION,
+    evaluate_account_drawdown,
+    source_snapshot_digest,
+)
 from risk.portfolio import (
     evaluate_post_trade_portfolio,
     summarize_broker_account_capital_at_risk,
 )
 from risk.trade_plan import (
+    ACCOUNT_KEY_DERIVATION_HEX_LENGTH,
+    ACCOUNT_KEY_DERIVATION_NAMESPACE,
+    ACCOUNT_KEY_DERIVATION_SCHEMA,
+    MANUAL_REVIEW_BASE_RISK_FRACTION,
     build_manual_robinhood_review_packet,
     calculate_account_limits,
     size_long_option_trade,
@@ -69,6 +78,10 @@ from scripts.lookup_symbol import DATA_DIR, lookup_symbol, rich_lookup_kwargs, s
 from scripts.normalize_robinhood_broker_snapshot import (
     RAW_BUNDLE_SCHEMA,
     SNAPSHOT_SCHEMA,
+    account_equity_ledger_path,
+    append_account_equity_ledgers,
+    default_account_equity_ledger_dir,
+    load_consistent_account_equity_ledger,
     normalize_broker_snapshot,
 )
 from scripts.export_external_paper_track import (
@@ -4122,6 +4135,26 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
     if target is None or target <= 0:
         blockers.append("missing positive target")
 
+    if asset == "option":
+        max_units = _clean_value(record.get("suggested_contracts"))
+    else:
+        suggested_dollars = _optional_float_value(record.get("suggested_dollars"))
+        max_units = (
+            max(1, int(suggested_dollars // entry))
+            if suggested_dollars is not None and suggested_dollars > 0 and entry is not None and entry > 0
+            else None
+        )
+    artifact_age = _optional_float_value(row.get("artifact_age_minutes"))
+    if artifact_age is None:
+        artifact_age = _optional_float_value(record.get("snapshot_age_min"))
+    artifact_at = _clean_value(row.get("artifact_generated_at"))
+    if artifact_at is None:
+        artifact_at = _clean_value(row.get("generated_at"))
+    if artifact_at is None:
+        artifact_at = _clean_value(row.get("_source_mtime"))
+    artifact_basis = _clean_value(row.get("artifact_time_basis"))
+    if artifact_basis is None:
+        artifact_basis = "generated_at" if _clean_value(row.get("generated_at")) else "file_mtime_age"
     candidate: dict[str, Any] = {
         "asset": asset,
         "symbol": symbol,
@@ -4129,10 +4162,13 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
         "entry_price": entry,
         "stop_price": stop,
         "target_price": target,
-        "max_units": _clean_value(record.get("suggested_contracts")),
+        "max_units": max_units,
         "identity_label": record.get("setup"),
         "source_file": record.get("source_file"),
         "source_generated_at": _clean_value(row.get("generated_at")),
+        "source_artifact_at": artifact_at,
+        "source_artifact_time_basis": artifact_basis,
+        "source_artifact_age_minutes": artifact_age,
         "source_quote_at": _clean_value(row.get("source_quote_at")),
         "source_quote_time_basis": _clean_value(row.get("source_quote_time_basis")),
         "quote_quality": _clean_value(row.get("quote_quality")),
@@ -4141,6 +4177,8 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
         "ask": _clean_value(row.get("ask")),
         "mid": _clean_value(row.get("mid")),
         "spread_pct": _clean_value(row.get("spread_pct")),
+        "source_price_session": _clean_value(row.get("source_price_session")),
+        "source_price_basis": _clean_value(row.get("source_price_basis")),
     }
     if asset == "option":
         side = str(row.get("side") or record.get("action") or "").strip().lower()
@@ -4175,7 +4213,11 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
             "asset", "symbol", "direction", "option_type", "strike", "expiry",
             "underlying_type", "contract_multiplier", "entry_price", "stop_price",
             "target_price", "max_units", "source_file", "source_generated_at",
-            "source_quote_at", "bid", "ask", "mid",
+            "source_artifact_at", "source_artifact_time_basis",
+            # Age is deliberately excluded: the same immutable artifact must
+            # keep the same identity while the wall clock advances.
+            "source_quote_at", "source_price_session", "source_price_basis",
+            "bid", "ask", "mid",
         )
     }
     fingerprint = hashlib.sha256(
@@ -4193,8 +4235,24 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
     spec = OPPORTUNITY_SPECS[asset]
     symbol = _setup_symbol(row, asset, spec)
     score = _opportunity_score(row)
-    readiness = _setup_readiness(row, asset)
     row_source = str(row.get("_source_file") or source_file or "").strip() or None
+    entry_price = _setup_entry_price(row, asset)
+    stop_price = _clean_value(row.get("stop_price"))
+    target_price = _clean_value(row.get("target_price"))
+    if asset == "share":
+        entry_number = _optional_float_value(entry_price)
+        stop_fraction = _optional_float_value(row.get("stop_pct"))
+        target_fraction = _optional_float_value(row.get("target_pct"))
+        if entry_number is not None and entry_number > 0:
+            if stop_price is None and stop_fraction is not None:
+                normalized_stop = stop_fraction if stop_fraction < 0 else -stop_fraction
+                stop_price = round(entry_number * (1.0 + normalized_stop), 4)
+            if target_price is None and target_fraction is not None and target_fraction > 0:
+                target_price = round(entry_number * (1.0 + target_fraction), 4)
+    readiness_row = row.copy()
+    readiness_row["stop_price"] = stop_price
+    readiness_row["target_price"] = target_price
+    readiness = _setup_readiness(readiness_row, asset)
     record = {
         "asset": asset,
         "ticker_or_symbol": symbol,
@@ -4203,9 +4261,9 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "score": round(score, 4),
         "confidence": _clean_value(row.get("confidence")),
         "trade_status": _clean_value(row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")),
-        "entry_price": _setup_entry_price(row, asset),
-        "stop_price": _clean_value(row.get("stop_price")),
-        "target_price": _clean_value(row.get("target_price")),
+        "entry_price": entry_price,
+        "stop_price": stop_price,
+        "target_price": target_price,
         "size": _setup_size(row, asset),
         "suggested_contracts": _clean_value(row.get("suggested_contracts")),
         "suggested_dollars": _clean_value(row.get("suggested_dollars")),
@@ -4219,8 +4277,22 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "snapshot_freshness": _clean_value(row.get("snapshot_freshness")),
         "snapshot_age_min": _clean_value(row.get("snapshot_age_min")),
         "reason_selected": _setup_reason(row, asset),
+        "research_guard_status": _clean_value(row.get("research_guard_status")),
         "_sort_score": score,
     }
+    for key in (
+        "next_earnings_date",
+        "earnings_date",
+        "days_to_earnings",
+        "earnings_score",
+        "whisper_score",
+        "whisper_gap_pct",
+        "next_catalyst_date",
+        "days_to_catalyst",
+        "catalyst_type",
+    ):
+        if key in row:
+            record[key] = _clean_value(row.get(key))
     if asset == "option":
         for key in (
             "contract",
@@ -4264,6 +4336,16 @@ def build_best_setups(
         if asset_name == "option":
             chain_df = _load_option_chain_shortlist(data_dir)
             if not chain_df.empty:
+                if "artifact_age_minutes" in chain_df.columns:
+                    chain_age = pd.to_numeric(
+                        chain_df["artifact_age_minutes"], errors="coerce"
+                    )
+                    chain_df["snapshot_age_min"] = chain_age
+                    chain_df["snapshot_freshness"] = chain_age.map(
+                        lambda value: _snapshot_freshness(
+                            None if pd.isna(value) else float(value)
+                        )
+                    )
                 chain_shortlist_rows = int(len(chain_df))
                 sources["option_chain_shortlist"] = str(chain_df["_source_file"].iloc[0]) if "_source_file" in chain_df.columns else "option_chain_shortlist"
                 df = pd.concat([df, chain_df], ignore_index=True, sort=False) if not df.empty else chain_df
@@ -4332,6 +4414,689 @@ def build_best_setups(
             "Options include chain-source and spread quality when available.",
             "Saved 3m+ chain shortlist rows are included as option review candidates when present.",
             "This is a research shortlist only; no orders are placed.",
+        ],
+    }
+
+
+COMPARISON_BOARD_LIMIT = 3
+
+
+def _comparison_value(*values: Any) -> Any:
+    """Return the first nonblank scalar without treating NaN as provenance."""
+    for value in values:
+        clean = _clean_value(value)
+        if clean is None:
+            continue
+        if isinstance(clean, str) and not clean.strip():
+            continue
+        return clean
+    return None
+
+
+def _comparison_exact_identity(record: dict[str, Any]) -> dict[str, Any]:
+    planner = record.get("planner_candidate")
+    planner = planner if isinstance(planner, dict) else {}
+    asset = str(record.get("asset") or planner.get("asset") or "").strip().lower()
+    symbol = str(
+        planner.get("symbol") or record.get("ticker_or_symbol") or ""
+    ).strip().upper()
+    direction = str(
+        planner.get("direction") or record.get("action") or "long"
+    ).strip().lower()
+    if direction in {"buy", "bull", "bullish"}:
+        direction = "long"
+    elif direction in {"sell", "bear", "bearish"}:
+        direction = "short"
+    identity: dict[str, Any] = {
+        "asset": asset,
+        "symbol": symbol,
+        "direction": direction,
+        "label": _comparison_value(
+            planner.get("identity_label"), record.get("setup"), symbol
+        ),
+    }
+    if asset == "option":
+        identity.update({
+            "option_type": _agentic_option_side(
+                planner.get("option_type") or record.get("action")
+            ),
+            "strike": _optional_float_value(planner.get("strike")),
+            "expiry": _agentic_expiry_key(
+                planner.get("expiry") or record.get("expiry")
+            ),
+            "underlying_type": str(
+                planner.get("underlying_type") or ""
+            ).strip().lower() or None,
+            "contract": _comparison_value(
+                planner.get("contract"), record.get("contract"), record.get("setup")
+            ),
+        })
+    elif asset == "futures":
+        identity["contract"] = _comparison_value(record.get("setup"), record.get("ticker_or_symbol"))
+    return identity
+
+
+def _comparison_manual_match(
+    identity: dict[str, Any],
+    broker: dict[str, Any],
+) -> dict[str, Any]:
+    rows = broker.get("manual_review_candidates")
+    rows = rows if isinstance(rows, list) else []
+    if identity.get("asset") != "option":
+        return {}
+    wanted = _agentic_contract_key(identity)
+    for raw in rows:
+        if isinstance(raw, dict) and _agentic_contract_key(raw) == wanted:
+            return raw
+    return {}
+
+
+def _comparison_source_state(
+    record: dict[str, Any],
+    broker_match: dict[str, Any],
+) -> dict[str, Any]:
+    planner = record.get("planner_candidate")
+    planner = planner if isinstance(planner, dict) else {}
+    asset = str(record.get("asset") or planner.get("asset") or "").strip().lower()
+    artifact_at = _comparison_value(
+        planner.get("source_artifact_at"),
+        planner.get("source_generated_at"),
+    )
+    artifact_age = _optional_float_value(
+        _comparison_value(
+            planner.get("source_artifact_age_minutes"),
+            record.get("snapshot_age_min"),
+        )
+    )
+    if artifact_age is None and artifact_at is not None:
+        artifact_age = _iso_age_minutes(artifact_at)
+    artifact_basis = _comparison_value(
+        planner.get("source_artifact_time_basis"),
+        "generated_at" if artifact_at else "file_mtime_age" if artifact_age is not None else None,
+    )
+    source_file = _comparison_value(planner.get("source_file"), record.get("source_file"))
+
+    quote_at = _comparison_value(
+        broker_match.get("source_quote_at"),
+        broker_match.get("quote_updated_at"),
+        planner.get("source_quote_at"),
+    )
+    quote_basis = _comparison_value(
+        broker_match.get("source_quote_time_basis"),
+        planner.get("source_quote_time_basis"),
+    )
+    quote_quality = _comparison_value(
+        broker_match.get("quote_quality"),
+        planner.get("quote_quality"),
+    )
+    data_delay = _comparison_value(
+        broker_match.get("data_delay"),
+        planner.get("data_delay"),
+    )
+    quote_age = _iso_age_minutes(quote_at)
+    provenance_row = {
+        "source_quote_at": quote_at,
+        "source_quote_time_basis": quote_basis,
+        "quote_quality": quote_quality,
+        "data_delay": data_delay,
+    }
+    source_blockers: list[str] = []
+    artifact_present = bool(source_file and artifact_age is not None)
+    artifact_fresh = bool(
+        artifact_present and artifact_age is not None and artifact_age <= STALE_SNAPSHOT_MINUTES
+    )
+    if not artifact_present:
+        source_blockers.append("artifact provenance or age is missing")
+    elif not artifact_fresh:
+        source_blockers.append(
+            f"source artifact is stale ({_short_age_label(artifact_age)} old)"
+        )
+
+    quote_reasons = manual_review_quote_provenance_reasons(provenance_row)
+    if quote_at is None or quote_age is None:
+        quote_reasons.append("source quote timestamp is missing or invalid")
+    elif quote_age > AGENTIC_FRESH_MINUTES:
+        quote_reasons.append(
+            f"source quote is stale for planning ({_short_age_label(quote_age)} old)"
+        )
+    source_quote_required = asset == "option"
+    if source_quote_required:
+        for reason in quote_reasons:
+            if reason not in source_blockers:
+                source_blockers.append(reason)
+    # A share shortlist is a bar-data research artifact, not an execution quote.
+    # Its exact artifact can enter local sizing while the mandatory connected
+    # Robinhood equity quote remains the only execution quote. Options still
+    # require contract-level source quote provenance before planner loading.
+    source_gate_pass = artifact_fresh and (not source_quote_required or not quote_reasons)
+    if source_gate_pass and artifact_age is not None and artifact_age <= FRESH_SNAPSHOT_MINUTES:
+        source_score = 4
+        source_status = "fresh"
+    elif source_gate_pass:
+        source_score = 3
+        source_status = "aging"
+    elif artifact_fresh and quote_at is not None and quote_age is not None and quote_age <= STALE_SNAPSHOT_MINUTES:
+        source_score = 2
+        source_status = "quote_stale"
+    elif artifact_fresh:
+        source_score = 1
+        source_status = "quote_unproven"
+    else:
+        source_score = 0
+        source_status = "artifact_stale_or_missing"
+    return {
+        "source_file": source_file,
+        "artifact_at": artifact_at,
+        "artifact_time_basis": artifact_basis,
+        "artifact_age_minutes": round(artifact_age, 1) if artifact_age is not None else None,
+        "artifact_freshness": _snapshot_freshness(artifact_age),
+        "quote_at": quote_at,
+        "quote_time_basis": quote_basis,
+        "quote_age_minutes": round(quote_age, 1) if quote_age is not None else None,
+        "quote_quality": quote_quality,
+        "data_delay": data_delay,
+        "source_status": source_status,
+        "source_score": source_score,
+        "source_gate_pass": source_gate_pass,
+        "blockers": source_blockers,
+        "warnings": list(dict.fromkeys([
+            *research_quote_provenance_warnings(provenance_row),
+            *(
+                ["share execution bid/ask will be validated from Robinhood during manual review"]
+                if asset == "share" and quote_reasons
+                else []
+            ),
+        ])),
+    }
+
+
+def _comparison_edge_state(asset: str, edge: dict[str, Any]) -> dict[str, Any]:
+    rows = edge.get("asset_rows")
+    rows = rows if isinstance(rows, list) else []
+    lane = next(
+        (
+            row for row in rows
+            if isinstance(row, dict)
+            and str(row.get("asset") or "").strip().lower() == asset
+        ),
+        {},
+    )
+    attestation = edge.get("source_attestation")
+    attestation = attestation if isinstance(attestation, dict) else {}
+    attestation_ok = attestation.get("met") is not False
+    eligible = bool(lane.get("live_capital_eligible") is True and attestation_ok)
+    blocker = None if eligible else _comparison_value(
+        lane.get("primary_blocker"),
+        edge.get("primary_blocker"),
+        f"{asset.title()} Edge Lab lane is unavailable",
+    )
+    return {
+        "eligible": eligible,
+        "score": 1 if eligible else 0,
+        "lane": _comparison_value(lane.get("evidence_lane"), "missing"),
+        "status": _comparison_value(lane.get("status"), edge.get("status"), "unavailable"),
+        "primary_blocker": blocker,
+    }
+
+
+def _comparison_overlap_state(
+    identity: dict[str, Any],
+    broker: dict[str, Any],
+) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for key in ("broker_reconciliation_rows", "paper_positions"):
+        values = broker.get(key)
+        if isinstance(values, list):
+            rows.extend(row for row in values if isinstance(row, dict))
+    symbol = str(identity.get("symbol") or "").strip().upper()
+    exact_contract = False
+    same_direction = False
+    underlying_count = 0
+    wanted_contract = _agentic_contract_key(identity) if identity.get("asset") == "option" else ""
+    wanted_direction = _agentic_direction_key(identity)
+    for row in rows:
+        row_status = str(row.get("status") or row.get("trade_status") or "").strip().lower()
+        if any(token in row_status for token in ("expired", "closed", "cancelled", "canceled")):
+            continue
+        row_symbol = str(
+            row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or ""
+        ).strip().upper()
+        if not symbol or row_symbol != symbol:
+            continue
+        underlying_count += 1
+        if identity.get("asset") == "option" and _agentic_contract_key(row) == wanted_contract:
+            exact_contract = True
+        if _agentic_direction_key(row) == wanted_direction:
+            same_direction = True
+    blockers: list[str] = []
+    if exact_contract:
+        blockers.append("exact contract already exists in broker/local paper exposure")
+    elif same_direction:
+        blockers.append("same-underlying directional exposure already exists")
+    return {
+        "label": (
+            "exact contract overlap" if exact_contract
+            else "directional overlap" if same_direction
+            else f"{underlying_count} same-underlying position(s)" if underlying_count
+            else "none"
+        ),
+        "underlying_count": underlying_count,
+        "exact_contract": exact_contract,
+        "same_direction": same_direction,
+        "blockers": blockers,
+    }
+
+
+def _comparison_economics(
+    record: dict[str, Any],
+    broker_match: dict[str, Any],
+) -> dict[str, Any]:
+    planner = record.get("planner_candidate")
+    planner = planner if isinstance(planner, dict) else {}
+    asset = str(record.get("asset") or planner.get("asset") or "").strip().lower()
+    entry = _optional_float_value(
+        _comparison_value(
+            planner.get("entry_price"),
+            record.get("entry_price"),
+            broker_match.get("reference_entry_price"),
+            broker_match.get("source_ask"),
+            broker_match.get("max_limit_price"),
+        )
+    )
+    stop = _optional_float_value(
+        _comparison_value(
+            planner.get("stop_price"),
+            record.get("stop_price"),
+            broker_match.get("stop_price_reference"),
+        )
+    )
+    target = _optional_float_value(
+        _comparison_value(
+            planner.get("target_price"),
+            record.get("target_price"),
+            broker_match.get("target_price_reference"),
+        )
+    )
+    spread = _optional_float_value(
+        _comparison_value(
+            broker_match.get("source_spread_pct"),
+            broker_match.get("spread_pct"),
+            planner.get("spread_pct"),
+            record.get("spread_pct"),
+        )
+    )
+    bid = _optional_float_value(
+        _comparison_value(broker_match.get("source_bid"), broker_match.get("bid"), planner.get("bid"))
+    )
+    ask = _optional_float_value(
+        _comparison_value(broker_match.get("source_ask"), broker_match.get("ask"), planner.get("ask"))
+    )
+    valid_bid_ask = bool(
+        bid is not None and bid > 0 and ask is not None and ask >= bid
+    )
+    if valid_bid_ask and bid is not None and ask is not None:
+        quote_mid = (ask + bid) / 2.0
+        spread = max(0.0, ask - bid) / quote_mid if quote_mid > 0 else None
+    multiplier = _optional_float_value(planner.get("contract_multiplier")) or (100.0 if asset == "option" else 1.0)
+    units = _optional_float_value(planner.get("max_units")) or _optional_float_value(record.get("suggested_contracts")) or 1.0
+    units = max(1.0, float(units))
+    slippage_fraction = max(0.005, (spread or 0.0) / 2.0)
+    adjusted_entry = entry * (1.0 + slippage_fraction) if entry is not None else None
+    stop_risk = None
+    reward = None
+    adjusted_rr = None
+    if adjusted_entry is not None and stop is not None and target is not None:
+        risk_per_unit = adjusted_entry - stop
+        reward_per_unit = target - adjusted_entry
+        if risk_per_unit > 0 and reward_per_unit > 0:
+            stop_risk = risk_per_unit * multiplier * units
+            reward = reward_per_unit * multiplier * units
+            adjusted_rr = reward / stop_risk
+    if asset == "option" and adjusted_entry is not None:
+        max_loss = adjusted_entry * multiplier * units
+    elif asset == "share" and adjusted_entry is not None:
+        max_loss = adjusted_entry * units
+    else:
+        max_loss = _optional_float_value(record.get("risk_dollars")) or stop_risk
+
+    execution_blockers: list[str] = []
+    max_spread = (
+        SWING_EXECUTION_PROFILE.max_option_spread_pct
+        if asset == "option"
+        else EQUITY_REVIEW_MAX_SPREAD_PCT if asset == "share"
+        else None
+    )
+    if asset == "option" and not valid_bid_ask:
+        execution_blockers.append("source bid/ask is missing or invalid")
+        execution_score = 0
+    elif spread is not None and spread < 0:
+        execution_blockers.append("bid/ask spread is invalid")
+        execution_score = 0
+    elif asset == "option" and spread is None:
+        execution_blockers.append("bid/ask spread is missing")
+        execution_score = 0
+    elif max_spread is not None and spread is not None and spread > max_spread:
+        execution_blockers.append(
+            f"spread {spread:.1%} exceeds the {max_spread:.1%} review limit"
+        )
+        execution_score = 0
+    elif spread is None:
+        execution_score = 1
+    elif max_spread is None or spread <= max_spread * 0.50:
+        execution_score = 3
+    else:
+        execution_score = 2
+
+    economics_blockers: list[str] = []
+    if adjusted_rr is None:
+        economics_blockers.append("stop/target geometry does not produce positive reward-to-risk")
+        rr_score = 0
+    elif adjusted_rr >= 2.0:
+        rr_score = 3
+    elif adjusted_rr >= 1.5:
+        rr_score = 2
+    elif adjusted_rr >= 1.0:
+        rr_score = 1
+    else:
+        rr_score = 0
+        economics_blockers.append(
+            f"slippage-adjusted reward/risk is only {adjusted_rr:.2f}x"
+        )
+    return {
+        "entry_price": round(entry, 4) if entry is not None else None,
+        "stop_price": round(stop, 4) if stop is not None else None,
+        "target_price": round(target, 4) if target is not None else None,
+        "bid": round(bid, 4) if bid is not None else None,
+        "ask": round(ask, 4) if ask is not None else None,
+        "spread_pct": round(spread, 6) if spread is not None else None,
+        "slippage_fraction": round(slippage_fraction, 6),
+        "slippage_adjusted_entry": round(adjusted_entry, 4) if adjusted_entry is not None else None,
+        "stop_risk_dollars": round(stop_risk, 2) if stop_risk is not None else None,
+        "reward_dollars": round(reward, 2) if reward is not None else None,
+        "max_loss_dollars": round(max_loss, 2) if max_loss is not None else None,
+        "slippage_adjusted_rr": round(adjusted_rr, 3) if adjusted_rr is not None else None,
+        "execution_score": execution_score,
+        "rr_score": rr_score,
+        "execution_blockers": execution_blockers,
+        "economics_blockers": economics_blockers,
+    }
+
+
+def _comparison_catalyst_regime(
+    record: dict[str, Any],
+    command: dict[str, Any],
+) -> dict[str, Any]:
+    earnings_days = _days_until_date(
+        record.get("next_earnings_date") or record.get("earnings_date"),
+        record.get("days_to_earnings"),
+    )
+    catalyst_days = _days_until_date(
+        record.get("next_catalyst_date"), record.get("days_to_catalyst")
+    )
+    whisper_gap = _float_value(record.get("whisper_gap_pct"), default=math.nan)
+    event_risk, event_action = _event_risk_level(
+        earnings_days, catalyst_days, whisper_gap
+    )
+    climate_score = _float_value(command.get("climate_score"), default=math.nan)
+    if not math.isfinite(climate_score):
+        regime_status, regime_score = "unknown", 0
+    elif climate_score >= 60:
+        regime_status, regime_score = "supportive", 2
+    elif climate_score >= 45:
+        regime_status, regime_score = "mixed", 1
+    else:
+        regime_status, regime_score = "defensive", 0
+    event_score = {"clear": 2, "watch": 1, "medium": 0, "high": -1}.get(event_risk, 0)
+    blockers = []
+    if event_risk == "high":
+        blockers.append(f"near-term catalyst gate: {event_action.replace('_', ' ')}")
+    return {
+        "event_risk": event_risk,
+        "event_action": event_action,
+        "next_earnings_date": _clean_value(record.get("next_earnings_date") or record.get("earnings_date")),
+        "next_catalyst_date": _clean_value(record.get("next_catalyst_date")),
+        "regime_status": regime_status,
+        "regime_label": _comparison_value(command.get("climate_label"), "unknown"),
+        "regime_score": regime_score,
+        "score": max(0, event_score + regime_score),
+        "blockers": blockers,
+    }
+
+
+def _candidate_comparison_row(
+    record: dict[str, Any],
+    *,
+    command: dict[str, Any],
+    edge: dict[str, Any],
+    broker: dict[str, Any],
+) -> dict[str, Any]:
+    identity = _comparison_exact_identity(record)
+    asset = str(identity.get("asset") or "")
+    planner = record.get("planner_candidate")
+    planner = planner if isinstance(planner, dict) else None
+    broker_match = _comparison_manual_match(identity, broker)
+    source = _comparison_source_state(record, broker_match)
+    edge_state = _comparison_edge_state(asset, edge)
+    overlap = _comparison_overlap_state(identity, broker)
+    economics = _comparison_economics(record, broker_match)
+    catalyst = _comparison_catalyst_regime(record, command)
+    guard = command.get("validation_guardrail")
+    guard = guard if isinstance(guard, dict) else {}
+    validation_level = str(guard.get("level") or "missing").strip().lower()
+    validation_clear = validation_level == "ok"
+    validation_blockers: list[str] = []
+    if not validation_clear:
+        validation_blockers.append(
+            str(guard.get("detail") or "validation guardrail is not cleared")
+        )
+    setup_status = str(record.get("setup_gate_status") or "review").strip().lower()
+    if setup_status == "avoid":
+        validation_blockers.append(
+            str((record.get("setup_gate_reasons") or ["setup gate says avoid"])[0])
+        )
+    validation_blockers.extend(overlap["blockers"])
+    candidate_blockers = (
+        [str(value) for value in (planner.get("blockers") or []) if str(value).strip()]
+        if planner is not None
+        else [f"{asset or 'unknown'} candidate is not supported by the planner"]
+    )
+    blockers = (
+        source["blockers"]
+        + ([] if edge_state["eligible"] else [str(edge_state["primary_blocker"])])
+        + validation_blockers
+        + candidate_blockers
+        + economics["execution_blockers"]
+        + economics["economics_blockers"]
+        + catalyst["blockers"]
+    )
+    blockers = list(dict.fromkeys(value for value in blockers if value))
+    planner_load_allowed = bool(
+        planner is not None
+        and planner.get("plan_ready") is True
+        and asset in {"option", "share"}
+        and source["source_gate_pass"]
+        and edge_state["eligible"]
+        and validation_clear
+        and setup_status != "avoid"
+        and not overlap["blockers"]
+        and not economics["execution_blockers"]
+        and not economics["economics_blockers"]
+        and not catalyst["blockers"]
+    )
+    validation_score = 2 if validation_clear and not overlap["blockers"] else 1 if validation_clear else 0
+    ranking_vector = [
+        int(source["source_score"]),
+        int(edge_state["score"]),
+        int(validation_score),
+        int(economics["execution_score"]),
+        int(economics["rr_score"]),
+        int(catalyst["score"]),
+    ]
+    identity_text = (
+        f"{identity.get('symbol')} {identity.get('expiry')} "
+        f"{identity.get('option_type')} {identity.get('strike'):g}"
+        if asset == "option" and identity.get("strike") is not None
+        else str(identity.get("label") or identity.get("symbol") or "Unknown candidate")
+    )
+    candidate_id = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()[:18]
+    why = (
+        f"Source {source['source_status']}; Edge {edge_state['status']} in "
+        f"{edge_state['lane']}; validation {validation_level}; overlap {overlap['label']}; "
+        f"execution {'clear' if not economics['execution_blockers'] else 'blocked'}; "
+        f"slippage-adjusted R/R "
+        f"{economics['slippage_adjusted_rr'] if economics['slippage_adjusted_rr'] is not None else 'missing'}x; "
+        f"catalyst {catalyst['event_risk']} / regime {catalyst['regime_status']}."
+    )
+    return {
+        "candidate_id": candidate_id,
+        "kind": "candidate",
+        "asset": asset,
+        "symbol": identity.get("symbol"),
+        "identity": identity,
+        "identity_label": identity_text,
+        "ranking_vector": ranking_vector,
+        "ranking_dimensions": {
+            "source_quote": ranking_vector[0],
+            "edge": ranking_vector[1],
+            "validation_portfolio": ranking_vector[2],
+            "execution": ranking_vector[3],
+            "slippage_rr": ranking_vector[4],
+            "catalyst_regime": ranking_vector[5],
+        },
+        "artifact_at": source["artifact_at"],
+        "artifact_time_basis": source["artifact_time_basis"],
+        "artifact_age_minutes": source["artifact_age_minutes"],
+        "artifact_freshness": source["artifact_freshness"],
+        "source_file": source["source_file"],
+        "quote_at": source["quote_at"],
+        "quote_time_basis": source["quote_time_basis"],
+        "quote_age_minutes": source["quote_age_minutes"],
+        "quote_quality": source["quote_quality"],
+        "source_status": source["source_status"],
+        "spread_pct": economics["spread_pct"],
+        "bid": economics["bid"],
+        "ask": economics["ask"],
+        "entry_price": economics["entry_price"],
+        "stop_price": economics["stop_price"],
+        "target_price": economics["target_price"],
+        "max_loss_dollars": economics["max_loss_dollars"],
+        "slippage_fraction": economics["slippage_fraction"],
+        "slippage_adjusted_rr": economics["slippage_adjusted_rr"],
+        "edge_eligible": edge_state["eligible"],
+        "edge_lane": edge_state["lane"],
+        "edge_status": edge_state["status"],
+        "validation_level": validation_level,
+        "overlap": overlap["label"],
+        "overlap_count": overlap["underlying_count"],
+        "event_risk": catalyst["event_risk"],
+        "regime_support": catalyst["regime_status"],
+        "primary_blocker": blockers[0] if blockers else None,
+        "blockers": blockers,
+        "warnings": list(dict.fromkeys(source["warnings"])),
+        "why": why,
+        "planner_load_allowed": planner_load_allowed,
+        "planner_candidate": planner if planner_load_allowed else None,
+        "raw_cross_asset_score_used": False,
+        "recommended": False,
+    }
+
+
+def build_candidate_comparison(
+    best_setups: dict[str, Any],
+    *,
+    command: dict[str, Any],
+    edge: dict[str, Any],
+    broker: dict[str, Any],
+    limit: int = COMPARISON_BOARD_LIMIT,
+) -> dict[str, Any]:
+    """Compare asset lanes with shared gates instead of incomparable raw scores."""
+    by_asset = best_setups.get("by_asset")
+    by_asset = by_asset if isinstance(by_asset, dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for asset in ("option", "share", "futures"):
+        rows = by_asset.get(asset)
+        if not isinstance(rows, list):
+            continue
+        for record in rows:
+            if isinstance(record, dict):
+                candidates.append(
+                    _candidate_comparison_row(
+                        record,
+                        command=command,
+                        edge=edge,
+                        broker=broker,
+                    )
+                )
+    candidates.sort(
+        key=lambda row: (
+            tuple(row.get("ranking_vector") or []),
+            str(row.get("candidate_id") or ""),
+        ),
+        reverse=True,
+    )
+    top = candidates[: max(1, min(int(limit or COMPARISON_BOARD_LIMIT), COMPARISON_BOARD_LIMIT))]
+    winner = next((row for row in top if row.get("planner_load_allowed") is True), None)
+    if winner is not None:
+        winner["recommended"] = True
+        baseline_reason = "An exact candidate clears the comparison gates; no trade remains the risk-free baseline."
+        winner_id = winner["candidate_id"]
+    else:
+        baseline_reason = (
+            f"No candidate clears every planner gate. First blocker: {top[0].get('primary_blocker')}"
+            if top else "No exact swing candidate is available in the current snapshot."
+        )
+        winner_id = "no_trade"
+    baseline = {
+        "candidate_id": "no_trade",
+        "kind": "baseline",
+        "asset": "cash",
+        "symbol": None,
+        "identity": {"asset": "cash", "label": "No trade / hold cash"},
+        "identity_label": "No trade / hold cash",
+        "ranking_vector": None,
+        "artifact_age_minutes": 0,
+        "quote_age_minutes": 0,
+        "spread_pct": 0,
+        "entry_price": None,
+        "stop_price": None,
+        "target_price": None,
+        "max_loss_dollars": 0,
+        "slippage_adjusted_rr": None,
+        "edge_eligible": True,
+        "edge_lane": "not_applicable",
+        "overlap": "none",
+        "primary_blocker": None if winner is None else baseline_reason,
+        "blockers": [],
+        "why": baseline_reason,
+        "planner_load_allowed": False,
+        "planner_candidate": None,
+        "raw_cross_asset_score_used": False,
+        "recommended": winner is None,
+    }
+    return {
+        "schema": "optedge_candidate_comparison_v1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "winner_id": winner_id,
+        "candidate_count": len(candidates),
+        "displayed_candidate_count": len(top),
+        "rows": top + [baseline],
+        "ranking_order": [
+            "source_quote_freshness_and_provenance",
+            "edge_eligibility",
+            "validation_and_portfolio_blockers",
+            "execution_quality",
+            "slippage_adjusted_reward_risk",
+            "catalyst_and_regime_support",
+        ],
+        "raw_cross_asset_scores_used": False,
+        "automation_enabled": False,
+        "broker_action_enabled": False,
+        "notes": [
+            "Each asset is shortlisted inside its own lane; raw asset scores are never compared across assets.",
+            "Stale or unproven source/quote provenance remains visible but cannot load the planner.",
+            "No trade is always shown as the zero-new-risk baseline.",
         ],
     }
 
@@ -7107,6 +7872,10 @@ def normalize_robinhood_broker_snapshot_file(
         return result
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    result["equity_ledger_update"] = append_account_equity_ledgers(
+        snapshot,
+        default_account_equity_ledger_dir(data_dir),
+    )
     result["broker_reconciliation"] = build_broker_reconciliation(data_dir)
     return result
 
@@ -7371,7 +8140,7 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         })
     if status == "stale":
         next_actions.append({
-            "label": "Refresh autopilot packet",
+            "label": "Refresh manual review packet",
             "action": "refresh_autopilot_packet",
             "detail": "Rebuild the research-only queue and cycle packet from the latest Optedge scan.",
         })
@@ -7493,7 +8262,7 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "robinhood_mcp_capabilities": broker_reconciliation.get("robinhood_mcp_capabilities") or [],
         "recent_decisions": decision.get("rows") or [],
         "notes": [
-            "Local paper entries can be automatic, but this cockpit does not submit broker orders.",
+            "Local paper simulation may update automatically; it never starts a Codex task or submits a broker order.",
             "Legacy live-ticket files are blocked; only Trade Desk can build a fresh one-order review packet.",
         ],
     }
@@ -12378,28 +13147,759 @@ def build_edge_lab_report(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     return build_edge_lab(Path(data_dir))
 
 
+def build_model_trust_report() -> dict[str, Any]:
+    """Return a privacy-safe view of the adaptive-model promotion firewall."""
+    from backtest.predictor import model_trust_status
+
+    trust = model_trust_status()
+
+    def component(value: Any, *, fallback: str) -> dict[str, Any]:
+        row = value if isinstance(value, dict) else {}
+        return {
+            "exists": row.get("exists") is True,
+            "usable": row.get("usable") is True,
+            "schema": _clean_value(row.get("schema")),
+            "trust_state": _clean_value(row.get("trust_state")),
+            "content_digest_sha256": _clean_value(row.get("content_digest_sha256")),
+            "age_days": _clean_value(row.get("age_days")),
+            "outcome_age_days": _clean_value(row.get("outcome_age_days")),
+            "active_mode": "trusted_champion" if row.get("usable") is True else fallback,
+            "reasons": [
+                str(reason)
+                for reason in (row.get("reasons") or [])[:5]
+                if str(reason).strip()
+            ],
+        }
+
+    return {
+        "schema": trust.get("schema"),
+        "status": trust.get("status"),
+        "trusted_components": list(trust.get("trusted_components") or []),
+        "predictor": component(
+            trust.get("predictor"),
+            fallback="zero_predictor",
+        ),
+        "runtime_weights": component(
+            trust.get("runtime_weights"),
+            fallback="source_controlled_weights",
+        ),
+        "ordinary_scan_training": trust.get("ordinary_scan_training"),
+        "option_adaptation": trust.get("option_adaptation"),
+        "safe_default": trust.get("safe_default"),
+        "does_not_train_during_scan": True,
+    }
+
+
+def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Summarize the local chained account-equity interlocks without broker calls."""
+    data_dir = Path(data_dir)
+    snapshot = _read_json(data_dir / "robinhood_broker_snapshot.json")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
+    account_keys = list(dict.fromkeys(
+        str(row.get("account_key") or "").strip()
+        for row in accounts
+        if isinstance(row, dict) and str(row.get("account_key") or "").strip()
+    ))
+    rows: list[dict[str, Any]] = []
+    for account_key in account_keys:
+        ledger_path = account_equity_ledger_path(
+            default_account_equity_ledger_dir(data_dir),
+            account_key,
+        )
+        ledger_error = None
+        try:
+            ledger = load_consistent_account_equity_ledger(ledger_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            ledger = None
+            ledger_error = str(exc)
+        result = evaluate_account_drawdown(
+            ledger,
+            snapshot,
+            account_key=account_key,
+        )
+        if ledger_error:
+            result["status"] = "blocked"
+            result["review_ready"] = False
+            result["allowed"] = False
+            result["risk_multiplier"] = 0.0
+            result["blockers"] = list(dict.fromkeys([
+                f"Durable equity ledger is unsafe: {ledger_error}",
+                *(result.get("blockers") or []),
+            ]))
+        rows.append({key: _clean_value(value) for key, value in result.items()})
+
+    allowed_rows = [row for row in rows if row.get("allowed") is True]
+    if rows and len(allowed_rows) == len(rows):
+        status = "reduced" if any(row.get("status") == "reduced" for row in rows) else "ready"
+    else:
+        status = "blocked"
+    drawdowns = [
+        _float_value(row.get("high_water_drawdown_fraction"), default=math.nan)
+        for row in rows
+    ]
+    multipliers = [
+        _float_value(row.get("risk_multiplier"), default=math.nan)
+        for row in rows
+    ]
+    return {
+        "schema": "optedge_account_drawdown_overview_v1",
+        "policy_version": ACCOUNT_DRAWDOWN_POLICY_VERSION,
+        "status": status,
+        "account_count": len(rows),
+        "eligible_account_count": len(allowed_rows),
+        "worst_high_water_drawdown_fraction": _clean_value(
+            min((value for value in drawdowns if math.isfinite(value)), default=None)
+        ),
+        "minimum_risk_multiplier": _clean_value(
+            min((value for value in multipliers if math.isfinite(value)), default=None)
+        ),
+        "base_risk_fraction": MANUAL_REVIEW_BASE_RISK_FRACTION,
+        "rows": rows,
+        "blockers": list(dict.fromkeys(
+            str(blocker)
+            for row in rows
+            for blocker in (row.get("blockers") or [])
+            if str(blocker).strip()
+        ))[:8],
+        "does_not_place_orders": True,
+    }
+
+
 def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Build the focused, read-only first screen from one local refresh pass."""
     data_dir = Path(data_dir)
+    command = build_command_center(
+        data_dir,
+        include_live_discovery=False,
+        refresh_trade_queue=False,
+    )
+    edge = build_edge_lab_report(data_dir)
+    broker = build_agentic_autopilot_status(data_dir)
+    model_trust = build_model_trust_report()
+    account_drawdown = build_account_drawdown_overview(data_dir)
+    best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
+    comparison = build_candidate_comparison(
+        best_setups,
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
     return {
-        "schema": "optedge_trade_desk_v1",
+        "schema": "optedge_trade_desk_v2",
         "snapshot_id": _local_snapshot_id(data_dir),
         "strategy_version": SWING_EXECUTION_PROFILE.strategy_version,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "execution_mode": "manual_review_only",
         "automation_enabled": False,
-        "command": build_command_center(
-            data_dir,
-            include_live_discovery=False,
-            refresh_trade_queue=False,
-        ),
-        "edge": build_edge_lab_report(data_dir),
-        "robinhood": build_agentic_autopilot_status(data_dir),
+        "command": command,
+        "edge": edge,
+        "model_trust": model_trust,
+        "account_drawdown": account_drawdown,
+        "robinhood": broker,
+        "candidate_comparison": comparison,
         "notes": [
             "This view prepares research and risk context; it does not submit broker orders.",
+            "Adaptive models remain source-controlled or quarantined until explicit purged OOS promotion evidence passes.",
+            "Account drawdown state comes only from explicit normalized Robinhood snapshots and blocks when history is missing or unsafe.",
             "Robinhood review must use a fresh connected-session account, quote, position, and order check.",
         ],
     }
+
+
+SHARE_CANDIDATE_REVIEW_SCHEMA = "optedge_share_candidate_review_attestation_v1"
+SHARE_CANDIDATE_REVIEW_LIMIT = 3
+OPTION_CANDIDATE_REVIEW_SCHEMA = "optedge_option_candidate_review_attestation_v1"
+OPTION_CYCLE_SCHEMA = "optedge_robinhood_agentic_cycle_v1"
+OPTION_QUEUE_SCHEMA = "optedge_robinhood_agentic_options_queue_v1"
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    """Return the stable digest used to bind review attestations to JSON values."""
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _option_candidate_review_attestation(
+    plan: dict[str, Any],
+    cycle: dict[str, Any],
+    queue: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str], dict[str, Any]]:
+    """Bind one option review to identical rows in two fresh, inert artifacts."""
+    order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    cycle_schema = str(cycle.get("schema") or "").strip()
+    queue_schema = str(queue.get("schema") or "").strip()
+    cycle_generated_at = str(cycle.get("generated_at") or "").strip()
+    queue_generated_at = str(queue.get("generated_at") or "").strip()
+    cycle_age = _iso_age_minutes(cycle_generated_at)
+    queue_age = _iso_age_minutes(queue_generated_at)
+    if cycle_schema != OPTION_CYCLE_SCHEMA:
+        blockers.append(f"Option review requires source cycle schema {OPTION_CYCLE_SCHEMA}.")
+    if queue_schema != OPTION_QUEUE_SCHEMA:
+        blockers.append(f"Option review requires source queue schema {OPTION_QUEUE_SCHEMA}.")
+    if cycle_age is None or queue_age is None:
+        blockers.append("Fresh option queue and entry-gate timestamps are required for manual review.")
+    elif cycle_age > AGENTIC_FRESH_MINUTES or queue_age > AGENTIC_FRESH_MINUTES:
+        blockers.append(
+            f"Option queue/entry gate is older than the {AGENTIC_FRESH_MINUTES:g}-minute review limit."
+        )
+
+    entry_gate = cycle.get("entry_gate") if isinstance(cycle.get("entry_gate"), dict) else {}
+    entry_allowed = entry_gate.get("new_entries_allowed_after_live_checks")
+    cycle_auto_submit = cycle.get("auto_submit_allowed")
+    cycle_no_orders = cycle.get("does_not_place_orders")
+    queue_no_orders = queue.get("does_not_place_orders")
+    queue_execution_enabled = queue.get("execution_enabled")
+    queue_max_orders = queue.get("max_orders_to_submit")
+    if entry_allowed is not True:
+        blockers.append("The current Optedge option-entry gate does not allow a fresh broker review.")
+    if cycle_auto_submit is not False:
+        blockers.append("The option cycle must explicitly keep auto_submit_allowed=false.")
+    if cycle_no_orders is not True:
+        blockers.append("The option cycle must explicitly declare does_not_place_orders=true.")
+    if queue_no_orders is not True:
+        blockers.append("The option queue must explicitly declare does_not_place_orders=true.")
+    if queue_execution_enabled is not False:
+        blockers.append("The option queue must explicitly keep execution_enabled=false.")
+    if isinstance(queue_max_orders, bool) or not isinstance(queue_max_orders, int) or queue_max_orders != 0:
+        blockers.append("The option queue must explicitly keep max_orders_to_submit=0.")
+
+    plan_candidate_key = _agentic_contract_key({
+        "symbol": order.get("symbol"),
+        "option_side": order.get("option_type"),
+        "strike": order.get("strike"),
+        "expiry": order.get("expiry"),
+    })
+    if not all(plan_candidate_key.split("|")):
+        blockers.append("The planned option contract identity is incomplete.")
+    cycle_rows = (
+        cycle.get("manual_review_candidates")
+        if isinstance(cycle.get("manual_review_candidates"), list)
+        else []
+    )
+    queue_rows = queue.get("orders") if isinstance(queue.get("orders"), list) else []
+    cycle_matches = [
+        row
+        for row in cycle_rows
+        if isinstance(row, dict) and _agentic_contract_key(row) == plan_candidate_key
+    ]
+    queue_matches = [
+        row
+        for row in queue_rows
+        if isinstance(row, dict) and _agentic_contract_key(row) == plan_candidate_key
+    ]
+    cycle_count = len(cycle_matches)
+    queue_count = len(queue_matches)
+    if cycle_count != 1:
+        blockers.append(
+            "The exact option contract must occur exactly once in cycle.manual_review_candidates."
+        )
+    if queue_count != 1:
+        blockers.append("The exact option contract must occur exactly once in queue.orders.")
+
+    cycle_row = cycle_matches[0] if cycle_count == 1 else None
+    queue_row = queue_matches[0] if queue_count == 1 else None
+    candidate_rows_match = bool(
+        cycle_row is not None
+        and queue_row is not None
+        and _canonical_json_sha256(cycle_row) == _canonical_json_sha256(queue_row)
+    )
+    if cycle_count == 1 and queue_count == 1 and not candidate_rows_match:
+        blockers.append("The exact option candidate rows in the cycle and queue do not match.")
+    candidate = cycle_row if isinstance(cycle_row, dict) else (
+        queue_row if isinstance(queue_row, dict) else {}
+    )
+    candidate_row_digest = (
+        _canonical_json_sha256(candidate) if candidate_rows_match else None
+    )
+    candidate_fingerprint = (
+        candidate_row_digest[:24] if candidate_row_digest is not None else None
+    )
+
+    candidate_asset = str(candidate.get("asset") or "").strip().lower()
+    candidate_action = str(candidate.get("action") or "").strip().upper()
+    candidate_order_type = str(candidate.get("order_type") or "").strip().lower()
+    candidate_time_in_force = str(candidate.get("time_in_force") or "").strip().lower()
+    candidate_underlying_type = str(candidate.get("underlying_type") or "").strip().lower()
+    candidate_symbol = str(
+        candidate.get("symbol")
+        or candidate.get("ticker")
+        or candidate.get("ticker_or_symbol")
+        or ""
+    ).strip().upper()
+    candidate_option_type = _agentic_option_side(
+        candidate.get("option_side")
+        or candidate.get("option_type")
+        or candidate.get("right")
+    )
+    candidate_strike = _float_value(
+        candidate.get("strike") or candidate.get("strike_price"),
+        default=math.nan,
+    )
+    candidate_expiry = _agentic_expiry_key(
+        candidate.get("expiry") or candidate.get("expiration_date")
+    )
+    candidate_dte_value = _float_value(candidate.get("dte"), default=math.nan)
+    candidate_dte = (
+        int(round(candidate_dte_value))
+        if math.isfinite(candidate_dte_value)
+        and math.isclose(candidate_dte_value, round(candidate_dte_value), abs_tol=1e-9)
+        else None
+    )
+    cycle_timestamp = _parse_iso_utc(cycle_generated_at)
+    try:
+        candidate_expiry_date = datetime.fromisoformat(candidate_expiry).date()
+    except ValueError:
+        candidate_expiry_date = None
+    expected_candidate_dte = (
+        (candidate_expiry_date - cycle_timestamp.date()).days
+        if candidate_expiry_date is not None and cycle_timestamp is not None
+        else None
+    )
+    if candidate:
+        if candidate_asset != "option":
+            blockers.append("The current option candidate must declare asset=option.")
+        if candidate_action != "BUY_TO_OPEN":
+            blockers.append("The current option candidate must declare action=BUY_TO_OPEN.")
+        if candidate_order_type != "limit":
+            blockers.append("The current option candidate must declare order_type=limit.")
+        if candidate_time_in_force != "day":
+            blockers.append("The current option candidate must declare time_in_force=day.")
+        if candidate_underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
+            blockers.append("The current option candidate is not explicitly an equity/ETF underlying.")
+        if candidate_underlying_type != str(order.get("underlying_type") or "").strip().lower():
+            blockers.append("Candidate and planner underlying_type do not match exactly.")
+        if is_known_index_option_symbol(candidate_symbol):
+            blockers.append("The current candidate uses an unsupported index option root.")
+        if (
+            candidate_dte is None
+            or candidate_dte < MIN_SWING_OPTION_DTE
+            or candidate_dte != expected_candidate_dte
+        ):
+            blockers.append(
+                "The current option candidate DTE must exactly reconcile its expiry "
+                f"and cycle date and be at least {MIN_SWING_OPTION_DTE}."
+            )
+
+    candidate_limit = _float_value(
+        candidate.get("max_limit_price")
+        or candidate.get("limit_price")
+        or candidate.get("reference_entry_price"),
+        default=math.nan,
+    )
+    plan_limit = _float_value(order.get("limit_price"), default=math.nan)
+    candidate_quantity_value = _float_value(candidate.get("quantity"), default=math.nan)
+    plan_quantity_value = _float_value(order.get("quantity"), default=math.nan)
+    candidate_quantity = (
+        int(round(candidate_quantity_value))
+        if math.isfinite(candidate_quantity_value)
+        and math.isclose(candidate_quantity_value, round(candidate_quantity_value), abs_tol=1e-9)
+        else 0
+    )
+    plan_quantity = (
+        int(round(plan_quantity_value))
+        if math.isfinite(plan_quantity_value)
+        and math.isclose(plan_quantity_value, round(plan_quantity_value), abs_tol=1e-9)
+        else 0
+    )
+    if candidate:
+        if not math.isfinite(candidate_limit) or candidate_limit <= 0 or not math.isfinite(plan_limit) or plan_limit <= 0:
+            blockers.append("Candidate and planner limit prices must both be finite and positive.")
+        elif plan_limit > candidate_limit + 1e-9:
+            blockers.append(
+                f"Planner limit ${plan_limit:.2f} exceeds the candidate cap of ${candidate_limit:.2f}."
+            )
+        if candidate_quantity <= 0 or plan_quantity <= 0 or plan_quantity > candidate_quantity:
+            blockers.append("Planner quantity exceeds the current candidate's approved quantity cap.")
+
+    source_quote_at = str(candidate.get("source_quote_at") or "").strip()
+    source_quote_time_basis = str(candidate.get("source_quote_time_basis") or "").strip()
+    quote_quality = str(candidate.get("quote_quality") or "").strip()
+    data_delay = str(candidate.get("data_delay") or "").strip()
+    source_quote_age = _iso_age_minutes(source_quote_at)
+    source_bid = _float_value(candidate.get("source_bid") or candidate.get("bid"), default=math.nan)
+    source_ask = _float_value(candidate.get("source_ask") or candidate.get("ask"), default=math.nan)
+    configured_spread_cap = _float_value(
+        candidate.get("max_allowed_spread_pct"),
+        default=SWING_EXECUTION_PROFILE.max_option_spread_pct,
+    )
+    if not math.isfinite(configured_spread_cap) or configured_spread_cap <= 0:
+        blockers.append("The current option candidate spread cap is missing or invalid.")
+        candidate_spread_cap = SWING_EXECUTION_PROFILE.max_option_spread_pct
+    else:
+        candidate_spread_cap = min(
+            configured_spread_cap,
+            SWING_EXECUTION_PROFILE.max_option_spread_pct,
+        )
+    if (
+        math.isfinite(source_bid)
+        and source_bid > 0
+        and math.isfinite(source_ask)
+        and source_ask >= source_bid
+    ):
+        source_mid = (source_bid + source_ask) / 2.0
+        source_spread = (source_ask - source_bid) / source_mid if source_mid > 0 else math.nan
+    else:
+        source_spread = math.nan
+    if candidate:
+        if source_quote_age is None:
+            blockers.append("The candidate source quote timestamp is missing or invalid.")
+        elif source_quote_age > AGENTIC_FRESH_MINUTES:
+            blockers.append(
+                f"The candidate source quote is older than {AGENTIC_FRESH_MINUTES:g} minutes."
+            )
+        for reason in manual_review_quote_provenance_reasons(candidate):
+            blockers.append(f"The candidate {reason}.")
+        provenance_warnings = research_quote_provenance_warnings(candidate)
+        for warning in provenance_warnings:
+            warnings.append(
+                f"The candidate {warning}; refresh with Robinhood's quote tool before review."
+            )
+        if not math.isfinite(source_spread):
+            blockers.append("The candidate source bid/ask is missing or invalid.")
+        elif source_spread > candidate_spread_cap + 1e-9:
+            blockers.append(
+                f"The candidate source spread exceeds the {candidate_spread_cap:.1%} execution cap."
+            )
+    else:
+        provenance_warnings = []
+
+    unique_blockers = list(dict.fromkeys(value for value in blockers if value))
+    unique_warnings = list(dict.fromkeys(value for value in warnings if value))
+    attestation = {
+        "schema": OPTION_CANDIDATE_REVIEW_SCHEMA,
+        "status": "allowed" if not unique_blockers else "blocked",
+        "allowed": not unique_blockers,
+        "blockers": unique_blockers,
+        "asset": candidate_asset or None,
+        "action": candidate_action or None,
+        "order_type": candidate_order_type or None,
+        "time_in_force": candidate_time_in_force or None,
+        "underlying_type": candidate_underlying_type or None,
+        "symbol": candidate_symbol or None,
+        "option_type": candidate_option_type or None,
+        "strike": _clean_value(candidate_strike if math.isfinite(candidate_strike) else None),
+        "expiry": candidate_expiry or None,
+        "dte": candidate_dte,
+        "candidate_fingerprint": candidate_fingerprint,
+        "candidate_row_digest_sha256": candidate_row_digest,
+        "source_cycle_schema": cycle_schema or None,
+        "source_queue_schema": queue_schema or None,
+        "cycle_generated_at": cycle_generated_at or None,
+        "queue_generated_at": queue_generated_at or None,
+        "max_source_age_minutes": AGENTIC_FRESH_MINUTES,
+        "cycle_digest_sha256": _canonical_json_sha256(cycle),
+        "queue_digest_sha256": _canonical_json_sha256(queue),
+        "exact_candidate_count_cycle": cycle_count,
+        "exact_candidate_count_queue": queue_count,
+        "candidate_rows_match": candidate_rows_match,
+        "entry_gate_new_entries_allowed_after_live_checks": entry_allowed,
+        "cycle_auto_submit_allowed": cycle_auto_submit,
+        "cycle_does_not_place_orders": cycle_no_orders,
+        "queue_does_not_place_orders": queue_no_orders,
+        "queue_execution_enabled": queue_execution_enabled,
+        "queue_max_orders_to_submit": queue_max_orders,
+        "candidate_quantity_cap": candidate_quantity or None,
+        "candidate_limit_cap": _clean_value(
+            candidate_limit if math.isfinite(candidate_limit) else None
+        ),
+        "planned_quantity": plan_quantity or None,
+        "planned_limit": _clean_value(plan_limit if math.isfinite(plan_limit) else None),
+        "max_spread_fraction": candidate_spread_cap,
+        "candidate_source_quote_at": source_quote_at or None,
+        "candidate_source_quote_time_basis": source_quote_time_basis or None,
+        "candidate_source_bid": _clean_value(source_bid if math.isfinite(source_bid) else None),
+        "candidate_source_ask": _clean_value(source_ask if math.isfinite(source_ask) else None),
+        "candidate_source_spread_fraction": _clean_value(
+            round(source_spread, 6) if math.isfinite(source_spread) else None
+        ),
+        "candidate_quote_quality": quote_quality or None,
+        "candidate_data_delay": data_delay or None,
+        "candidate_quote_is_research_only": bool(provenance_warnings),
+    }
+    quote_constraints = {
+        "candidate_source_quote_at": attestation["candidate_source_quote_at"],
+        "candidate_source_quote_time_basis": attestation["candidate_source_quote_time_basis"],
+        "candidate_source_quote_age_minutes": (
+            round(float(source_quote_age), 3) if source_quote_age is not None else None
+        ),
+        "candidate_source_bid": attestation["candidate_source_bid"],
+        "candidate_source_ask": attestation["candidate_source_ask"],
+        "candidate_source_spread_fraction": attestation["candidate_source_spread_fraction"],
+        "candidate_quote_quality": attestation["candidate_quote_quality"],
+        "candidate_data_delay": attestation["candidate_data_delay"],
+        "candidate_quote_is_research_only": attestation["candidate_quote_is_research_only"],
+        "max_spread_fraction": candidate_spread_cap,
+    }
+    return attestation, unique_blockers, unique_warnings, quote_constraints
+
+
+def _share_candidate_review_attestation(
+    data_dir: Path,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Bind a share review to one fresh, top-ranked immutable local candidate."""
+    data_dir = Path(data_dir)
+    order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
+    request = (
+        plan.get("candidate_request")
+        if isinstance(plan.get("candidate_request"), dict)
+        else {}
+    )
+    source_path = _latest_file(data_dir, OPPORTUNITY_SPECS["share"]["pattern"])
+    source_meta = _file_meta(source_path)
+    blockers: list[str] = []
+    requested_fingerprint = str(request.get("candidate_fingerprint") or "").strip().lower()
+    requested_source = str(request.get("source_file") or "").strip()
+    requested_generated_at = str(request.get("source_generated_at") or "").strip()
+    symbol = str(order.get("symbol") or "").strip().upper()
+    direction = str(plan.get("direction") or order.get("direction") or "").strip().lower()
+
+    if re.fullmatch(r"[0-9a-f]{24}", requested_fingerprint) is None:
+        blockers.append(
+            "Load the share from the current freshness-gated candidate board; a valid candidate fingerprint is required."
+        )
+    if source_path is None or source_meta is None:
+        blockers.append("The latest top_shares artifact is missing; share broker review is unavailable.")
+    elif requested_source != source_path.name:
+        blockers.append("The loaded share candidate is not bound to the latest top_shares artifact.")
+    if direction != "long" or order.get("intent") != "open_long" or order.get("side") != "buy":
+        blockers.append("Share candidate review is limited to the exact long buy setup in the current artifact.")
+
+    artifact_digest: str | None = None
+    if source_path is not None:
+        try:
+            artifact_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        except OSError:
+            blockers.append("The latest top_shares artifact could not be read for digest attestation.")
+
+    artifact_at = source_meta.get("modified_at") if source_meta else None
+    artifact_age = _iso_age_minutes(artifact_at)
+    if artifact_age is None:
+        blockers.append("The latest top_shares artifact timestamp is missing or invalid.")
+    elif artifact_age > AGENTIC_FRESH_MINUTES:
+        blockers.append(
+            f"The latest top_shares artifact is older than the {AGENTIC_FRESH_MINUTES:g}-minute review limit."
+        )
+
+    records: list[dict[str, Any]] = []
+    if source_path is not None:
+        frame = _read_parquet(source_path)
+        if frame.empty:
+            blockers.append("The latest top_shares artifact is empty or unreadable.")
+        else:
+            frame = frame.copy()
+            frame["asset"] = "share"
+            frame["actionable"] = frame.apply(_is_actionable, axis=1)
+            actionable = frame[frame["actionable"]].copy()
+            actionable["_opportunity_score"] = actionable.apply(_opportunity_score, axis=1)
+            actionable = actionable.sort_values(
+                "_opportunity_score", ascending=False, kind="mergesort"
+            ).head(SHARE_CANDIDATE_REVIEW_LIMIT)
+            records = [
+                _best_setup_record(row, "share", source_path.name)
+                for _, row in actionable.iterrows()
+            ]
+            if not records:
+                blockers.append("No actionable share candidate exists in the latest top_shares artifact.")
+
+    match: dict[str, Any] | None = None
+    for record in records:
+        candidate = record.get("planner_candidate")
+        if not isinstance(candidate, dict):
+            continue
+        if (
+            candidate.get("candidate_fingerprint") == requested_fingerprint
+            and str(candidate.get("symbol") or "").strip().upper() == symbol
+        ):
+            match = record
+            break
+    if match is None and records:
+        blockers.append(
+            "The exact symbol and fingerprint are not among the latest three actionable share candidates."
+        )
+
+    candidate = (
+        match.get("planner_candidate")
+        if isinstance(match, dict) and isinstance(match.get("planner_candidate"), dict)
+        else {}
+    )
+    source_state = _comparison_source_state(match or {}, {}) if match is not None else {}
+    if match is not None:
+        if candidate.get("plan_ready") is not True:
+            blockers.append("The exact share candidate is incomplete for deterministic sizing.")
+        if str(match.get("setup_gate_status") or "").strip().lower() != "ready":
+            blockers.append("The exact share candidate has not cleared its setup gate.")
+        if str(match.get("research_guard_status") or "").strip().lower() not in {
+            "pass", "passed", "ok", "ready", "allowed", "validated",
+        }:
+            blockers.append("The exact share candidate has not passed the research guard.")
+        if source_state.get("source_gate_pass") is not True:
+            for reason in source_state.get("blockers") or ["candidate source freshness is not proven"]:
+                blockers.append(f"The share candidate {reason}.")
+
+    candidate_generated_at = str(candidate.get("source_generated_at") or "").strip()
+    if requested_generated_at and requested_generated_at != candidate_generated_at:
+        blockers.append("The loaded share candidate generation timestamp no longer matches the artifact.")
+    price_session_text = str(candidate.get("source_price_session") or "").strip()
+    try:
+        price_session = datetime.fromisoformat(price_session_text).date()
+    except ValueError:
+        price_session = None
+    session_age_days = (
+        (datetime.now(timezone.utc).date() - price_session).days
+        if price_session is not None
+        else None
+    )
+    if session_age_days is None or session_age_days < 0 or session_age_days > 4:
+        blockers.append(
+            "The share candidate last-bar session must be a valid, nonfuture date no more than four calendar days old."
+        )
+    if candidate.get("source_price_basis") != "history_last_bar_close":
+        blockers.append(
+            "The share candidate price basis must be the producer's history_last_bar_close value."
+        )
+
+    def same_cent(left: Any, right: Any) -> bool:
+        left_value = _float_value(left, default=math.nan)
+        right_value = _float_value(right, default=math.nan)
+        return (
+            math.isfinite(left_value)
+            and math.isfinite(right_value)
+            and abs(left_value - right_value) <= 0.011
+        )
+
+    geometry = (
+        ("entry", order.get("limit_price"), candidate.get("entry_price")),
+        ("stop", order.get("stop_price"), candidate.get("stop_price")),
+        ("target", order.get("target_price"), candidate.get("target_price")),
+    )
+    if match is not None:
+        for label, planned, approved in geometry:
+            if not same_cent(planned, approved):
+                blockers.append(
+                    f"The planned share {label} must exactly match the loaded candidate geometry."
+                )
+
+    quantity = int(_float_value(order.get("quantity"), default=0.0))
+    max_units = int(_float_value(candidate.get("max_units"), default=0.0))
+    suggested_dollars = _float_value(
+        match.get("suggested_dollars") if isinstance(match, dict) else None,
+        default=math.nan,
+    )
+    planned_notional = _float_value(order.get("estimated_notional_dollars"), default=math.nan)
+    if match is not None and (quantity <= 0 or max_units <= 0 or quantity > max_units):
+        blockers.append("The planned share quantity exceeds the exact candidate unit cap.")
+    if match is not None and (
+        not math.isfinite(suggested_dollars)
+        or suggested_dollars <= 0
+        or not math.isfinite(planned_notional)
+        or planned_notional > suggested_dollars + 0.01
+    ):
+        blockers.append("The planned share notional exceeds the exact candidate capital cap.")
+
+    quote_at = source_state.get("quote_at") if source_state else None
+    quote_age = _iso_age_minutes(quote_at)
+    bid = _float_value(candidate.get("bid"), default=math.nan)
+    ask = _float_value(candidate.get("ask"), default=math.nan)
+    spread = (
+        (ask - bid) / ((ask + bid) / 2.0)
+        if math.isfinite(bid) and bid > 0 and math.isfinite(ask) and ask >= bid
+        else math.nan
+    )
+    if match is not None and any(
+        value not in (None, "")
+        for value in (candidate.get("source_quote_at"), candidate.get("bid"), candidate.get("ask"))
+    ):
+        if quote_age is None or quote_age > AGENTIC_FRESH_MINUTES:
+            blockers.append("The supplied share candidate source quote timestamp is stale or invalid.")
+        if not math.isfinite(spread):
+            blockers.append("The supplied share candidate source bid/ask is invalid.")
+        elif spread > EQUITY_REVIEW_MAX_SPREAD_PCT + 1e-12:
+            blockers.append(
+                f"The exact share candidate source spread exceeds {EQUITY_REVIEW_MAX_SPREAD_PCT:.1%}."
+            )
+
+    stable_candidate = {
+        key: candidate.get(key)
+        for key in (
+            "asset", "symbol", "direction", "entry_price", "stop_price",
+            "target_price", "max_units", "source_file", "source_generated_at",
+            "source_artifact_at", "source_artifact_time_basis", "source_quote_at",
+            "source_quote_time_basis", "source_price_session", "source_price_basis",
+            "quote_quality", "data_delay", "bid", "ask", "mid",
+            "candidate_fingerprint",
+        )
+    }
+    stable_candidate.update({
+        "trade_status": match.get("trade_status") if isinstance(match, dict) else None,
+        "setup_gate_status": match.get("setup_gate_status") if isinstance(match, dict) else None,
+        "research_guard_status": match.get("research_guard_status") if isinstance(match, dict) else None,
+        "suggested_dollars": match.get("suggested_dollars") if isinstance(match, dict) else None,
+    })
+    row_digest = hashlib.sha256(
+        json.dumps(stable_candidate, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest() if match is not None else None
+
+    unique_blockers = list(dict.fromkeys(value for value in blockers if value))
+    return {
+        "schema": SHARE_CANDIDATE_REVIEW_SCHEMA,
+        "status": "allowed" if not unique_blockers else "blocked",
+        "allowed": not unique_blockers,
+        "asset": "share",
+        "direction": "long",
+        "symbol": symbol or None,
+        "source_pattern": OPPORTUNITY_SPECS["share"]["pattern"],
+        "source_file": source_path.name if source_path is not None else None,
+        "source_artifact_at": artifact_at,
+        "source_artifact_age_minutes": round(artifact_age, 3) if artifact_age is not None else None,
+        "max_source_age_minutes": AGENTIC_FRESH_MINUTES,
+        "source_artifact_digest_sha256": artifact_digest,
+        "candidate_row_digest_sha256": row_digest,
+        "candidate_fingerprint": candidate.get("candidate_fingerprint"),
+        "candidate_source_generated_at": candidate.get("source_generated_at"),
+        "candidate_source_price_session": candidate.get("source_price_session"),
+        "candidate_source_price_basis": candidate.get("source_price_basis"),
+        "candidate_source_quote_at": quote_at,
+        "candidate_quote_available": bool(
+            quote_at is not None and math.isfinite(bid) and math.isfinite(ask)
+        ),
+        "candidate_source_quote_time_basis": candidate.get("source_quote_time_basis"),
+        "candidate_source_bid": _clean_value(bid if math.isfinite(bid) else None),
+        "candidate_source_ask": _clean_value(ask if math.isfinite(ask) else None),
+        "candidate_source_spread_fraction": _clean_value(
+            round(spread, 6) if math.isfinite(spread) else None
+        ),
+        "candidate_quote_quality": candidate.get("quote_quality"),
+        "trade_status": match.get("trade_status") if isinstance(match, dict) else None,
+        "setup_gate_status": match.get("setup_gate_status") if isinstance(match, dict) else None,
+        "research_guard_status": match.get("research_guard_status") if isinstance(match, dict) else None,
+        "entry_price": candidate.get("entry_price"),
+        "stop_price": candidate.get("stop_price"),
+        "target_price": candidate.get("target_price"),
+        "max_units": candidate.get("max_units"),
+        "max_notional_dollars": _clean_value(
+            suggested_dollars if math.isfinite(suggested_dollars) else None
+        ),
+        "planned_quantity": quantity,
+        "planned_notional_dollars": _clean_value(
+            planned_notional if math.isfinite(planned_notional) else None
+        ),
+        "top_rank_limit": SHARE_CANDIDATE_REVIEW_LIMIT,
+        "require_exact_geometry": True,
+        "require_loaded_candidate_fingerprint": True,
+        "blockers": unique_blockers,
+    }, unique_blockers
 
 
 def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dict[str, Any]:
@@ -12408,7 +13908,14 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
 
     def broker_position_quantity(row: dict[str, Any]) -> float:
         """Read the first normalized quantity alias used by portfolio controls."""
-        for field in ("signed_quantity", "quantity", "contracts", "shares", "qty"):
+        for field in (
+            "signed_quantity",
+            "quantity",
+            "contracts",
+            "suggested_contracts",
+            "shares",
+            "qty",
+        ):
             value = row.get(field)
             if value is not None and value != "":
                 return _float_value(value, default=0.0)
@@ -12476,6 +13983,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             default=str,
         ).encode("utf-8")
     ).hexdigest()
+    normalized_source_snapshot_digest = source_snapshot_digest(snapshot)
     broker_age = broker.get("snapshot_age_minutes")
     broker_normalization_blockers = [
         str(value)
@@ -12506,6 +14014,12 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
     risk = plan.get("risk") if isinstance(plan.get("risk"), dict) else {}
     assumptions = plan.get("account_assumptions") if isinstance(plan.get("account_assumptions"), dict) else {}
+    candidate_constraints: dict[str, Any] = {}
+    if asset == "share":
+        candidate_constraints, share_candidate_blockers = (
+            _share_candidate_review_attestation(data_dir, plan)
+        )
+        blockers.extend(share_candidate_blockers)
     assumed_equity = _float_value(assumptions.get("account_equity_dollars"), default=math.nan)
     risk_fraction = _float_value(assumptions.get("risk_fraction"), default=math.nan)
     allocation_fraction = _float_value(assumptions.get("allocation_fraction"), default=math.nan)
@@ -12529,13 +14043,35 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     )
     if asset == "option":
         order_underlying_type = str(order.get("underlying_type") or "").strip().lower()
+        planned_chain_symbol = str(order.get("symbol") or "").strip().upper()
         if order_underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
             blockers.append(
                 "Option review requires an explicit equity underlying; index options are not supported."
             )
         if is_known_index_option_symbol(order.get("symbol")):
             blockers.append("Known index option roots and ^ symbols are blocked from Trade Desk review.")
-        quote_constraints["expected_underlying_type"] = SWING_EXECUTION_OPTION_UNDERLYING_TYPE
+        if re.search(r"\d", planned_chain_symbol):
+            blockers.append(
+                "Numeric option roots are treated as adjusted/close-only contracts and are blocked from new-entry review."
+            )
+        quote_constraints.update({
+            "expected_underlying_type": SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
+            "expected_chain_symbol": planned_chain_symbol,
+            "expected_contract_multiplier": 100,
+            "require_active_instrument": True,
+            "require_buy_to_open_tradable": True,
+            "require_exact_chain_symbol": True,
+            "require_exact_instrument_chain_id_match": True,
+            "require_unique_chain_record": True,
+            "require_unique_instrument_across_all_expiry_chains": True,
+            "require_chain_can_open_position": True,
+            "require_chain_cash_component_null": True,
+            "require_chain_underlying_instrument_match": True,
+            "require_complete_instrument_and_chain_lookup": True,
+            "reject_numeric_adjusted_roots": True,
+            "require_standard_contract_proof": True,
+            "block_adjusted_or_nonstandard_deliverables": True,
+        })
         if str(broker.get("agentic_readiness_status") or "").lower() != "ready":
             blockers.append(
                 str(
@@ -12543,122 +14079,20 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                     or "No single funded account has both agentic access and options approval."
                 )
             )
-        cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
-        entry_gate = cycle.get("entry_gate") if isinstance(cycle, dict) and isinstance(cycle.get("entry_gate"), dict) else {}
-        queue = _read_json(data_dir / "robinhood_agentic_queue.json")
-        cycle_age = _iso_age_minutes(cycle.get("generated_at")) if isinstance(cycle, dict) else None
-        queue_age = _iso_age_minutes(queue.get("generated_at")) if isinstance(queue, dict) else None
-        if cycle_age is None or queue_age is None:
-            blockers.append("Fresh option queue and entry-gate timestamps are required for manual review.")
-        elif cycle_age > AGENTIC_FRESH_MINUTES or queue_age > AGENTIC_FRESH_MINUTES:
-            blockers.append(
-                f"Option queue/entry gate is older than the {AGENTIC_FRESH_MINUTES:g}-minute review limit."
-            )
-        if entry_gate.get("new_entries_allowed_after_live_checks") is not True:
-            blockers.append("The current Optedge option-entry gate does not allow a fresh broker review.")
-        plan_candidate_key = _agentic_contract_key({
-            "symbol": order.get("symbol"),
-            "option_side": order.get("option_type"),
-            "strike": order.get("strike"),
-            "expiry": order.get("expiry"),
-        })
-        entry_candidates = (
-            cycle.get("manual_review_candidates")
-            if isinstance(cycle, dict) and isinstance(cycle.get("manual_review_candidates"), list)
-            else []
-        )
-        matching_candidates = [
-            row for row in entry_candidates
-            if isinstance(row, dict) and _agentic_contract_key(row) == plan_candidate_key
-        ]
-        if not matching_candidates:
-            blockers.append("The exact option contract is not in the current fresh Optedge entry-candidate set.")
-        else:
-            candidate = matching_candidates[0]
-            candidate_underlying_type = str(candidate.get("underlying_type") or "").strip().lower()
-            if candidate_underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
-                blockers.append(
-                    "The current option candidate is not explicitly an equity/ETF underlying."
-                )
-            if candidate_underlying_type != order_underlying_type:
-                blockers.append("Candidate and planner underlying_type do not match exactly.")
-            if is_known_index_option_symbol(candidate.get("symbol") or candidate.get("ticker_or_symbol")):
-                blockers.append("The current candidate uses an unsupported index option root.")
-            candidate_limit = _float_value(
-                candidate.get("max_limit_price")
-                or candidate.get("limit_price")
-                or candidate.get("reference_entry_price"),
-                default=math.nan,
-            )
-            plan_limit = _float_value(order.get("limit_price"), default=math.nan)
-            candidate_quantity = int(_float_value(candidate.get("quantity"), default=0.0))
-            plan_quantity = int(_float_value(order.get("quantity"), default=0.0))
-            if not math.isfinite(candidate_limit) or not math.isfinite(plan_limit):
-                blockers.append("Candidate and planner limit prices must both be finite.")
-            elif plan_limit > candidate_limit + 0.01:
-                blockers.append(
-                    f"Planner limit ${plan_limit:.2f} exceeds the candidate cap of ${candidate_limit:.2f}."
-                )
-            if candidate_quantity <= 0 or plan_quantity > candidate_quantity:
-                blockers.append("Planner quantity exceeds the current candidate's approved quantity cap.")
-            source_quote_at = str(candidate.get("source_quote_at") or "").strip()
-            source_quote_time_basis = str(
-                candidate.get("source_quote_time_basis") or ""
-            ).strip()
-            quote_quality = str(candidate.get("quote_quality") or "").strip()
-            data_delay = str(candidate.get("data_delay") or "").strip()
-            source_quote_age = _iso_age_minutes(source_quote_at)
-            source_bid = _float_value(candidate.get("source_bid") or candidate.get("bid"), default=math.nan)
-            source_ask = _float_value(candidate.get("source_ask") or candidate.get("ask"), default=math.nan)
-            candidate_spread_cap = _float_value(
-                candidate.get("max_allowed_spread_pct"),
-                default=SWING_EXECUTION_PROFILE.max_option_spread_pct,
-            )
-            candidate_spread_cap = min(
-                candidate_spread_cap,
-                SWING_EXECUTION_PROFILE.max_option_spread_pct,
-            )
-            if math.isfinite(source_bid) and source_bid > 0 and math.isfinite(source_ask) and source_ask >= source_bid:
-                source_mid = (source_bid + source_ask) / 2.0
-                source_spread = (source_ask - source_bid) / source_mid if source_mid > 0 else math.nan
-            else:
-                source_spread = math.nan
-            quote_constraints.update({
-                "candidate_source_quote_at": source_quote_at or None,
-                "candidate_source_quote_time_basis": source_quote_time_basis or None,
-                "candidate_source_quote_age_minutes": (
-                    round(float(source_quote_age), 3) if source_quote_age is not None else None
-                ),
-                "candidate_source_bid": _clean_value(source_bid if math.isfinite(source_bid) else None),
-                "candidate_source_ask": _clean_value(source_ask if math.isfinite(source_ask) else None),
-                "candidate_source_spread_fraction": _clean_value(
-                    round(source_spread, 6) if math.isfinite(source_spread) else None
-                ),
-                "candidate_quote_quality": quote_quality or None,
-                "candidate_data_delay": data_delay or None,
-                "candidate_quote_is_research_only": bool(
-                    research_quote_provenance_warnings(candidate)
-                ),
-                "max_spread_fraction": candidate_spread_cap,
-            })
-            if source_quote_age is None:
-                blockers.append("The candidate source quote timestamp is missing or invalid.")
-            elif source_quote_age > AGENTIC_FRESH_MINUTES:
-                blockers.append(
-                    f"The candidate source quote is older than {AGENTIC_FRESH_MINUTES:g} minutes."
-                )
-            for reason in manual_review_quote_provenance_reasons(candidate):
-                blockers.append(f"The candidate {reason}.")
-            for warning in research_quote_provenance_warnings(candidate):
-                warnings.append(
-                    f"The candidate {warning}; refresh with Robinhood's quote tool before review."
-                )
-            if not math.isfinite(source_spread):
-                blockers.append("The candidate source bid/ask is missing or invalid.")
-            elif source_spread > candidate_spread_cap + 1e-9:
-                blockers.append(
-                    f"The candidate source spread exceeds the {candidate_spread_cap:.1%} execution cap."
-                )
+        cycle_raw = _read_json(data_dir / "robinhood_agentic_cycle.json")
+        queue_raw = _read_json(data_dir / "robinhood_agentic_queue.json")
+        cycle = cycle_raw if isinstance(cycle_raw, dict) else {}
+        queue = queue_raw if isinstance(queue_raw, dict) else {}
+        (
+            option_candidate_constraints,
+            option_candidate_blockers,
+            option_candidate_warnings,
+            option_quote_constraints,
+        ) = _option_candidate_review_attestation(plan, cycle, queue)
+        candidate_constraints = option_candidate_constraints
+        blockers.extend(option_candidate_blockers)
+        warnings.extend(option_candidate_warnings)
+        quote_constraints.update(option_quote_constraints)
         eligible_rows = [
             row for row in account_rows
             if isinstance(row, dict)
@@ -12689,9 +14123,54 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         "filled", "cancelled", "canceled", "rejected", "failed", "voided",
         "expired", "partially_filled_rest_cancelled",
     }
+    # Positions can legitimately carry an order-like state such as ``filled``.
+    # Only unambiguous closed-position states suppress non-zero exposure.
+    terminal_position_states = {
+        "closed", "exited", "sold", "inactive", "voided",
+    }
+
+    def active_position(
+        row: dict[str, Any],
+        *,
+        local_option: bool = False,
+        allow_notional: bool = False,
+    ) -> bool:
+        """Treat nonzero, nonterminal exposure as active and fail closed on uncertainty."""
+        has_quantity = abs(broker_position_quantity(row)) > 0
+        has_notional = allow_notional and any(
+            abs(_float_value(row.get(field), default=0.0)) > 0
+            for field in ("suggested_dollars", "actual_dollars", "market_value")
+        )
+        if not has_quantity and not has_notional:
+            return False
+        state = str(
+            row.get("state")
+            or row.get("status")
+            or row.get("trade_status")
+            or row.get("position_status")
+            or ""
+        ).strip().lower()
+        if state in terminal_position_states:
+            return False
+        if local_option:
+            expiry_text = str(
+                row.get("expiry") or row.get("expiration_date") or ""
+            ).strip()
+            if expiry_text:
+                try:
+                    if datetime.fromisoformat(expiry_text[:10]).date() < datetime.now(timezone.utc).date():
+                        return False
+                except ValueError:
+                    # An invalid expiry cannot prove that broker-linked local
+                    # exposure ended, so it remains active for fail-closed review.
+                    pass
+        return True
     matching_account_rows: list[dict[str, Any]] = []
+    overlap_account_keys: set[str] = set()
     portfolio_attestations: list[dict[str, Any]] = []
+    drawdown_attestations: list[dict[str, Any]] = []
     portfolio_failure_details: list[str] = []
+    drawdown_failure_details: list[str] = []
     account_failure_codes: set[str] = set()
     planned_stop_loss = _float_value(risk.get("planned_stop_loss_dollars"), default=math.nan)
     share_notional = _float_value(risk.get("full_share_notional_at_risk_dollars"), default=math.nan)
@@ -12702,12 +14181,63 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         live_buying_power = _float_value(row.get("buying_power"), default=math.nan)
         failures: set[str] = set()
         portfolio_attestation: dict[str, Any] | None = None
+        drawdown_attestation: dict[str, Any] | None = None
         if not account_key:
             failures.add("missing_account_key")
         if not math.isfinite(live_equity) or live_equity <= 0:
             failures.add("missing_equity")
         if not math.isfinite(live_buying_power) or live_buying_power <= 0:
             failures.add("missing_buying_power")
+        if account_key:
+            ledger_path = account_equity_ledger_path(
+                default_account_equity_ledger_dir(data_dir),
+                account_key,
+            )
+            ledger_error = None
+            try:
+                ledger = load_consistent_account_equity_ledger(ledger_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                ledger = None
+                ledger_error = str(exc)
+            drawdown_result = evaluate_account_drawdown(
+                ledger,
+                snapshot,
+                account_key=account_key,
+            )
+            if ledger_error:
+                drawdown_result["status"] = "blocked"
+                drawdown_result["review_ready"] = False
+                drawdown_result["allowed"] = False
+                drawdown_result["risk_multiplier"] = 0.0
+                drawdown_result["blockers"] = list(dict.fromkeys([
+                    f"Durable equity ledger is unsafe: {ledger_error}",
+                    *(drawdown_result.get("blockers") or []),
+                ]))
+            risk_multiplier = _float_value(
+                drawdown_result.get("risk_multiplier"),
+                default=0.0,
+            )
+            max_allowed_risk_fraction = round(
+                MANUAL_REVIEW_BASE_RISK_FRACTION * max(0.0, risk_multiplier),
+                8,
+            )
+            drawdown_attestation = {
+                **drawdown_result,
+                "account_mask": _clean_value(row.get("account_mask")),
+                "max_allowed_risk_fraction": max_allowed_risk_fraction,
+            }
+            if drawdown_result.get("allowed") is not True:
+                failures.add("account_drawdown_interlock")
+                drawdown_failure_details.extend(
+                    str(value)
+                    for value in (drawdown_result.get("blockers") or [])
+                    if str(value).strip()
+                )
+            elif (
+                not math.isfinite(risk_fraction)
+                or risk_fraction > max_allowed_risk_fraction + 1e-12
+            ):
+                failures.add("account_drawdown_risk_cap")
         if math.isfinite(live_equity) and live_equity > 0 and math.isfinite(assumed_equity):
             equity_tolerance = max(1.0, live_equity * ACCOUNT_EQUITY_OVERSTATEMENT_TOLERANCE_PCT)
             if assumed_equity > live_equity + equity_tolerance:
@@ -12779,15 +14309,23 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                     for value in (portfolio_attestation.get("blockers") or [])
                     if str(value).strip()
                 )
+        if account_key and not (
+            failures - {"portfolio_exposure", "portfolio_allocation_cap"}
+        ):
+            # Preserve an account for duplicate/concentration diagnostics when
+            # its existing exposure is itself the only portfolio failure.
+            overlap_account_keys.add(account_key)
         if failures:
             account_failure_codes.update(failures)
         else:
             matching_account_rows.append(row)
             assert portfolio_attestation is not None
+            assert drawdown_attestation is not None
             portfolio_attestations.append({
                 **portfolio_attestation,
                 "account_mask": _clean_value(row.get("account_mask")),
             })
+            drawdown_attestations.append(drawdown_attestation)
 
     if eligible_rows and not matching_account_rows:
         blockers.append(
@@ -12813,9 +14351,21 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             blockers.append(
                 "Existing broker exposure plus the proposed trade exceeds the total-open allocation cap."
             )
+        if "account_drawdown_interlock" in account_failure_codes:
+            blockers.append(
+                "The chained Robinhood account-equity history is missing, stale, mismatched, or beyond a loss limit."
+            )
+        if "account_drawdown_risk_cap" in account_failure_codes:
+            blockers.append(
+                "The requested risk exceeds 1% times the current account-drawdown multiplier."
+            )
         blockers.extend(
             f"Portfolio gate: {value}"
             for value in list(dict.fromkeys(portfolio_failure_details))[:3]
+        )
+        blockers.extend(
+            f"Account-loss firewall: {value}"
+            for value in list(dict.fromkeys(drawdown_failure_details))[:3]
         )
 
     review_constraints = {
@@ -12849,6 +14399,17 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             "require_agentic_allowed": True,
             "require_options_approval": asset == "option",
             "use_conservative_buying_power": True,
+            "account_key_derivation": {
+                "schema": ACCOUNT_KEY_DERIVATION_SCHEMA,
+                "algorithm": "sha256",
+                "namespace": ACCOUNT_KEY_DERIVATION_NAMESPACE,
+                "input_field": "get_accounts.account_number",
+                "input_normalization": "strip_surrounding_whitespace",
+                "output_prefix": "acct_",
+                "lowercase_hex_characters": ACCOUNT_KEY_DERIVATION_HEX_LENGTH,
+                "require_exact_eligible_key_match": True,
+                "persist_raw_account_number": False,
+            },
         },
         "portfolio": {
             "schema": "optedge_portfolio_review_constraints_v1",
@@ -12868,14 +14429,28 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             "eligible_account_count": len(portfolio_attestations),
             "eligible_accounts": portfolio_attestations,
         },
+        "drawdown": {
+            "schema": "optedge_account_drawdown_review_constraints_v1",
+            "policy_version": ACCOUNT_DRAWDOWN_POLICY_VERSION,
+            "status": "allowed" if matching_account_rows else "blocked",
+            "allowed": bool(matching_account_rows),
+            "missing_or_unsafe_state_policy": "block_new_entries",
+            "broker_snapshot_digest_sha256": snapshot_digest,
+            "source_snapshot_digest_sha256": normalized_source_snapshot_digest,
+            "base_risk_fraction": MANUAL_REVIEW_BASE_RISK_FRACTION,
+            "requested_risk_fraction": _clean_value(
+                risk_fraction if math.isfinite(risk_fraction) else None
+            ),
+            "eligible_account_count": len(drawdown_attestations),
+            "eligible_accounts": drawdown_attestations,
+        },
+        "candidate": candidate_constraints,
         "quote": quote_constraints,
     }
 
-    passing_account_keys = {
-        str(row.get("account_key") or "").strip()
-        for row in matching_account_rows
-        if str(row.get("account_key") or "").strip()
-    }
+    # Duplicate and concentration checks include accounts whose existing
+    # exposure caused the portfolio failure, while excluding accounts that
+    # failed identity, permission, equity, drawdown, or buying-power gates.
     symbol = str(order.get("symbol") or "").strip().upper()
     if asset == "option":
         plan_key = _agentic_contract_key({
@@ -12890,10 +14465,9 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
-                or str(row.get("account_key") or "").strip() in passing_account_keys
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
             )
-            and broker_position_quantity(row) > 0
-            and str(row.get("state") or "open").strip().lower() not in {"closed", "expired", "cancelled"}
+            and active_position(row, local_option=True, allow_notional=True)
         ]
         broker_position_keys = {
             _agentic_contract_key(row) for row in active_broker_option_positions
@@ -12908,11 +14482,41 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             for row in (_read_json(data_dir / POSITION_FILES["option"]) or [])
             if isinstance(row, dict)
             and _local_option_tracking_scope(row) == "broker_linked"
-            and str(row.get("account_key") or "").strip() in passing_account_keys
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, local_option=True)
         ]
         local_contract_keys, local_direction_keys = _agentic_open_option_keys(
             broker_linked_local_options
         )
+        broker_share_rows = [
+            row
+            for row in (snapshot.get("equity_positions") or [])
+            if isinstance(row, dict)
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, allow_notional=True)
+        ]
+        broker_linked_local_share_rows = [
+            row
+            for row in (_read_json(data_dir / POSITION_FILES["share"]) or [])
+            if isinstance(row, dict)
+            and _local_option_tracking_scope(row) == "broker_linked"
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, allow_notional=True)
+        ]
+        cross_asset_share_symbols = {
+            str(row.get("symbol") or row.get("ticker") or "").strip().upper()
+            for row in [*broker_share_rows, *broker_linked_local_share_rows]
+            if str(row.get("symbol") or row.get("ticker") or "").strip()
+        }
         plan_direction = _agentic_direction_key({
             "symbol": symbol,
             "option_side": order.get("option_type"),
@@ -12926,12 +14530,16 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             )
         if plan_key in local_contract_keys or plan_direction in local_direction_keys:
             blockers.append("Local lifecycle state already has matching contract or same-direction option exposure.")
+        if symbol in cross_asset_share_symbols:
+            blockers.append(
+                f"Existing {symbol} share exposure blocks a new {symbol} option entry until cross-asset concentration is reviewed."
+            )
         nonterminal_option_orders = [
             row for row in (snapshot.get("option_orders") or [])
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
-                or str(row.get("account_key") or "").strip() in passing_account_keys
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
             )
             and str(row.get("state") or row.get("status") or "").strip().lower()
             not in terminal_order_states
@@ -12975,23 +14583,27 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
-                or str(row.get("account_key") or "").strip() in passing_account_keys
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
             )
-            and abs(broker_position_quantity(row)) > 0
+            and active_position(row, allow_notional=True)
         }
         local_share_symbols = {
             str(row.get("symbol") or row.get("ticker") or "").strip().upper()
             for row in (_read_json(data_dir / POSITION_FILES["share"]) or [])
             if isinstance(row, dict)
             and _local_option_tracking_scope(row) == "broker_linked"
-            and str(row.get("account_key") or "").strip() in passing_account_keys
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, allow_notional=True)
         }
         nonterminal_equity_orders = [
             row for row in (snapshot.get("equity_orders") or [])
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
-                or str(row.get("account_key") or "").strip() in passing_account_keys
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
             )
             and str(row.get("state") or row.get("status") or "").strip().lower()
             not in terminal_order_states
@@ -13000,6 +14612,37 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             str(row.get("symbol") or "").strip().upper()
             for row in nonterminal_equity_orders
             if str(row.get("symbol") or "").strip()
+        }
+        broker_option_rows = [
+            row
+            for row in (snapshot.get("option_positions") or [])
+            if isinstance(row, dict)
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, local_option=True)
+        ]
+        broker_linked_local_option_rows = [
+            row
+            for row in (_read_json(data_dir / POSITION_FILES["option"]) or [])
+            if isinstance(row, dict)
+            and _local_option_tracking_scope(row) == "broker_linked"
+            and (
+                not str(row.get("account_key") or "").strip()
+                or str(row.get("account_key") or "").strip() in overlap_account_keys
+            )
+            and active_position(row, local_option=True)
+        ]
+        cross_asset_option_symbols = {
+            str(row.get("symbol") or row.get("ticker") or row.get("chain_symbol") or "")
+            .strip()
+            .upper()
+            for row in [
+                *broker_option_rows,
+                *broker_linked_local_option_rows,
+            ]
+            if str(row.get("symbol") or row.get("ticker") or row.get("chain_symbol") or "").strip()
         }
         if any(not str(row.get("symbol") or "").strip() for row in nonterminal_equity_orders):
             blockers.append("Robinhood has a nonterminal equity order whose symbol cannot be verified.")
@@ -13010,6 +14653,10 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             )
         if symbol in working_share_symbols:
             blockers.append(f"Robinhood already has a working {symbol} equity order.")
+        if symbol in cross_asset_option_symbols:
+            blockers.append(
+                f"Existing {symbol} option exposure blocks a new {symbol} share entry until cross-asset concentration is reviewed."
+            )
 
     if asset == "option" and str(broker.get("status") or "").lower() == "mismatch":
         blockers.append("Robinhood positions and local lifecycle state do not reconcile.")
@@ -13222,6 +14869,11 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         "planner_buying_power_dollars": limits.get("buying_power"),
         "risk_budget_dollars": limits.get("risk_budget_dollars"),
         "allocation_cap_dollars": limits.get("effective_allocation_cap_dollars"),
+    }
+    plan["candidate_request"] = {
+        "candidate_fingerprint": _clean_value(payload.get("candidate_fingerprint")),
+        "source_file": _clean_value(payload.get("candidate_source_file")),
+        "source_generated_at": _clean_value(payload.get("candidate_source_generated_at")),
     }
     review_gate = _manual_review_gate(asset, Path(data_dir), plan)
     plan["review_constraints"] = review_gate.get("review_constraints") or {}
@@ -15509,6 +17161,32 @@ body.view-desk .wrap > .global-command { display:none; }
 .edge-metric span { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.35px; }
 .edge-metric strong { display:block; margin-top:3px; font-size:13px; overflow-wrap:anywhere; }
 .edge-foot { margin-top:10px; color:var(--soft); font-size:11px; line-height:1.45; }
+.firewall-board { margin-top:12px; border-color:rgba(245,158,11,.38); background:linear-gradient(145deg,rgba(24,19,10,.72),rgba(13,16,15,.98)); }
+.firewall-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.firewall-card { min-width:0; border:1px solid var(--border); background:rgba(8,10,9,.72); border-radius:8px; padding:11px; }
+.firewall-card.good { border-color:rgba(32,201,151,.48); }
+.firewall-card.warn { border-color:rgba(245,158,11,.48); }
+.firewall-card.bad { border-color:rgba(248,113,113,.48); }
+.firewall-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.firewall-card h4 { margin:0; font-size:14px; }
+.firewall-card p { margin:8px 0 0; color:var(--muted); font-size:11px; line-height:1.45; }
+.candidate-board { margin-top:12px; border-color:rgba(32,201,151,.42); background:linear-gradient(145deg,rgba(12,20,17,.98),rgba(13,16,15,.98)); }
+.candidate-board-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.candidate-board-head p { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.45; max-width:850px; }
+.candidate-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.candidate-card { min-width:0; display:grid; gap:9px; align-content:start; border:1px solid var(--border); background:rgba(8,10,9,.72); border-radius:8px; padding:11px; }
+.candidate-card.recommended { border-color:rgba(32,201,151,.72); box-shadow:inset 0 0 0 1px rgba(32,201,151,.10); }
+.candidate-card.baseline { border-style:dashed; background:rgba(15,17,16,.72); }
+.candidate-card header { border:0; padding:0; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.candidate-card h4 { margin:0; font-size:14px; line-height:1.3; overflow-wrap:anywhere; }
+.candidate-card .candidate-identity { color:var(--soft); font-size:11px; line-height:1.4; overflow-wrap:anywhere; }
+.candidate-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+.candidate-metric { min-width:0; border-top:1px solid rgba(255,255,255,.07); padding-top:6px; }
+.candidate-metric span { display:block; color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.35px; }
+.candidate-metric strong { display:block; margin-top:3px; font-size:11px; line-height:1.3; overflow-wrap:anywhere; }
+.candidate-why { margin:0; color:var(--muted); font-size:10px; line-height:1.45; overflow-wrap:anywhere; }
+.candidate-blocker { margin:0; border-left:3px solid var(--warn); padding:7px 8px; background:rgba(245,158,11,.07); color:#fde68a; font-size:10px; line-height:1.4; }
+.candidate-card .btn { width:100%; justify-content:center; margin-top:auto; }
 .planner-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin-top:14px; }
 .planner-field { min-width:0; display:grid; gap:5px; }
 .planner-field.wide { grid-column:span 2; }
@@ -15661,8 +17339,8 @@ tr.clickable-row:hover { background:#18201d; }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } .edge-grid { grid-template-columns:1fr; } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media (max-width:560px) { .wrap { padding:16px 10px 56px; } .grid, .desk-flow, .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .planner-field.wide { grid-column:span 2; } .desk-title { font-size:23px; } .btn { min-height:40px; } .view-tab[data-view="all"] { display:none; } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow, .candidate-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .edge-grid { grid-template-columns:1fr; } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:560px) { .wrap { padding:16px 10px 56px; } .grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics { grid-template-columns:1fr; } .planner-field.wide { grid-column:span 1; } .candidate-board-head { display:grid; grid-template-columns:1fr; } .desk-title { font-size:23px; } .btn { min-height:40px; } .view-tab[data-view="all"] { display:none; } }
 </style>
 </head>
 <body class="view-desk">
@@ -15756,6 +17434,28 @@ tr.clickable-row:hover { background:#18201d; }
       <div id="trade-desk-edge" class="edge-grid"></div>
       <div id="trade-desk-edge-foot" class="edge-foot"></div>
     </article>
+    <article class="desk-card firewall-board" aria-labelledby="firewall-title">
+      <div class="candidate-board-head">
+        <div>
+          <h3 id="firewall-title">Capital and model firewalls</h3>
+          <p>Adaptive models need explicit purged out-of-sample promotion. Account equity needs a fresh tamper-evident history. Missing evidence blocks or falls back safely; it never invents an edge.</p>
+        </div>
+        <span id="trade-desk-firewall-status" class="pill warn">Loading firewalls</span>
+      </div>
+      <div id="trade-desk-firewalls" class="firewall-grid" aria-live="polite"></div>
+      <div id="trade-desk-firewall-foot" class="edge-foot"></div>
+    </article>
+    <article class="desk-card candidate-board" aria-labelledby="candidate-board-title">
+      <div class="candidate-board-head">
+        <div>
+          <h3 id="candidate-board-title">Freshness-gated candidate comparison</h3>
+          <p>Top three exact setups compared in one shared snapshot, plus the no-trade baseline. Ranking is lexicographic: provenance, Edge, blockers, execution, slippage-adjusted R/R, then catalyst/regime. Raw cross-asset scores are never compared.</p>
+        </div>
+        <span id="candidate-board-status" class="pill warn">Loading candidates</span>
+      </div>
+      <div id="trade-desk-candidates" class="candidate-grid" aria-live="polite"></div>
+      <div id="trade-desk-candidate-foot" class="edge-foot"></div>
+    </article>
     <div class="desk-grid">
       <article class="desk-card">
         <h3>Best current review</h3>
@@ -15779,8 +17479,8 @@ tr.clickable-row:hover { background:#18201d; }
       <div class="planner-field"><label for="plan-direction">Direction</label><select id="plan-direction"><option value="long">Long / buy</option><option value="short">Short / sell</option></select></div>
       <div class="planner-field"><label for="plan-account-equity">Account equity</label><input id="plan-account-equity" type="number" min="1" step="100" value="10000"></div>
       <div class="planner-field"><label for="plan-buying-power">Buying power</label><input id="plan-buying-power" type="number" min="0" step="100" placeholder="optional"></div>
-      <div class="planner-field"><label for="plan-risk-pct">Risk per trade %</label><input id="plan-risk-pct" type="number" min="0.1" max="10" step="0.1" value="1"></div>
-      <div class="planner-field"><label for="plan-allocation-pct">Max total open allocation %</label><input id="plan-allocation-pct" type="number" min="1" max="100" step="1" value="10" title="Caps existing same-account broker exposure plus this proposed trade."></div>
+      <div class="planner-field"><label for="plan-risk-pct">Risk per trade %</label><input id="plan-risk-pct" type="number" min="0.1" max="1" step="0.1" value="1" title="Manual review is capped at 1% before account drawdown reductions."></div>
+      <div class="planner-field"><label for="plan-allocation-pct">Max total open allocation %</label><input id="plan-allocation-pct" type="number" min="1" max="25" step="1" value="10" title="Caps existing same-account broker exposure plus this proposed trade at no more than 25%."></div>
       <div class="planner-field"><label for="plan-slippage-pct">Slippage buffer %</label><input id="plan-slippage-pct" type="number" min="0" max="25" step="0.1" value="0.5"></div>
       <div class="planner-field"><label for="plan-entry">Entry / limit</label><input id="plan-entry" type="number" min="0" step="0.01" placeholder="required"></div>
       <div class="planner-field"><label for="plan-stop">Stop / invalidation</label><input id="plan-stop" type="number" min="0" step="0.01" placeholder="required"></div>
@@ -16048,10 +17748,10 @@ tr.clickable-row:hover { background:#18201d; }
     <div class="status" id="rh-status-text"></div>
     <div class="brief-grid" style="margin-top:12px" id="rh-summary"></div>
     <div class="brief-list" style="margin-top:12px">
-      <h4>Autopilot status</h4>
-      <div class="muted">One clean view of entry gate, staged live ticket, local paper entries, and local decision log.</div>
+      <h4>Manual review status</h4>
+      <div class="muted">One clean view of the entry gate, inspection-only ticket, paper simulation, and local decision log. No Codex automation starts here.</div>
       <div class="scan-controls">
-        <button class="btn" type="button" id="autopilot-refresh">Refresh autopilot</button>
+        <button class="btn" type="button" id="autopilot-refresh">Refresh review state</button>
         <button class="btn" type="button" id="autopilot-packet-refresh">Refresh packet</button>
         <a class="btn" href="/artifact/robinhood-live-order-tickets" target="_blank">Open live tickets</a>
         <a class="btn" href="/artifact/agentic-paper-positions" target="_blank">Open paper book</a>
@@ -16409,13 +18109,104 @@ function tradeDeskEdge(edge) {
     </article>`;
   }).join('');
 }
-function tradeDeskFocus(command) {
+function tradeDeskFirewalls(model, drawdown) {
+  const predictor = model.predictor || {};
+  const weights = model.runtime_weights || {};
+  const modelTrusted = model.status === 'trusted_champion_active';
+  const modelTone = modelTrusted ? 'good' : 'warn';
+  const modelReason = [...(predictor.reasons || []), ...(weights.reasons || [])][0]
+    || 'Source-controlled defaults remain active until a promoted challenger clears every guard.';
+  const capitalReady = ['ready', 'reduced'].includes(String(drawdown.status || '').toLowerCase());
+  const capitalTone = capitalReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : 'bad';
+  const capitalReason = (drawdown.blockers || [])[0]
+    || (capitalReady ? 'Every displayed account has a fresh blocker-free chained equity history.' : 'Refresh and normalize explicit Robinhood account reads to establish the equity baseline.');
+  return `<article class="firewall-card ${modelTone}">
+      <header><h4>Adaptive-model promotion</h4><span class="pill ${modelTone}">${cell(labelText(model.status || 'unavailable'))}</span></header>
+      <div class="candidate-metrics" style="margin-top:10px">
+        <div class="candidate-metric"><span>Return predictor</span><strong>${cell(labelText(predictor.active_mode || 'unavailable'))}</strong></div>
+        <div class="candidate-metric"><span>Fusion weights</span><strong>${cell(labelText(weights.active_mode || 'unavailable'))}</strong></div>
+        <div class="candidate-metric"><span>Training during scan</span><strong>${model.ordinary_scan_training === 'disabled' ? 'off' : cell(labelText(model.ordinary_scan_training || 'unknown'))}</strong></div>
+        <div class="candidate-metric"><span>Option adaptation</span><strong>${String(model.option_adaptation || '').startsWith('disabled') ? 'off pending direct OOS' : cell(labelText(model.option_adaptation || 'unknown'))}</strong></div>
+      </div>
+      <p>${cell(modelReason)}</p>
+    </article>
+    <article class="firewall-card ${capitalTone}">
+      <header><h4>Robinhood account-loss firewall</h4><span class="pill ${capitalTone}">${cell(labelText(drawdown.status || 'blocked'))}</span></header>
+      <div class="candidate-metrics" style="margin-top:10px">
+        <div class="candidate-metric"><span>Eligible accounts</span><strong>${cell(drawdown.eligible_account_count || 0)} / ${cell(drawdown.account_count || 0)}</strong></div>
+        <div class="candidate-metric"><span>Worst high-water DD</span><strong>${pct(drawdown.worst_high_water_drawdown_fraction)}</strong></div>
+        <div class="candidate-metric"><span>Minimum risk multiplier</span><strong>${drawdown.minimum_risk_multiplier === null || drawdown.minimum_risk_multiplier === undefined ? '-' : `${Number(drawdown.minimum_risk_multiplier).toFixed(2)}x`}</strong></div>
+        <div class="candidate-metric"><span>Base review risk</span><strong>${pct(drawdown.base_risk_fraction)}</strong></div>
+      </div>
+      <p>${cell(capitalReason)}</p>
+    </article>`;
+}
+function ageMinutesLabel(value) {
+  if (value === null || value === undefined || value === '') return 'missing';
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes)) return 'missing';
+  if (minutes < 1) return '<1m';
+  if (minutes < 120) return `${minutes.toFixed(0)}m`;
+  if (minutes < 2880) return `${(minutes / 60).toFixed(1)}h`;
+  return `${(minutes / 1440).toFixed(1)}d`;
+}
+function comparisonIdentity(row) {
+  const identity = row.identity || {};
+  if (String(row.asset || '').toLowerCase() === 'option') {
+    return `${identity.symbol || row.symbol || '-'} | ${identity.expiry || '-'} | ${String(identity.option_type || '-').toUpperCase()} ${identity.strike ?? '-'} | ${identity.underlying_type || 'type missing'}`;
+  }
+  return row.identity_label || identity.label || row.symbol || 'Unknown candidate';
+}
+function tradeDeskCandidates(board) {
+  const rows = Array.isArray(board.rows) ? board.rows : [];
+  if (!rows.length) return '<div class="privacy-note">No candidate rows are available. No trade is the default until a current exact setup exists.</div>';
+  return rows.map((row, index) => {
+    const baseline = row.kind === 'baseline';
+    const recommended = row.recommended === true;
+    const button = baseline
+      ? '<button class="btn" type="button" disabled>Zero-new-risk baseline</button>'
+      : row.planner_load_allowed === true && row.planner_candidate
+        ? `<button class="btn primary desk-comparison-plan" type="button" data-comparison-id="${escAttr(row.candidate_id)}">Load exact plan</button>`
+        : `<button class="btn" type="button" disabled title="${escAttr(row.primary_blocker || 'Candidate did not clear every planner gate')}">Planner locked</button>`;
+    const blocker = row.primary_blocker
+      ? `<p class="candidate-blocker"><strong>Primary blocker:</strong> ${cell(row.primary_blocker)}</p>`
+      : '<p class="candidate-blocker" style="border-left-color:var(--good);color:#bbf7d0;background:rgba(34,197,94,.07)"><strong>Primary blocker:</strong> none</p>';
+    return `<article class="candidate-card ${recommended ? 'recommended' : ''} ${baseline ? 'baseline' : ''}">
+      <header>
+        <div><div class="desk-kicker">${baseline ? 'Baseline' : `Rank ${index + 1} | ${labelText(row.asset)}`}</div><h4>${cell(row.identity_label)}</h4></div>
+        <span class="pill ${recommended ? 'good' : toneClass(row.source_status)}">${recommended ? 'Recommended' : cell(labelText(row.source_status || row.kind))}</span>
+      </header>
+      <div class="candidate-identity"><strong>Exact identity:</strong> ${cell(comparisonIdentity(row))}</div>
+      <div class="candidate-metrics">
+        <div class="candidate-metric"><span>Source artifact</span><strong>${cell(row.source_file || (baseline ? 'n/a' : 'missing'))}</strong></div>
+        <div class="candidate-metric"><span>Quote quality</span><strong>${cell(row.quote_quality || (baseline ? 'n/a' : 'missing'))}</strong></div>
+        <div class="candidate-metric"><span>Artifact age</span><strong>${cell(ageMinutesLabel(row.artifact_age_minutes))} | ${cell(row.artifact_time_basis || (baseline ? 'n/a' : 'basis missing'))}</strong></div>
+        <div class="candidate-metric"><span>Quote age</span><strong>${cell(ageMinutesLabel(row.quote_age_minutes))} | ${cell(row.quote_time_basis || (baseline ? 'n/a' : 'basis missing'))}</strong></div>
+        <div class="candidate-metric"><span>Entry</span><strong>${compactMoney(row.entry_price, 2)}</strong></div>
+        <div class="candidate-metric"><span>Spread</span><strong>${baseline ? '0.0%' : pct(row.spread_pct)}</strong></div>
+        <div class="candidate-metric"><span>Stop / target</span><strong>${baseline ? '- / -' : `${compactMoney(row.stop_price, 2)} / ${compactMoney(row.target_price, 2)}`}</strong></div>
+        <div class="candidate-metric"><span>Max loss</span><strong>${compactMoney(row.max_loss_dollars, 2)}</strong></div>
+        <div class="candidate-metric"><span>Slippage R/R</span><strong>${row.slippage_adjusted_rr === null || row.slippage_adjusted_rr === undefined ? '-' : `${Number(row.slippage_adjusted_rr).toFixed(2)}x`}</strong></div>
+        <div class="candidate-metric"><span>Edge lane</span><strong>${cell(labelText(row.edge_lane))}</strong></div>
+        <div class="candidate-metric"><span>Portfolio overlap</span><strong>${cell(row.overlap || 'none')}</strong></div>
+      </div>
+      ${blocker}
+      <p class="candidate-why"><strong>Why:</strong> ${cell(row.why)}</p>
+      ${button}
+    </article>`;
+  }).join('');
+}
+function tradeDeskFocus(command, comparison) {
   const next = command.next_action || {};
   const guard = command.validation_guardrail || {};
   const action = next.action || '';
   const query = next.query || next.symbol || '';
   const candidate = next.planner_candidate || null;
-  const canPlan = Boolean(candidate && candidate.plan_ready && !next.entry_blocked);
+  const cleared = ((comparison && comparison.rows) || []).find(row =>
+    row && row.kind === 'candidate' && row.planner_load_allowed === true && row.planner_candidate
+    && row.planner_candidate.candidate_fingerprint === (candidate && candidate.candidate_fingerprint)
+  );
+  const canPlan = Boolean(cleared && !next.entry_blocked);
   return `<div class="plan-callout ${toneClass(command.status)}">
     <h3>${cell(next.label || command.status_detail || 'No review item')}</h3>
     <p>${cell(next.detail || command.status_detail || 'Refresh the local snapshot before choosing a setup.')}</p>
@@ -16434,6 +18225,7 @@ function tradeDeskFocus(command) {
 let latestTradeDeskBroker = {};
 let latestTradeDeskCandidate = null;
 let latestPlannerCandidate = null;
+let latestComparisonCandidates = new Map();
 function applySnapshotAccountDefaults(asset) {
   const rows = (latestTradeDeskBroker.account_readiness_rows || []).filter(row =>
     row && row.active && row.agentic_allowed && row.funded && (asset !== 'option' || row.options_ready)
@@ -16444,29 +18236,6 @@ function applySnapshotAccountDefaults(asset) {
   if (Number.isFinite(equity) && equity > 0) $('plan-account-equity').value = String(equity);
   if (Number.isFinite(power) && power > 0) $('plan-buying-power').value = String(power);
   return Number.isFinite(equity) && equity > 0 && Number.isFinite(power) && power > 0;
-}
-function prefillTradePlannerFromCandidate(index) {
-  const candidates = latestTradeDeskBroker.manual_review_candidates || [];
-  const row = candidates[Number(index)];
-  if (!row) return;
-  loadCandidateIntoPlanner({
-    asset: 'option',
-    symbol: row.symbol || row.ticker_or_symbol,
-    direction: 'long',
-    option_type: row.option_side,
-    entry_price: row.reference_entry_price ?? row.source_ask ?? row.max_limit_price,
-    stop_price: row.stop_price_reference,
-    target_price: row.target_price_reference,
-    strike: row.strike,
-    expiry: row.expiry,
-    max_units: row.quantity,
-    contract_multiplier: 100,
-    underlying_type: row.underlying_type,
-    identity_label: row.contract || row.contract_label || row.symbol,
-    candidate_fingerprint: row.candidate_fingerprint || null,
-    plan_ready: true,
-    blockers: []
-  }, 'current manual shortlist');
 }
 function loadCandidateIntoPlanner(candidate, sourceLabel='decision workspace') {
   if (!candidate || !candidate.plan_ready) {
@@ -16515,7 +18284,7 @@ function tradeDeskRobinhood(broker) {
   const safe = broker.fresh_entries_allowed && funded > 0 && manualCount > 0;
   const topBlocker = (broker.blockers || [])[0] || (broker.warnings || [])[0] || 'No current blocker recorded.';
   const candidates = (broker.manual_review_candidates || []).slice(0, 3);
-  const candidateHtml = candidates.length ? `<div class="brief-list" style="margin-top:12px"><h4>Current manual candidates</h4><ul class="plan-list">${candidates.map((row, index) => `<li><strong>${cell(row.contract || row.symbol)}</strong> | max ${compactMoney(row.max_limit_price, 2)} | spread ${pct(row.source_spread_pct)} <button class="btn desk-candidate-plan" type="button" data-candidate-index="${index}">Load plan</button></li>`).join('')}</ul></div>` : '';
+  const candidateHtml = candidates.length ? `<div class="brief-list" style="margin-top:12px"><h4>Current manual candidates</h4><ul class="plan-list">${candidates.map(row => `<li><strong>${cell(row.contract || row.symbol)}</strong> | max ${compactMoney(row.max_limit_price, 2)} | spread ${pct(row.source_spread_pct)} | use the freshness-gated comparison above</li>`).join('')}</ul></div>` : '';
   return `<div class="plan-callout ${safe ? 'good' : 'bad'}">
     <h3>${cell(broker.label || broker.status || 'Robinhood review unavailable')}</h3>
     <p>${cell(safe ? 'A review can be prepared, but the connected Robinhood task must refresh live account and quote data before asking for confirmation.' : topBlocker)}</p>
@@ -16545,21 +18314,52 @@ async function loadTradeDesk(force=false) {
   const command = data.command || {};
   const broker = data.robinhood || {};
   const edge = data.edge || {};
+  const model = data.model_trust || {};
+  const drawdown = data.account_drawdown || {};
+  const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
+  latestComparisonCandidates = new Map(
+    (comparison.rows || [])
+      .filter(row => row && row.kind === 'candidate')
+      .map(row => [String(row.candidate_id || ''), row])
+  );
   const next = command.next_action || {};
-  latestTradeDeskCandidate = next.planner_candidate || null;
+  const nextFingerprint = next.planner_candidate && next.planner_candidate.candidate_fingerprint;
+  const clearedNext = (comparison.rows || []).find(row =>
+    row && row.planner_load_allowed === true && row.planner_candidate
+    && row.planner_candidate.candidate_fingerprint === nextFingerprint
+  );
+  latestTradeDeskCandidate = clearedNext ? clearedNext.planner_candidate : null;
   $('trade-desk-hero').innerHTML = `<div><div class="desk-kicker">Today&apos;s decision</div><h2 class="desk-title">${cell(labelText(command.status || 'review'))}</h2><p class="desk-copy">${cell(command.status_detail || 'Review the latest snapshot before planning risk.')}</p></div><div class="desk-hero-side"><span>Next action</span><strong>${cell(next.label || 'Review local evidence')}</strong><div class="muted">${cell(next.detail || 'No order is sent from this page.')}</div></div>`;
   $('trade-desk-flow').innerHTML = tradeDeskFlow(command, broker, edge);
   $('trade-desk-edge').innerHTML = tradeDeskEdge(edge);
   $('trade-desk-edge-status').className = `pill ${toneClass(edge.tone || edge.status)}`;
   $('trade-desk-edge-status').textContent = labelText(edge.label || edge.status || 'unavailable');
   $('trade-desk-edge-foot').textContent = `${edge.primary_blocker || 'All live-capital evidence requirements are clear.'} Same-day ideas are averaged, then confidence is resampled in circular blocks at least as long as the holding horizon; option live gates use broker-observed outcomes only.`;
-  $('trade-desk-focus').innerHTML = tradeDeskFocus(command);
+  $('trade-desk-firewalls').innerHTML = tradeDeskFirewalls(model, drawdown);
+  const firewallsReady = ['ready', 'reduced'].includes(String(drawdown.status || '').toLowerCase());
+  $('trade-desk-firewall-status').className = `pill ${firewallsReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : 'bad'}`;
+  $('trade-desk-firewall-status').textContent = firewallsReady ? 'Capital history verified' : 'Capital history blocks';
+  $('trade-desk-firewall-foot').textContent = 'Manual review uses a 1% base risk ceiling, reduced to 0.5% at 5% account drawdown and 0.25% at 8%; 10% high-water drawdown or a 3% New York-session loss blocks new entries.';
+  $('trade-desk-candidates').innerHTML = tradeDeskCandidates(comparison);
+  const comparisonWinner = (comparison.rows || []).find(row => row && row.candidate_id === comparison.winner_id) || {};
+  const comparisonHasWinner = Boolean(comparisonWinner.candidate_id);
+  $('candidate-board-status').className = `pill ${!comparisonHasWinner || comparisonWinner.kind === 'baseline' ? 'warn' : 'good'}`;
+  $('candidate-board-status').textContent = !comparisonHasWinner ? 'Candidate data unavailable' : comparisonWinner.kind === 'baseline' ? 'No trade leads' : 'Exact candidate clears';
+  $('trade-desk-candidate-foot').textContent = `Displayed ${Number(comparison.displayed_candidate_count || 0)} exact candidate(s) plus no trade. Planner loading is local sizing only; broker actions and automation remain off.`;
+  $('trade-desk-focus').innerHTML = tradeDeskFocus(command, comparison);
   $('trade-desk-robinhood').innerHTML = tradeDeskRobinhood(broker);
   $('trade-desk-status-text').textContent = `Snapshot ${cell(data.snapshot_id || 'local')} | strategy ${cell(data.strategy_version || 'current')} | ${cell(data.generated_at || '')}`;
   document.querySelectorAll('.desk-focus-action').forEach(btn => btn.addEventListener('click', () => routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '')));
   document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => loadCandidateIntoPlanner(latestTradeDeskCandidate)));
-  document.querySelectorAll('.desk-candidate-plan').forEach(btn => btn.addEventListener('click', () => prefillTradePlannerFromCandidate(btn.dataset.candidateIndex)));
+  document.querySelectorAll('.desk-comparison-plan').forEach(btn => btn.addEventListener('click', () => {
+    const row = latestComparisonCandidates.get(String(btn.dataset.comparisonId || ''));
+    if (!row || row.planner_load_allowed !== true || !row.planner_candidate) {
+      $('plan-status-text').textContent = `Blocked: ${(row && row.primary_blocker) || 'candidate no longer clears the comparison gates'}.`;
+      return;
+    }
+    loadCandidateIntoPlanner(row.planner_candidate, 'freshness-gated candidate board');
+  }));
   const openReview = $('desk-open-review');
   if (openReview) openReview.addEventListener('click', () => { setView('paper'); scrollToId('autopilot-summary'); });
 }
@@ -16620,6 +18420,10 @@ function tradePlanResultHtml(report) {
   const gate = report.review_gate || {};
   const constraints = packet.review_constraints || plan.review_constraints || {};
   const accountRule = constraints.account || {};
+  const drawdownRule = constraints.drawdown || {};
+  const drawdownRows = Array.isArray(drawdownRule.eligible_accounts) ? drawdownRule.eligible_accounts : [];
+  const drawdownMultipliers = drawdownRows.map(row => Number(row.risk_multiplier)).filter(Number.isFinite);
+  const drawdownMaxRisks = drawdownRows.map(row => Number(row.max_allowed_risk_fraction)).filter(Number.isFinite);
   const quoteRule = constraints.quote || {};
   const quantity = order.quantity ?? '-';
   const capital = order.estimated_notional_dollars ?? order.estimated_debit_dollars;
@@ -16656,6 +18460,9 @@ function tradePlanResultHtml(report) {
       <div class="brief-tile"><span>Broker step</span><strong>${cell(packet.status === 'manual_review_required' ? (review.review_tool || 'review') : 'blocked')}</strong></div>
       <div class="brief-tile"><span>Equity assumption</span><strong>${compactMoney(accountRule.assumed_equity_dollars, 2)}</strong></div>
       <div class="brief-tile"><span>Same-account matches</span><strong>${cell(accountRule.eligible_same_account_match_count ?? 0)}</strong></div>
+      <div class="brief-tile"><span>Account-loss firewall</span><strong>${cell(labelText(drawdownRule.status || 'blocked'))}</strong></div>
+      <div class="brief-tile"><span>Drawdown risk multiplier</span><strong>${drawdownMultipliers.length ? `${Math.min(...drawdownMultipliers).toFixed(2)}x` : '-'}</strong></div>
+      <div class="brief-tile"><span>Drawdown-adjusted risk cap</span><strong>${drawdownMaxRisks.length ? pct(Math.min(...drawdownMaxRisks)) : '-'}</strong></div>
       <div class="brief-tile"><span>Live quote max age</span><strong>${cell(quoteRule.max_live_quote_age_seconds || '-')} sec</strong></div>
       <div class="brief-tile"><span>Live spread cap</span><strong>${pct(quoteRule.max_spread_fraction)}</strong></div>
     </div>
@@ -16663,7 +18470,7 @@ function tradePlanResultHtml(report) {
   <div class="brief-cols">
     <div class="brief-list"><h4>Validation</h4>${planIssuesHtml(plan.validation)}</div>
     <div class="brief-list"><h4>Live review gate</h4>${reviewGateIssuesHtml(gate)}</div>
-    <div class="brief-list"><h4>Manual control</h4><ul class="plan-list"><li>Entry order only; stop and target are not placed.</li><li>Review in Robinhood first.</li><li>Confirm the exact reviewed order once.</li><li>No loop, recurring task, or automatic retry.</li><li>Submission is not a fill.</li></ul></div>
+    <div class="brief-list"><h4>Manual control</h4><ul class="plan-list"><li>Entry order only; stop and target are not placed.</li><li>Review in Robinhood first.</li><li>Confirm the exact reviewed order once.</li><li>After confirmation, re-check account state, packet expiry, and the exact quote/instrument/chain.</li><li>One packet-scoped ref ID; no loop, recurring task, or automatic retry.</li><li>Submission is not a fill.</li></ul></div>
   </div>
   <div class="privacy-note">Packet ${cell(packet.packet_id || '-')} expires ${cell(packet.expires_at || 'before use if freshness is unknown')}. Digest ${cell(String(packet.content_digest_sha256 || '-').slice(0, 16))}… detects modification but is not broker authorization. A downloaded copy is inspection-only, contains no credentials or account number, and still requires fresh live review plus exact confirmation.</div>`;
 }
@@ -19348,15 +21155,15 @@ function wireAutopilotActions() {
 }
 async function loadAgenticAutopilotStatus() {
   if (!$('autopilot-status-text')) return;
-  $('autopilot-status-text').textContent = 'Loading autopilot state...';
+  $('autopilot-status-text').textContent = 'Loading manual review state...';
   const res = await fetch('/api/agentic-autopilot-status');
   const data = await res.json();
   if (!res.ok || data.error) {
-    $('autopilot-status-text').textContent = 'Autopilot status failed: ' + (data.error || 'unknown error');
+    $('autopilot-status-text').textContent = 'Manual review status failed: ' + (data.error || 'unknown error');
     return;
   }
   const blockers = Array.isArray(data.blockers) && data.blockers.length ? ` Blocker: ${data.blockers[0]}` : '';
-  $('autopilot-status-text').textContent = `${data.label || data.status || 'Autopilot'}: ${data.detail || ''}${blockers}`;
+  $('autopilot-status-text').textContent = `${data.label || data.status || 'Manual review'}: ${data.detail || ''}${blockers}`;
   $('autopilot-summary').innerHTML = autopilotSummary(data);
   $('autopilot-actions').innerHTML = autopilotActionsHtml(data);
   $('autopilot-notes').innerHTML = autopilotNotesHtml(data);

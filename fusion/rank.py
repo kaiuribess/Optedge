@@ -902,7 +902,8 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
                            ["next_catalyst_date", "days_to_catalyst", "catalyst_type"])
     df = _safe_merge_score(df, sector_flow, "sector_flow_score")
     df = _safe_merge_score(df, technicals, "tech_score",
-                           ["rsi", "macd_hist", "bb_percent_b", "ma_cross",
+                           ["spot", "source_price_session", "source_price_basis",
+                            "rsi", "macd_hist", "bb_percent_b", "ma_cross",
                             "dist_52w_high", "dist_52w_low", "adx", "stoch_k",
                             "obv_slope"])
     df = _safe_merge_score(df, short_int, "short_int_score",

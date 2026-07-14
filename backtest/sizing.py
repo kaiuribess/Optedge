@@ -546,6 +546,22 @@ def add_sizing_to_shares(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
     target_pct = 0.30 if aggressive else 0.20
     out["stop_pct"] = stop_pct
     out["target_pct"] = target_pct
+    existing_entry = (
+        pd.to_numeric(out["entry_price"], errors="coerce")
+        if "entry_price" in out.columns
+        else pd.Series(np.nan, index=out.index, dtype=float)
+    )
+    spot = (
+        pd.to_numeric(out["spot"], errors="coerce")
+        if "spot" in out.columns
+        else pd.Series(np.nan, index=out.index, dtype=float)
+    )
+    reference_entry = existing_entry.where(existing_entry > 0).combine_first(
+        spot.where(spot > 0)
+    )
+    out["entry_price"] = reference_entry
+    out["stop_price"] = (reference_entry * (1.0 + stop_pct)).round(2)
+    out["target_price"] = (reference_entry * (1.0 + target_pct)).round(2)
     return _add_trade_status(out, asset="shares")
 
 

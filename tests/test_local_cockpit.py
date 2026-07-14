@@ -16,8 +16,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import scripts.local_cockpit as cockpit_module
+from risk.account_drawdown import append_snapshot_observation
 from scripts.export_robinhood_agentic_queue import robinhood_mcp_option_review_plan
-from scripts.normalize_robinhood_broker_snapshot import normalize_broker_snapshot
+from scripts.normalize_robinhood_broker_snapshot import (
+    EQUITY_LEDGER_DIRNAME,
+    account_equity_ledger_backup_path,
+    account_equity_ledger_path,
+    default_account_equity_ledger_dir,
+    normalize_broker_snapshot,
+)
+
 from scripts.local_cockpit import (
     add_watchlist_queries, add_watchlist_query, artifact_path, build_agentic_autopilot_status,
     build_agentic_decision_journal,
@@ -35,6 +43,10 @@ from scripts.local_cockpit import (
     normalize_robinhood_broker_snapshot_file,
     record_agentic_decision, warm_sec_ticker_cache, write_option_chain_shortlist, write_position_hygiene_plan,
 )
+
+TEST_ACCOUNT_KEY = "acct_0123456789abcdef"
+PASSING_ACCOUNT_KEY = "acct_1111111111111111"
+OTHER_ACCOUNT_KEY = "acct_2222222222222222"
 
 
 def test_cockpit_summary_counts_open_positions():
@@ -291,6 +303,9 @@ def _share_plan_payload():
         "entry_price": 100,
         "stop_price": 95,
         "target_price": 112,
+        "candidate_fingerprint": "1" * 24,
+        "candidate_source_file": "top_shares_20260713_120000.parquet",
+        "candidate_source_generated_at": None,
     }
 
 
@@ -304,7 +319,7 @@ def _manual_gate_account(
     options_ready=True,
     account_key=None,
 ):
-    account_key = account_key or f"acct_{str(label).lower().replace(' ', '_')}"
+    account_key = account_key or f"acct_{hashlib.sha256(str(label).encode()).hexdigest()[:16]}"
     return {
         "account": label,
         "account_mask": "...0001",
@@ -344,12 +359,18 @@ def _manual_gate_share_plan(
     planned_stop_loss=50,
     notional=900,
 ):
+    stop_distance = planned_stop_loss / 9
     return {
         "direction": "long",
         "order": {
             "symbol": "AAPL",
+            "direction": "long",
+            "intent": "open_long",
+            "side": "buy",
             "quantity": 9,
             "limit_price": 100,
+            "stop_price": round(100 - stop_distance, 6),
+            "target_price": round(100 + 2 * stop_distance, 6),
             "estimated_notional_dollars": notional,
         },
         "risk": {
@@ -364,7 +385,7 @@ def _manual_gate_share_plan(
     }
 
 
-def _manual_gate_option_plan(*, assumed_equity=9_000, debit=100):
+def _manual_gate_option_plan(*, assumed_equity=10_000, debit=100):
     return {
         "direction": "long",
         "order": {
@@ -380,18 +401,26 @@ def _manual_gate_option_plan(*, assumed_equity=9_000, debit=100):
         "risk": {"full_option_debit_at_risk_dollars": debit},
         "account_assumptions": {
             "account_equity_dollars": assumed_equity,
-            "risk_fraction": 0.02,
+            "risk_fraction": 0.01,
             "allocation_fraction": 0.10,
         },
     }
 
 
 def _manual_gate_option_candidate(**updates):
+    expiry = "2027-01-15"
     candidate = {
+        "asset": "option",
         "symbol": "AAPL",
+        "action": "BUY_TO_OPEN",
+        "order_type": "limit",
+        "time_in_force": "day",
         "option_side": "call",
         "strike": 200,
-        "expiry": "2027-01-15",
+        "expiry": expiry,
+        "dte": (
+            datetime.fromisoformat(expiry).date() - datetime.now(timezone.utc).date()
+        ).days,
         "quantity": 1,
         "max_limit_price": 1.0,
         "source_quote_at": datetime.now(timezone.utc).isoformat(),
@@ -440,7 +469,7 @@ def _portfolio_review_constraints(
             "schema": "optedge_post_trade_portfolio_gate_v1",
             "status": "allowed",
             "allowed": True,
-            "account_key": "acct_test",
+            "account_key": TEST_ACCOUNT_KEY,
             "account_mask": "...0001",
             "asof": now.date().isoformat(),
             "exposure_schema": "optedge_broker_portfolio_exposure_v1",
@@ -464,6 +493,166 @@ def _portfolio_review_constraints(
     }
 
 
+def _drawdown_review_constraints(
+    *,
+    equity=10_000,
+    risk_fraction=0.01,
+    account_key=TEST_ACCOUNT_KEY,
+):
+    now = datetime.now(timezone.utc)
+    return {
+        "schema": "optedge_account_drawdown_review_constraints_v1",
+        "policy_version": "robinhood_account_drawdown_v2",
+        "status": "allowed",
+        "allowed": True,
+        "missing_or_unsafe_state_policy": "block_new_entries",
+        "broker_snapshot_digest_sha256": "b" * 64,
+        "source_snapshot_digest_sha256": "c" * 64,
+        "base_risk_fraction": 0.01,
+        "requested_risk_fraction": risk_fraction,
+        "eligible_account_count": 1,
+        "eligible_accounts": [{
+            "schema": "optedge_robinhood_account_drawdown_interlock_v1",
+            "policy_version": "robinhood_account_drawdown_v2",
+            "status": "ready",
+            "review_ready": True,
+            "allowed": True,
+            "account_key": account_key,
+            "account_mask": "...0001",
+            "asof": now.isoformat(),
+            "observation_count": 2,
+            "baseline_started_at": (now - timedelta(hours=24)).isoformat(),
+            "baseline_span_hours": 24.0,
+            "baseline_ny_calendar_date_count": 2,
+            "current_equity_dollars": equity,
+            "high_water_equity_dollars": equity,
+            "high_water_drawdown_fraction": 0.0,
+            "ny_session_date": now.date().isoformat(),
+            "ny_session_reference_equity_dollars": equity,
+            "ny_session_loss_fraction": 0.0,
+            "risk_multiplier": 1.0,
+            "max_allowed_risk_fraction": 0.01,
+            "source_snapshot_digest_sha256": "c" * 64,
+            "ledger_digest_sha256": "d" * 64,
+            "blockers": [],
+            "policy": {
+                "max_observation_age_minutes": 90.0,
+                "minimum_baseline_observations": 2,
+                "minimum_baseline_ny_calendar_dates": 2,
+                "minimum_baseline_span_hours": 18.0,
+                "half_risk_at_drawdown_fraction": 0.05,
+                "quarter_risk_at_drawdown_fraction": 0.08,
+                "block_at_drawdown_fraction": 0.10,
+                "block_at_ny_session_loss_fraction": -0.03,
+                "block_at_unexplained_adjacent_jump_fraction": 0.25,
+                "missing_or_unsafe_state_policy": "block_new_entries",
+                "risk_multiplier_may_increase_risk": False,
+            },
+            "does_not_place_orders": True,
+        }],
+    }
+
+
+def _share_candidate_review_constraints(plan):
+    now = datetime.now(timezone.utc)
+    order = plan["order"]
+    return {
+        "schema": "optedge_share_candidate_review_attestation_v1",
+        "status": "allowed",
+        "allowed": True,
+        "asset": "share",
+        "direction": "long",
+        "symbol": order["symbol"],
+        "source_pattern": "top_shares_*.parquet",
+        "source_file": "top_shares_20260713_120000.parquet",
+        "source_artifact_at": now.isoformat(),
+        "source_artifact_age_minutes": 0.0,
+        "max_source_age_minutes": 45.0,
+        "source_artifact_digest_sha256": "d" * 64,
+        "candidate_row_digest_sha256": "f" * 64,
+        "candidate_fingerprint": "1" * 24,
+        "candidate_source_generated_at": None,
+        "candidate_source_price_session": now.date().isoformat(),
+        "candidate_source_price_basis": "history_last_bar_close",
+        "candidate_source_quote_at": None,
+        "candidate_quote_available": False,
+        "candidate_source_quote_time_basis": None,
+        "candidate_source_bid": None,
+        "candidate_source_ask": None,
+        "candidate_source_spread_fraction": None,
+        "candidate_quote_quality": None,
+        "trade_status": "Trade",
+        "setup_gate_status": "ready",
+        "research_guard_status": "pass",
+        "entry_price": order["limit_price"],
+        "stop_price": order["stop_price"],
+        "target_price": order["target_price"],
+        "max_units": order["quantity"],
+        "max_notional_dollars": order["estimated_notional_dollars"],
+        "planned_quantity": order["quantity"],
+        "planned_notional_dollars": order["estimated_notional_dollars"],
+        "top_rank_limit": 3,
+        "require_exact_geometry": True,
+        "require_loaded_candidate_fingerprint": True,
+        "blockers": [],
+    }
+
+
+def _write_test_equity_ledgers(
+    data_dir,
+    snapshot,
+    *,
+    initial_equity_multiplier=1.0,
+):
+    """Seed a durable multi-date baseline and its rollback-detection sidecar."""
+    generated = datetime.fromisoformat(
+        str(snapshot["generated_at"]).replace("Z", "+00:00")
+    )
+    initial = json.loads(json.dumps(snapshot))
+    initial["generated_at"] = (generated - timedelta(days=2)).isoformat()
+    for account in initial.get("accounts") or []:
+        portfolio = account.get("portfolio") if isinstance(account, dict) else None
+        if isinstance(portfolio, dict) and isinstance(portfolio.get("total_value"), (int, float)):
+            portfolio["total_value"] = round(
+                float(portfolio["total_value"]) * initial_equity_multiplier,
+                2,
+            )
+    for account in snapshot.get("accounts") or []:
+        if not isinstance(account, dict) or not account.get("account_key"):
+            continue
+        try:
+            ledger, _ = append_snapshot_observation(
+                None,
+                initial,
+                account["account_key"],
+            )
+            prior_close = json.loads(json.dumps(snapshot))
+            prior_close["generated_at"] = (
+                generated - timedelta(days=1)
+            ).isoformat()
+            ledger, _ = append_snapshot_observation(
+                ledger,
+                prior_close,
+                account["account_key"],
+            )
+            ledger, _ = append_snapshot_observation(
+                ledger,
+                snapshot,
+                account["account_key"],
+            )
+        except ValueError:
+            continue
+        path = account_equity_ledger_path(
+            default_account_equity_ledger_dir(data_dir),
+            account["account_key"],
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(ledger), encoding="utf-8")
+        account_equity_ledger_backup_path(path).write_text(
+            json.dumps(ledger), encoding="utf-8"
+        )
+
+
 def _run_manual_gate(
     asset,
     plan,
@@ -472,6 +661,18 @@ def _run_manual_gate(
     candidate=None,
     snapshot_updates=None,
     entry_gate_allowed=True,
+    seed_equity_ledger=True,
+    initial_equity_multiplier=1.0,
+    local_option_positions=None,
+    local_share_positions=None,
+    seed_share_candidate=True,
+    share_candidate_updates=None,
+    candidate_request_updates=None,
+    share_candidate_age_minutes=0,
+    cycle_candidates=None,
+    queue_candidates=None,
+    cycle_updates=None,
+    queue_updates=None,
 ):
     old_health = cockpit_module.build_data_health
     old_broker = cockpit_module.build_broker_reconciliation
@@ -501,9 +702,15 @@ def _run_manual_gate(
             data_dir = Path(td)
             now = datetime.now(timezone.utc).isoformat()
             snapshot = {
+                "schema": "optedge_robinhood_broker_snapshot_v1",
                 "generated_at": now,
+                "normalized_at": now,
+                "normalization_blockers": [],
                 "accounts": [
-                    {"account_key": row.get("account_key")}
+                    {
+                        "account_key": row.get("account_key"),
+                        "portfolio": {"total_value": row.get("account_equity")},
+                    }
                     for row in (broker.get("account_readiness_rows") or [])
                     if isinstance(row, dict) and row.get("account_key")
                 ],
@@ -516,19 +723,97 @@ def _run_manual_gate(
             (data_dir / "robinhood_broker_snapshot.json").write_text(
                 json.dumps(snapshot), encoding="utf-8",
             )
-            (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
-            (data_dir / "open_share_positions.json").write_text("[]", encoding="utf-8")
-            if asset == "option":
-                (data_dir / "robinhood_agentic_queue.json").write_text(
-                    json.dumps({"generated_at": now}), encoding="utf-8",
+            if seed_equity_ledger:
+                _write_test_equity_ledgers(
+                    data_dir,
+                    snapshot,
+                    initial_equity_multiplier=initial_equity_multiplier,
                 )
-                (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps({
+            (data_dir / "open_positions.json").write_text(
+                json.dumps(local_option_positions or []), encoding="utf-8"
+            )
+            (data_dir / "open_share_positions.json").write_text(
+                json.dumps(local_share_positions or []), encoding="utf-8"
+            )
+            if asset == "share" and seed_share_candidate:
+                order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
+                candidate_row = {
+                    "ticker": order.get("symbol") or "AAPL",
+                    "entry_price": order.get("limit_price"),
+                    "stop_price": order.get("stop_price"),
+                    "target_price": order.get("target_price"),
+                    "source_price_session": datetime.now(timezone.utc).date().isoformat(),
+                    "source_price_basis": "history_last_bar_close",
+                    "confidence": 80,
+                    "rank_score": 1.0,
+                    "suggested_dollars": max(
+                        100_000.0,
+                        float(order.get("estimated_notional_dollars") or 0.0),
+                    ),
+                    "stop_pct": -0.04,
+                    "target_pct": 0.08,
+                    "trade_status": "Trade",
+                    "is_actionable": True,
+                    "research_guard_status": "pass",
+                }
+                candidate_row.update(share_candidate_updates or {})
+                share_path = data_dir / "top_shares_20260713_120000.parquet"
+                pd.DataFrame([candidate_row]).to_parquet(share_path)
+                if share_candidate_age_minutes:
+                    stale_time = datetime.now(timezone.utc).timestamp() - share_candidate_age_minutes * 60
+                    os.utime(share_path, (stale_time, stale_time))
+                loaded = cockpit_module._read_parquet(share_path)
+                record = cockpit_module._best_setup_record(
+                    loaded.iloc[0], "share", share_path.name
+                )
+                planner_candidate = record.get("planner_candidate") or {}
+                plan["candidate_request"] = {
+                    "candidate_fingerprint": planner_candidate.get("candidate_fingerprint"),
+                    "source_file": share_path.name,
+                    "source_generated_at": planner_candidate.get("source_generated_at"),
+                }
+            if asset == "share" and candidate_request_updates:
+                plan.setdefault("candidate_request", {}).update(candidate_request_updates)
+            if asset == "option":
+                candidate_row = (
+                    candidate if candidate is not None else _manual_gate_option_candidate()
+                )
+                cycle_rows = (
+                    cycle_candidates
+                    if cycle_candidates is not None
+                    else [json.loads(json.dumps(candidate_row))]
+                )
+                queue_rows = (
+                    queue_candidates
+                    if queue_candidates is not None
+                    else [json.loads(json.dumps(candidate_row))]
+                )
+                queue_payload = {
+                    "schema": "optedge_robinhood_agentic_options_queue_v1",
                     "generated_at": now,
+                    "does_not_place_orders": True,
+                    "execution_enabled": False,
+                    "max_orders_to_submit": 0,
+                    "orders": queue_rows,
+                }
+                queue_payload.update(queue_updates or {})
+                (data_dir / "robinhood_agentic_queue.json").write_text(
+                    json.dumps(queue_payload), encoding="utf-8",
+                )
+                cycle_payload = {
+                    "schema": "optedge_robinhood_agentic_cycle_v1",
+                    "generated_at": now,
+                    "does_not_place_orders": True,
+                    "auto_submit_allowed": False,
                     "entry_gate": {
                         "new_entries_allowed_after_live_checks": entry_gate_allowed,
                     },
-                    "manual_review_candidates": [candidate or _manual_gate_option_candidate()],
-                }), encoding="utf-8")
+                    "manual_review_candidates": cycle_rows,
+                }
+                cycle_payload.update(cycle_updates or {})
+                (data_dir / "robinhood_agentic_cycle.json").write_text(
+                    json.dumps(cycle_payload), encoding="utf-8"
+                )
             return cockpit_module._manual_review_gate(asset, data_dir, plan)
     finally:
         cockpit_module.build_data_health = old_health
@@ -623,6 +908,132 @@ def test_manual_review_gate_allows_conservative_user_equity_when_live_math_passe
     assert gate["review_allowed"] is True
     assert gate["blockers"] == []
     assert gate["review_constraints"]["account"]["eligible_same_account_match_count"] == 1
+    derivation = gate["review_constraints"]["account"]["account_key_derivation"]
+    assert derivation["schema"] == "optedge_robinhood_account_key_derivation_v1"
+    assert derivation["namespace"] == "optedge-robinhood-account-v1|"
+    assert derivation["require_exact_eligible_key_match"] is True
+    assert derivation["persist_raw_account_number"] is False
+    assert gate["review_constraints"]["drawdown"]["eligible_accounts"][0][
+        "account_mask"
+    ] == "...0001"
+
+
+def test_share_review_binds_realistic_candidate_without_pretending_bar_data_is_quote():
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(),
+        _manual_gate_broker([_manual_gate_account(equity=10_000, buying_power=2_000)]),
+    )
+
+    candidate = gate["review_constraints"]["candidate"]
+    assert gate["review_allowed"] is True
+    assert candidate["allowed"] is True
+    assert candidate["candidate_quote_available"] is False
+    assert candidate["candidate_source_price_basis"] == "history_last_bar_close"
+    assert len(candidate["candidate_fingerprint"]) == 24
+    assert len(candidate["source_artifact_digest_sha256"]) == 64
+
+
+def test_share_review_blocks_missing_stale_or_mismatched_exact_candidate():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    cases = [
+        ({"seed_share_candidate": False}, "top_shares artifact is missing"),
+        ({"share_candidate_age_minutes": 46}, "older than the 45-minute review limit"),
+        (
+            {"candidate_request_updates": {"candidate_fingerprint": "f" * 24}},
+            "symbol and fingerprint are not among",
+        ),
+        (
+            {"share_candidate_updates": {"source_price_basis": "live_quote"}},
+            "history_last_bar_close",
+        ),
+        (
+            {"share_candidate_updates": {"source_price_session": "2020-01-01"}},
+            "no more than four calendar days old",
+        ),
+    ]
+    for kwargs, expected in cases:
+        gate = _run_manual_gate(
+            "share",
+            _manual_gate_share_plan(),
+            broker,
+            **kwargs,
+        )
+        assert gate["review_allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+
+def test_manual_review_gate_blocks_without_chained_account_equity_history():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=1_000),
+    ])
+
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(assumed_equity=9_000),
+        broker,
+        seed_equity_ledger=False,
+    )
+
+    assert gate["review_allowed"] is False
+    assert gate["review_constraints"]["drawdown"]["eligible_account_count"] == 0
+    assert any("account-equity history" in blocker for blocker in gate["blockers"])
+
+
+def test_manual_review_gate_applies_drawdown_reduced_risk_ceiling():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=1_000),
+    ])
+    reduced_plan = _manual_gate_share_plan(
+        assumed_equity=10_000,
+        risk_fraction=0.005,
+        planned_stop_loss=50,
+    )
+
+    reduced = _run_manual_gate(
+        "share",
+        reduced_plan,
+        broker,
+        initial_equity_multiplier=1 / 0.95,
+    )
+    too_large = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(
+            assumed_equity=10_000,
+            risk_fraction=0.01,
+            planned_stop_loss=50,
+        ),
+        broker,
+        initial_equity_multiplier=1 / 0.95,
+    )
+
+    assert reduced["review_allowed"] is True
+    attestation = reduced["review_constraints"]["drawdown"]["eligible_accounts"][0]
+    assert attestation["status"] == "reduced"
+    assert attestation["risk_multiplier"] == 0.5
+    assert attestation["max_allowed_risk_fraction"] == 0.005
+    assert too_large["review_allowed"] is False
+    assert any("drawdown multiplier" in blocker for blocker in too_large["blockers"])
+
+
+def test_manual_review_gate_blocks_at_ten_percent_account_drawdown():
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(
+            assumed_equity=10_000,
+            risk_fraction=0.0025,
+            planned_stop_loss=25,
+        ),
+        _manual_gate_broker([
+            _manual_gate_account(equity=10_000, buying_power=1_000),
+        ]),
+        initial_equity_multiplier=1 / 0.89,
+    )
+
+    assert gate["review_allowed"] is False
+    assert any("at least 10%" in blocker for blocker in gate["blockers"])
 
 
 def test_manual_review_gate_attests_existing_plus_proposed_same_account_exposure():
@@ -685,7 +1096,7 @@ def test_manual_review_gate_ignores_other_account_exposure_without_pooling():
         _manual_gate_share_plan(allocation_fraction=0.10, notional=900),
         _manual_gate_broker([account]),
         snapshot_updates={"equity_positions": [{
-            "account_key": "acct_other",
+            "account_key": OTHER_ACCOUNT_KEY,
             "symbol": "MSFT",
             "quantity": 100,
             "signed_quantity": -100,
@@ -704,13 +1115,13 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
         label="Passing",
         equity=10_000,
         buying_power=2_000,
-        account_key="acct_passing",
+        account_key=PASSING_ACCOUNT_KEY,
     )
     failing_other = _manual_gate_account(
         label="Other",
         equity=4_000,
         buying_power=2_000,
-        account_key="acct_other",
+        account_key=OTHER_ACCOUNT_KEY,
     )
     broker = _manual_gate_broker([passing, failing_other])
     cases = [
@@ -719,7 +1130,7 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
             _manual_gate_share_plan(),
             None,
             {"equity_positions": [{
-                "account_key": "acct_other",
+                "account_key": OTHER_ACCOUNT_KEY,
                 "symbol": "AAPL",
                 "quantity": 1,
                 "signed_quantity": 1,
@@ -733,7 +1144,7 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
             _manual_gate_share_plan(),
             None,
             {"equity_orders": [{
-                "account_key": "acct_other",
+                "account_key": OTHER_ACCOUNT_KEY,
                 "symbol": "AAPL",
                 "quantity": 1,
                 "state": "queued",
@@ -744,7 +1155,7 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
             _manual_gate_option_plan(),
             _manual_gate_option_candidate(),
             {"option_positions": [{
-                "account_key": "acct_other",
+                "account_key": OTHER_ACCOUNT_KEY,
                 "symbol": "AAPL",
                 "option_type": "call",
                 "strike_price": 200,
@@ -762,7 +1173,7 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
             _manual_gate_option_plan(),
             _manual_gate_option_candidate(),
             {"option_orders": [{
-                "account_key": "acct_other",
+                "account_key": OTHER_ACCOUNT_KEY,
                 "symbol": "AAPL",
                 "option_type": "call",
                 "strike_price": 200,
@@ -786,14 +1197,181 @@ def test_manual_review_gate_duplicate_checks_use_only_fully_passing_account():
 
         assert gate["review_allowed"] is True, (asset, snapshot_updates, gate["blockers"])
         assert gate["review_constraints"]["account"]["eligible_same_account_match_count"] == 1
-        assert gate["review_constraints"]["portfolio"]["eligible_accounts"][0]["account_key"] == "acct_passing"
+        assert gate["review_constraints"]["portfolio"]["eligible_accounts"][0]["account_key"] == PASSING_ACCOUNT_KEY
+
+
+def test_manual_review_gate_blocks_same_underlying_cross_asset_overlap():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    broker = _manual_gate_broker([account])
+    option_gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        broker,
+        candidate=_manual_gate_option_candidate(),
+        snapshot_updates={"equity_positions": [{
+            "account_key": account["account_key"],
+            "symbol": "AAPL",
+            "quantity": 2,
+            "signed_quantity": 2,
+            "position_type": "long",
+            "market_value": 200,
+            "current_price": 100,
+        }]},
+    )
+    share_gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(
+            assumed_equity=10_000,
+            allocation_fraction=0.20,
+        ),
+        broker,
+        snapshot_updates={"option_positions": [{
+            "account_key": account["account_key"],
+            "symbol": "AAPL",
+            "option_type": "call",
+            "strike_price": 200,
+            "expiration_date": "2027-01-15",
+            "quantity": 1,
+            "signed_quantity": 1,
+            "position_type": "long",
+            "trade_value_multiplier": 100,
+            "mark_price": 1.0,
+            "state": "open",
+        }]},
+    )
+
+    assert option_gate["review_allowed"] is False
+    assert share_gate["review_allowed"] is False
+    assert any("cross-asset concentration" in value for value in option_gate["blockers"])
+    assert any("cross-asset concentration" in value for value in share_gate["blockers"])
+
+
+def test_nonzero_filled_position_rows_remain_active_exposure():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    broker = _manual_gate_broker([account])
+    share_gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(),
+        broker,
+        snapshot_updates={"equity_positions": [{
+            "account_key": account["account_key"],
+            "symbol": "AAPL",
+            "quantity": 1,
+            "signed_quantity": 1,
+            "position_type": "long",
+            "market_value": 100,
+            "state": "filled",
+        }]},
+    )
+    option_gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        broker,
+        candidate=_manual_gate_option_candidate(),
+        snapshot_updates={"option_positions": [{
+            "account_key": account["account_key"],
+            "symbol": "AAPL",
+            "option_type": "call",
+            "strike_price": 200,
+            "expiration_date": "2027-01-15",
+            "quantity": 1,
+            "signed_quantity": 1,
+            "position_type": "long",
+            "trade_value_multiplier": 100,
+            "mark_price": 1.0,
+            "state": "filled",
+        }]},
+    )
+
+    assert share_gate["review_allowed"] is False
+    assert any("Existing long or short AAPL" in value for value in share_gate["blockers"])
+    assert option_gate["review_allowed"] is False
+    assert any("already holds this exact option contract" in value for value in option_gate["blockers"])
+
+
+def test_manual_review_gate_blocks_broker_linked_local_option_suggested_contracts():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(
+            assumed_equity=10_000,
+            allocation_fraction=0.20,
+        ),
+        _manual_gate_broker([account]),
+        local_option_positions=[{
+            "account_key": account["account_key"],
+            "tracking_scope": "broker_linked",
+            "ticker": "AAPL",
+            "option_side": "call",
+            "strike": 200,
+            "expiry": "2027-01-15",
+            "trade_status": "open",
+            "suggested_contracts": 1,
+        }],
+    )
+
+    assert gate["review_allowed"] is False
+    assert any("cross-asset concentration" in value for value in gate["blockers"])
+
+
+def test_manual_review_gate_blocks_broker_linked_local_share_suggested_dollars():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        _manual_gate_broker([account]),
+        candidate=_manual_gate_option_candidate(),
+        local_share_positions=[{
+            "account_key": account["account_key"],
+            "tracking_scope": "broker_linked",
+            "ticker": "AAPL",
+            "trade_status": "open",
+            "suggested_dollars": 500,
+        }],
+    )
+
+    assert gate["review_allowed"] is False
+    assert any("cross-asset concentration" in value for value in gate["blockers"])
+
+
+def test_manual_review_gate_ignores_terminal_or_expired_local_option_rows():
+    account = _manual_gate_account(equity=10_000, buying_power=2_000)
+    gate = _run_manual_gate(
+        "share",
+        _manual_gate_share_plan(
+            assumed_equity=10_000,
+            allocation_fraction=0.20,
+        ),
+        _manual_gate_broker([account]),
+        local_option_positions=[
+            {
+                "account_key": account["account_key"],
+                "tracking_scope": "broker_linked",
+                "ticker": "AAPL",
+                "expiry": "2027-01-15",
+                "trade_status": "closed",
+                "suggested_contracts": 1,
+            },
+            {
+                "account_key": account["account_key"],
+                "tracking_scope": "broker_linked",
+                "ticker": "AAPL",
+                "expiry": "2020-01-17",
+                "trade_status": "open",
+                "suggested_contracts": 1,
+            },
+        ],
+    )
+
+    assert gate["review_allowed"] is True
+    assert not any("cross-asset concentration" in value for value in gate["blockers"])
 
 
 def test_manual_review_gate_keeps_unscoped_nonzero_and_working_rows_fail_closed():
     account = _manual_gate_account(
         equity=10_000,
         buying_power=2_000,
-        account_key="acct_passing",
+        account_key=PASSING_ACCOUNT_KEY,
     )
     cases = [
         (
@@ -1191,6 +1769,144 @@ def test_manual_option_review_requires_fresh_two_sided_quote_within_spread_cap()
     assert any("fresh Robinhood quote" in warning for warning in research_gate["warnings"])
 
 
+def test_manual_option_review_freezes_exact_cycle_and_queue_candidate_attestation():
+    gate = _run_manual_gate(
+        "option",
+        _manual_gate_option_plan(),
+        _manual_gate_broker([
+            _manual_gate_account(equity=10_000, buying_power=2_000),
+        ]),
+        candidate=_manual_gate_option_candidate(),
+    )
+
+    candidate = gate["review_constraints"]["candidate"]
+    assert gate["review_allowed"] is True
+    assert candidate["schema"] == "optedge_option_candidate_review_attestation_v1"
+    assert candidate["status"] == "allowed"
+    assert candidate["allowed"] is True
+    assert candidate["blockers"] == []
+    assert candidate["source_cycle_schema"] == "optedge_robinhood_agentic_cycle_v1"
+    assert candidate["source_queue_schema"] == "optedge_robinhood_agentic_options_queue_v1"
+    assert candidate["exact_candidate_count_cycle"] == 1
+    assert candidate["exact_candidate_count_queue"] == 1
+    assert candidate["candidate_rows_match"] is True
+    assert len(candidate["cycle_digest_sha256"]) == 64
+    assert len(candidate["queue_digest_sha256"]) == 64
+    assert len(candidate["candidate_row_digest_sha256"]) == 64
+    assert candidate["candidate_fingerprint"] == candidate["candidate_row_digest_sha256"][:24]
+    assert candidate["asset"] == "option"
+    assert candidate["action"] == "BUY_TO_OPEN"
+    assert candidate["order_type"] == "limit"
+    assert candidate["time_in_force"] == "day"
+    assert candidate["underlying_type"] == "equity"
+    assert candidate["symbol"] == "AAPL"
+    assert candidate["option_type"] == "call"
+    assert candidate["strike"] == 200
+    assert candidate["expiry"] == "2027-01-15"
+    assert candidate["dte"] >= 90
+    assert candidate["entry_gate_new_entries_allowed_after_live_checks"] is True
+    assert candidate["cycle_auto_submit_allowed"] is False
+    assert candidate["cycle_does_not_place_orders"] is True
+    assert candidate["queue_does_not_place_orders"] is True
+    assert candidate["queue_execution_enabled"] is False
+    assert candidate["queue_max_orders_to_submit"] == 0
+    assert candidate["candidate_quantity_cap"] == 1
+    assert candidate["candidate_limit_cap"] == 1.0
+    assert candidate["planned_quantity"] == 1
+    assert candidate["planned_limit"] == 1.0
+    assert candidate["candidate_source_bid"] == 0.99
+    assert candidate["candidate_source_ask"] == 1.01
+    assert candidate["candidate_quote_is_research_only"] is False
+    assert set(candidate) == {
+        "schema", "status", "allowed", "blockers", "asset", "action",
+        "order_type", "time_in_force", "underlying_type", "symbol",
+        "option_type", "strike", "expiry", "dte", "candidate_fingerprint",
+        "candidate_row_digest_sha256", "source_cycle_schema",
+        "source_queue_schema", "cycle_generated_at", "queue_generated_at",
+        "max_source_age_minutes", "cycle_digest_sha256", "queue_digest_sha256",
+        "exact_candidate_count_cycle", "exact_candidate_count_queue",
+        "candidate_rows_match", "entry_gate_new_entries_allowed_after_live_checks",
+        "cycle_auto_submit_allowed", "cycle_does_not_place_orders",
+        "queue_does_not_place_orders", "queue_execution_enabled",
+        "queue_max_orders_to_submit", "candidate_quantity_cap",
+        "candidate_limit_cap", "planned_quantity", "planned_limit",
+        "max_spread_fraction", "candidate_source_quote_at",
+        "candidate_source_quote_time_basis", "candidate_source_bid",
+        "candidate_source_ask", "candidate_source_spread_fraction",
+        "candidate_quote_quality", "candidate_data_delay",
+        "candidate_quote_is_research_only",
+    }
+
+
+def test_manual_option_review_blocks_missing_duplicate_or_mismatched_queue_candidate():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    candidate = _manual_gate_option_candidate()
+    cases = [
+        (
+            [],
+            0,
+            False,
+            "must occur exactly once in queue.orders",
+        ),
+        (
+            [candidate, json.loads(json.dumps(candidate))],
+            2,
+            False,
+            "must occur exactly once in queue.orders",
+        ),
+        (
+            [{**candidate, "research_instruction": "mismatched row"}],
+            1,
+            False,
+            "candidate rows in the cycle and queue do not match",
+        ),
+    ]
+
+    for queue_candidates, expected_count, expected_rows_match, expected_blocker in cases:
+        gate = _run_manual_gate(
+            "option",
+            _manual_gate_option_plan(),
+            broker,
+            candidate=candidate,
+            queue_candidates=queue_candidates,
+        )
+        attestation = gate["review_constraints"]["candidate"]
+        assert gate["review_allowed"] is False
+        assert attestation["allowed"] is False
+        assert attestation["exact_candidate_count_cycle"] == 1
+        assert attestation["exact_candidate_count_queue"] == expected_count
+        assert attestation["candidate_rows_match"] is expected_rows_match
+        assert any(expected_blocker in blocker for blocker in gate["blockers"])
+
+
+def test_manual_option_review_requires_inert_cycle_and_queue_controls():
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+    cases = [
+        ({"cycle_updates": {"auto_submit_allowed": True}}, "auto_submit_allowed=false"),
+        ({"cycle_updates": {"does_not_place_orders": False}}, "cycle must explicitly declare"),
+        ({"queue_updates": {"does_not_place_orders": False}}, "queue must explicitly declare"),
+        ({"queue_updates": {"execution_enabled": True}}, "execution_enabled=false"),
+        ({"queue_updates": {"max_orders_to_submit": 1}}, "max_orders_to_submit=0"),
+    ]
+
+    for updates, expected in cases:
+        gate = _run_manual_gate(
+            "option",
+            _manual_gate_option_plan(),
+            broker,
+            candidate=_manual_gate_option_candidate(),
+            **updates,
+        )
+        candidate = gate["review_constraints"]["candidate"]
+        assert gate["review_allowed"] is False
+        assert candidate["allowed"] is False
+        assert any(expected in blocker for blocker in gate["blockers"])
+
+
 def test_trade_plan_report_calculates_but_blocks_without_local_evidence():
     with tempfile.TemporaryDirectory() as td:
         report = build_trade_plan_report(_share_plan_payload(), Path(td))
@@ -1321,12 +2037,25 @@ def test_trade_plan_report_builds_manual_review_without_execution_or_automation(
                     "require_agentic_allowed": True,
                     "require_options_approval": False,
                     "use_conservative_buying_power": True,
+                    "account_key_derivation": {
+                        "schema": "optedge_robinhood_account_key_derivation_v1",
+                        "algorithm": "sha256",
+                        "namespace": "optedge-robinhood-account-v1|",
+                        "input_field": "get_accounts.account_number",
+                        "input_normalization": "strip_surrounding_whitespace",
+                        "output_prefix": "acct_",
+                        "lowercase_hex_characters": 16,
+                        "require_exact_eligible_key_match": True,
+                        "persist_raw_account_number": False,
+                    },
                 },
-                "portfolio": _portfolio_review_constraints(),
+                    "portfolio": _portfolio_review_constraints(),
+                    "drawdown": _drawdown_review_constraints(),
+                    "candidate": _share_candidate_review_constraints(plan),
                 "quote": {
                     "quote_tool": "get_equity_quotes",
                     "max_live_quote_age_seconds": 120,
-                    "max_spread_fraction": 0.02,
+                    "max_spread_fraction": 0.01,
                     "require_positive_bid_ask": True,
                     "require_live_tick_validation": True,
                     "limit_price_may_increase": False,
@@ -1407,29 +2136,250 @@ def test_trade_plan_report_blocks_index_option_types_and_roots():
         assert expected_code in error_codes
 
 
+def _comparison_option_record(
+    symbol="AAPL",
+    *,
+    raw_score=1.0,
+    artifact_age=10.0,
+    quote_age=5.0,
+    quote_basis="provider_quote_timestamp",
+    quote_quality="live_broker",
+):
+    now = datetime.now(timezone.utc)
+    quote_at = (
+        (now - timedelta(minutes=quote_age)).isoformat()
+        if quote_age is not None
+        else None
+    )
+    strike = 200.0 if symbol == "AAPL" else 100.0
+    fingerprint = hashlib.sha256(symbol.encode("utf-8")).hexdigest()[:24]
+    planner = {
+        "asset": "option",
+        "symbol": symbol,
+        "direction": "long",
+        "option_type": "call",
+        "strike": strike,
+        "expiry": "2027-12-17",
+        "underlying_type": "equity",
+        "contract_multiplier": 100,
+        "contract": f"{symbol} 2027-12-17 C {strike:g}",
+        "identity_label": f"{symbol} 2027-12-17 call {strike:g}",
+        "entry_price": 1.0,
+        "stop_price": 0.5,
+        "target_price": 2.0,
+        "max_units": 1,
+        "source_file": f"top_options_{symbol}.parquet",
+        "source_artifact_age_minutes": artifact_age,
+        "source_artifact_time_basis": "file_mtime_age",
+        "source_quote_at": quote_at,
+        "source_quote_time_basis": quote_basis,
+        "quote_quality": quote_quality,
+        "data_delay": "real_time",
+        "bid": 0.98,
+        "ask": 1.02,
+        "mid": 1.0,
+        "spread_pct": 0.04,
+        "candidate_fingerprint": fingerprint,
+        "plan_ready": True,
+        "blockers": [],
+    }
+    return {
+        "asset": "option",
+        "ticker_or_symbol": symbol,
+        "setup": planner["identity_label"],
+        "action": "call",
+        "score": raw_score,
+        "entry_price": 1.0,
+        "stop_price": 0.5,
+        "target_price": 2.0,
+        "suggested_contracts": 1,
+        "spread_pct": 0.04,
+        "source_file": planner["source_file"],
+        "snapshot_age_min": artifact_age,
+        "snapshot_freshness": "fresh" if artifact_age <= 90 else "stale",
+        "setup_gate_status": "ready",
+        "setup_gate_reasons": [],
+        "planner_candidate": planner,
+    }
+
+
+def _comparison_context(*, edge_eligible=True, broker=None, validation_level="ok"):
+    command = {
+        "climate_label": "constructive",
+        "climate_score": 68,
+        "validation_guardrail": {
+            "level": validation_level,
+            "detail": "Independent evidence is current." if validation_level == "ok" else "Refresh validation evidence.",
+        },
+    }
+    edge = {
+        "status": "validated" if edge_eligible else "paper_only",
+        "primary_blocker": None if edge_eligible else "Option evidence is still paper-only",
+        "source_attestation": {"met": True},
+        "asset_rows": [{
+            "asset": "option",
+            "status": "validated" if edge_eligible else "insufficient",
+            "live_capital_eligible": edge_eligible,
+            "evidence_lane": "current_method_executable" if edge_eligible else "current_method_shadow",
+            "primary_blocker": None if edge_eligible else "Option evidence is still paper-only",
+        }],
+    }
+    return command, edge, broker or {
+        "manual_review_candidates": [],
+        "broker_reconciliation_rows": [],
+        "paper_positions": [],
+    }
+
+
+def test_candidate_comparison_ranks_freshness_before_incomparable_raw_scores():
+    stale_high_score = _comparison_option_record(
+        "STALE", raw_score=999.0, artifact_age=900.0,
+    )
+    fresh_low_score = _comparison_option_record(
+        "FRESH", raw_score=0.01, artifact_age=8.0,
+    )
+    command, edge, broker = _comparison_context()
+
+    board = cockpit_module.build_candidate_comparison(
+        {"by_asset": {"option": [stale_high_score, fresh_low_score]}},
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
+
+    assert board["raw_cross_asset_scores_used"] is False
+    assert board["rows"][0]["symbol"] == "FRESH"
+    assert board["rows"][0]["planner_load_allowed"] is True
+    assert board["winner_id"] == board["rows"][0]["candidate_id"]
+    assert board["rows"][-1]["kind"] == "baseline"
+
+
+def test_candidate_comparison_keeps_missing_quote_visible_but_locks_planner():
+    missing_quote = _comparison_option_record(
+        "NOQUOTE",
+        quote_age=None,
+        quote_basis=None,
+        quote_quality=None,
+    )
+    command, edge, broker = _comparison_context()
+
+    board = cockpit_module.build_candidate_comparison(
+        {"by_asset": {"option": [missing_quote]}},
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
+
+    candidate, baseline = board["rows"]
+    assert candidate["symbol"] == "NOQUOTE"
+    assert candidate["quote_age_minutes"] is None
+    assert candidate["planner_load_allowed"] is False
+    assert candidate["planner_candidate"] is None
+    assert "quote" in candidate["primary_blocker"].lower()
+    assert baseline["candidate_id"] == "no_trade"
+    assert baseline["recommended"] is True
+    assert board["winner_id"] == "no_trade"
+
+
+def test_candidate_comparison_blocks_exact_portfolio_overlap():
+    record = _comparison_option_record("AAPL")
+    broker = {
+        "manual_review_candidates": [],
+        "broker_reconciliation_rows": [{
+            "symbol": "AAPL",
+            "option_side": "call",
+            "strike": 200.0,
+            "expiry": "2027-12-17",
+            "position_type": "long",
+        }],
+        "paper_positions": [],
+    }
+    command, edge, broker = _comparison_context(broker=broker)
+
+    board = cockpit_module.build_candidate_comparison(
+        {"by_asset": {"option": [record]}},
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
+
+    candidate = board["rows"][0]
+    assert candidate["overlap"] == "exact contract overlap"
+    assert candidate["planner_load_allowed"] is False
+    assert "exact contract" in candidate["primary_blocker"].lower()
+    assert board["winner_id"] == "no_trade"
+
+
+def test_candidate_comparison_shows_only_top_three_plus_no_trade():
+    records = [
+        _comparison_option_record(symbol, artifact_age=10.0 + index)
+        for index, symbol in enumerate(("AAA", "BBB", "CCC", "DDD"))
+    ]
+    command, edge, broker = _comparison_context()
+
+    board = cockpit_module.build_candidate_comparison(
+        {"by_asset": {"option": records}},
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
+
+    assert board["candidate_count"] == 4
+    assert board["displayed_candidate_count"] == 3
+    assert len(board["rows"]) == 4
+    assert [row["kind"] for row in board["rows"]].count("baseline") == 1
+
+
 def test_trade_desk_contract_is_manual_and_versioned():
     old_command = cockpit_module.build_command_center
     old_autopilot = cockpit_module.build_agentic_autopilot_status
+    old_edge = cockpit_module.build_edge_lab_report
+    old_best = cockpit_module.build_best_setups
+    calls = {"command": 0, "broker": 0, "edge": 0, "best": 0}
     try:
-        cockpit_module.build_command_center = lambda data_dir, include_live_discovery=False, refresh_trade_queue=False: {
-            "status": "review",
-            "status_detail": "Review the snapshot.",
-        }
-        cockpit_module.build_agentic_autopilot_status = lambda data_dir: {
-            "status": "idle",
-            "auto_submit_allowed": False,
-        }
+        def command_builder(data_dir, include_live_discovery=False, refresh_trade_queue=False):
+            calls["command"] += 1
+            return {
+                "status": "review",
+                "status_detail": "Review the snapshot.",
+                "validation_guardrail": {"level": "ok", "detail": "Current."},
+            }
+
+        def broker_builder(data_dir):
+            calls["broker"] += 1
+            return {"status": "idle", "auto_submit_allowed": False}
+
+        def edge_builder(data_dir):
+            calls["edge"] += 1
+            return {"status": "paper_only", "asset_rows": []}
+
+        def best_builder(data_dir, per_asset=3, limit=12):
+            calls["best"] += 1
+            return {"by_asset": {}}
+
+        cockpit_module.build_command_center = command_builder
+        cockpit_module.build_agentic_autopilot_status = broker_builder
+        cockpit_module.build_edge_lab_report = edge_builder
+        cockpit_module.build_best_setups = best_builder
         with tempfile.TemporaryDirectory() as td:
             desk = build_trade_desk(Path(td))
     finally:
         cockpit_module.build_command_center = old_command
         cockpit_module.build_agentic_autopilot_status = old_autopilot
+        cockpit_module.build_edge_lab_report = old_edge
+        cockpit_module.build_best_setups = old_best
 
-    assert desk["schema"] == "optedge_trade_desk_v1"
+    assert desk["schema"] == "optedge_trade_desk_v2"
     assert desk["strategy_version"]
     assert desk["execution_mode"] == "manual_review_only"
     assert desk["automation_enabled"] is False
     assert desk["snapshot_id"] == "local-empty"
+    assert desk["model_trust"]["ordinary_scan_training"] == "disabled"
+    assert desk["account_drawdown"]["status"] == "blocked"
+    assert desk["account_drawdown"]["base_risk_fraction"] == 0.01
+    assert desk["candidate_comparison"]["rows"][-1]["candidate_id"] == "no_trade"
+    assert desk["candidate_comparison"]["broker_action_enabled"] is False
+    assert calls == {"command": 1, "broker": 1, "edge": 1, "best": 1}
 
 
 def test_cockpit_html_contains_lookup_controls():
@@ -1493,6 +2443,23 @@ def test_cockpit_html_contains_lookup_controls():
     assert "trust-card" in html
     assert "loadCommandCenter" in html
     assert "loadView('desk')" in html
+    assert "Freshness-gated candidate comparison" in html
+    assert "trade-desk-candidates" in html
+    assert "tradeDeskCandidates" in html
+    assert "desk-comparison-plan" in html
+    assert "Exact identity" in html
+    assert "Artifact age" in html
+    assert "Quote age" in html
+    assert "Slippage R/R" in html
+    assert ".grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics { grid-template-columns:1fr; }" in html
+    assert "Capital and model firewalls" in html
+    assert "trade-desk-firewalls" in html
+    assert "tradeDeskFirewalls" in html
+    assert 'id="plan-risk-pct" type="number" min="0.1" max="1"' in html
+    assert 'id="plan-allocation-pct" type="number" min="1" max="25"' in html
+    assert "use the freshness-gated comparison above" in html
+    assert "desk-candidate-plan" not in html
+    assert "prefillTradePlannerFromCandidate" not in html
     assert "loaders.slice(0, 1)" in html
     assert "window.setTimeout" in html
     assert "loadPositions().catch" not in html
@@ -1654,7 +2621,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
     assert "loadRobinhoodQueue" in html
-    assert "Autopilot status" in html
+    assert "Manual review status" in html
     assert "autopilot-summary" in html
     assert "autopilot-actions" in html
     assert "autopilot-notes" in html
@@ -4623,6 +5590,48 @@ def test_best_setups_include_saved_chain_shortlist_contracts():
     assert any("Saved 3m+ chain shortlist" in note for note in report["notes"])
 
 
+def test_best_setups_marks_stale_chain_artifact_avoid_even_when_row_scores_high():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated_at = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "STALE",
+                "contract_query": "STALE 2027-12-17 C 100",
+                "side": "call",
+                "underlying_type": "equity",
+                "expiry": "2027-12-17",
+                "strike": 100.0,
+                "dte": 400,
+                "mid": 1.0,
+                "bid": 0.98,
+                "ask": 1.02,
+                "premium_dollars": 100.0,
+                "stop_price_reference": 0.5,
+                "target_price_reference": 2.0,
+                "spread_pct": 0.04,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "readiness_score": 99,
+                "contract_quality_score": 99,
+                "swing_fit_score": 99,
+                "quote_quality": "live_broker",
+                "source_quote_at": datetime.now(timezone.utc).isoformat(),
+                "source_quote_time_basis": "provider_quote_timestamp",
+            }],
+        }), encoding="utf-8")
+
+        report = build_best_setups(data_dir, per_asset=1, limit=1)
+
+    row = report["by_asset"]["option"][0]
+    assert row["snapshot_age_min"] > cockpit_module.STALE_SNAPSHOT_MINUTES
+    assert row["snapshot_freshness"] == "stale"
+    assert row["setup_gate_status"] == "avoid"
+    assert any("stale" in reason.lower() for reason in row["setup_gate_reasons"])
+
+
 def test_swing_scout_surfaces_small_caps_and_futures_but_filters_short_dte_options():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -6339,6 +7348,7 @@ def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         (data_dir / "robinhood_mcp_snapshot_raw.json").write_text(json.dumps({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "accounts": [{
                 "account_number": "FAKE123456",
                 "nickname": "Agentic",
@@ -6379,6 +7389,7 @@ def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
         assert preview["ok"] is True
         assert preview["dry_run"] is True
         assert not (data_dir / "robinhood_broker_snapshot.json").exists()
+        assert not (data_dir / EQUITY_LEDGER_DIRNAME).exists()
 
         result = normalize_robinhood_broker_snapshot_file(data_dir)
 
@@ -6386,6 +7397,8 @@ def test_cockpit_can_normalize_raw_robinhood_snapshot_for_reconciliation():
         assert result["does_not_place_orders"] is True
         assert result["summary"]["option_positions"] == 1
         assert (data_dir / "robinhood_broker_snapshot.json").exists()
+        assert result["equity_ledger_update"]["observations_appended"] == 1
+        assert len(list((data_dir / EQUITY_LEDGER_DIRNAME).glob("*.json"))) == 1
         assert result["broker_reconciliation"]["broker_option_count"] == 1
         assert result["broker_reconciliation"]["matched_count"] == 1
 
