@@ -252,6 +252,13 @@ def _process_ticker(ticker: str) -> Optional[Dict[str, Any]]:
     obv_slope = _obv_slope(close, vol) if vol is not None else None
 
     indicators = {
+        # The ranked share artifact needs a positive, auditable reference
+        # price so its deterministic entry/stop/target geometry is usable.
+        # This is the last history-bar close, not a live quote; broker review
+        # still requires a fresh Robinhood bid/ask check.
+        "spot": float(close.iloc[-1]),
+        "source_price_session": pd.Timestamp(close.index[-1]).date().isoformat(),
+        "source_price_basis": "history_last_bar_close",
         "rsi": rsi,
         "macd": macd["macd"], "macd_signal": macd["signal"], "macd_hist": macd["hist"],
         "bb_percent_b": bb["bb_percent_b"], "bb_bandwidth": bb["bb_bandwidth"],

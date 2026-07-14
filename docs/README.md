@@ -7,13 +7,13 @@ This directory explains how Optedge works, where its evidence comes from, and ho
 | Guide | Purpose |
 |---|---|
 | [Complete Project Map](PROJECT_MAP.md) | One-line purpose and ownership context for every repository path. |
-| [Architecture](ARCHITECTURE.md) | System flow, module boundaries, asset lifecycles, and local state. |
-| [Edge Lab](EDGE_LAB.md) | Independent evidence lanes, calculations, thresholds, statuses, and limitations. |
-| [Validation](VALIDATION.md) | Lifecycle and fixed-session evidence, report artifacts, exclusions, and sample rules. |
-| [Risk Model](RISK_MODEL.md) | Sizing, portfolio guardrails, exit review, and the manual packet boundary. |
+| [Architecture](ARCHITECTURE.md) | System flow, model and broker trust boundaries, exact candidate/contract identity, asset lifecycles, and local state. |
+| [Edge Lab](EDGE_LAB.md) | Independent evidence lanes, exact model provenance, cost coverage, thresholds, statuses, and limitations. |
+| [Validation](VALIDATION.md) | Lifecycle and fixed-session evidence, adaptive-model promotion, report artifacts, exclusions, and sample rules. |
+| [Risk Model](RISK_MODEL.md) | Sizing, account identity/drawdown, hard spread limits, exact option-chain proof, idempotent order identity, and the manual packet boundary. |
 | [Data Sources](DATA_SOURCES.md) | Provider hierarchy, freshness, fallback behavior, and reliability. |
 | [Factor Library](FACTOR_LIBRARY.md) | Research factors and the information each engine contributes. |
-| [Third-Party Forward Testing](THIRD_PARTY_FORWARD_TESTING.md) | Read-only Robinhood capture shapes and reproducible external verification. |
+| [Third-Party Forward Testing](THIRD_PARTY_FORWARD_TESTING.md) | Read-only Robinhood capture, equity-ledger baselines, exact option attestations, manual review, and reproducible external verification. |
 | [Free Data Roadmap](FREE_DATA_ROADMAP.md) | Planned improvements to the no-subscription research stack. |
 | [Limitations](LIMITATIONS.md) | Known statistical, market-data, execution, and operational constraints. |
 

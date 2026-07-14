@@ -385,6 +385,30 @@ def test_v2_normalizes_current_mcp_account_snapshots_and_joins_option_instrument
     assert "RHS99992222" not in encoded
 
 
+def test_v2_raw_account_key_cannot_persist_an_account_number():
+    raw = _mcp_v2_bundle()
+    leaked_number = raw["get_accounts"]["data"]["accounts"][0]["account_number"]
+    raw["get_accounts"]["data"]["accounts"][0]["account_key"] = leaked_number
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    account_key = snapshot["accounts"][0]["account_key"]
+    assert account_key.startswith("acct_")
+    assert len(account_key) == 21
+    assert account_key != leaked_number
+    assert leaked_number not in json.dumps(snapshot, sort_keys=True)
+
+    spoofed = _mcp_v2_bundle()
+    spoofed["get_accounts"]["data"]["accounts"][0]["account_key"] = (
+        "acct_ffffffffffffffff"
+    )
+    without_explicit = _mcp_v2_bundle()
+    expected = normalize_broker_snapshot(without_explicit)["accounts"][0]["account_key"]
+    actual = normalize_broker_snapshot(spoofed)["accounts"][0]["account_key"]
+    assert actual == expected
+    assert actual != "acct_ffffffffffffffff"
+
+
 def test_v2_invalid_option_quantity_blocks_instead_of_becoming_zero_exposure():
     raw = _mcp_v2_bundle()
     raw["account_snapshots"][0]["get_option_orders"]["data"]["orders"] = []

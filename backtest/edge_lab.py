@@ -188,6 +188,9 @@ def _empty_stats() -> dict[str, Any]:
         "nonnegative_slippage_coverage": None,
         "spy_excess_coverage": None,
         "cost_reconciliation_coverage": None,
+        "entry_spread_coverage": None,
+        "nonnegative_entry_spread_coverage": None,
+        "cost_covers_entry_spread_coverage": None,
     }
 
 
@@ -205,6 +208,7 @@ def evidence_stats(
     raw = _numeric_column(work, "pnl_pct")
     after_costs = _numeric_column(work, "pnl_pct_after_slippage")
     slippage = _numeric_column(work, "slippage_assumption_pct")
+    entry_spread = _numeric_column(work, "spread_pct")
     excess = _numeric_column(work, "excess_vs_spy_pct")
     entry_time = pd.to_datetime(work.get("entry_time"), errors="coerce", utc=True)
     entry_mask = entry_time.notna()
@@ -213,6 +217,13 @@ def evidence_stats(
     slippage_mask = _finite_mask(slippage)
     excess_mask = _finite_mask(excess)
     nonnegative_slippage = slippage_mask & slippage.ge(0)
+    spread_mask = _finite_mask(entry_spread)
+    nonnegative_spread = spread_mask & entry_spread.ge(0)
+    cost_covers_spread = (
+        slippage_mask
+        & nonnegative_spread
+        & slippage.ge(entry_spread - COST_RECONCILIATION_ATOL)
+    )
     reconciliation = (
         raw_mask
         & after_mask
@@ -249,6 +260,9 @@ def evidence_stats(
                 "nonnegative_slippage_coverage": float(nonnegative_slippage.mean()),
                 "spy_excess_coverage": float(excess_mask.mean()),
                 "cost_reconciliation_coverage": float(reconciliation.mean()),
+                "entry_spread_coverage": float(spread_mask.mean()),
+                "nonnegative_entry_spread_coverage": float(nonnegative_spread.mean()),
+                "cost_covers_entry_spread_coverage": float(cost_covers_spread.mean()),
             }
         )
         return stats
@@ -306,6 +320,9 @@ def evidence_stats(
         "nonnegative_slippage_coverage": float(nonnegative_slippage.mean()),
         "spy_excess_coverage": float(excess_mask.mean()),
         "cost_reconciliation_coverage": float(reconciliation.mean()),
+        "entry_spread_coverage": float(spread_mask.mean()),
+        "nonnegative_entry_spread_coverage": float(nonnegative_spread.mean()),
+        "cost_covers_entry_spread_coverage": float(cost_covers_spread.mean()),
     }
 
 
@@ -547,14 +564,37 @@ def _verdict(
         ]
     )
     if asset == "option":
-        requirements.append(
-            _requirement(
-                "observed_option_coverage",
-                "Broker-observed option outcome coverage",
-                observed is not None and observed >= MIN_OPTION_OBSERVED_COVERAGE,
-                observed,
-                f">= {MIN_OPTION_OBSERVED_COVERAGE:.0%}",
-            )
+        requirements.extend(
+            [
+                _requirement(
+                    "entry_spread_coverage",
+                    "Finite entry-spread coverage",
+                    _coverage_is_complete(stats, "entry_spread_coverage"),
+                    stats.get("entry_spread_coverage"),
+                    "100%",
+                ),
+                _requirement(
+                    "nonnegative_entry_spread_coverage",
+                    "Nonnegative entry-spread coverage",
+                    _coverage_is_complete(stats, "nonnegative_entry_spread_coverage"),
+                    stats.get("nonnegative_entry_spread_coverage"),
+                    "100%",
+                ),
+                _requirement(
+                    "cost_covers_entry_spread_coverage",
+                    "Recorded cost covers entry spread",
+                    _coverage_is_complete(stats, "cost_covers_entry_spread_coverage"),
+                    stats.get("cost_covers_entry_spread_coverage"),
+                    "100%",
+                ),
+                _requirement(
+                    "observed_option_coverage",
+                    "Broker-observed option outcome coverage",
+                    observed is not None and observed >= MIN_OPTION_OBSERVED_COVERAGE,
+                    observed,
+                    f">= {MIN_OPTION_OBSERVED_COVERAGE:.0%}",
+                ),
+            ]
         )
 
     live_eligible = all(row["met"] for row in requirements)

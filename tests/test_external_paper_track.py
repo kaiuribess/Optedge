@@ -11,7 +11,11 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
-from scripts.export_external_paper_track import build_external_orders, export_candidates
+from scripts.export_external_paper_track import (
+    _load_option_chain_shortlist,
+    build_external_orders,
+    export_candidates,
+)
 from scripts.export_robinhood_agentic_queue import build_robinhood_queue
 
 
@@ -257,9 +261,16 @@ def test_external_track_does_not_promote_artifact_times_to_quote_provenance():
             }],
         }), encoding="utf-8")
 
+        loaded = _load_option_chain_shortlist(data_dir)
         out = build_external_orders(data_dir, asset="option", query="AAPL")
 
     assert len(out) == 1
+    assert len(loaded) == 1
+    assert loaded.iloc[0]["artifact_generated_at"] == generated_at
+    assert loaded.iloc[0]["artifact_time_basis"] == "generated_at"
+    assert loaded.iloc[0]["artifact_age_minutes"] <= 1
+    assert loaded.iloc[0]["source_quote_at"] == ""
+    assert loaded.iloc[0]["source_quote_time_basis"] == ""
     assert out.iloc[0]["source_quote_at"] == ""
     assert out.iloc[0]["source_quote_time_basis"] == ""
     assert out.iloc[0]["data_delay"] == "delayed"

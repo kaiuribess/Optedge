@@ -850,30 +850,18 @@ def main():
                     "(4) run with --loop 60 (longer gap = less rate-limit pressure).",
                     len(contracts))
 
-    # Auto-retrain BEFORE fusion from independent lifecycle outcomes. The full
-    # forward-test stream is intentionally not repriced here: it contains
-    # repeated scan snapshots and is run once later for monitoring.
+    # Ordinary scans are inference-only. Adaptive challengers must be built in
+    # an explicit research workflow and promoted through a purged OOS review;
+    # a scan never fits, persists, or consumes a newly fitted artifact.
     try:
-        adaptive_outcomes_pre = bt_predictor.load_adaptive_outcomes()
-        if adaptive_outcomes_pre.empty:
-            adaptive_outcomes_pre = None
-    except Exception:
-        adaptive_outcomes_pre = None
-    try:
-        ic_df_pre = bt_predictor.load_cached_ic()
-        if ic_df_pre is not None or adaptive_outcomes_pre is not None:
-            coef_payload = bt_predictor.fit_return_predictor(adaptive_outcomes_pre, ic_df_pre)
-            new_w = bt_predictor.update_runtime_weights(adaptive_outcomes_pre, ic_df_pre)
-            if new_w:
-                _config.SIGNAL_WEIGHTS = new_w
-                fusion_rank.SIGNAL_WEIGHTS = new_w
-                log.info("auto-retrain (pre-fusion): top weight = %s",
-                         max(new_w, key=new_w.get))
-            top_coef = max(coef_payload["coefs"].items(), key=lambda kv: abs(kv[1]))
-            log.info("predictor: source=%s top=%s=%+.4f",
-                     coef_payload["meta"].get("source"), top_coef[0], top_coef[1])
-    except Exception as e:
-        log.debug("pre-fusion retrain skipped: %s", e)
+        trust = bt_predictor.model_trust_status()
+        log.info(
+            "adaptive model trust: %s (components=%s; scan training disabled)",
+            trust.get("status"),
+            trust.get("trusted_components"),
+        )
+    except Exception as exc:
+        log.debug("adaptive model trust check failed closed: %s", exc)
 
     # Variable-age current-mid matching is not fixed-horizon out-of-sample
     # evidence. It may be inspected manually, but it cannot promote live
@@ -1019,11 +1007,12 @@ def main():
                                            credit_spread=credit_spread_df,
                                            cluster_buys=cluster_buys_df)
 
-    # Apply return predictions to ranked options
-    coefs = bt_predictor.load_predictor_coefs()
-    has_predictor = any(abs(v) > 1e-6 for v in coefs.values())
-    if has_predictor:
-        ranked_opts = bt_predictor.add_predictions_to_options(ranked_opts, coefs)
+    # Options require their own direct broker-observed OOS champion. A share
+    # predictor can never flow into option returns.
+    option_coefs = bt_predictor.load_predictor_coefs(asset="option")
+    has_option_predictor = any(abs(v) > 1e-6 for v in option_coefs.values())
+    if has_option_predictor:
+        ranked_opts = bt_predictor.add_predictions_to_options(ranked_opts, option_coefs)
 
     # v20 — Drawdown circuit breaker
     drawdown_mult = 1.0
@@ -1117,8 +1106,10 @@ def main():
                                              credit_spread=credit_spread_df,
                                              cluster_buys=cluster_buys_df,
                                              sec_ftd=sec_ftd_df)
-    if has_predictor:
-        ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, coefs)
+    share_coefs = bt_predictor.load_predictor_coefs(asset="share")
+    has_share_predictor = any(abs(v) > 1e-6 for v in share_coefs.values())
+    if has_share_predictor:
+        ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, share_coefs)
     ranked_shares = bt_sizing.add_sizing_to_shares(ranked_shares, bankroll=args.bankroll,
                                                     aggressive=args.aggressive,
                                                     drawdown_mult=drawdown_mult)

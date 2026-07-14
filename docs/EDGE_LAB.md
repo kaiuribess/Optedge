@@ -18,7 +18,7 @@ Edge Lab reads:
 
 The outcome file and fixed-horizon summary must each be no more than 96 hours old. The summary's own `generated_at` value must also be within that window and cannot be more than one hour in the future. The 96-hour allowance safely spans a normal market weekend without accepting indefinitely stale evidence.
 
-Every new signal is stamped at log time with the exact provenance schema, strategy version, fixed-horizon methodology version, policy digest, and experiment ID. Those values carry into its outcomes. The fixed-horizon summary must match the current provenance, and its SHA-256 outcome-set digest must match the parquet contents. Missing, stale, malformed, mismatched, duplicated, or unattested evidence fails closed.
+Every new signal is stamped at log time with the exact provenance schema, strategy version, fixed-horizon methodology version, policy digest, model-trust schema and status, active predictor SHA-256 identity, active runtime-weight SHA-256 identity, option-adaptation status, and experiment ID. Those values carry into its outcomes, and the experiment identity binds the strategy, evidence policy, and active models. The fixed-horizon summary must match the current provenance, and its SHA-256 outcome-set digest must match the parquet contents. Missing, stale, malformed, mismatched, duplicated, or unattested evidence fails closed.
 
 Historical evidence is never silently upgraded. Rows without the exact current provenance remain visible as `legacy_research_only`, but cannot authorize live review.
 
@@ -95,6 +95,8 @@ For each asset, horizon, and lane, Edge Lab reports:
 | 90% moving-block interval | Deterministic 2,000-sample circular moving-block bootstrap interval over entry-day averages, using a block at least as long as the horizon. |
 | SPY excess | Stored outcome return in excess of SPY over the same horizon. |
 | `1.5x` and `2x` cost stress | Raw return less 1.5 or 2 times the recorded slippage assumption. |
+| Option entry-spread coverage | Share of rows with a finite nonnegative signal-time spread. |
+| Option cost-covers-spread coverage | Share of rows whose recorded cost is at least the signal-time spread. |
 | First half / recent half | Entry-day averages before and after the chronological midpoint. |
 | Broker-observed coverage | Share of selected current option outcomes labeled `broker_market_observed`. |
 | Modeled-proxy coverage | Share labeled `modeled_option_proxy`, reported for research only. |
@@ -102,6 +104,8 @@ For each asset, horizon, and lane, Edge Lab reports:
 The bootstrap seed is fixed, so identical input produces an identical interval. Determinism helps audit and testing; it does not remove statistical uncertainty.
 
 Every gated row must have a valid entry time and finite raw return, after-cost return, nonnegative slippage assumption, and SPY excess return. After-cost return must reconcile to `raw return - recorded slippage` within the fixed numerical tolerance. Each of these coverage checks must equal 100%; missing costs or benchmarks are never replaced with zero.
+
+For options, fixed-horizon evaluation records the greater of the configured option-cost floor and the entry spread. A missing entry spread is labeled `configured_floor_missing_entry_spread`; it is not guessed. The live option gate additionally requires 100% finite nonnegative entry-spread coverage and 100% cost-covers-entry-spread coverage, so a floor-only fallback remains research-visible but cannot silently clear the gate.
 
 Outcome IDs must be present and globally unique. The combination of independent key and horizon must also be unique among rows marked independent. Integrity failures return a structured unavailable result rather than scoring a partial dataset.
 
@@ -112,7 +116,7 @@ An asset is `validated` only when every applicable requirement passes at the hea
 | Requirement | Rule |
 |---|---:|
 | Evidence source | Outcome parquet and fixed summary are policy-bound and `<= 96h` old |
-| Provenance | Exact current schema, strategy, methodology, policy digest, and experiment ID |
+| Provenance | Exact current schema, strategy, methodology, policy digest, model-trust state, active predictor/weight identities, option-adaptation state, and experiment ID |
 | Outcome-set integrity | Summary digest matches the outcome parquet |
 | Evidence lane | `current_method_executable` |
 | Mature resolution | `100%` scored, with `0` excluded or pending |
@@ -128,6 +132,8 @@ An asset is `validated` only when every applicable requirement passes at the hea
 | Average return at doubled costs | `> 0` |
 | First-half entry-day average | `> 0` |
 | Recent-half entry-day average | `> 0` |
+| Option entry-spread coverage | `100%` finite and nonnegative |
+| Option cost coverage | `100%` of recorded cost assumptions cover the entry spread |
 | Option performance basis | Broker-market-observed outcomes only |
 | Broker-observed option coverage | `>= 50%` of the selected current option cohort |
 
@@ -170,7 +176,7 @@ Free historical option data is incomplete. Optedge distinguishes:
 - `broker_market_observed`: an exact, non-interpolated target-date Robinhood option trade bar supplied through the read-only connector cache.
 - `modeled_option_proxy`: a constant-entry-IV model mark used when no exact bar is available.
 
-All option performance gates use the `broker_market_observed` cohort alone. Modeled proxies remain visible in the research-only aggregate, but their returns, profit factor, stability, and sample size cannot improve live eligibility. The broker-observed cohort must also represent at least 50% of the selected current option cohort.
+All option performance gates use the `broker_market_observed` cohort alone. Modeled proxies remain visible in the research-only aggregate, but their returns, profit factor, stability, and sample size cannot improve live eligibility. The broker-observed cohort must also represent at least 50% of the selected current option cohort, and its rows must pass the complete entry-spread and cost-coverage checks above.
 
 Neither label proves that Optedge received an executable fill. Last-trade bars can differ materially from contemporaneous bid/ask prices, and a modeled mark can miss volatility-surface changes, early exercise behavior, halts, and liquidity.
 
@@ -182,13 +188,19 @@ The legacy current-mark model-accuracy refit is disabled by default. Variable-ag
 
 Use chronological, frozen, exact-current-policy fixed-session evidence for promotion decisions. Calibration uses after-slippage outcomes and asset-appropriate prediction columns; mixed assets are not evaluated against one generic prediction field.
 
+## Active-Model Identity
+
+Normal scans are inference-only. Research fits are `shadow_untrusted` and cannot become active merely because they were saved. The safe fallback is the source-controlled factor weights plus a zero stock-return predictor. The stock predictor accepts share targets only, and option adaptation remains disabled until a separate path has direct broker-observed targets and passes purged out-of-sample promotion requirements.
+
+Current evidence is bound to the exact ranking state actually used. `active_predictor_digest_sha256` identifies either the trusted share-predictor champion or the deterministic zero-predictor fallback. `active_runtime_weights_digest_sha256` identifies either the trusted runtime-weight champion or the deterministic source-controlled weight set. `model_trust_status` must be `source_controlled_defaults` or `trusted_champion_active`, and `option_adaptation_status` must match the disabled-pending-direct-OOS policy. A mismatch moves the row out of the current lane rather than borrowing performance from another model identity.
+
 ## How to Read the Dashboard
 
 Review these fields in order:
 
 1. **Source attestation** — verify the fixed-horizon artifacts are fresh, policy-bound, and digest-matched.
 2. **Evidence lane** — require current-method executable; shadow and legacy lanes are research-only.
-3. **Resolution and field coverage** — require complete scored outcomes, costs, reconciliation, and SPY comparison.
+3. **Resolution and field coverage** — require complete scored outcomes, costs, reconciliation, and SPY comparison; options also need complete entry-spread and cost-covers-spread coverage.
 4. **Effective horizon blocks** — distinguish real time diversity from a large correlated row count; ten sessions require about 300 entry days.
 5. **After-cost average and profit factor** — confirm nominal performance is positive.
 6. **90% lower bound** — check whether horizon-length moving-block uncertainty remains above zero.
@@ -205,6 +217,7 @@ Do not average away a failed requirement. The gate is conjunctive by design.
 - Horizon-length circular blocking reduces dependence from overlapping outcomes, but sectors, regimes, shared factors, and longer-memory effects can remain correlated.
 - SPY is not the correct benchmark for every asset or direction.
 - Slippage stress scales the stored assumption; it cannot reproduce a missing order book or market gap.
+- Using the signal-time spread as the option cost floor is conservative relative to ignoring the spread, but it does not reconstruct the exit spread, queue position, or actual fill path.
 - First-versus-recent halves are a stability screen, not a full walk-forward parameter study.
 - Observed option last trades are not bid/ask fills.
 - Surviving every threshold does not account for taxes, assignment, exercise, outages, rejected orders, or individual suitability.

@@ -11,6 +11,7 @@ config_runtime.py
 # Runtime data, caches, and outputs
 data/_cache/
 data/cockpit_jobs/
+data/robinhood_account_equity_ledgers/
 data/weights/*.json
 data/*.parquet
 data/*.json

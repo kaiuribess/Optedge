@@ -29,10 +29,28 @@ from pricing_models import (
 )
 from backtest.sizing import (
     _add_trade_status, add_directional_option_edges, add_sizing_to_options,
+    add_sizing_to_shares,
     compute_option_ev_and_kelly,
 )
 from engines.mispricing import _pricing_edges
 import pandas as pd
+
+
+def test_share_sizing_freezes_reference_price_and_exit_geometry():
+    shares = pd.DataFrame([{
+        "ticker": "AAPL",
+        "spot": 100.0,
+        "share_score": 1.0,
+        "confidence": 70,
+    }])
+
+    sized = add_sizing_to_shares(shares, bankroll=10_000)
+
+    assert sized.loc[0, "entry_price"] == 100.0
+    assert sized.loc[0, "stop_price"] == 92.0
+    assert sized.loc[0, "target_price"] == 120.0
+    assert sized.loc[0, "stop_pct"] == -0.08
+    assert sized.loc[0, "target_pct"] == 0.20
 
 
 # ---------- Black-Scholes closed-form regressions ----------

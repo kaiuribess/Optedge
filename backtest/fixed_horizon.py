@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import sys
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,7 +41,7 @@ DATA_DIR = ROOT / "data"
 OUTCOMES_PATH = DATA_DIR / "fixed_horizon_outcomes.parquet"
 SUMMARY_PATH = DATA_DIR / "fixed_horizon_summary.json"
 
-METHODOLOGY_VERSION = 5
+METHODOLOGY_VERSION = 6
 DEFAULT_HORIZONS = (1, 3, 5, 10, 20)
 HEADLINE_HORIZON = 10
 MIN_RELIABLE_SAMPLES = 100
@@ -55,6 +56,11 @@ EVIDENCE_PROVENANCE_COLUMNS = (
     "strategy_version",
     "fixed_horizon_methodology_version",
     "fixed_horizon_policy_digest",
+    "model_trust_schema",
+    "model_trust_status",
+    "active_predictor_digest_sha256",
+    "active_runtime_weights_digest_sha256",
+    "option_adaptation_status",
     "experiment_id",
 )
 
@@ -137,12 +143,20 @@ def evidence_policy_payload() -> dict[str, Any]:
         "default_horizons": list(DEFAULT_HORIZONS),
         "headline_horizon": HEADLINE_HORIZON,
         "slippage": {
-            "option": _option_slippage_pct(),
+            "option": {
+                "floor": _option_slippage_pct(),
+                "row_method": "max_configured_floor_and_entry_spread_fraction",
+            },
             "share": SHARE_SLIPPAGE_PCT,
             "futures": FUTURES_SLIPPAGE_PCT,
         },
         "independence_key": "asset|symbol|direction|utc_entry_date",
         "outcome_order": "strictly_completed_market_sessions",
+        "adaptive_model_policy": {
+            "ordinary_scan_training": "disabled",
+            "untrusted_artifact_fallback": "zero_predictor_and_source_controlled_weights",
+            "option_adaptation": "disabled_until_direct_broker_observed_targets_pass_oos",
+        },
     }
 
 
@@ -156,15 +170,98 @@ def evidence_policy_digest() -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _active_model_provenance() -> dict[str, str]:
+    """Return a deterministic identity for the ranking models actually in use."""
+    try:
+        from backtest import predictor
+        from config import SIGNAL_WEIGHTS
+
+        trust = predictor.model_trust_status()
+        predictor_status = (
+            trust.get("predictor")
+            if isinstance(trust.get("predictor"), dict)
+            else {}
+        )
+        runtime_status = (
+            trust.get("runtime_weights")
+            if isinstance(trust.get("runtime_weights"), dict)
+            else {}
+        )
+        predictor_identity: Any = (
+            predictor_status.get("content_digest_sha256")
+            if predictor_status.get("usable") is True
+            else {
+                "mode": "source_controlled_zero_predictor",
+                "asset": "share",
+                "coefficients": sorted(predictor.Z_COLS),
+            }
+        )
+        runtime_identity: Any = (
+            runtime_status.get("content_digest_sha256")
+            if runtime_status.get("usable") is True
+            else {
+                "mode": "source_controlled_weights",
+                "weights": {
+                    str(key): float(value)
+                    for key, value in sorted(SIGNAL_WEIGHTS.items())
+                },
+            }
+        )
+
+        def identity_digest(value: Any) -> str:
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
+                return value
+            encoded = json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            return hashlib.sha256(encoded).hexdigest()
+
+        return {
+            "model_trust_schema": str(trust.get("schema") or "optedge_model_trust_v1"),
+            "model_trust_status": str(trust.get("status") or "unavailable"),
+            "active_predictor_digest_sha256": identity_digest(predictor_identity),
+            "active_runtime_weights_digest_sha256": identity_digest(runtime_identity),
+            "option_adaptation_status": str(
+                trust.get("option_adaptation")
+                or "disabled_until_direct_broker_observed_targets_pass_oos"
+            ),
+        }
+    except Exception:
+        unavailable = hashlib.sha256(b"optedge-model-provenance-unavailable").hexdigest()
+        return {
+            "model_trust_schema": "optedge_model_trust_v1",
+            "model_trust_status": "unavailable",
+            "active_predictor_digest_sha256": unavailable,
+            "active_runtime_weights_digest_sha256": unavailable,
+            "option_adaptation_status": "unavailable",
+        }
+
+
 def current_evidence_provenance() -> dict[str, Any]:
-    """Return the provenance fields frozen when a recommendation is logged."""
+    """Return the policy and active-model identity frozen on every signal."""
     digest = evidence_policy_digest()
+    model = _active_model_provenance()
+    experiment_identity = hashlib.sha256(
+        json.dumps(
+            {
+                "strategy_version": STRATEGY_VERSION,
+                "policy_digest": digest,
+                "model": model,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
         "evidence_provenance_schema": EVIDENCE_PROVENANCE_SCHEMA,
         "strategy_version": STRATEGY_VERSION,
         "fixed_horizon_methodology_version": METHODOLOGY_VERSION,
         "fixed_horizon_policy_digest": digest,
-        "experiment_id": f"{STRATEGY_VERSION}:{digest[:16]}",
+        **model,
+        "experiment_id": f"{STRATEGY_VERSION}:{experiment_identity[:16]}",
     }
 
 
@@ -186,6 +283,15 @@ def _provenance_status(row: pd.Series) -> tuple[bool, str]:
             return False, f"missing_{column}"
         if actual_text != str(wanted):
             return False, f"{column}_mismatch"
+    if _text(row.get("model_trust_status")) not in {
+        "source_controlled_defaults",
+        "trusted_champion_active",
+    }:
+        return False, "unsafe_model_trust_status"
+    if _text(row.get("option_adaptation_status")) != (
+        "disabled_until_direct_broker_observed_targets_pass_oos"
+    ):
+        return False, "unsafe_option_adaptation_status"
     return True, "passed"
 
 
@@ -537,21 +643,29 @@ def _proxy_futures_outcome(
     return target, pnl, "etf_proxy_return"
 
 
-def _slippage(asset: str) -> float:
+def _slippage(asset: str, row: pd.Series | None = None) -> tuple[float, str]:
     if asset == "option":
-        return _option_slippage_pct()
+        floor = _option_slippage_pct()
+        spread = _optional_float(row.get("spread_pct")) if row is not None else None
+        if spread is not None and spread >= 0:
+            return max(floor, spread), "max_configured_floor_and_entry_spread"
+        return floor, "configured_floor_missing_entry_spread"
     if asset == "share":
-        return SHARE_SLIPPAGE_PCT
-    return FUTURES_SLIPPAGE_PCT
+        return SHARE_SLIPPAGE_PCT, "configured_share_cost"
+    return FUTURES_SLIPPAGE_PCT, "configured_futures_cost"
 
 
 def _carry_fields(row: pd.Series, outcome: dict[str, Any]) -> None:
     exact = {
         "confidence",
+        "regime",
+        "macro_tilt",
         "rank_score",
         "fused_score",
         "share_score",
         "futures_score",
+        "pred_stock_return_pct",
+        "pred_option_return_pct",
         "ev_pct",
         "kelly_pct",
         "trade_status",
@@ -740,7 +854,7 @@ def evaluate_fixed_horizons(
                 directional_underlying = -underlying_return
             spy_return = _benchmark_return(spy, entry_date, target_date)
             qqq_return = _benchmark_return(qqq, entry_date, target_date)
-            slippage = _slippage(asset)
+            slippage, slippage_basis = _slippage(asset, row)
             contracts = max(
                 0, int(_first_number(row.get("suggested_contracts"), row.get("n_contracts")) or 0)
             )
@@ -780,6 +894,7 @@ def evaluate_fixed_horizons(
                 "target_price": target_price,
                 "pnl_pct": pnl,
                 "slippage_assumption_pct": slippage,
+                "slippage_assumption_basis": slippage_basis,
                 "pnl_pct_after_slippage": pnl - slippage,
                 "underlying_return_pct": underlying_return,
                 "directional_underlying_return_pct": directional_underlying,

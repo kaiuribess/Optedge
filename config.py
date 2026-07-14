@@ -326,6 +326,6 @@ ENGINE_SLA_SECONDS = {
 
 # ---- v20 Tier D: Risk gates ------------------------------------------
 HEDGE_DELTA_THRESHOLD = 5000.0   # $ net delta triggers SPY hedge suggestion
-DRAWDOWN_BREAKER_ENABLED = True   # halve Kelly on rolling -10% P&L
+DRAWDOWN_BREAKER_ENABLED = True   # cap research sizing from validated equity drawdown
 
 ASOF = datetime.now(timezone.utc)
