@@ -2611,15 +2611,21 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
 
     # --- Breaker panel ----
     breaker_html = ""
-    if breaker_state and breaker_state.get("n", 0) > 0:
+    if breaker_state:
         bg = "#fee2e2" if breaker_state["multiplier"] < 1.0 else "#dcfce7"
         border = "#dc2626" if breaker_state["multiplier"] < 1.0 else "#16a34a"
+        drawdown = breaker_state.get("max_drawdown")
+        drawdown_label = (
+            f"{float(drawdown):.2%}"
+            if isinstance(drawdown, (int, float)) and math.isfinite(float(drawdown))
+            else "unavailable"
+        )
         breaker_html = f"""
         <details class="dash-section" id="sect-breaker" open>
-          <summary><h2 class="section-title">v Drawdown breaker <span class="muted">(14-day rolling P&L)</span></h2></summary>
+          <summary><h2 class="section-title">v Drawdown breaker <span class="muted">(validated equity curve)</span></h2></summary>
           <div style="padding:14px;background:{bg};border-left:4px solid {border};border-radius:6px;margin:10px 0">
             <div style="font-size:18px;font-weight:600">{html.escape(breaker_state['verdict'])}</div>
-            <div class="muted" style="margin-top:6px">Kelly multiplier: {breaker_state['multiplier']:.2f}x  -  Avg P&L: {breaker_state['rolling_pnl_pct']*100:+.2f}%  -  Win rate: {breaker_state['rolling_win_rate']*100:.0f}%  -  n={breaker_state['n']}</div>
+            <div class="muted" style="margin-top:6px">Kelly multiplier: {breaker_state['multiplier']:.2f}x  -  Max drawdown: {drawdown_label}  -  n={breaker_state.get('n', 0)}</div>
           </div>
         </details>
         """

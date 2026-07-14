@@ -126,6 +126,7 @@ def test_option_outcomes_are_labeled_proxies_and_expiry_is_not_stretched():
                 "is_actionable": True,
                 "suggested_contracts": 1,
                 "buyer_edge_pct": 0.08,
+                "spread_pct": 0.12,
                 "pricing_edge_ok": True,
                 "strategy_qualified_pre_guard": True,
                 "pre_guard_suggested_contracts": 1,
@@ -160,6 +161,10 @@ def test_option_outcomes_are_labeled_proxies_and_expiry_is_not_stretched():
     assert set(proxy["outcome_quality"]) == {"modeled_option_proxy"}
     assert proxy["eligible_for_shadow_metrics"].all()
     assert proxy["pnl_pct"].notna().all()
+    assert set(proxy["slippage_assumption_pct"]) == {0.12}
+    assert set(proxy["slippage_assumption_basis"]) == {
+        "max_configured_floor_and_entry_spread"
+    }
     assert excluded == {}
     expiry_rows = outcomes[
         outcomes.get("resolution_reason", pd.Series("", index=outcomes.index))
@@ -463,6 +468,14 @@ def test_unstamped_or_mismatched_signals_are_legacy_only():
     assert not bool(prepared.loc[0, "eligible_for_executable_metrics"])
     assert prepared.loc[0, "execution_eligibility_reason"] == "strategy_version_mismatch"
 
+    mismatched_model = _current_signals([base])
+    mismatched_model["active_predictor_digest_sha256"] = "0" * 64
+    prepared_model = fixed_horizon.prepare_signals(mismatched_model)
+    assert not bool(prepared_model.loc[0, "eligible_for_executable_metrics"])
+    assert prepared_model.loc[0, "execution_eligibility_reason"] == (
+        "active_predictor_digest_sha256_mismatch"
+    )
+
 
 def test_outcomes_and_summary_bind_exact_policy_and_resolution_coverage():
     signals = _current_signals(
@@ -475,6 +488,9 @@ def test_outcomes_and_summary_bind_exact_policy_and_resolution_coverage():
                 "trade_status": "Trade",
                 "is_actionable": True,
                 "suggested_dollars": 500.0,
+                "regime": "risk_on",
+                "macro_tilt": 0.2,
+                "pred_stock_return_pct": 0.03,
             }
         ]
     )
@@ -491,6 +507,9 @@ def test_outcomes_and_summary_bind_exact_policy_and_resolution_coverage():
     provenance = fixed_horizon.current_evidence_provenance()
     for column, value in provenance.items():
         assert outcomes[column].eq(value).all()
+    assert outcomes["regime"].eq("risk_on").all()
+    assert outcomes["macro_tilt"].eq(0.2).all()
+    assert outcomes["pred_stock_return_pct"].eq(0.03).all()
     summary = fixed_horizon.build_summary(
         outcomes,
         signals,

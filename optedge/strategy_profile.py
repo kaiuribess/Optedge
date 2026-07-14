@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-strategy_version = "2026.07-evidence-portfolio-v3"
+strategy_version = "2026.07-forward-edge-v4"
 STRATEGY_VERSION = strategy_version
 
 

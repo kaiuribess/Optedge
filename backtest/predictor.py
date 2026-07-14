@@ -1,14 +1,15 @@
 # Purpose: Evidence-gated return prediction and adaptive fusion weights.
-"""Evidence-gated return prediction and adaptive fusion weights.
+"""Fail-closed return prediction and adaptive fusion-weight research.
 
-Both learning paths use completed, independent lifecycle outcomes. Repeated
-forward-test snapshots and same-scan exit churn remain useful diagnostics but
-cannot train the model. Source-controlled priors remain active until the sample,
-time-span, freshness, coverage, and concentration guards all pass.
+Normal scans are inference-only. Research fits remain untrusted shadows, and
+legacy artifacts load as zero predictor coefficients or source-controlled
+weights. Only an explicitly promoted, digest-valid champion with asset-isolated
+purged out-of-sample evidence can affect ranking.
 """
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import logging
 import sys
@@ -36,6 +37,22 @@ RUNTIME_WEIGHT_MAX_AGE_DAYS = 14
 MAX_RUNTIME_FACTOR_WEIGHT = 0.30
 MIN_RUNTIME_FACTOR_COVERAGE = 1.00
 ADAPTIVE_WEIGHT_BLEND = 0.25
+
+PREDICTOR_CHAMPION_SCHEMA = "optedge_predictor_champion_v1"
+PREDICTOR_SHADOW_SCHEMA = "optedge_predictor_shadow_v1"
+RUNTIME_WEIGHT_CHAMPION_SCHEMA = "optedge_runtime_weight_champion_v2"
+RUNTIME_WEIGHT_SHADOW_SCHEMA = "optedge_runtime_weight_shadow_v1"
+MODEL_TRUST_SCHEMA = "optedge_model_trust_v1"
+TRUSTED_CHAMPION = "trusted_champion"
+SHADOW_UNTRUSTED = "shadow_untrusted"
+PREDICTOR_MODEL_KIND = "stock_return"
+PREDICTOR_TARGET_BASIS = "fixed_horizon_after_cost_return"
+PREDICTOR_SHADOW_TARGET_BASIS = "research_lifecycle_after_cost_return"
+RUNTIME_TARGET_BASIS = "asset_isolated_fixed_horizon_after_cost_returns"
+OOS_METHOD = "purged_expanding_window"
+MIN_PROMOTION_FOLDS = 3
+MIN_PROMOTION_EFFECTIVE_BLOCKS = 30
+MIN_PROMOTION_ENTRY_DAYS = 30
 
 
 def cache_ic(ic_df: pd.DataFrame):
@@ -236,6 +253,298 @@ FACTOR_TO_ZCOL = {
 
 ZCOL_TO_SIGNAL = {z_col: signal for signal, z_col in SIGNAL_TO_ZCOL.items()}
 
+_ASSET_ALIASES = {
+    "share": "share",
+    "shares": "share",
+    "stock": "share",
+    "stocks": "share",
+    "equity": "share",
+    "equities": "share",
+    "option": "option",
+    "options": "option",
+    "future": "futures",
+    "futures": "futures",
+}
+
+
+def _zero_coefs() -> dict[str, float]:
+    return {column: 0.0 for column in Z_COLS}
+
+
+def _normalize_asset(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    return _ASSET_ALIASES.get(str(value).strip().lower())
+
+
+def _canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(character in "0123456789abcdef" for character in text)
+
+
+def _predictor_content_digest(payload: dict[str, Any]) -> str:
+    content = dict(payload)
+    content.pop("content_digest_sha256", None)
+    return _canonical_sha256(content)
+
+
+def _runtime_content_digest(weights: dict[str, float], meta: dict[str, Any]) -> str:
+    digest_meta = dict(meta)
+    digest_meta.pop("content_digest_sha256", None)
+    return _canonical_sha256({"meta": digest_meta, "weights": weights})
+
+
+def _current_policy_digest() -> str | None:
+    try:
+        from backtest.fixed_horizon import evidence_policy_digest
+
+        digest = evidence_policy_digest()
+    except Exception:
+        return None
+    return str(digest) if _is_sha256(digest) else None
+
+
+def _utc_timestamp(value: Any) -> datetime | None:
+    try:
+        timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    except Exception:
+        return None
+    if pd.isna(timestamp):
+        return None
+    return timestamp.to_pydatetime()
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _whole_number(value: Any) -> int | None:
+    number = _finite_number(value)
+    if number is None or number < 0 or number != int(number):
+        return None
+    return int(number)
+
+
+def _training_asset(frame: pd.DataFrame | None) -> tuple[str | None, str | None]:
+    """Require one explicit asset family before fitting any return model."""
+    if frame is None or frame.empty:
+        return None, "missing_training_rows"
+    if "asset" not in frame.columns:
+        return None, "missing_asset_identity"
+    normalized = frame["asset"].map(_normalize_asset)
+    if normalized.isna().any():
+        return None, "unsupported_or_missing_asset_identity"
+    assets = sorted(set(normalized.astype(str)))
+    if len(assets) != 1:
+        return None, "mixed_asset_training_rejected"
+    asset = assets[0]
+    if asset == "option":
+        return None, "option_adaptation_requires_direct_broker_observed_target"
+    if asset != "share":
+        return None, "stock_predictor_accepts_share_targets_only"
+    return asset, None
+
+
+def predictor_artifact_status(
+    path: Path | None = None,
+    *,
+    requested_asset: str = "share",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate a promoted predictor artifact before it may affect ranking."""
+    source_path = Path(path) if path is not None else COEFS_PATH
+    checked_at = now or datetime.now(UTC)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=UTC)
+    else:
+        checked_at = checked_at.astimezone(UTC)
+    wanted_asset = _normalize_asset(requested_asset)
+    status: dict[str, Any] = {
+        "path": str(source_path),
+        "exists": source_path.exists(),
+        "usable": False,
+        "schema": None,
+        "trust_state": None,
+        "asset": None,
+        "requested_asset": wanted_asset,
+        "horizon_sessions": None,
+        "target_basis": None,
+        "content_digest_sha256": None,
+        "age_days": None,
+        "outcome_age_days": None,
+        "coefs": None,
+        "oos": None,
+        "reasons": [],
+    }
+    if wanted_asset is None:
+        status["reasons"].append("unsupported requested asset")
+    if not source_path.exists():
+        status["reasons"].append("predictor champion not found")
+        return status
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        status["reasons"].append(f"predictor artifact is unreadable: {type(exc).__name__}")
+        return status
+    if not isinstance(payload, dict):
+        status["reasons"].append("predictor artifact must be an object")
+        return status
+
+    schema = str(payload.get("schema") or "")
+    trust_state = str(payload.get("trust_state") or "")
+    asset = _normalize_asset(payload.get("asset"))
+    horizon = _whole_number(payload.get("horizon_sessions"))
+    target_basis = str(payload.get("target_basis") or "")
+    status.update(
+        {
+            "schema": schema or None,
+            "trust_state": trust_state or None,
+            "asset": asset,
+            "horizon_sessions": horizon,
+            "target_basis": target_basis or None,
+            "oos": payload.get("oos") if isinstance(payload.get("oos"), dict) else None,
+            "content_digest_sha256": payload.get("content_digest_sha256"),
+        }
+    )
+    if schema != PREDICTOR_CHAMPION_SCHEMA:
+        status["reasons"].append("predictor schema is not the trusted champion schema")
+    if trust_state != TRUSTED_CHAMPION:
+        status["reasons"].append("predictor artifact is not explicitly promoted")
+    if str(payload.get("model_kind") or "") != PREDICTOR_MODEL_KIND:
+        status["reasons"].append("predictor model kind is not stock_return")
+    if asset != "share":
+        status["reasons"].append(
+            "only a share-specific champion is supported; option adaptation remains disabled"
+        )
+    if wanted_asset is not None and asset != wanted_asset:
+        status["reasons"].append("predictor champion asset does not match the requested asset")
+    if horizon is None or horizon <= 0:
+        status["reasons"].append("predictor horizon_sessions must be a positive whole number")
+    if target_basis != PREDICTOR_TARGET_BASIS:
+        status["reasons"].append("predictor target basis is not fixed-horizon after-cost return")
+
+    coefs = payload.get("coefs")
+    parsed_coefs: dict[str, float] = {}
+    if not isinstance(coefs, dict):
+        status["reasons"].append("predictor coefficients are missing")
+    else:
+        try:
+            parsed_coefs = {str(key): float(value) for key, value in coefs.items()}
+        except (TypeError, ValueError):
+            status["reasons"].append("predictor coefficients contain non-numeric values")
+            parsed_coefs = {}
+    if parsed_coefs:
+        if set(parsed_coefs) != set(Z_COLS):
+            status["reasons"].append("predictor coefficients do not cover the exact factor set")
+        if any(not np.isfinite(value) or abs(value) > 0.05 for value in parsed_coefs.values()):
+            status["reasons"].append("predictor coefficients are non-finite or exceed the hard cap")
+        status["coefs"] = parsed_coefs
+
+    oos = payload.get("oos")
+    if not isinstance(oos, dict):
+        status["reasons"].append("predictor OOS promotion evidence is missing")
+    else:
+        if str(oos.get("method") or "") != OOS_METHOD:
+            status["reasons"].append("predictor OOS method is not purged expanding-window")
+        if oos.get("passed") is not True:
+            status["reasons"].append("predictor OOS promotion did not pass")
+        folds = _whole_number(oos.get("folds"))
+        entry_days = _whole_number(oos.get("unique_entry_days"))
+        effective_blocks = _whole_number(oos.get("effective_horizon_blocks"))
+        predictions = _whole_number(oos.get("n_predictions"))
+        purge_sessions = _whole_number(oos.get("purge_sessions"))
+        if folds is None or folds < MIN_PROMOTION_FOLDS:
+            status["reasons"].append(
+                f"predictor OOS evidence needs at least {MIN_PROMOTION_FOLDS} folds"
+            )
+        if entry_days is None or entry_days < MIN_PROMOTION_ENTRY_DAYS:
+            status["reasons"].append(
+                f"predictor OOS evidence needs at least {MIN_PROMOTION_ENTRY_DAYS} entry days"
+            )
+        if effective_blocks is None or effective_blocks < MIN_PROMOTION_EFFECTIVE_BLOCKS:
+            status["reasons"].append(
+                "predictor OOS evidence lacks 30 effective horizon-length blocks"
+            )
+        if predictions is None or predictions < max(MIN_ADAPTIVE_SAMPLES, entry_days or 0):
+            status["reasons"].append("predictor OOS prediction count is insufficient")
+        if horizon is None or purge_sessions is None or purge_sessions < horizon:
+            status["reasons"].append("predictor OOS purge is shorter than the holding horizon")
+        for key in (
+            "after_cost_mean",
+            "champion_delta_ci_low",
+            "cost_stress_2x_mean",
+            "recent_half_mean",
+        ):
+            value = _finite_number(oos.get(key))
+            if value is None or value <= 0:
+                status["reasons"].append(f"predictor OOS {key} must be positive")
+
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        status["reasons"].append("predictor source evidence metadata is missing")
+    else:
+        for key in ("outcome_digest_sha256", "policy_digest_sha256"):
+            if not _is_sha256(source.get(key)):
+                status["reasons"].append(f"predictor source {key} is invalid")
+        expected_policy = _current_policy_digest()
+        if (
+            expected_policy is None
+            or str(source.get("policy_digest_sha256") or "") != expected_policy
+        ):
+            status["reasons"].append("predictor source policy digest is not current")
+        latest_outcome = _utc_timestamp(source.get("latest_outcome_at"))
+        if latest_outcome is None:
+            status["reasons"].append("predictor latest_outcome_at is invalid")
+        else:
+            outcome_age = (checked_at - latest_outcome).total_seconds() / 86400.0
+            status["outcome_age_days"] = outcome_age
+            if outcome_age > RUNTIME_WEIGHT_MAX_AGE_DAYS:
+                status["reasons"].append("predictor source outcomes are stale")
+            elif outcome_age < -1.0:
+                status["reasons"].append("predictor source outcomes are future-dated")
+
+    promoted_at = _utc_timestamp(payload.get("promoted_at"))
+    if promoted_at is None:
+        status["reasons"].append("predictor promoted_at is invalid")
+    else:
+        age = (checked_at - promoted_at).total_seconds() / 86400.0
+        status["age_days"] = age
+        if age > RUNTIME_WEIGHT_MAX_AGE_DAYS:
+            status["reasons"].append("predictor champion is stale")
+        elif age < -1.0:
+            status["reasons"].append("predictor promoted_at is future-dated")
+
+    digest = str(payload.get("content_digest_sha256") or "")
+    try:
+        expected_digest = _predictor_content_digest(payload)
+    except (TypeError, ValueError):
+        expected_digest = None
+    if not _is_sha256(digest) or expected_digest is None or digest != expected_digest:
+        status["reasons"].append("predictor content digest does not match")
+    status["usable"] = not status["reasons"]
+    return status
+
 
 def _bootstrap_coefs_from_ic(ic_df: pd.DataFrame, horizon: int = DEFAULT_HORIZON_DAYS) -> dict[str, float]:
     """Seed coefficients from explicitly qualified lifecycle IC evidence.
@@ -350,15 +659,18 @@ def _balanced_time_weights(df: pd.DataFrame) -> np.ndarray:
 
 def _fit_from_forward(forward_signals: pd.DataFrame,
                        regime: str | None = None) -> tuple[dict[str, float], dict[str, Any]]:
-    """Refit coefs from realized P&L using Huber regression + time-decay weights.
+    """Build a research-only share-return challenger from realized P&L.
 
     `regime` filters the data to only signals from the same regime (risk_on/risk_off/neutral)
     if a `regime` column is available in the signals dataframe.
     """
+    asset, asset_error = _training_asset(forward_signals)
+    if asset_error:
+        return {}, {"reason": asset_error, "asset": asset}
     df = forward_signals.copy()
-    target_col = "pnl_pct_after_slippage" if "pnl_pct_after_slippage" in df.columns else "pnl_pct"
+    target_col = "pnl_pct_after_slippage"
     if target_col not in df.columns:
-        return {}, {"reason": "missing_target", "missing": ["pnl_pct"]}
+        return {}, {"reason": "missing_after_cost_target", "missing": [target_col]}
     # Optional per-regime filter
     if regime and "regime" in df.columns:
         df = df[df["regime"] == regime]
@@ -389,6 +701,7 @@ def _fit_from_forward(forward_signals: pd.DataFrame,
     meta: dict[str, Any] = {
         "n": len(df),
         "unique_days": history["unique_days"],
+        "asset": asset,
         "regime": regime or "all",
         "target": target_col,
         "filled_missing_features": missing_features,
@@ -428,25 +741,56 @@ def _fit_from_forward(forward_signals: pd.DataFrame,
         return {}, {"reason": f"fit_error: {e}"}
 
 
-def fit_return_predictor(forward_signals: pd.DataFrame = None,
-                         ic_df: pd.DataFrame = None,
-                         horizon: int = DEFAULT_HORIZON_DAYS) -> dict[str, Any]:
-    """Fit/refit and persist the return predictor coefficients."""
+def fit_return_predictor(
+    forward_signals: pd.DataFrame = None,
+    ic_df: pd.DataFrame = None,
+    horizon: int = DEFAULT_HORIZON_DAYS,
+    *,
+    asset: str | None = None,
+) -> dict[str, Any]:
+    """Build an untrusted research challenger without changing active models.
+
+    Ordinary scans must never fit and consume a model in the same run.  This
+    function is therefore pure with respect to model artifacts: it returns a
+    shadow payload and never writes ``predictor_coefs.json``.
+    """
     coefs: dict[str, float] = {}
-    meta: dict[str, Any] = {"horizon": horizon, "fitted_at": datetime.now(UTC).isoformat()}
+    requested_asset = _normalize_asset(asset) if asset is not None else None
+    requested_asset_error = asset is not None and requested_asset is None
+    inferred_asset: str | None = None
+    meta: dict[str, Any] = {
+        "horizon": horizon,
+        "fitted_at": datetime.now(UTC).isoformat(),
+        "activation_eligible": False,
+        "persistence": "disabled",
+    }
 
     if forward_signals is not None and not forward_signals.empty:
-        coefs, fwd_meta = _fit_from_forward(forward_signals)
-        meta.update(fwd_meta)
+        inferred_asset, asset_error = _training_asset(forward_signals)
+        if requested_asset_error:
+            meta.update({"reason": "unsupported_requested_asset", "source": "zero_init"})
+        elif asset_error:
+            meta.update({"reason": asset_error, "source": "zero_init"})
+        elif requested_asset is not None and requested_asset != inferred_asset:
+            meta.update({"reason": "requested_asset_mismatch", "source": "zero_init"})
+        else:
+            coefs, fwd_meta = _fit_from_forward(forward_signals)
+            meta.update(fwd_meta)
 
-    if not coefs and _ic_frame_is_reliable(ic_df):
+    effective_asset = requested_asset or inferred_asset
+    if (
+        not coefs
+        and effective_asset == "share"
+        and forward_signals is None
+        and _ic_frame_is_reliable(ic_df)
+    ):
         coefs = _bootstrap_coefs_from_ic(ic_df, horizon=horizon)
         meta["source"] = "ic_bootstrap"
     elif coefs:
-        meta["source"] = "forward_refit"
+        meta["source"] = "shadow_forward_refit"
     else:
-        coefs = {c: 0.0 for c in Z_COLS}
-        meta["source"] = "zero_init"
+        coefs = _zero_coefs()
+        meta.setdefault("source", "zero_init")
         if ic_df is not None and not ic_df.empty:
             meta["ic_bootstrap_skipped"] = "not_independent_or_insufficient_history"
 
@@ -454,27 +798,40 @@ def fit_return_predictor(forward_signals: pd.DataFrame = None,
     for k in list(coefs.keys()):
         coefs[k] = max(-0.05, min(0.05, float(coefs[k])))
 
-    payload = {"coefs": coefs, "meta": meta}
-    COEFS_PATH.parent.mkdir(exist_ok=True)
-    COEFS_PATH.write_text(json.dumps(payload, indent=2))
+    payload = {
+        "schema": PREDICTOR_SHADOW_SCHEMA,
+        "trust_state": SHADOW_UNTRUSTED,
+        "model_kind": PREDICTOR_MODEL_KIND,
+        "asset": effective_asset,
+        "horizon_sessions": int(horizon),
+        "target_basis": PREDICTOR_SHADOW_TARGET_BASIS,
+        "coefs": coefs,
+        "meta": meta,
+    }
+    payload["content_digest_sha256"] = _predictor_content_digest(payload)
     return payload
 
 
-def load_predictor_coefs() -> dict[str, float]:
-    """Load previously-fit coefficients. Returns zeros if none."""
-    if not COEFS_PATH.exists():
-        return {c: 0.0 for c in Z_COLS}
-    try:
-        data = json.loads(COEFS_PATH.read_text())
-        return {c: float(data.get("coefs", {}).get(c, 0.0)) for c in Z_COLS}
-    except Exception:
-        return {c: 0.0 for c in Z_COLS}
+def load_predictor_coefs(
+    asset: str = "share",
+    path: Path | None = None,
+) -> dict[str, float]:
+    """Load only a digest-valid explicitly promoted asset champion."""
+    status = predictor_artifact_status(path, requested_asset=asset)
+    if status["usable"] and isinstance(status.get("coefs"), dict):
+        return {column: float(status["coefs"][column]) for column in Z_COLS}
+    return _zero_coefs()
 
 
-def predict_returns(ranked: pd.DataFrame, coefs: dict[str, float] = None) -> pd.Series:
+def predict_returns(
+    ranked: pd.DataFrame,
+    coefs: dict[str, float] = None,
+    *,
+    asset: str = "share",
+) -> pd.Series:
     """Apply coefficients to z-scores, returning predicted % return per row."""
     if coefs is None:
-        coefs = load_predictor_coefs()
+        coefs = load_predictor_coefs(asset=asset)
     if ranked is None or ranked.empty:
         return pd.Series(dtype=float)
     used_cols = [c for c in Z_COLS if c in ranked.columns]
@@ -490,7 +847,7 @@ def add_predictions_to_options(ranked: pd.DataFrame, coefs: dict[str, float] = N
     if ranked is None or ranked.empty:
         return ranked
     df = ranked.copy()
-    df["pred_stock_return_pct"] = predict_returns(df, coefs)
+    df["pred_stock_return_pct"] = predict_returns(df, coefs, asset="option")
     # Option leverage ≈ 1 / |delta|, capped to keep things sane
     deltas = df.get("delta", pd.Series(0.5, index=df.index)).abs().clip(0.10, 0.95)
     leverage = 1.0 / deltas
@@ -507,7 +864,7 @@ def add_predictions_to_shares(ranked: pd.DataFrame, coefs: dict[str, float] = No
     if ranked is None or ranked.empty:
         return ranked
     df = ranked.copy()
-    df["pred_stock_return_pct"] = predict_returns(df, coefs)
+    df["pred_stock_return_pct"] = predict_returns(df, coefs, asset="share")
     return df
 
 
@@ -524,11 +881,7 @@ def _has_enough_history_for_lasso(forward_signals: pd.DataFrame,
       - ≥ min_unique_days (default 10) distinct trading days represented.
     Until then we keep the source-controlled configured priors.
     """
-    target_col = (
-        "pnl_pct_after_slippage"
-        if forward_signals is not None and "pnl_pct_after_slippage" in forward_signals.columns
-        else "pnl_pct"
-    )
+    target_col = "pnl_pct_after_slippage"
     history = _forward_history_stats(forward_signals, target_col)
     return history["samples"] >= min_samples and history["unique_days"] >= min_unique_days
 
@@ -541,7 +894,7 @@ def _rolling_forward_ic_weights(forward_signals: pd.DataFrame,
     """Reweight factors from rolling forward IC before trusting full Lasso."""
     if forward_signals is None or forward_signals.empty:
         return None
-    target_col = "pnl_pct_after_slippage" if "pnl_pct_after_slippage" in forward_signals.columns else "pnl_pct"
+    target_col = "pnl_pct_after_slippage"
     if target_col not in forward_signals.columns or "entry_time" not in forward_signals.columns:
         return None
     df = forward_signals.copy()
@@ -724,15 +1077,19 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
                            ic_df: pd.DataFrame = None,
                            min_samples: int = MIN_ADAPTIVE_SAMPLES
                            ) -> dict[str, float] | None:
-    """Refit fusion weights from independent, after-slippage outcomes only."""
+    """Build a research-only weight challenger without persisting or activating it."""
     baseline = _normalize_and_cap_weights(_configured_signal_weights())
 
     if forward_signals is not None and not forward_signals.empty:
+        _, asset_error = _training_asset(forward_signals)
+        if asset_error:
+            log.warning("adaptive-weight guard: %s; keeping configured priors", asset_error)
+            return None
         df = forward_signals.copy()
-        target_col = (
-            "pnl_pct_after_slippage"
-            if "pnl_pct_after_slippage" in df.columns else "pnl_pct"
-        )
+        target_col = "pnl_pct_after_slippage"
+        if target_col not in df.columns:
+            log.warning("adaptive-weight guard: missing after-cost target")
+            return None
         history = _forward_history_stats(df, target_col)
         if (history["samples"] < min_samples
                 or history["unique_days"] < MIN_ADAPTIVE_DAYS):
@@ -772,15 +1129,9 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
                     zip(Z_COLS, positive_coef / positive_coef.sum(), strict=True)
                 )
                 weight_map = _normalize_to_signal_weights(z_to_weight, baseline)
-                _persist_runtime_weights(
-                    weight_map,
-                    source="independent_lifecycle_lasso",
-                    sample_count=history["samples"],
-                    unique_days=history["unique_days"],
-                    latest_outcome_at=_latest_outcome_time(df),
-                )
                 log.info(
-                    "adaptive weights refit from %d independent outcomes across %d days",
+                    "shadow adaptive weights built from %d independent outcomes across %d days; "
+                    "ordinary scans cannot persist or activate them",
                     history["samples"], history["unique_days"],
                 )
                 return weight_map
@@ -802,13 +1153,6 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
                 for key in baseline
             }
             conservative = _normalize_and_cap_weights(conservative)
-            _persist_runtime_weights(
-                conservative,
-                source="independent_lifecycle_ic",
-                sample_count=history["samples"],
-                unique_days=history["unique_days"],
-                latest_outcome_at=_latest_outcome_time(df),
-            )
             return conservative
         return None
 
@@ -847,14 +1191,10 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
     })
     sample_count = int(pd.to_numeric(ic_df["n"], errors="coerce").min())
     unique_days = int(pd.to_numeric(ic_df["trading_days"], errors="coerce").min())
-    _persist_runtime_weights(
-        blended,
-        source="independent_lifecycle_ic_summary",
-        sample_count=sample_count,
-        unique_days=unique_days,
-        latest_outcome_at=pd.to_datetime(
-            ic_df["latest_outcome_at"], errors="coerce", utc=True
-        ).max().to_pydatetime(),
+    log.info(
+        "shadow IC weight challenger built from %d outcomes across %d days; not persisted",
+        sample_count,
+        unique_days,
     )
     return blended
 
@@ -864,9 +1204,12 @@ def _persist_runtime_weights(weights: dict[str, float], source: str = "auto",
                              path: Path | None = None,
                              generated_at: datetime | None = None,
                              latest_outcome_at: datetime | None = None) -> None:
-    """Persist a self-describing, auditable runtime override."""
+    """Persist a research shadow that can never be mistaken for a champion."""
     destination = Path(path) if path is not None else RUNTIME_CONFIG_PATH
-    normalized = _normalize_and_cap_weights(weights)
+    normalized = {
+        key: float(f"{value:.10f}")
+        for key, value in _normalize_and_cap_weights(weights).items()
+    }
     timestamp = generated_at or datetime.now(UTC)
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=UTC)
@@ -874,8 +1217,13 @@ def _persist_runtime_weights(weights: dict[str, float], source: str = "auto",
     if outcome_timestamp.tzinfo is None:
         outcome_timestamp = outcome_timestamp.replace(tzinfo=UTC)
     metadata = {
-        "policy_version": 1,
+        "schema": RUNTIME_WEIGHT_SHADOW_SCHEMA,
+        "trust_state": SHADOW_UNTRUSTED,
+        "policy_version": 2,
         "source": str(source),
+        "asset_scope": "share_research",
+        "horizon_sessions": DEFAULT_HORIZON_DAYS,
+        "target_basis": "research_lifecycle_after_cost_return",
         "generated_at": timestamp.astimezone(UTC).isoformat(),
         "latest_outcome_at": outcome_timestamp.astimezone(UTC).isoformat(),
         "sample_count": int(sample_count),
@@ -883,11 +1231,13 @@ def _persist_runtime_weights(weights: dict[str, float], source: str = "auto",
         "factor_count": len(normalized),
         "max_factor_weight": max(normalized.values(), default=0.0),
         "adaptive_blend": ADAPTIVE_WEIGHT_BLEND,
+        "oos": {"method": "not_evaluated", "passed": False},
     }
+    metadata["content_digest_sha256"] = _runtime_content_digest(normalized, metadata)
     lines = [
-        '"""Auto-generated adaptive fusion weights.',
+        '"""Research-only adaptive fusion-weight shadow.',
         "",
-        "Loaded only while evidence, age, coverage, and concentration guards pass.",
+        "Ordinary scans cannot load this file as a trusted champion.",
         '"""',
         "",
         f"RUNTIME_WEIGHT_META = {metadata!r}",
@@ -901,12 +1251,28 @@ def _persist_runtime_weights(weights: dict[str, float], source: str = "auto",
     destination.write_text("\n".join(lines), encoding="utf-8")
 
 
-def runtime_weight_status(path: Path | None = None) -> dict[str, Any]:
-    """Validate a runtime override before it can affect ranking."""
+def runtime_weight_status(
+    path: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate an explicitly promoted multi-asset runtime-weight champion."""
     source_path = Path(path) if path is not None else RUNTIME_CONFIG_PATH
+    checked_at = now or datetime.now(UTC)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=UTC)
+    else:
+        checked_at = checked_at.astimezone(UTC)
     status: dict[str, Any] = {
+        "path": str(source_path),
         "exists": source_path.exists(),
         "usable": False,
+        "schema": None,
+        "trust_state": None,
+        "asset_scope": None,
+        "horizon_sessions": None,
+        "target_basis": None,
+        "content_digest_sha256": None,
         "reasons": [],
         "weights": None,
         "meta": None,
@@ -935,6 +1301,32 @@ def runtime_weight_status(path: Path | None = None) -> dict[str, Any]:
         status["reasons"].append("missing trust metadata")
         meta = {}
 
+    schema = str(meta.get("schema") or "")
+    trust_state = str(meta.get("trust_state") or "")
+    asset_scope = str(meta.get("asset_scope") or "")
+    horizon = _whole_number(meta.get("horizon_sessions"))
+    target_basis = str(meta.get("target_basis") or "")
+    status.update(
+        {
+            "schema": schema or None,
+            "trust_state": trust_state or None,
+            "asset_scope": asset_scope or None,
+            "horizon_sessions": horizon,
+            "target_basis": target_basis or None,
+            "content_digest_sha256": meta.get("content_digest_sha256"),
+        }
+    )
+    if schema != RUNTIME_WEIGHT_CHAMPION_SCHEMA:
+        status["reasons"].append("runtime schema is not the trusted champion schema")
+    if trust_state != TRUSTED_CHAMPION:
+        status["reasons"].append("runtime weights are not explicitly promoted")
+    if asset_scope != "multi_asset":
+        status["reasons"].append("runtime champion must declare multi_asset scope")
+    if horizon is None or horizon <= 0:
+        status["reasons"].append("runtime horizon_sessions must be a positive whole number")
+    if target_basis != RUNTIME_TARGET_BASIS:
+        status["reasons"].append("runtime target basis is not asset-isolated fixed-horizon return")
+
     parsed: dict[str, float] = {}
     try:
         parsed = {str(key): float(value) for key, value in weights.items()}
@@ -959,29 +1351,38 @@ def runtime_weight_status(path: Path | None = None) -> dict[str, Any]:
         status["reasons"].append(
             f"factor concentration {max_factor:.0%} exceeds {MAX_RUNTIME_FACTOR_WEIGHT:.0%}"
         )
+    factor_count = _whole_number(meta.get("factor_count"))
+    declared_max = _finite_number(meta.get("max_factor_weight"))
+    declared_blend = _finite_number(meta.get("adaptive_blend"))
+    if factor_count != len(parsed):
+        status["reasons"].append("runtime factor_count does not match the weight payload")
+    if declared_max is None or not np.isclose(declared_max, max_factor, atol=1e-12):
+        status["reasons"].append("runtime max_factor_weight does not match the weight payload")
+    if declared_blend is None or not np.isclose(
+        declared_blend,
+        ADAPTIVE_WEIGHT_BLEND,
+        atol=1e-12,
+    ):
+        status["reasons"].append("runtime adaptive_blend does not match the current policy")
 
-    try:
-        sample_count = int(meta.get("sample_count") or 0)
-        unique_days = int(meta.get("unique_days") or 0)
-    except (TypeError, ValueError):
-        sample_count = 0
-        unique_days = 0
+    sample_count = _whole_number(meta.get("sample_count"))
+    unique_days = _whole_number(meta.get("unique_days"))
+    if sample_count is None or unique_days is None:
+        sample_count = sample_count or 0
+        unique_days = unique_days or 0
         status["reasons"].append("invalid evidence metadata")
     if sample_count < MIN_ADAPTIVE_SAMPLES:
         status["reasons"].append(
             f"only {sample_count} independent outcomes; need {MIN_ADAPTIVE_SAMPLES}"
         )
-    if unique_days < MIN_ADAPTIVE_DAYS:
+    if unique_days < MIN_PROMOTION_ENTRY_DAYS:
         status["reasons"].append(
-            f"only {unique_days} entry days; need {MIN_ADAPTIVE_DAYS}"
+            f"only {unique_days} entry days; need {MIN_PROMOTION_ENTRY_DAYS}"
         )
 
-    generated = meta.get("generated_at")
-    try:
-        generated_at = datetime.fromisoformat(str(generated).replace("Z", "+00:00"))
-        if generated_at.tzinfo is None:
-            generated_at = generated_at.replace(tzinfo=UTC)
-        age_days = (datetime.now(UTC) - generated_at).total_seconds() / 86400.0
+    generated_at = _utc_timestamp(meta.get("promoted_at") or meta.get("generated_at"))
+    if generated_at is not None:
+        age_days = (checked_at - generated_at).total_seconds() / 86400.0
         status["age_days"] = age_days
         if age_days > RUNTIME_WEIGHT_MAX_AGE_DAYS:
             status["reasons"].append(
@@ -990,19 +1391,25 @@ def runtime_weight_status(path: Path | None = None) -> dict[str, Any]:
             )
         elif age_days < -1.0:
             status["reasons"].append("runtime timestamp is in the future")
-    except Exception:
-        status["reasons"].append("missing or invalid generated_at")
+    else:
+        status["reasons"].append("missing or invalid promoted_at")
 
-    latest_outcome = meta.get("latest_outcome_at")
-    try:
-        latest_outcome_at = datetime.fromisoformat(
-            str(latest_outcome).replace("Z", "+00:00")
-        )
-        if latest_outcome_at.tzinfo is None:
-            latest_outcome_at = latest_outcome_at.replace(tzinfo=UTC)
-        outcome_age_days = (
-            datetime.now(UTC) - latest_outcome_at
-        ).total_seconds() / 86400.0
+    source = meta.get("source_evidence")
+    if not isinstance(source, dict):
+        status["reasons"].append("runtime source evidence metadata is missing")
+        source = {}
+    for key in ("outcome_digest_sha256", "policy_digest_sha256"):
+        if not _is_sha256(source.get(key)):
+            status["reasons"].append(f"runtime source {key} is invalid")
+    expected_policy = _current_policy_digest()
+    if (
+        expected_policy is None
+        or str(source.get("policy_digest_sha256") or "") != expected_policy
+    ):
+        status["reasons"].append("runtime source policy digest is not current")
+    latest_outcome_at = _utc_timestamp(source.get("latest_outcome_at"))
+    if latest_outcome_at is not None:
+        outcome_age_days = (checked_at - latest_outcome_at).total_seconds() / 86400.0
         status["outcome_age_days"] = outcome_age_days
         if outcome_age_days > RUNTIME_WEIGHT_MAX_AGE_DAYS:
             status["reasons"].append(
@@ -1011,8 +1418,72 @@ def runtime_weight_status(path: Path | None = None) -> dict[str, Any]:
             )
         elif outcome_age_days < -1.0:
             status["reasons"].append("latest outcome timestamp is in the future")
-    except Exception:
+    else:
         status["reasons"].append("missing or invalid latest_outcome_at")
+
+    oos = meta.get("oos")
+    if not isinstance(oos, dict):
+        status["reasons"].append("runtime OOS promotion evidence is missing")
+    else:
+        if str(oos.get("method") or "") != OOS_METHOD:
+            status["reasons"].append("runtime OOS method is not purged expanding-window")
+        if oos.get("passed") is not True:
+            status["reasons"].append("runtime OOS promotion did not pass")
+        folds = _whole_number(oos.get("folds"))
+        if folds is None or folds < MIN_PROMOTION_FOLDS:
+            status["reasons"].append(
+                f"runtime OOS evidence needs at least {MIN_PROMOTION_FOLDS} folds"
+            )
+        validated_assets = oos.get("validated_assets")
+        if not isinstance(validated_assets, list):
+            validated_assets = []
+        validated = {_normalize_asset(value) for value in validated_assets}
+        if not {"share", "option"}.issubset(validated):
+            status["reasons"].append(
+                "global runtime weights require separate share and option OOS validation"
+            )
+        if str(oos.get("options_target_basis") or "") != "broker_observed_option_return":
+            status["reasons"].append(
+                "option runtime adaptation requires direct broker-observed option targets"
+            )
+        purge_sessions = _whole_number(oos.get("purge_sessions"))
+        if horizon is None or purge_sessions is None or purge_sessions < horizon:
+            status["reasons"].append("runtime OOS purge is shorter than the holding horizon")
+        effective = oos.get("effective_horizon_blocks_by_asset")
+        delta = oos.get("champion_delta_ci_low_by_asset")
+        stress = oos.get("cost_stress_2x_mean_by_asset")
+        predictions = oos.get("n_predictions_by_asset")
+        for asset in ("share", "option"):
+            blocks = _whole_number(effective.get(asset)) if isinstance(effective, dict) else None
+            delta_low = _finite_number(delta.get(asset)) if isinstance(delta, dict) else None
+            stress_mean = _finite_number(stress.get(asset)) if isinstance(stress, dict) else None
+            prediction_count = (
+                _whole_number(predictions.get(asset)) if isinstance(predictions, dict) else None
+            )
+            if blocks is None or blocks < MIN_PROMOTION_EFFECTIVE_BLOCKS:
+                status["reasons"].append(
+                    f"runtime OOS {asset} evidence lacks 30 effective horizon blocks"
+                )
+            if delta_low is None or delta_low <= 0:
+                status["reasons"].append(f"runtime OOS {asset} champion delta must be positive")
+            if stress_mean is None or stress_mean <= 0:
+                status["reasons"].append(f"runtime OOS {asset} 2x-cost mean must be positive")
+            if prediction_count is None or prediction_count < MIN_ADAPTIVE_SAMPLES:
+                status["reasons"].append(
+                    f"runtime OOS {asset} prediction count is insufficient"
+                )
+
+    content_digest = str(meta.get("content_digest_sha256") or "")
+    try:
+        expected_digest = _runtime_content_digest(parsed, meta)
+    except (TypeError, ValueError):
+        expected_digest = None
+    if (
+        not _is_sha256(content_digest)
+        or expected_digest is None
+        or content_digest != expected_digest
+    ):
+        status["reasons"].append("runtime content digest does not match")
 
     status["weights"] = parsed or None
     status["meta"] = meta or None
@@ -1028,3 +1499,33 @@ def load_runtime_weights(path: Path | None = None) -> dict[str, float] | None:
     if status["exists"]:
         log.debug("runtime weights ignored: %s", "; ".join(status["reasons"]))
     return None
+
+
+def model_trust_status(
+    *,
+    predictor_path: Path | None = None,
+    runtime_path: Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return one dashboard-ready trust view for every adaptive component."""
+    predictor = predictor_artifact_status(
+        predictor_path,
+        requested_asset="share",
+        now=now,
+    )
+    runtime = runtime_weight_status(runtime_path, now=now)
+    trusted_components = []
+    if predictor.get("usable"):
+        trusted_components.append("share_predictor")
+    if runtime.get("usable"):
+        trusted_components.append("runtime_weights")
+    return {
+        "schema": MODEL_TRUST_SCHEMA,
+        "status": "trusted_champion_active" if trusted_components else "source_controlled_defaults",
+        "trusted_components": trusted_components,
+        "predictor": predictor,
+        "runtime_weights": runtime,
+        "ordinary_scan_training": "disabled",
+        "option_adaptation": "disabled_until_direct_broker_observed_targets_pass_oos",
+        "safe_default": "zero_predictor_and_source_controlled_weights",
+    }

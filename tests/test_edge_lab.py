@@ -37,6 +37,7 @@ def _outcomes(
                 "entry_time": (start + timedelta(days=day)).isoformat(),
                 "pnl_pct": raw_return,
                 "slippage_assumption_pct": slippage,
+                "spread_pct": slippage if asset == "option" else None,
                 "pnl_pct_after_slippage": raw_return - slippage,
                 "excess_vs_spy_pct": raw_return - slippage - 0.003,
                 "is_scored": True,
@@ -109,6 +110,23 @@ def test_options_require_broker_observed_outcome_coverage():
     )
     assert coverage["met"] is False
     assert option["modeled_proxy_coverage"] == 1
+    assert option["live_capital_eligible"] is False
+
+
+def test_option_cost_assumption_must_cover_every_recorded_entry_spread():
+    frame = _outcomes(asset="option")
+    frame["spread_pct"] = 0.12
+
+    report = analyze_edge_outcomes(frame)
+    option = next(row for row in report["asset_rows"] if row["asset"] == "option")
+    requirement = next(
+        row
+        for row in option["requirements"]
+        if row["code"] == "cost_covers_entry_spread_coverage"
+    )
+
+    assert requirement["met"] is False
+    assert requirement["actual"] == 0.0
     assert option["live_capital_eligible"] is False
 
 

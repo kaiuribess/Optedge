@@ -22,6 +22,7 @@ def _outcomes(samples: int, days: int) -> pd.DataFrame:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     values = np.linspace(-1.0, 1.0, samples)
     frame = pd.DataFrame({
+        "asset": "share",
         "entry_time": [(start + timedelta(days=index % days)).isoformat()
                        for index in range(samples)],
         "pnl_pct": values * 0.05,
@@ -34,19 +35,82 @@ def _outcomes(samples: int, days: int) -> pd.DataFrame:
 
 
 def _write_runtime(path: Path, weights: dict, *, generated_at: datetime,
-                   samples: int = 500, days: int = 10,
+                   samples: int = 500, days: int = 320,
                    latest_outcome_at: datetime | None = None) -> None:
     metadata = {
-        "source": "test",
+        "schema": predictor.RUNTIME_WEIGHT_CHAMPION_SCHEMA,
+        "trust_state": predictor.TRUSTED_CHAMPION,
+        "source": "test_promotion",
+        "asset_scope": "multi_asset",
+        "horizon_sessions": 10,
+        "target_basis": predictor.RUNTIME_TARGET_BASIS,
         "generated_at": generated_at.isoformat(),
-        "latest_outcome_at": (latest_outcome_at or generated_at).isoformat(),
+        "promoted_at": generated_at.isoformat(),
         "sample_count": samples,
         "unique_days": days,
+        "factor_count": len(weights),
+        "max_factor_weight": max(weights.values()),
+        "adaptive_blend": predictor.ADAPTIVE_WEIGHT_BLEND,
+        "source_evidence": {
+            "outcome_digest_sha256": "a" * 64,
+            "policy_digest_sha256": predictor._current_policy_digest(),
+            "latest_outcome_at": (latest_outcome_at or generated_at).isoformat(),
+        },
+        "oos": {
+            "method": predictor.OOS_METHOD,
+            "passed": True,
+            "folds": 5,
+            "purge_sessions": 10,
+            "validated_assets": ["share", "option"],
+            "options_target_basis": "broker_observed_option_return",
+            "n_predictions_by_asset": {"share": 500, "option": 500},
+            "effective_horizon_blocks_by_asset": {"share": 30, "option": 30},
+            "champion_delta_ci_low_by_asset": {"share": 0.001, "option": 0.001},
+            "cost_stress_2x_mean_by_asset": {"share": 0.001, "option": 0.001},
+        },
     }
+    metadata["content_digest_sha256"] = predictor._runtime_content_digest(
+        weights, metadata
+    )
     path.write_text(
         f"RUNTIME_WEIGHT_META = {metadata!r}\nSIGNAL_WEIGHTS = {weights!r}\n",
         encoding="utf-8",
     )
+
+
+def _predictor_champion_payload(now: datetime) -> dict:
+    coefs = {column: 0.0 for column in predictor.Z_COLS}
+    coefs["z_mispricing"] = 0.01
+    payload = {
+        "schema": predictor.PREDICTOR_CHAMPION_SCHEMA,
+        "trust_state": predictor.TRUSTED_CHAMPION,
+        "model_kind": predictor.PREDICTOR_MODEL_KIND,
+        "asset": "share",
+        "horizon_sessions": 10,
+        "target_basis": predictor.PREDICTOR_TARGET_BASIS,
+        "coefs": coefs,
+        "oos": {
+            "method": predictor.OOS_METHOD,
+            "passed": True,
+            "folds": 5,
+            "unique_entry_days": 320,
+            "effective_horizon_blocks": 32,
+            "n_predictions": 500,
+            "purge_sessions": 10,
+            "after_cost_mean": 0.01,
+            "champion_delta_ci_low": 0.001,
+            "cost_stress_2x_mean": 0.005,
+            "recent_half_mean": 0.008,
+        },
+        "source": {
+            "outcome_digest_sha256": "a" * 64,
+            "policy_digest_sha256": predictor._current_policy_digest(),
+            "latest_outcome_at": now.isoformat(),
+        },
+        "promoted_at": now.isoformat(),
+    }
+    payload["content_digest_sha256"] = predictor._predictor_content_digest(payload)
+    return payload
 
 
 def test_walk_forward_guard_requires_samples_and_days():
@@ -93,7 +157,135 @@ def test_predictor_does_not_fit_or_bootstrap_from_weak_history():
             predictor.COEFS_PATH = old_path
 
 
+def test_research_fit_is_shadow_only_and_never_persists_on_an_ordinary_call():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        old_path = predictor.COEFS_PATH
+        path = Path(temp_dir) / "predictor.json"
+        predictor.COEFS_PATH = path
+        try:
+            payload = predictor.fit_return_predictor(_outcomes(500, 320))
+            assert payload["schema"] == predictor.PREDICTOR_SHADOW_SCHEMA
+            assert payload["trust_state"] == predictor.SHADOW_UNTRUSTED
+            assert payload["meta"]["activation_eligible"] is False
+            assert payload["meta"]["persistence"] == "disabled"
+            assert not path.exists()
+        finally:
+            predictor.COEFS_PATH = old_path
+
+
+def test_runtime_weight_research_fit_does_not_persist_a_scan_override():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        old_path = predictor.RUNTIME_CONFIG_PATH
+        path = Path(temp_dir) / "config_runtime.py"
+        predictor.RUNTIME_CONFIG_PATH = path
+        try:
+            candidate = predictor.update_runtime_weights(_outcomes(500, 320))
+            assert candidate is not None
+            assert not path.exists()
+        finally:
+            predictor.RUNTIME_CONFIG_PATH = old_path
+
+
+def test_mixed_assets_and_option_returns_cannot_train_the_stock_predictor():
+    mixed = _outcomes(500, 320)
+    mixed.loc[mixed.index[::2], "asset"] = "option"
+    mixed_payload = predictor.fit_return_predictor(mixed)
+    assert mixed_payload["meta"]["reason"] == "mixed_asset_training_rejected"
+    assert all(value == 0.0 for value in mixed_payload["coefs"].values())
+
+    options = _outcomes(500, 320)
+    options["asset"] = "option"
+    options["outcome_quality"] = "broker_market_observed"
+    option_payload = predictor.fit_return_predictor(options)
+    assert (
+        option_payload["meta"]["reason"]
+        == "option_adaptation_requires_direct_broker_observed_target"
+    )
+    assert all(value == 0.0 for value in option_payload["coefs"].values())
+
+
+def test_legacy_predictor_artifact_fails_closed_to_safe_zeros():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "predictor.json"
+        path.write_text(
+            json.dumps({"coefs": {"z_mispricing": 0.05}, "meta": {"source": "legacy"}}),
+            encoding="utf-8",
+        )
+
+        status = predictor.predictor_artifact_status(path)
+        assert status["usable"] is False
+        assert any("trusted champion schema" in reason for reason in status["reasons"])
+        assert all(value == 0.0 for value in predictor.load_predictor_coefs(path=path).values())
+
+
+def test_digest_valid_share_champion_loads_only_for_shares_and_tampering_fails():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "predictor.json"
+        now = datetime.now(UTC)
+        payload = _predictor_champion_payload(now)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        status = predictor.predictor_artifact_status(path, now=now)
+        assert status["usable"] is True
+        assert predictor.load_predictor_coefs(asset="share", path=path)["z_mispricing"] == 0.01
+        assert all(
+            value == 0.0
+            for value in predictor.load_predictor_coefs(asset="option", path=path).values()
+        )
+
+        payload["coefs"]["z_mispricing"] = 0.02
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        tampered = predictor.predictor_artifact_status(path, now=now)
+        assert tampered["usable"] is False
+        assert "predictor content digest does not match" in tampered["reasons"]
+        assert all(value == 0.0 for value in predictor.load_predictor_coefs(path=path).values())
+
+
+def test_digest_valid_but_retired_policy_champion_still_fails_closed():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "predictor.json"
+        now = datetime.now(UTC)
+        payload = _predictor_champion_payload(now)
+        payload["source"]["policy_digest_sha256"] = "c" * 64
+        payload["content_digest_sha256"] = predictor._predictor_content_digest(payload)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        status = predictor.predictor_artifact_status(path, now=now)
+        assert status["usable"] is False
+        assert "predictor source policy digest is not current" in status["reasons"]
+        assert all(value == 0.0 for value in predictor.load_predictor_coefs(path=path).values())
+
+
+def test_model_trust_status_exposes_safe_defaults_without_promoted_artifacts():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        report = predictor.model_trust_status(
+            predictor_path=root / "missing_predictor.json",
+            runtime_path=root / "missing_runtime.py",
+        )
+
+    assert report["schema"] == predictor.MODEL_TRUST_SCHEMA
+    assert report["status"] == "source_controlled_defaults"
+    assert report["trusted_components"] == []
+    assert report["ordinary_scan_training"] == "disabled"
+    assert report["safe_default"] == "zero_predictor_and_source_controlled_weights"
+
+
 def test_runtime_status_accepts_fresh_diversified_full_coverage_file():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "config_runtime.py"
+        weights = predictor._normalize_and_cap_weights(
+            predictor._configured_signal_weights()
+        )
+        now = datetime.now(UTC)
+        _write_runtime(path, weights, generated_at=now)
+        status = predictor.runtime_weight_status(path)
+        assert status["usable"] is True
+        assert status["reasons"] == []
+        assert len(predictor.load_runtime_weights(path)) == len(weights)
+
+
+def test_runtime_persistence_helper_writes_untrusted_shadow_by_default():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "config_runtime.py"
         weights = predictor._normalize_and_cap_weights(
@@ -101,15 +293,42 @@ def test_runtime_status_accepts_fresh_diversified_full_coverage_file():
         )
         predictor._persist_runtime_weights(
             weights,
-            source="test",
+            source="research_test",
             sample_count=500,
-            unique_days=10,
+            unique_days=320,
             path=path,
         )
+
         status = predictor.runtime_weight_status(path)
-        assert status["usable"] is True
-        assert status["reasons"] == []
-        assert len(predictor.load_runtime_weights(path)) == len(weights)
+        assert status["usable"] is False
+        assert status["schema"] == predictor.RUNTIME_WEIGHT_SHADOW_SCHEMA
+        assert status["trust_state"] == predictor.SHADOW_UNTRUSTED
+        assert "runtime content digest does not match" not in status["reasons"]
+        assert predictor.load_runtime_weights(path) is None
+
+
+def test_runtime_champion_digest_detects_weight_tampering():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "config_runtime.py"
+        weights = predictor._normalize_and_cap_weights(
+            predictor._configured_signal_weights()
+        )
+        _write_runtime(path, weights, generated_at=datetime.now(UTC))
+        assignments = predictor._literal_assignments(
+            path, {"SIGNAL_WEIGHTS", "RUNTIME_WEIGHT_META"}
+        )
+        tampered = dict(assignments["SIGNAL_WEIGHTS"])
+        tampered["macro"] += 0.001
+        path.write_text(
+            "RUNTIME_WEIGHT_META = "
+            f"{assignments['RUNTIME_WEIGHT_META']!r}\nSIGNAL_WEIGHTS = {tampered!r}\n",
+            encoding="utf-8",
+        )
+
+        status = predictor.runtime_weight_status(path)
+        assert status["usable"] is False
+        assert "runtime content digest does not match" in status["reasons"]
+        assert predictor.load_runtime_weights(path) is None
 
 
 def test_runtime_status_rejects_stale_concentrated_and_incomplete_files():

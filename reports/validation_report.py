@@ -310,19 +310,53 @@ def _equity_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -> pd.S
     if df.empty:
         return pd.Series(dtype=float)
     idx = df.index
-    if "equity_return" in df.columns:
-        direct = pd.to_numeric(df["equity_return"], errors="coerce").dropna()
-        if not direct.empty:
-            return direct
+    raw = pd.to_numeric(df[return_col], errors="coerce")
+    allocation = _allocation_series(df).reindex(idx)
+    # Build a complete row-wise fallback first.  Older lifecycle rows often
+    # lack explicit account returns, while newer rows contain them.  Returning
+    # only the non-null direct subset would silently erase the older outcomes
+    # from drawdown even though they remain in the headline sample count.
+    contributions = raw * allocation
     if {"pnl_dollars", "bankroll"} <= set(df.columns):
         pnl_dollars = pd.to_numeric(df["pnl_dollars"], errors="coerce")
         bankroll = pd.to_numeric(df["bankroll"], errors="coerce")
-        direct = (pnl_dollars / bankroll.where(bankroll > 0)).dropna()
-        if not direct.empty:
-            return direct.clip(lower=-1.0)
-    raw = pd.to_numeric(df[return_col], errors="coerce")
-    allocation = _allocation_series(df).reindex(idx)
-    return (raw * allocation).dropna().clip(lower=-1.0)
+        dollar_return = pnl_dollars / bankroll.where(bankroll > 0)
+        valid_dollar_return = dollar_return.notna() & np.isfinite(dollar_return)
+        contributions = contributions.where(~valid_dollar_return, dollar_return)
+    if "equity_return" in df.columns:
+        direct = pd.to_numeric(df["equity_return"], errors="coerce")
+        valid_direct = direct.notna() & np.isfinite(direct)
+        contributions = contributions.where(~valid_direct, direct)
+    return contributions.dropna().clip(lower=-1.0)
+
+
+def _equity_curve_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -> pd.Series:
+    """Return chronological account events, netting same-day concurrent signals.
+
+    Signals that close on the same day affect the account together.  Summing
+    their already allocation-normalized contributions avoids inventing a
+    sequential compounding order inside one session.  If timestamps are not
+    complete, every contribution is retained in stable row order rather than
+    dropping undated evidence.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    eligible = _validation_eligible_rows(df)
+    contributions = _equity_return_series(eligible, return_col)
+    if contributions.empty:
+        return contributions
+    for column in ("exit_time", "closed_at", "target_date", "entry_time"):
+        if column not in eligible.columns:
+            continue
+        timestamps = pd.to_datetime(
+            eligible.loc[contributions.index, column],
+            errors="coerce",
+            utc=True,
+        )
+        if timestamps.notna().all():
+            daily = contributions.groupby(timestamps.dt.date, sort=True).sum()
+            return daily.clip(lower=-1.0)
+    return contributions
 
 
 def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
@@ -352,7 +386,7 @@ def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
         "avg_return": float(r.mean()),
         "median_return": float(r.median()),
         "profit_factor": _profit_factor(r),
-        "max_drawdown": _max_drawdown(_equity_return_series(eligible_df, return_col)),
+        "max_drawdown": _max_drawdown(_equity_curve_return_series(eligible_df, return_col)),
         "max_drawdown_mode": EQUITY_RETURN_MODE,
         "best": float(r.max()),
         "worst": float(r.min()),

@@ -243,6 +243,42 @@ def test_validation_drawdown_uses_normalized_signal_allocation():
     assert stats["worst"] == -1.0
 
 
+def test_validation_drawdown_fills_partial_direct_returns_row_by_row():
+    closed = pd.DataFrame({
+        "pnl_pct": [-0.10, -0.20, 0.05],
+        "equity_return": [-0.001, None, None],
+        "entry_time": [
+            "2026-01-01T15:00:00+00:00",
+            "2026-01-02T15:00:00+00:00",
+            "2026-01-03T15:00:00+00:00",
+        ],
+    })
+
+    contributions = validation_report._equity_return_series(closed, "pnl_pct")
+    stats = validation_report._stats(closed, "pnl_pct")
+
+    assert contributions.tolist() == [-0.001, -0.002, 0.0005]
+    assert stats["n"] == 3
+    assert round(stats["max_drawdown"], 6) == -0.002998
+
+
+def test_validation_drawdown_nets_concurrent_session_contributions():
+    closed = pd.DataFrame({
+        "pnl_pct": [-1.0, -1.0, 1.0],
+        "exit_time": [
+            "2026-01-02T15:00:00+00:00",
+            "2026-01-02T20:00:00+00:00",
+            "2026-01-03T20:00:00+00:00",
+        ],
+    })
+
+    curve_returns = validation_report._equity_curve_return_series(closed, "pnl_pct")
+    stats = validation_report._stats(closed, "pnl_pct")
+
+    assert curve_returns.tolist() == [-0.02, 0.01]
+    assert round(stats["max_drawdown"], 6) == -0.02
+
+
 def test_summary_exposes_equity_curve_assumption():
     with tempfile.TemporaryDirectory() as td:
         old_data = validation_report.DATA_DIR

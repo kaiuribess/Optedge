@@ -238,11 +238,31 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["source_quote_at"] = _series_or_default(df, "source_quote_at")
     out["source_quote_time_basis"] = _series_or_default(df, "source_quote_time_basis")
     out["top_headline"] = "3m+ option-chain shortlist candidate"
-    out["generated_at"] = _series_or_default(df, "generated_at", generated_at)
+    row_generated = _series_or_default(df, "generated_at", generated_at).astype(str).str.strip()
+    if generated_at:
+        row_generated = row_generated.mask(row_generated.eq(""), generated_at)
+    out["generated_at"] = row_generated
     for timestamp_key in ("quote_updated_at", "updated_at", "asof", "entry_time"):
         out[timestamp_key] = _series_or_default(df, timestamp_key)
     out["_source_file"] = source_path.name
-    out["_source_mtime"] = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc).isoformat()
+    source_modified = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
+    out["_source_mtime"] = source_modified.isoformat()
+    now = datetime.now(timezone.utc)
+
+    def artifact_age_minutes(value: Any) -> float | None:
+        timestamp = _parse_time(value) or source_modified
+        age_seconds = (now - timestamp).total_seconds()
+        if age_seconds < -300:
+            return None
+        return round(max(0.0, age_seconds / 60.0), 1)
+
+    out["artifact_generated_at"] = out["generated_at"]
+    out["artifact_source_mtime"] = source_modified.isoformat()
+    out["artifact_time_basis"] = [
+        "generated_at" if _parse_time(value) is not None else "file_mtime"
+        for value in out["generated_at"]
+    ]
+    out["artifact_age_minutes"] = [artifact_age_minutes(value) for value in out["generated_at"]]
     out["_chain_shortlist"] = True
     return out
 
