@@ -60,12 +60,12 @@ The lifecycle report answers whether tracked recommendations eventually hit an e
 - Intraday repeats collapse to the first thesis for each asset, ticker, direction, and entry day.
 - A horizon remains pending until the required completed session exists; the current partial session is never scored.
 - `Watch`, `Skip`, guard-blocked, zero-size, and legacy-unverified rows cannot enter executed metrics.
-- New signals are stamped with the exact provenance schema, strategy version, fixed-horizon methodology version, stable policy digest, and experiment ID. Those fields carry into every scored or excluded outcome.
+- New signals are stamped with the exact provenance schema, strategy version, fixed-horizon methodology version, stable policy digest, model-trust schema and status, active predictor SHA-256 identity, active runtime-weight SHA-256 identity, option-adaptation status, and experiment ID. Those fields carry into every scored or excluded outcome. The experiment identity itself binds the strategy, policy, and active-model identities.
 - `fixed_horizon_summary.json` records an outcome-set digest and mature-resolution coverage by asset, horizon, and evidence lane. A digest mismatch, duplicate evidence key, excluded mature outcome, or unresolved mature outcome fails closed in Edge Lab.
 - Current-method shadow rows freeze the strategy's qualification and intended size before portfolio-level guardrails. They can build research evidence while broker/execution eligibility remains blocked, avoiding a validation deadlock.
 - Current long-option evidence must include the directional buyer-edge fields used by the current pricing gate. Older absolute-anomaly rows remain telemetry-only.
 - Shares and futures use observed closes. Futures may use a labeled ETF proxy only when the continuous-contract history is unavailable.
-- Options first look for an exact, non-interpolated target-date trade bar in `data/robinhood_option_history_snapshot.json`. Matching bars are labeled `broker_market_observed`. When no exact bar is cached, the evaluator uses a labeled Black-Scholes mark with entry IV held constant. Both paths apply the configured slippage assumption, and neither path is evidence that Optedge received a fill.
+- Options first look for an exact, non-interpolated target-date trade bar in `data/robinhood_option_history_snapshot.json`. Matching bars are labeled `broker_market_observed`. When no exact bar is cached, the evaluator uses a labeled Black-Scholes mark with entry IV held constant. Both paths record cost as the greater of the configured option-cost floor and the signal's entry spread when that spread is available. A missing entry spread uses a clearly labeled floor fallback rather than an invented spread, and neither valuation path is evidence that Optedge received a fill.
 - The report shows executed and current-method shadow samples separately. The base research headline remains untrusted below 100 shadow outcomes or 10 distinct entry days. That reporting floor is less strict than Edge Lab's live-review gate and must not be read as live-capital approval.
 
 `python scripts/refresh_robinhood_option_history.py --status` writes a bounded exact-contract request queue, an agent-safe read-only prompt, and a coverage report. A connected Codex/Robinhood session can resolve those requests with `get_option_instruments` and `get_option_historicals`. Interpolated gap-fill bars are rejected. When new exact bars arrive, previously modeled outcomes are upgraded in place on the next fixed-horizon refresh.
@@ -84,6 +84,7 @@ The output includes Wilson 95% intervals for win rate, after-cost returns, profi
 - At the default ten-session horizon, 30 effective blocks require about 300 distinct entry days. Repeated same-day signals and raw row count cannot replace that time coverage.
 - Mature resolution coverage must be 100%, with no excluded or pending gated outcome.
 - Entry time, raw return, after-cost return, nonnegative slippage, SPY excess, and raw-minus-slippage reconciliation must each have 100% coverage. Missing costs or benchmarks are never treated as zero.
+- The option lane additionally requires 100% finite nonnegative entry-spread coverage and 100% proof that recorded cost is at least the entry spread. A labeled cost-floor fallback keeps the outcome visible but cannot clear those option checks when its entry spread is missing.
 - Nominal after-cost results are stressed at 1.5 and 2 times the recorded slippage assumption.
 - The first and recent chronological halves must both remain positive.
 - Option performance gates use only exact `broker_market_observed` outcomes. Modeled proxies remain research-only and cannot improve any live performance requirement; the observed cohort must cover at least 50% of the selected current option cohort.
@@ -97,6 +98,18 @@ After the source, provenance, resolution, coverage, lane, and effective-block ga
 Calibration prefers `pnl_pct_after_slippage` and reports its return basis. Asset-specific prediction columns are used: option rows use the option prediction and share/futures rows use the stock-direction prediction. Mixed-asset calibration selects the appropriate prediction for each row instead of comparing every asset against one generic field.
 
 Calibration describes alignment between stored predictions and stored outcomes. It does not prove fill quality or live profitability.
+
+## Adaptive Model Promotion Firewall
+
+Normal scans are inference-only. They never fit, save, or immediately consume new predictor coefficients or fusion weights. Research fitting APIs return `shadow_untrusted` candidates in memory; saving a research shadow does not make it executable.
+
+A predictor can affect ranking only when its artifact uses the trusted-champion schema and passes every fail-closed check: one explicit asset family, fixed holding horizon, after-cost target basis, complete coefficient coverage, at least three purged expanding-window out-of-sample folds, at least 500 OOS predictions across at least 30 entry days and 30 effective horizon blocks, positive after-cost and doubled-cost results, a positive challenger-versus-champion lower bound, source evidence no more than 14 days old, policy and outcome digests, and an intact content digest. Legacy `predictor_coefs.json` files load as zero coefficients.
+
+The stock-return predictor accepts share targets only. Option and futures lifecycle returns cannot train it. Option adaptation remains disabled until a separate option-specific path has direct broker-observed targets and passes the same out-of-sample promotion standard.
+
+Runtime fusion weights are global, so their champion schema is stricter: every configured factor must be present, weights must remain normalized with no factor above 30%, and separate share and option out-of-sample attestations are required. Each asset attestation needs the purged-fold, prediction-count, effective-block, positive champion-delta, and positive doubled-cost checks; the option attestation must use direct broker-observed targets. Legacy `config_runtime.py` files and research-shadow weight files fail closed to source-controlled weights.
+
+The fixed-horizon policy records that ordinary-scan training is disabled and option adaptation is disabled pending direct broker-observed out-of-sample evidence. Current-lane eligibility requires the exact model-trust state and both active-model digests frozen at signal time. A later champion, weight set, or policy change starts a different experiment identity; it cannot claim the previous identity's outcomes.
 
 ## Diagnostic Quarantine
 
