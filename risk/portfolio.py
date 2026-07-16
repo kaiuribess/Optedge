@@ -73,7 +73,9 @@ def _asof_date(value: Any) -> date | None:
     return None
 
 
-def _row_quantity(row: Mapping[str, Any], fields: tuple[str, ...]) -> tuple[float | None, str | None]:
+def _row_quantity(
+    row: Mapping[str, Any], fields: tuple[str, ...]
+) -> tuple[float | None, str | None]:
     """Return one reconciled quantity, rejecting missing or contradictory fields."""
     observed: list[tuple[str, float]] = []
     invalid: list[str] = []
@@ -187,9 +189,7 @@ def summarize_broker_account_capital_at_risk(
         if isinstance(row, Mapping) and _account_scope(row) == clean_account_key
     ]
     if clean_account_key and len(matching_accounts) != 1:
-        blockers.append(
-            "account_key must identify exactly one normalized broker account"
-        )
+        blockers.append("account_key must identify exactly one normalized broker account")
 
     collections: dict[str, list[Any]] = {}
     for field in ("option_positions", "equity_positions", "option_orders", "equity_orders"):
@@ -386,9 +386,7 @@ def summarize_broker_account_capital_at_risk(
         ]
         conservative_price = max(price_candidates) if price_candidates else None
         quantity_exposure = (
-            abs(quantity) * conservative_price
-            if conservative_price is not None
-            else None
+            abs(quantity) * conservative_price if conservative_price is not None else None
         )
         if market_exposure is None and quantity_exposure is None:
             _append_blocker(blockers, f"{label} is missing market value and a valid current price")
@@ -463,9 +461,7 @@ def _trade_plan_capital_at_risk(trade_plan: Mapping[str, Any]) -> tuple[float | 
     if errors:
         return None, "trade_plan has validation errors"
     validation = (
-        trade_plan.get("validation")
-        if isinstance(trade_plan.get("validation"), Mapping)
-        else {}
+        trade_plan.get("validation") if isinstance(trade_plan.get("validation"), Mapping) else {}
     )
     if validation.get("ok") is not True or validation.get("errors"):
         return None, "trade_plan has validation errors"
@@ -482,11 +478,9 @@ def _trade_plan_capital_at_risk(trade_plan: Mapping[str, Any]) -> tuple[float | 
         return None, "trade_plan maximum loss is unbounded"
 
     inputs = trade_plan.get("inputs") if isinstance(trade_plan.get("inputs"), Mapping) else {}
-    asset = str(
-        trade_plan.get("asset")
-        or order.get("asset")
-        or inputs.get("asset")
-    ).strip().lower()
+    asset = (
+        str(trade_plan.get("asset") or order.get("asset") or inputs.get("asset")).strip().lower()
+    )
     if asset in {"share", "shares", "equity", "stock"}:
         candidates = (
             risk.get("full_share_notional_at_risk_dollars"),
@@ -534,10 +528,7 @@ def evaluate_post_trade_portfolio(
     if not isinstance(exposure_summary, Mapping):
         blockers.append("exposure_summary must be a mapping")
         exposure_summary = {}
-    if (
-        exposure_summary.get("status") != "ready"
-        or exposure_summary.get("eligible") is not True
-    ):
+    if exposure_summary.get("status") != "ready" or exposure_summary.get("eligible") is not True:
         blockers.append("broker exposure summary is blocked")
     existing = _finite_number(exposure_summary.get("capital_at_risk_dollars"))
     if existing is None or existing < 0:
@@ -576,9 +567,19 @@ def evaluate_post_trade_portfolio(
         else None
     )
     post_trade = existing + proposed if existing is not None and proposed is not None else None
-    headroom_before = allocation_cap - existing if allocation_cap is not None and existing is not None else None
-    headroom_after = allocation_cap - post_trade if allocation_cap is not None and post_trade is not None else None
-    if allocation_cap is not None and post_trade is not None and post_trade > allocation_cap + 0.005:
+    headroom_before = (
+        allocation_cap - existing if allocation_cap is not None and existing is not None else None
+    )
+    headroom_after = (
+        allocation_cap - post_trade
+        if allocation_cap is not None and post_trade is not None
+        else None
+    )
+    if (
+        allocation_cap is not None
+        and post_trade is not None
+        and post_trade > allocation_cap + 0.005
+    ):
         blockers.append("post-trade broker capital at risk exceeds the total-open allocation cap")
 
     allowed = not blockers
@@ -601,9 +602,15 @@ def evaluate_post_trade_portfolio(
         "allocation_cap_dollars": _money(allocation_cap) if allocation_cap is not None else None,
         "current_capital_at_risk_dollars": _money(existing) if existing is not None else None,
         "proposed_capital_at_risk_dollars": _money(proposed) if proposed is not None else None,
-        "post_trade_capital_at_risk_dollars": _money(post_trade) if post_trade is not None else None,
-        "headroom_before_trade_dollars": _money(headroom_before) if headroom_before is not None else None,
-        "headroom_after_trade_dollars": _money(headroom_after) if headroom_after is not None else None,
+        "post_trade_capital_at_risk_dollars": _money(post_trade)
+        if post_trade is not None
+        else None,
+        "headroom_before_trade_dollars": _money(headroom_before)
+        if headroom_before is not None
+        else None,
+        "headroom_after_trade_dollars": _money(headroom_after)
+        if headroom_after is not None
+        else None,
         "utilization_before": (
             _ratio(existing / allocation_cap)
             if existing is not None and allocation_cap is not None and allocation_cap > 0

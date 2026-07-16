@@ -104,7 +104,9 @@ def calibration_report(
     return_col = (
         "pnl_pct_after_slippage"
         if "pnl_pct_after_slippage" in df.columns
-        else "pnl_pct" if "pnl_pct" in df.columns else None
+        else "pnl_pct"
+        if "pnl_pct" in df.columns
+        else None
     )
     scope = requested_asset or "mixed"
     if return_col is None:
@@ -122,9 +124,7 @@ def calibration_report(
         if prediction_col not in df.columns:
             continue
         mask = df["_calibration_asset"].eq(canonical_asset)
-        prediction.loc[mask] = pd.to_numeric(
-            df.loc[mask, prediction_col], errors="coerce"
-        )
+        prediction.loc[mask] = pd.to_numeric(df.loc[mask, prediction_col], errors="coerce")
     df["_predicted_return_pct"] = prediction
     df[return_col] = pd.to_numeric(df[return_col], errors="coerce")
 
@@ -153,9 +153,7 @@ def calibration_report(
         )
 
     try:
-        df["pred_bin"] = pd.qcut(
-            df["_predicted_return_pct"], n_bins, duplicates="drop"
-        )
+        df["pred_bin"] = pd.qcut(df["_predicted_return_pct"], n_bins, duplicates="drop")
     except (TypeError, ValueError):
         return _empty_report("binning_failed", **common_details)
 

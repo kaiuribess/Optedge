@@ -6,6 +6,7 @@ legacy artifacts load as zero predictor coefficients or source-controlled
 weights. Only an explicitly promoted, digest-valid champion with asset-isolated
 purged out-of-sample evidence can affect ranking.
 """
+
 from __future__ import annotations
 
 import ast
@@ -117,11 +118,11 @@ def load_adaptive_outcomes(data_dir: Path | None = None) -> pd.DataFrame:
     try:
         from backtest.exit_learning import eligible_closed_for_learning
 
-        eligible = [eligible_closed_for_learning(asset, closed)
-                    for asset in ("option", "share", "futures")]
+        eligible = [
+            eligible_closed_for_learning(asset, closed) for asset in ("option", "share", "futures")
+        ]
         eligible = [frame for frame in eligible if not frame.empty]
-        closed = (pd.concat(eligible, ignore_index=True, sort=False)
-                  if eligible else pd.DataFrame())
+        closed = pd.concat(eligible, ignore_index=True, sort=False) if eligible else pd.DataFrame()
     except Exception as exc:
         log.warning("adaptive outcomes unavailable: lifecycle filter failed: %s", exc)
         return pd.DataFrame()
@@ -147,7 +148,9 @@ def load_adaptive_outcomes(data_dir: Path | None = None) -> pd.DataFrame:
     except Exception:
         slippage = 0.04
     option_mask = closed["asset"].astype(str).eq("option")
-    missing_option_slippage = option_mask & ~closed["_had_after_slippage"].fillna(False).astype(bool)
+    missing_option_slippage = option_mask & ~closed["_had_after_slippage"].fillna(False).astype(
+        bool
+    )
     closed.loc[missing_option_slippage, "pnl_pct_after_slippage"] = (
         closed.loc[missing_option_slippage, "pnl_pct"] - slippage
     )
@@ -193,6 +196,7 @@ def load_adaptive_outcomes(data_dir: Path | None = None) -> pd.DataFrame:
         else:
             closed[target] = closed[target].where(closed[target].notna(), closed[source])
     return closed.drop(columns=["_had_after_slippage"], errors="ignore").dropna(subset=["pnl_pct"])
+
 
 # Default horizon for option-buying predictions (matches typical 14-30 DTE picks).
 DEFAULT_HORIZON_DAYS = 14
@@ -245,10 +249,10 @@ Z_COLS = list(SIGNAL_TO_ZCOL.values())
 
 # Map factor name (used in IC) to its z-column in fusion output
 FACTOR_TO_ZCOL = {
-    "value_score":     "z_value",
-    "fund_score":      "z_fund",
+    "value_score": "z_value",
+    "fund_score": "z_fund",
     "sentiment_delta": "z_sent",
-    "insider_score":   "z_insider",
+    "insider_score": "z_insider",
 }
 
 ZCOL_TO_SIGNAL = {z_col: signal for signal, z_col in SIGNAL_TO_ZCOL.items()}
@@ -546,7 +550,9 @@ def predictor_artifact_status(
     return status
 
 
-def _bootstrap_coefs_from_ic(ic_df: pd.DataFrame, horizon: int = DEFAULT_HORIZON_DAYS) -> dict[str, float]:
+def _bootstrap_coefs_from_ic(
+    ic_df: pd.DataFrame, horizon: int = DEFAULT_HORIZON_DAYS
+) -> dict[str, float]:
     """Seed coefficients from explicitly qualified lifecycle IC evidence.
 
     Logic: a Q5-Q1 spread of S% spans roughly 4 z-units (top 20% mean ≈ +1.3z,
@@ -590,8 +596,7 @@ def _time_decay_weights(entry_times: pd.Series, half_life_days: float = 30.0) ->
     return np.array(weights, dtype=float)
 
 
-def _forward_history_stats(df: pd.DataFrame | None,
-                           target_col: str = "pnl_pct") -> dict[str, int]:
+def _forward_history_stats(df: pd.DataFrame | None, target_col: str = "pnl_pct") -> dict[str, int]:
     if df is None or df.empty or target_col not in df.columns:
         return {"samples": 0, "unique_days": 0}
     target = pd.to_numeric(df[target_col], errors="coerce")
@@ -618,9 +623,11 @@ def _latest_outcome_time(df: pd.DataFrame | None) -> datetime | None:
     return None
 
 
-def _ic_frame_is_reliable(ic_df: pd.DataFrame | None,
-                          min_samples: int = MIN_ADAPTIVE_SAMPLES,
-                          min_unique_days: int = MIN_ADAPTIVE_DAYS) -> bool:
+def _ic_frame_is_reliable(
+    ic_df: pd.DataFrame | None,
+    min_samples: int = MIN_ADAPTIVE_SAMPLES,
+    min_unique_days: int = MIN_ADAPTIVE_DAYS,
+) -> bool:
     """Only accept explicitly labeled, out-of-sample lifecycle IC evidence."""
     if ic_df is None or ic_df.empty:
         return False
@@ -657,8 +664,9 @@ def _balanced_time_weights(df: pd.DataFrame) -> np.ndarray:
     return weights * (len(weights) / total) if total > 0 else np.ones(len(df), dtype=float)
 
 
-def _fit_from_forward(forward_signals: pd.DataFrame,
-                       regime: str | None = None) -> tuple[dict[str, float], dict[str, Any]]:
+def _fit_from_forward(
+    forward_signals: pd.DataFrame, regime: str | None = None
+) -> tuple[dict[str, float], dict[str, Any]]:
     """Build a research-only share-return challenger from realized P&L.
 
     `regime` filters the data to only signals from the same regime (risk_on/risk_off/neutral)
@@ -676,8 +684,7 @@ def _fit_from_forward(forward_signals: pd.DataFrame,
         df = df[df["regime"] == regime]
     df = df.dropna(subset=[target_col])
     history = _forward_history_stats(df, target_col)
-    if (history["samples"] < MIN_ADAPTIVE_SAMPLES
-            or history["unique_days"] < MIN_ADAPTIVE_DAYS):
+    if history["samples"] < MIN_ADAPTIVE_SAMPLES or history["unique_days"] < MIN_ADAPTIVE_DAYS:
         return {}, {
             "reason": "insufficient_walk_forward_history",
             "n": history["samples"],
@@ -710,32 +717,39 @@ def _fit_from_forward(forward_signals: pd.DataFrame,
     # Try Huber first (robust to outliers), fall back to LassoCV
     try:
         from sklearn.linear_model import HuberRegressor
+
         model = HuberRegressor(epsilon=1.35, max_iter=200).fit(X, y, sample_weight=sw)
         coefs = dict(zip(Z_COLS, model.coef_.astype(float), strict=True))
-        meta.update({
-            "reason": "huber_with_time_decay",
-            "intercept": float(model.intercept_),
-            "scale": float(model.scale_),
-        })
-        log.info("Huber refit from %d signals (half-life 30d, regime=%s)",
-                 len(df), regime or "all")
+        meta.update(
+            {
+                "reason": "huber_with_time_decay",
+                "intercept": float(model.intercept_),
+                "scale": float(model.scale_),
+            }
+        )
+        log.info("Huber refit from %d signals (half-life 30d, regime=%s)", len(df), regime or "all")
         return coefs, meta
     except Exception as e:
         log.debug("Huber failed (%s), falling back to LassoCV", e)
 
     try:
         from sklearn.linear_model import LassoCV
-        model = LassoCV(cv=min(5, len(df) // 10), max_iter=5000,
-                        random_state=42).fit(X, y, sample_weight=sw)
+
+        model = LassoCV(cv=min(5, len(df) // 10), max_iter=5000, random_state=42).fit(
+            X, y, sample_weight=sw
+        )
         coefs = dict(zip(Z_COLS, model.coef_.astype(float), strict=True))
-        meta.update({
-            "reason": "lasso_with_time_decay",
-            "alpha": float(model.alpha_),
-            "intercept": float(model.intercept_),
-            "r2": float(model.score(X, y)),
-        })
-        log.info("LassoCV refit from %d signals (half-life 30d, regime=%s)",
-                 len(df), regime or "all")
+        meta.update(
+            {
+                "reason": "lasso_with_time_decay",
+                "alpha": float(model.alpha_),
+                "intercept": float(model.intercept_),
+                "r2": float(model.score(X, y)),
+            }
+        )
+        log.info(
+            "LassoCV refit from %d signals (half-life 30d, regime=%s)", len(df), regime or "all"
+        )
         return coefs, meta
     except Exception as e:
         return {}, {"reason": f"fit_error: {e}"}
@@ -842,7 +856,9 @@ def predict_returns(
     return pd.Series(M @ w, index=ranked.index)
 
 
-def add_predictions_to_options(ranked: pd.DataFrame, coefs: dict[str, float] = None) -> pd.DataFrame:
+def add_predictions_to_options(
+    ranked: pd.DataFrame, coefs: dict[str, float] = None
+) -> pd.DataFrame:
     """Attach pred_stock_return_pct and pred_option_return_pct columns."""
     if ranked is None or ranked.empty:
         return ranked
@@ -869,9 +885,11 @@ def add_predictions_to_shares(ranked: pd.DataFrame, coefs: dict[str, float] = No
 
 
 # -------- Auto-retrain SIGNAL_WEIGHTS --------------------------------
-def _has_enough_history_for_lasso(forward_signals: pd.DataFrame,
-                                    min_samples: int = MIN_ADAPTIVE_SAMPLES,
-                                    min_unique_days: int = MIN_ADAPTIVE_DAYS) -> bool:
+def _has_enough_history_for_lasso(
+    forward_signals: pd.DataFrame,
+    min_samples: int = MIN_ADAPTIVE_SAMPLES,
+    min_unique_days: int = MIN_ADAPTIVE_DAYS,
+) -> bool:
     """v20.7 — walk-forward validation guard.
 
     A Lasso refit on a small / single-day sample overfits the one weird day
@@ -886,11 +904,13 @@ def _has_enough_history_for_lasso(forward_signals: pd.DataFrame,
     return history["samples"] >= min_samples and history["unique_days"] >= min_unique_days
 
 
-def _rolling_forward_ic_weights(forward_signals: pd.DataFrame,
-                                baseline: dict[str, float],
-                                lookback_days: int = 90,
-                                min_samples: int = MIN_ADAPTIVE_SAMPLES,
-                                min_unique_days: int = MIN_ADAPTIVE_DAYS) -> dict[str, float] | None:
+def _rolling_forward_ic_weights(
+    forward_signals: pd.DataFrame,
+    baseline: dict[str, float],
+    lookback_days: int = 90,
+    min_samples: int = MIN_ADAPTIVE_SAMPLES,
+    min_unique_days: int = MIN_ADAPTIVE_DAYS,
+) -> dict[str, float] | None:
     """Reweight factors from rolling forward IC before trusting full Lasso."""
     if forward_signals is None or forward_signals.empty:
         return None
@@ -934,8 +954,12 @@ def _rolling_forward_ic_weights(forward_signals: pd.DataFrame,
     weights = _normalize_and_cap_weights(raw)
     if not weights:
         return None
-    log.info("rolling %dd IC weights from %d forward samples; strongest=%s",
-             lookback_days, len(df), max(weights, key=weights.get))
+    log.info(
+        "rolling %dd IC weights from %d forward samples; strongest=%s",
+        lookback_days,
+        len(df),
+        max(weights, key=weights.get),
+    )
     return weights
 
 
@@ -967,9 +991,9 @@ def _configured_signal_weights() -> dict[str, float]:
     return {key: 1.0 for key in SIGNAL_TO_ZCOL}
 
 
-def _normalize_and_cap_weights(weights: dict[str, float],
-                               max_weight: float = MAX_RUNTIME_FACTOR_WEIGHT
-                               ) -> dict[str, float]:
+def _normalize_and_cap_weights(
+    weights: dict[str, float], max_weight: float = MAX_RUNTIME_FACTOR_WEIGHT
+) -> dict[str, float]:
     """Normalize non-negative weights and redistribute mass above a hard cap."""
     clean: dict[str, float] = {}
     for key, value in weights.items():
@@ -995,10 +1019,7 @@ def _normalize_and_cap_weights(weights: dict[str, float],
             equal = remaining_mass / len(active)
             result.update({key: equal for key in active})
             break
-        scaled = {
-            key: remaining_mass * normalized[key] / active_total
-            for key in active
-        }
+        scaled = {key: remaining_mass * normalized[key] / active_total for key in active}
         over = [key for key, value in scaled.items() if value > max_weight + 1e-12]
         if not over:
             result.update(scaled)
@@ -1020,9 +1041,9 @@ def _normalize_and_cap_weights(weights: dict[str, float],
     return result
 
 
-def _normalize_to_signal_weights(z_weights: dict[str, float],
-                                 baseline: dict[str, float] | None = None
-                                 ) -> dict[str, float]:
+def _normalize_to_signal_weights(
+    z_weights: dict[str, float], baseline: dict[str, float] | None = None
+) -> dict[str, float]:
     """Shrink learned positive factor weights toward the configured priors."""
     priors = _normalize_and_cap_weights(baseline or _configured_signal_weights())
     if not priors:
@@ -1044,20 +1065,19 @@ def _normalize_to_signal_weights(z_weights: dict[str, float],
     mapped = [key for key in priors if key in SIGNAL_TO_ZCOL]
     mapped_budget = sum(priors[key] for key in mapped)
     learned_distribution = {
-        key: mapped_budget * learned.get(key, 0.0) / learned_total
-        for key in mapped
+        key: mapped_budget * learned.get(key, 0.0) / learned_total for key in mapped
     }
     blended = dict(priors)
     for key in mapped:
-        blended[key] = (
-            (1.0 - ADAPTIVE_WEIGHT_BLEND) * priors[key]
-            + ADAPTIVE_WEIGHT_BLEND * learned_distribution[key]
-        )
+        blended[key] = (1.0 - ADAPTIVE_WEIGHT_BLEND) * priors[
+            key
+        ] + ADAPTIVE_WEIGHT_BLEND * learned_distribution[key]
     return _normalize_and_cap_weights(blended)
 
 
-def _walk_forward_splits(df: pd.DataFrame, max_splits: int = 5,
-                         min_train_days: int = 5) -> list[tuple[np.ndarray, np.ndarray]]:
+def _walk_forward_splits(
+    df: pd.DataFrame, max_splits: int = 5, min_train_days: int = 5
+) -> list[tuple[np.ndarray, np.ndarray]]:
     entry_time = pd.to_datetime(df["entry_time"], errors="coerce", utc=True)
     days = entry_time.dt.date
     unique_days = sorted(day for day in days.dropna().unique())
@@ -1073,10 +1093,11 @@ def _walk_forward_splits(df: pd.DataFrame, max_splits: int = 5,
     return splits
 
 
-def update_runtime_weights(forward_signals: pd.DataFrame = None,
-                           ic_df: pd.DataFrame = None,
-                           min_samples: int = MIN_ADAPTIVE_SAMPLES
-                           ) -> dict[str, float] | None:
+def update_runtime_weights(
+    forward_signals: pd.DataFrame = None,
+    ic_df: pd.DataFrame = None,
+    min_samples: int = MIN_ADAPTIVE_SAMPLES,
+) -> dict[str, float] | None:
     """Build a research-only weight challenger without persisting or activating it."""
     baseline = _normalize_and_cap_weights(_configured_signal_weights())
 
@@ -1091,13 +1112,14 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
             log.warning("adaptive-weight guard: missing after-cost target")
             return None
         history = _forward_history_stats(df, target_col)
-        if (history["samples"] < min_samples
-                or history["unique_days"] < MIN_ADAPTIVE_DAYS):
+        if history["samples"] < min_samples or history["unique_days"] < MIN_ADAPTIVE_DAYS:
             log.warning(
                 "adaptive-weight guard: %d independent outcomes across %d entry days; "
                 "need %d across %d days, keeping configured priors",
-                history["samples"], history["unique_days"],
-                min_samples, MIN_ADAPTIVE_DAYS,
+                history["samples"],
+                history["unique_days"],
+                min_samples,
+                MIN_ADAPTIVE_DAYS,
             )
             return None
 
@@ -1125,14 +1147,13 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
             ).fit(x_values, y_values, sample_weight=_balanced_time_weights(df))
             positive_coef = np.maximum(model.coef_.astype(float), 0.0)
             if positive_coef.sum() > 0:
-                z_to_weight = dict(
-                    zip(Z_COLS, positive_coef / positive_coef.sum(), strict=True)
-                )
+                z_to_weight = dict(zip(Z_COLS, positive_coef / positive_coef.sum(), strict=True))
                 weight_map = _normalize_to_signal_weights(z_to_weight, baseline)
                 log.info(
                     "shadow adaptive weights built from %d independent outcomes across %d days; "
                     "ordinary scans cannot persist or activate them",
-                    history["samples"], history["unique_days"],
+                    history["samples"],
+                    history["unique_days"],
                 )
                 return weight_map
         except Exception as exc:
@@ -1160,7 +1181,9 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
     # correlated with already-realized returns are not walk-forward evidence.
     if not _ic_frame_is_reliable(ic_df, min_samples, MIN_ADAPTIVE_DAYS):
         if ic_df is not None and not ic_df.empty:
-            log.warning("cached IC is not independent lifecycle evidence; keeping configured priors")
+            log.warning(
+                "cached IC is not independent lifecycle evidence; keeping configured priors"
+            )
         return None
 
     adjusted = dict(baseline)
@@ -1182,13 +1205,15 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
             multiplier = 1.0
         adjusted[signal] *= multiplier
     adjusted = _normalize_and_cap_weights(adjusted)
-    blended = _normalize_and_cap_weights({
-        key: (
-            (1.0 - ADAPTIVE_WEIGHT_BLEND) * baseline.get(key, 0.0)
-            + ADAPTIVE_WEIGHT_BLEND * adjusted.get(key, 0.0)
-        )
-        for key in baseline
-    })
+    blended = _normalize_and_cap_weights(
+        {
+            key: (
+                (1.0 - ADAPTIVE_WEIGHT_BLEND) * baseline.get(key, 0.0)
+                + ADAPTIVE_WEIGHT_BLEND * adjusted.get(key, 0.0)
+            )
+            for key in baseline
+        }
+    )
     sample_count = int(pd.to_numeric(ic_df["n"], errors="coerce").min())
     unique_days = int(pd.to_numeric(ic_df["trading_days"], errors="coerce").min())
     log.info(
@@ -1199,16 +1224,19 @@ def update_runtime_weights(forward_signals: pd.DataFrame = None,
     return blended
 
 
-def _persist_runtime_weights(weights: dict[str, float], source: str = "auto",
-                             sample_count: int = 0, unique_days: int = 0,
-                             path: Path | None = None,
-                             generated_at: datetime | None = None,
-                             latest_outcome_at: datetime | None = None) -> None:
+def _persist_runtime_weights(
+    weights: dict[str, float],
+    source: str = "auto",
+    sample_count: int = 0,
+    unique_days: int = 0,
+    path: Path | None = None,
+    generated_at: datetime | None = None,
+    latest_outcome_at: datetime | None = None,
+) -> None:
     """Persist a research shadow that can never be mistaken for a champion."""
     destination = Path(path) if path is not None else RUNTIME_CONFIG_PATH
     normalized = {
-        key: float(f"{value:.10f}")
-        for key, value in _normalize_and_cap_weights(weights).items()
+        key: float(f"{value:.10f}") for key, value in _normalize_and_cap_weights(weights).items()
     }
     timestamp = generated_at or datetime.now(UTC)
     if timestamp.tzinfo is None:
@@ -1285,9 +1313,7 @@ def runtime_weight_status(
         status["reasons"] = ["runtime file not found"]
         return status
     try:
-        assignments = _literal_assignments(
-            source_path, {"SIGNAL_WEIGHTS", "RUNTIME_WEIGHT_META"}
-        )
+        assignments = _literal_assignments(source_path, {"SIGNAL_WEIGHTS", "RUNTIME_WEIGHT_META"})
     except Exception as exc:
         status["reasons"] = [f"malformed runtime file: {exc}"]
         return status
@@ -1376,9 +1402,7 @@ def runtime_weight_status(
             f"only {sample_count} independent outcomes; need {MIN_ADAPTIVE_SAMPLES}"
         )
     if unique_days < MIN_PROMOTION_ENTRY_DAYS:
-        status["reasons"].append(
-            f"only {unique_days} entry days; need {MIN_PROMOTION_ENTRY_DAYS}"
-        )
+        status["reasons"].append(f"only {unique_days} entry days; need {MIN_PROMOTION_ENTRY_DAYS}")
 
     generated_at = _utc_timestamp(meta.get("promoted_at") or meta.get("generated_at"))
     if generated_at is not None:
@@ -1386,8 +1410,7 @@ def runtime_weight_status(
         status["age_days"] = age_days
         if age_days > RUNTIME_WEIGHT_MAX_AGE_DAYS:
             status["reasons"].append(
-                f"runtime weights are {age_days:.1f} days old; "
-                f"max is {RUNTIME_WEIGHT_MAX_AGE_DAYS}"
+                f"runtime weights are {age_days:.1f} days old; max is {RUNTIME_WEIGHT_MAX_AGE_DAYS}"
             )
         elif age_days < -1.0:
             status["reasons"].append("runtime timestamp is in the future")
@@ -1402,10 +1425,7 @@ def runtime_weight_status(
         if not _is_sha256(source.get(key)):
             status["reasons"].append(f"runtime source {key} is invalid")
     expected_policy = _current_policy_digest()
-    if (
-        expected_policy is None
-        or str(source.get("policy_digest_sha256") or "") != expected_policy
-    ):
+    if expected_policy is None or str(source.get("policy_digest_sha256") or "") != expected_policy:
         status["reasons"].append("runtime source policy digest is not current")
     latest_outcome_at = _utc_timestamp(source.get("latest_outcome_at"))
     if latest_outcome_at is not None:
@@ -1469,9 +1489,7 @@ def runtime_weight_status(
             if stress_mean is None or stress_mean <= 0:
                 status["reasons"].append(f"runtime OOS {asset} 2x-cost mean must be positive")
             if prediction_count is None or prediction_count < MIN_ADAPTIVE_SAMPLES:
-                status["reasons"].append(
-                    f"runtime OOS {asset} prediction count is insufficient"
-                )
+                status["reasons"].append(f"runtime OOS {asset} prediction count is insufficient")
 
     content_digest = str(meta.get("content_digest_sha256") or "")
     try:

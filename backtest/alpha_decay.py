@@ -11,10 +11,11 @@ cannot promote weights, clear Edge Lab, or authorize live review.
 ``write_alpha_decay`` can persist a labeled local artifact for explicit
 inspection. No current dashboard or execution gate consumes that artifact.
 """
+
 from __future__ import annotations
+
 import logging
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 
@@ -26,10 +27,26 @@ ELIGIBLE_FOR_MODEL_PROMOTION = False
 ELIGIBLE_FOR_LIVE_REVIEW = False
 
 FACTOR_COLS = [
-    "z_mispricing", "z_iv_rank", "z_sent", "z_fund", "z_insider", "z_macro",
-    "z_news", "z_earnings", "z_value", "z_congress", "z_social", "z_analyst",
-    "z_uoa", "z_sector_rs", "z_dark_pool", "z_fda", "z_sector_flow",
-    "z_short_int", "z_put_call", "z_iv_surface",
+    "z_mispricing",
+    "z_iv_rank",
+    "z_sent",
+    "z_fund",
+    "z_insider",
+    "z_macro",
+    "z_news",
+    "z_earnings",
+    "z_value",
+    "z_congress",
+    "z_social",
+    "z_analyst",
+    "z_uoa",
+    "z_sector_rs",
+    "z_dark_pool",
+    "z_fda",
+    "z_sector_flow",
+    "z_short_int",
+    "z_put_call",
+    "z_iv_surface",
 ]
 
 
@@ -53,7 +70,7 @@ def _safe_corr(x: pd.Series, y: pd.Series) -> float:
         return float("nan")
 
 
-def compute_alpha_decay(signals_df: pd.DataFrame, horizons: List[int] = None) -> pd.DataFrame:
+def compute_alpha_decay(signals_df: pd.DataFrame, horizons: list[int] = None) -> pd.DataFrame:
     """For each factor + horizon, compute IC vs realised return at that horizon."""
     if horizons is None:
         horizons = [1, 3, 7, 14, 30]

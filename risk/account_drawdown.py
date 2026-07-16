@@ -6,6 +6,7 @@ already-normalized, read-only broker snapshots into pseudonymous chained equity
 observations, validates those chains, and evaluates a versioned capital-
 preservation policy for manual review.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -102,10 +103,7 @@ def _clean_account_key(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     key = value.strip()
-    if (
-        key != value
-        or re.fullmatch(r"acct_[0-9a-f]{16}", key) is None
-    ):
+    if key != value or re.fullmatch(r"acct_[0-9a-f]{16}", key) is None:
         return ""
     return key
 
@@ -154,9 +152,7 @@ def _snapshot_observation_fields(
     if not isinstance(accounts, list):
         raise ValueError("broker snapshot accounts are missing")
     matches = [
-        row
-        for row in accounts
-        if isinstance(row, Mapping) and row.get("account_key") == clean_key
+        row for row in accounts if isinstance(row, Mapping) and row.get("account_key") == clean_key
     ]
     if len(matches) != 1:
         raise ValueError("account_key must identify exactly one normalized broker account")
@@ -194,9 +190,7 @@ def eligible_snapshot_account_keys(snapshot: Mapping[str, Any] | Any) -> list[st
         key = _clean_account_key(row.get("account_key"))
         portfolio = row.get("portfolio")
         equity = (
-            _finite_number(portfolio.get("total_value"))
-            if isinstance(portfolio, Mapping)
-            else None
+            _finite_number(portfolio.get("total_value")) if isinstance(portfolio, Mapping) else None
         )
         if key and equity is not None and equity > 0 and key not in eligible:
             eligible.append(key)
@@ -323,8 +317,7 @@ def append_snapshot_observation(
         validation = validate_equity_ledger(ledger)
         if validation.get("valid") is not True:
             raise ValueError(
-                "existing equity ledger is unsafe: "
-                + "; ".join(validation.get("blockers") or [])
+                "existing equity ledger is unsafe: " + "; ".join(validation.get("blockers") or [])
             )
         out = deepcopy(dict(ledger))
     if out.get("account_key") != fields["account_key"]:
@@ -501,14 +494,8 @@ def evaluate_account_drawdown(
         if latest_time is not None and baseline_started_at is not None
         else None
     )
-    baseline_ny_dates = {
-        observed_at.astimezone(NEW_YORK).date()
-        for observed_at, _ in parsed_rows
-    }
-    if (
-        baseline_span_hours is None
-        or baseline_span_hours < MIN_BASELINE_SPAN_HOURS - 1e-12
-    ):
+    baseline_ny_dates = {observed_at.astimezone(NEW_YORK).date() for observed_at, _ in parsed_rows}
+    if baseline_span_hours is None or baseline_span_hours < MIN_BASELINE_SPAN_HOURS - 1e-12:
         blockers.append(
             "Account drawdown baseline must span at least 18 hours before new entries are allowed."
         )
@@ -592,9 +579,7 @@ def evaluate_account_drawdown(
         "asof": latest.get("observed_at") if isinstance(latest, Mapping) else None,
         "observation_count": len(observations),
         "baseline_started_at": (
-            _timestamp_text(baseline_started_at)
-            if baseline_started_at is not None
-            else None
+            _timestamp_text(baseline_started_at) if baseline_started_at is not None else None
         ),
         "baseline_span_hours": (
             _ratio(baseline_span_hours) if baseline_span_hours is not None else None
@@ -610,9 +595,7 @@ def evaluate_account_drawdown(
         "ny_session_loss_fraction": _ratio(session_loss) if session_loss is not None else None,
         "risk_multiplier": risk_multiplier,
         "source_snapshot_digest_sha256": (
-            latest.get("source_snapshot_digest_sha256")
-            if isinstance(latest, Mapping)
-            else None
+            latest.get("source_snapshot_digest_sha256") if isinstance(latest, Mapping) else None
         ),
         "ledger_digest_sha256": validation.get("ledger_digest_sha256"),
         "blockers": blockers,

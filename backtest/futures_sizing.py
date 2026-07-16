@@ -1,26 +1,105 @@
 # Purpose: Risk-based futures sizing with micro-contract preference.
 """Risk-based futures sizing with micro-contract preference."""
+
 from __future__ import annotations
 
 import math
-from typing import Any, Dict
+from typing import Any
 
 import pandas as pd
 
-FUTURES_SPECS: Dict[str, Dict[str, Any]] = {
-    "ES=F": {"contract": "/ES", "micro_contract": "/MES", "point_value": 50, "micro_point_value": 5, "spec_confidence": "high"},
-    "NQ=F": {"contract": "/NQ", "micro_contract": "/MNQ", "point_value": 20, "micro_point_value": 2, "spec_confidence": "high"},
-    "YM=F": {"contract": "/YM", "micro_contract": "/MYM", "point_value": 5, "micro_point_value": 0.5, "spec_confidence": "high"},
-    "RTY=F": {"contract": "/RTY", "micro_contract": "/M2K", "point_value": 50, "micro_point_value": 5, "spec_confidence": "high"},
-    "GC=F": {"contract": "/GC", "micro_contract": "/MGC", "point_value": 100, "micro_point_value": 10, "spec_confidence": "high"},
-    "SI=F": {"contract": "/SI", "micro_contract": None, "point_value": 5000, "micro_point_value": None, "spec_confidence": "low"},
-    "CL=F": {"contract": "/CL", "micro_contract": "/MCL", "point_value": 1000, "micro_point_value": 100, "spec_confidence": "high"},
-    "NG=F": {"contract": "/NG", "micro_contract": None, "point_value": 10000, "micro_point_value": None, "spec_confidence": "low"},
-    "ZB=F": {"contract": "/ZB", "micro_contract": None, "point_value": 1000, "micro_point_value": None, "spec_confidence": "low"},
-    "ZN=F": {"contract": "/ZN", "micro_contract": None, "point_value": 1000, "micro_point_value": None, "spec_confidence": "low"},
-    "DX=F": {"contract": "/DX", "micro_contract": None, "point_value": 1000, "micro_point_value": None, "spec_confidence": "low"},
-    "BTC=F": {"contract": "/BTC", "micro_contract": "/MBT", "point_value": 5, "micro_point_value": 0.1, "spec_confidence": "low"},
-    "ETH=F": {"contract": "/ETH", "micro_contract": "/MET", "point_value": 50, "micro_point_value": 0.1, "spec_confidence": "low"},
+FUTURES_SPECS: dict[str, dict[str, Any]] = {
+    "ES=F": {
+        "contract": "/ES",
+        "micro_contract": "/MES",
+        "point_value": 50,
+        "micro_point_value": 5,
+        "spec_confidence": "high",
+    },
+    "NQ=F": {
+        "contract": "/NQ",
+        "micro_contract": "/MNQ",
+        "point_value": 20,
+        "micro_point_value": 2,
+        "spec_confidence": "high",
+    },
+    "YM=F": {
+        "contract": "/YM",
+        "micro_contract": "/MYM",
+        "point_value": 5,
+        "micro_point_value": 0.5,
+        "spec_confidence": "high",
+    },
+    "RTY=F": {
+        "contract": "/RTY",
+        "micro_contract": "/M2K",
+        "point_value": 50,
+        "micro_point_value": 5,
+        "spec_confidence": "high",
+    },
+    "GC=F": {
+        "contract": "/GC",
+        "micro_contract": "/MGC",
+        "point_value": 100,
+        "micro_point_value": 10,
+        "spec_confidence": "high",
+    },
+    "SI=F": {
+        "contract": "/SI",
+        "micro_contract": None,
+        "point_value": 5000,
+        "micro_point_value": None,
+        "spec_confidence": "low",
+    },
+    "CL=F": {
+        "contract": "/CL",
+        "micro_contract": "/MCL",
+        "point_value": 1000,
+        "micro_point_value": 100,
+        "spec_confidence": "high",
+    },
+    "NG=F": {
+        "contract": "/NG",
+        "micro_contract": None,
+        "point_value": 10000,
+        "micro_point_value": None,
+        "spec_confidence": "low",
+    },
+    "ZB=F": {
+        "contract": "/ZB",
+        "micro_contract": None,
+        "point_value": 1000,
+        "micro_point_value": None,
+        "spec_confidence": "low",
+    },
+    "ZN=F": {
+        "contract": "/ZN",
+        "micro_contract": None,
+        "point_value": 1000,
+        "micro_point_value": None,
+        "spec_confidence": "low",
+    },
+    "DX=F": {
+        "contract": "/DX",
+        "micro_contract": None,
+        "point_value": 1000,
+        "micro_point_value": None,
+        "spec_confidence": "low",
+    },
+    "BTC=F": {
+        "contract": "/BTC",
+        "micro_contract": "/MBT",
+        "point_value": 5,
+        "micro_point_value": 0.1,
+        "spec_confidence": "low",
+    },
+    "ETH=F": {
+        "contract": "/ETH",
+        "micro_contract": "/MET",
+        "point_value": 50,
+        "micro_point_value": 0.1,
+        "spec_confidence": "low",
+    },
 }
 
 
@@ -49,8 +128,9 @@ def _atr_like(row: pd.Series) -> float:
     return max(spot * 0.01, 0.01)
 
 
-def compute_futures_ev_and_sizing(row: pd.Series, bankroll: float = 10000,
-                                  aggressive: bool = False) -> Dict[str, Any]:
+def compute_futures_ev_and_sizing(
+    row: pd.Series, bankroll: float = 10000, aggressive: bool = False
+) -> dict[str, Any]:
     score = float(row.get("futures_score") or 0)
     threshold = 0.30
     if score > threshold:
@@ -104,17 +184,22 @@ def compute_futures_ev_and_sizing(row: pd.Series, bankroll: float = 10000,
         "reward_risk_ratio": reward / risk if risk > 0 else None,
         "suggested_contracts": int(contracts),
         "suggested_dollars_risk": risk_per * contracts if risk_per else 0,
-        "trade_status": "Trade" if actionable else ("Watch" if direction in {"long", "short"} else "Skip"),
+        "trade_status": "Trade"
+        if actionable
+        else ("Watch" if direction in {"long", "short"} else "Skip"),
         "is_actionable": bool(actionable),
         "spec_confidence": spec.get("spec_confidence", "low"),
     }
 
 
-def add_sizing_to_futures(df: pd.DataFrame, bankroll: float = 10000,
-                          aggressive: bool = False) -> pd.DataFrame:
+def add_sizing_to_futures(
+    df: pd.DataFrame, bankroll: float = 10000, aggressive: bool = False
+) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     out = df.copy()
-    rows = [compute_futures_ev_and_sizing(r, bankroll=bankroll, aggressive=aggressive)
-            for _, r in out.iterrows()]
+    rows = [
+        compute_futures_ev_and_sizing(r, bankroll=bankroll, aggressive=aggressive)
+        for _, r in out.iterrows()
+    ]
     return pd.concat([out.reset_index(drop=True), pd.DataFrame(rows)], axis=1)

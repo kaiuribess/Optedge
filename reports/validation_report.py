@@ -11,6 +11,7 @@ instead of being inferred. Run with:
 
     python reports/validation_report.py
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,9 +24,10 @@ import random
 import struct
 import sys
 import zlib
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -50,7 +52,7 @@ MAX_EQUITY_ALLOCATION_PCT = 0.10
 EQUITY_RETURN_MODE = "normalized_signal_allocation"
 
 
-def _latest_archive_cutoff() -> Optional[pd.Timestamp]:
+def _latest_archive_cutoff() -> pd.Timestamp | None:
     """Use the latest archive/reset as the active experiment boundary.
 
     Adaptive model files are updated during scans, so their mtimes can move
@@ -67,7 +69,7 @@ def _latest_archive_cutoff() -> Optional[pd.Timestamp]:
     return pd.Timestamp(latest.stat().st_mtime, unit="s", tz="UTC")
 
 
-def _current_scope_cutoff() -> Optional[pd.Timestamp]:
+def _current_scope_cutoff() -> pd.Timestamp | None:
     """Return only a deliberate experiment/reset boundary.
 
     Runtime weights, pricing-model weights, and predictor coefficients are
@@ -77,7 +79,7 @@ def _current_scope_cutoff() -> Optional[pd.Timestamp]:
     return _latest_archive_cutoff()
 
 
-def _existing_total_signals() -> Optional[int]:
+def _existing_total_signals() -> int | None:
     summary_path = DATA_DIR / "validation_summary.json"
     if not summary_path.exists():
         return None
@@ -88,13 +90,15 @@ def _existing_total_signals() -> Optional[int]:
         return None
 
 
-def _filter_since(df: pd.DataFrame, since: Optional[pd.Timestamp], date_col: str = "entry_time") -> pd.DataFrame:
+def _filter_since(
+    df: pd.DataFrame, since: pd.Timestamp | None, date_col: str = "entry_time"
+) -> pd.DataFrame:
     if df is None or df.empty or since is None or pd.isna(since) or date_col not in df.columns:
         return df
     return df[pd.to_datetime(df[date_col], errors="coerce", utc=True) >= since].copy()
 
 
-def _filter_logs_for_scope(logs: pd.DataFrame, cutoff: Optional[pd.Timestamp]) -> pd.DataFrame:
+def _filter_logs_for_scope(logs: pd.DataFrame, cutoff: pd.Timestamp | None) -> pd.DataFrame:
     """Filter signal logs only when the cutoff does not erase active run data.
 
     Adaptive files such as model_weights.json are updated during each scan. If
@@ -103,7 +107,13 @@ def _filter_logs_for_scope(logs: pd.DataFrame, cutoff: Optional[pd.Timestamp]) -
     signals it just produced. Closed positions can still be filtered by model
     era; logs represent the active, unarchived experiment folder.
     """
-    if logs is None or logs.empty or cutoff is None or pd.isna(cutoff) or "entry_time" not in logs.columns:
+    if (
+        logs is None
+        or logs.empty
+        or cutoff is None
+        or pd.isna(cutoff)
+        or "entry_time" not in logs.columns
+    ):
         return logs
     filtered = _filter_since(logs, cutoff)
     if not filtered.empty:
@@ -116,7 +126,7 @@ def _filter_logs_for_scope(logs: pd.DataFrame, cutoff: Optional[pd.Timestamp]) -
     return filtered
 
 
-def _read_json_rows(path: Path) -> List[Dict[str, Any]]:
+def _read_json_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
@@ -126,7 +136,7 @@ def _read_json_rows(path: Path) -> List[Dict[str, Any]]:
         return []
 
 
-def _read_json_object(path: Path) -> Dict[str, Any]:
+def _read_json_object(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
@@ -172,7 +182,7 @@ def load_signal_logs() -> pd.DataFrame:
     return out
 
 
-def load_positions() -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_positions() -> tuple[pd.DataFrame, pd.DataFrame]:
     open_frames = []
     closed_frames = []
     for asset, open_name, closed_name in [
@@ -188,8 +198,12 @@ def load_positions() -> Tuple[pd.DataFrame, pd.DataFrame]:
         if not closed_part.empty:
             closed_part["asset"] = asset
             closed_frames.append(closed_part)
-    open_df = pd.concat(open_frames, ignore_index=True, sort=False) if open_frames else pd.DataFrame()
-    closed_df = pd.concat(closed_frames, ignore_index=True, sort=False) if closed_frames else pd.DataFrame()
+    open_df = (
+        pd.concat(open_frames, ignore_index=True, sort=False) if open_frames else pd.DataFrame()
+    )
+    closed_df = (
+        pd.concat(closed_frames, ignore_index=True, sort=False) if closed_frames else pd.DataFrame()
+    )
     for df in (open_df, closed_df):
         if not df.empty:
             for col in ("entry_time", "exit_time"):
@@ -219,13 +233,13 @@ def _validation_eligible_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[_validation_eligible_mask(df)].copy()
 
 
-def _fmt_pct(v: Optional[float]) -> str:
+def _fmt_pct(v: float | None) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/a"
     return f"{v * 100:+.2f}%"
 
 
-def _fmt(v: Optional[float], digits: int = 2) -> str:
+def _fmt(v: float | None, digits: int = 2) -> str:
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return "n/a"
     return f"{v:.{digits}f}"
@@ -256,7 +270,7 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
-def _profit_factor(returns: pd.Series) -> Optional[float]:
+def _profit_factor(returns: pd.Series) -> float | None:
     r = _num(returns).dropna()
     if r.empty:
         return None
@@ -267,7 +281,7 @@ def _profit_factor(returns: pd.Series) -> Optional[float]:
     return gross_profit / gross_loss
 
 
-def _max_drawdown(returns: pd.Series) -> Optional[float]:
+def _max_drawdown(returns: pd.Series) -> float | None:
     r = _num(returns).dropna()
     if r.empty:
         return None
@@ -295,11 +309,15 @@ def _allocation_series(df: pd.DataFrame) -> pd.Series:
         dollars = pd.to_numeric(df["suggested_dollars"], errors="coerce")
         bankroll = pd.to_numeric(df.get("bankroll", pd.Series(np.nan, index=idx)), errors="coerce")
         dollar_alloc = dollars / bankroll.where(bankroll > 0)
-        allocation = allocation.where(~((dollar_alloc > 0) & np.isfinite(dollar_alloc)), dollar_alloc)
+        allocation = allocation.where(
+            ~((dollar_alloc > 0) & np.isfinite(dollar_alloc)), dollar_alloc
+        )
     if "portfolio_weight" in df.columns:
         weight = pd.to_numeric(df["portfolio_weight"], errors="coerce")
         allocation = allocation.where(~((weight > 0) & np.isfinite(weight)), weight)
-    return allocation.clip(lower=0.0, upper=MAX_EQUITY_ALLOCATION_PCT).fillna(DEFAULT_EQUITY_ALLOCATION_PCT)
+    return allocation.clip(lower=0.0, upper=MAX_EQUITY_ALLOCATION_PCT).fillna(
+        DEFAULT_EQUITY_ALLOCATION_PCT
+    )
 
 
 def _equity_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -> pd.Series:
@@ -359,7 +377,7 @@ def _equity_curve_return_series(df: pd.DataFrame, return_col: str = "pnl_pct") -
     return contributions
 
 
-def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
+def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> dict[str, Any]:
     if df is None or df.empty or return_col not in df.columns:
         return {
             "n": 0,
@@ -393,7 +411,7 @@ def _stats(df: pd.DataFrame, return_col: str = "pnl_pct") -> Dict[str, Any]:
     }
 
 
-def _bucket_label(v: Any, buckets: List[Tuple[float, float, str]]) -> str:
+def _bucket_label(v: Any, buckets: list[tuple[float, float, str]]) -> str:
     try:
         x = float(v)
     except Exception:
@@ -406,7 +424,9 @@ def _bucket_label(v: Any, buckets: List[Tuple[float, float, str]]) -> str:
     return buckets[-1][2]
 
 
-def _bucket_performance(df: pd.DataFrame, source_col: str, buckets: List[Tuple[float, float, str]]) -> List[Dict[str, Any]]:
+def _bucket_performance(
+    df: pd.DataFrame, source_col: str, buckets: list[tuple[float, float, str]]
+) -> list[dict[str, Any]]:
     df = _validation_eligible_rows(df)
     if df.empty or source_col not in df.columns:
         return [{"bucket": "Unavailable", **_stats(pd.DataFrame())}]
@@ -420,8 +440,9 @@ def _bucket_performance(df: pd.DataFrame, source_col: str, buckets: List[Tuple[f
     return sorted(rows, key=lambda r: r["bucket"])
 
 
-def _factor_ic(closed: pd.DataFrame, min_n: int = 5,
-               min_reliable_n: int = 100, min_reliable_days: int = 10) -> List[Dict[str, Any]]:
+def _factor_ic(
+    closed: pd.DataFrame, min_n: int = 5, min_reliable_n: int = 100, min_reliable_days: int = 10
+) -> list[dict[str, Any]]:
     """Per-factor information coefficient from closed positions.
 
     The position tracker now preserves factor z-columns at entry, so each
@@ -445,7 +466,8 @@ def _factor_ic(closed: pd.DataFrame, min_n: int = 5,
             continue
         trading_days = (
             int(pd.to_datetime(sub["entry_time"], errors="coerce", utc=True).dt.date.nunique())
-            if "entry_time" in sub.columns else 0
+            if "entry_time" in sub.columns
+            else 0
         )
         is_reliable = len(sub) >= min_reliable_n and trading_days >= min_reliable_days
         if not is_reliable:
@@ -456,20 +478,22 @@ def _factor_ic(closed: pd.DataFrame, min_n: int = 5,
             reliability = "adverse"
         else:
             reliability = "weak"
-        rows.append({
-            "factor": col.replace("z_", ""),
-            "z_col": col,
-            "n": int(len(sub)),
-            "trading_days": trading_days,
-            "ic": float(ic),
-            "avg_score": float(sub[col].mean()),
-            "reliability": reliability,
-            "is_reliable": is_reliable,
-        })
+        rows.append(
+            {
+                "factor": col.replace("z_", ""),
+                "z_col": col,
+                "n": int(len(sub)),
+                "trading_days": trading_days,
+                "ic": float(ic),
+                "avg_score": float(sub[col].mean()),
+                "reliability": reliability,
+                "is_reliable": is_reliable,
+            }
+        )
     return sorted(rows, key=lambda r: abs(r["ic"]), reverse=True)
 
 
-def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
+def _position_aging(open_df: pd.DataFrame) -> dict[str, Any]:
     if open_df is None or open_df.empty or "entry_time" not in open_df.columns:
         asset_counts = {}
         if open_df is not None and not open_df.empty and "asset" in open_df.columns:
@@ -487,7 +511,8 @@ def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
     df["age_days"] = df["age_days"].clip(lower=0)
     asset_counts = (
         df["asset"].fillna("unknown").astype(str).value_counts().to_dict()
-        if "asset" in df.columns else {}
+        if "asset" in df.columns
+        else {}
     )
     bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
     labels = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
@@ -498,14 +523,30 @@ def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
         if "unrealized_pct" in sub.columns:
             avg = pd.to_numeric(sub["unrealized_pct"], errors="coerce").mean()
             avg_unrealized = None if pd.isna(avg) else float(avg)
-        buckets.append({
-            "bucket": str(label),
-            "count": int(len(sub)),
-            "avg_unrealized_pct": avg_unrealized,
-        })
-    keep = [c for c in ("asset", "ticker", "symbol", "side", "direction", "expiry", "entry_time", "age_days",
-                        "unrealized_pct", "confidence", "trade_status")
-            if c in df.columns]
+        buckets.append(
+            {
+                "bucket": str(label),
+                "count": int(len(sub)),
+                "avg_unrealized_pct": avg_unrealized,
+            }
+        )
+    keep = [
+        c
+        for c in (
+            "asset",
+            "ticker",
+            "symbol",
+            "side",
+            "direction",
+            "expiry",
+            "entry_time",
+            "age_days",
+            "unrealized_pct",
+            "confidence",
+            "trade_status",
+        )
+        if c in df.columns
+    ]
     oldest = df.sort_values("age_days", ascending=False).head(20)[keep].to_dict(orient="records")
     return {
         "open_count": int(len(df)),
@@ -515,7 +556,7 @@ def _position_aging(open_df: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def _side_performance(closed: pd.DataFrame) -> List[Dict[str, Any]]:
+def _side_performance(closed: pd.DataFrame) -> list[dict[str, Any]]:
     closed = _validation_eligible_rows(closed)
     if closed.empty or "side" not in closed.columns:
         return []
@@ -545,7 +586,7 @@ def _closed_with_slippage(closed: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
+def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> dict[str, int]:
     if closed.empty:
         return {
             "learning_eligible_closed_positions": 0,
@@ -563,7 +604,8 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
         }
     try:
         from backtest.exit_learning import (
-            MIN_LEARNING_HOLD_HOURS, eligible_closed_for_learning,
+            MIN_LEARNING_HOLD_HOURS,
+            eligible_closed_for_learning,
             execution_eligibility_summary,
         )
 
@@ -589,13 +631,21 @@ def _learning_sample_stats(asset: str, closed: pd.DataFrame) -> Dict[str, int]:
         holding_hours = (exit_time - entry).dt.total_seconds() / 3600.0
     else:
         holding_hours = pd.Series(np.nan, index=asset_rows.index)
-    reasons = asset_rows.get("exit_reason", pd.Series("", index=asset_rows.index)).fillna("").astype(str)
-    same_scan = int((reasons.eq("dynamic_exit") & (
-        holding_hours.isna() | (holding_hours < MIN_LEARNING_HOLD_HOURS)
-    )).sum())
+    reasons = (
+        asset_rows.get("exit_reason", pd.Series("", index=asset_rows.index)).fillna("").astype(str)
+    )
+    same_scan = int(
+        (
+            reasons.eq("dynamic_exit")
+            & (holding_hours.isna() | (holding_hours < MIN_LEARNING_HOLD_HOURS))
+        ).sum()
+    )
     date_source = eligible.get("entry_time", eligible.get("exit_time", pd.Series(dtype=str)))
-    trading_days = int(pd.to_datetime(date_source, errors="coerce", utc=True).dt.date.nunique()) \
-        if not eligible.empty else 0
+    trading_days = (
+        int(pd.to_datetime(date_source, errors="coerce", utc=True).dt.date.nunique())
+        if not eligible.empty
+        else 0
+    )
     return {
         **execution_summary,
         "validation_eligible_closed_positions": int(len(validation_asset_rows)),
@@ -618,33 +668,49 @@ def _swing_eligible_sample(closed: pd.DataFrame) -> pd.DataFrame:
     try:
         from backtest.exit_learning import eligible_closed_for_learning
 
-        frames = [eligible_closed_for_learning(asset, closed) for asset in ("option", "share", "futures")]
+        frames = [
+            eligible_closed_for_learning(asset, closed) for asset in ("option", "share", "futures")
+        ]
         frames = [frame for frame in frames if not frame.empty]
         return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
 
-def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, Any]:
+def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> dict[str, Any]:
     out = {}
     reviews = _load_exit_reviews()
     policy = _exit_policy_summary()
     policies = policy.get("assets", {}) if isinstance(policy, dict) else {}
     for asset in ("option", "share", "futures"):
-        open_sub = open_df[open_df.get("asset", "") == asset] if not open_df.empty else pd.DataFrame()
-        closed_sub = closed[closed.get("asset", "") == asset] if not closed.empty else pd.DataFrame()
+        open_sub = (
+            open_df[open_df.get("asset", "") == asset] if not open_df.empty else pd.DataFrame()
+        )
+        closed_sub = (
+            closed[closed.get("asset", "") == asset] if not closed.empty else pd.DataFrame()
+        )
         eligible_closed_sub = _validation_eligible_rows(closed_sub)
-        raw_priced_count = int(_num(
-            closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index))
-        ).notna().sum()) if not closed_sub.empty else 0
-        priced_mask = _validation_eligible_mask(closed_sub) & _num(
-            closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index))
-        ).notna() if not closed_sub.empty else pd.Series(dtype=bool)
+        raw_priced_count = (
+            int(
+                _num(closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index)))
+                .notna()
+                .sum()
+            )
+            if not closed_sub.empty
+            else 0
+        )
+        priced_mask = (
+            _validation_eligible_mask(closed_sub)
+            & _num(closed_sub.get("pnl_pct", pd.Series(np.nan, index=closed_sub.index))).notna()
+            if not closed_sub.empty
+            else pd.Series(dtype=bool)
+        )
         priced_count = int(priced_mask.sum()) if not priced_mask.empty else 0
         unresolved_count = int(max(0, len(closed_sub) - priced_count))
         review_sub = (
             reviews[reviews["asset"] == asset]
-            if not reviews.empty and "asset" in reviews.columns else pd.DataFrame()
+            if not reviews.empty and "asset" in reviews.columns
+            else pd.DataFrame()
         )
         asset_policy = policies.get(asset, {}) if isinstance(policies, dict) else {}
         out[asset] = {
@@ -660,25 +726,37 @@ def _asset_breakdown(open_df: pd.DataFrame, closed: pd.DataFrame) -> Dict[str, A
             "overall": _stats(closed_sub),
             "after_slippage": _stats(closed_sub, "pnl_pct_after_slippage"),
             "exit_reasons": (
-                closed_sub.get("exit_reason", pd.Series(dtype=str)).fillna("unknown")
-                .astype(str).value_counts().to_dict()
-                if not closed_sub.empty else {}
+                closed_sub.get("exit_reason", pd.Series(dtype=str))
+                .fillna("unknown")
+                .astype(str)
+                .value_counts()
+                .to_dict()
+                if not closed_sub.empty
+                else {}
             ),
             "dynamic_exit_actions": (
-                review_sub.get("action", pd.Series(dtype=str)).fillna("unknown")
-                .astype(str).value_counts().to_dict()
-                if not review_sub.empty else {}
+                review_sub.get("action", pd.Series(dtype=str))
+                .fillna("unknown")
+                .astype(str)
+                .value_counts()
+                .to_dict()
+                if not review_sub.empty
+                else {}
             ),
             "learned_policy_active": bool(asset_policy.get("learned_active", False)),
-            "policy_version": asset_policy.get("policy_version", policy.get("policy_version", "default")
-                                                if isinstance(policy, dict) else "default"),
+            "policy_version": asset_policy.get(
+                "policy_version",
+                policy.get("policy_version", "default") if isinstance(policy, dict) else "default",
+            ),
             "pnl_dollars": (
                 float(pd.to_numeric(eligible_closed_sub.get("pnl_dollars"), errors="coerce").sum())
-                if "pnl_dollars" in eligible_closed_sub.columns else None
+                if "pnl_dollars" in eligible_closed_sub.columns
+                else None
             ),
             "pnl_points": (
                 float(pd.to_numeric(eligible_closed_sub.get("pnl_points"), errors="coerce").sum())
-                if "pnl_points" in eligible_closed_sub.columns else None
+                if "pnl_points" in eligible_closed_sub.columns
+                else None
             ),
             "pnl_pct_column": "pnl_pct" if "pnl_pct" in closed_sub.columns else None,
         }
@@ -700,7 +778,7 @@ def _load_exit_reviews() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _exit_review_summary() -> Dict[str, Any]:
+def _exit_review_summary() -> dict[str, Any]:
     df = _load_exit_reviews()
     if df.empty:
         return {"by_asset": {}, "total_reviews": 0}
@@ -708,20 +786,37 @@ def _exit_review_summary() -> Dict[str, Any]:
     for asset, sub in df.groupby("asset"):
         by_asset[str(asset)] = {
             "reviews": int(len(sub)),
-            "actions": sub.get("action", pd.Series(dtype=str)).fillna("unknown").astype(str).value_counts().to_dict(),
-            "learned_policy_reviews": int(sub.get("used_learned_policy", pd.Series(False, index=sub.index)).fillna(False).astype(bool).sum()),
+            "actions": sub.get("action", pd.Series(dtype=str))
+            .fillna("unknown")
+            .astype(str)
+            .value_counts()
+            .to_dict(),
+            "learned_policy_reviews": int(
+                sub.get("used_learned_policy", pd.Series(False, index=sub.index))
+                .fillna(False)
+                .astype(bool)
+                .sum()
+            ),
         }
     return {"by_asset": by_asset, "total_reviews": int(len(df))}
 
 
-def _exit_effectiveness(closed: pd.DataFrame) -> Dict[str, Any]:
+def _exit_effectiveness(closed: pd.DataFrame) -> dict[str, Any]:
     if closed is None or closed.empty:
         return {}
     out = {}
-    for asset, raw_sub in closed.groupby(closed.get("asset", pd.Series("option", index=closed.index))):
+    for asset, raw_sub in closed.groupby(
+        closed.get("asset", pd.Series("option", index=closed.index))
+    ):
         sub = _validation_eligible_rows(raw_sub)
-        dyn = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str) == "dynamic_exit"]
-        hard = sub[sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str).str.startswith("hard_")]
+        dyn = sub[
+            sub.get("exit_reason", pd.Series("", index=sub.index)).astype(str) == "dynamic_exit"
+        ]
+        hard = sub[
+            sub.get("exit_reason", pd.Series("", index=sub.index))
+            .astype(str)
+            .str.startswith("hard_")
+        ]
         raw_reasons = raw_sub.get("exit_reason", pd.Series("", index=raw_sub.index)).astype(str)
         out[str(asset)] = {
             "dynamic_exit": _stats(dyn),
@@ -735,15 +830,16 @@ def _exit_effectiveness(closed: pd.DataFrame) -> Dict[str, Any]:
     return out
 
 
-def _exit_policy_summary() -> Dict[str, Any]:
+def _exit_policy_summary() -> dict[str, Any]:
     try:
         from backtest.exit_learning import load_exit_policy
+
         return load_exit_policy()
     except Exception:
         return {}
 
 
-def _period_return(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> Optional[float]:
+def _period_return(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> float | None:
     try:
         import yfinance as yf
 
@@ -760,7 +856,7 @@ def _period_return(symbol: str, start: pd.Timestamp, end: pd.Timestamp) -> Optio
         return None
 
 
-def _benchmark_comparison(closed: pd.DataFrame) -> Dict[str, Any]:
+def _benchmark_comparison(closed: pd.DataFrame) -> dict[str, Any]:
     closed = _validation_eligible_rows(closed)
     if closed.empty or "entry_time" not in closed.columns:
         return {"SPY": None, "QQQ": None, "note": "No dated closed positions."}
@@ -777,7 +873,7 @@ def _benchmark_comparison(closed: pd.DataFrame) -> Dict[str, Any]:
     }
 
 
-def _random_baseline(returns: Iterable[float], trials: int = 1000) -> Dict[str, Any]:
+def _random_baseline(returns: Iterable[float], trials: int = 1000) -> dict[str, Any]:
     vals = [abs(float(v)) for v in returns if v is not None and not math.isnan(float(v))]
     if not vals:
         return {"n": 0, "avg_return": None, "win_rate": None}
@@ -856,7 +952,9 @@ def _write_equity_curve_pil(equity: pd.Series, path: Path) -> None:
         draw = ImageDraw.Draw(img)
         draw.rectangle([20, 18, width - 20, height - 20], fill=panel, outline=grid)
         font = ImageFont.load_default()
-        draw.text((margin_l, 20), "Optedge Normalized Closed-Signal Equity Curve", fill=text, font=font)
+        draw.text(
+            (margin_l, 20), "Optedge Normalized Closed-Signal Equity Curve", fill=text, font=font
+        )
 
         lo = min(min(vals), 1.0)
         hi = max(max(vals), 1.0)
@@ -935,8 +1033,13 @@ def _write_empty_equity_curve(path: Path) -> None:
         plt.figure(figsize=(9, 4.5))
         plt.axhline(1.0, color="#64748b", linewidth=1.0, linestyle="--")
         plt.text(
-            0.5, 0.52, "No closed positions yet",
-            ha="center", va="center", fontsize=15, color="#475569",
+            0.5,
+            0.52,
+            "No closed positions yet",
+            ha="center",
+            va="center",
+            fontsize=15,
+            color="#475569",
             transform=plt.gca().transAxes,
         )
         plt.title("Optedge Closed-Signal Equity Curve")
@@ -952,7 +1055,7 @@ def _write_empty_equity_curve(path: Path) -> None:
         _write_valid_blank_png(path)
 
 
-def build_summary(scope: str = "current_model", since: Optional[str] = None) -> Dict[str, Any]:
+def build_summary(scope: str = "current_model", since: str | None = None) -> dict[str, Any]:
     logs = load_signal_logs()
     open_df, closed_raw = load_positions()
     closed = _closed_with_slippage(closed_raw)
@@ -975,16 +1078,22 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
     closed_count = int(len(closed))
     validation_eligible_closed = _validation_eligible_rows(closed)
     validation_eligible_closed_count = int(len(validation_eligible_closed))
-    validation_excluded_closed_count = int(
-        max(0, closed_count - validation_eligible_closed_count)
+    validation_excluded_closed_count = int(max(0, closed_count - validation_eligible_closed_count))
+    raw_priced_closed_count = (
+        int(_num(closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))).notna().sum())
+        if not closed.empty
+        else 0
     )
-    raw_priced_closed_count = int(_num(
-        closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))
-    ).notna().sum()) if not closed.empty else 0
-    priced_closed_count = int((
-        _validation_eligible_mask(closed)
-        & _num(closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))).notna()
-    ).sum()) if not closed.empty else 0
+    priced_closed_count = (
+        int(
+            (
+                _validation_eligible_mask(closed)
+                & _num(closed.get("pnl_pct", pd.Series(np.nan, index=closed.index))).notna()
+            ).sum()
+        )
+        if not closed.empty
+        else 0
+    )
     unresolved_closed_count = int(max(0, closed_count - priced_closed_count))
     open_count = int(len(open_df))
     overall = _stats(closed)
@@ -1020,7 +1129,9 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
             "validation exclusions and are excluded from performance metrics."
         )
     if overall.get("max_drawdown") is not None and overall["max_drawdown"] < -0.20:
-        warnings.append(f"All-closure max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}.")
+        warnings.append(
+            f"All-closure max drawdown is worse than -20%: {_fmt_pct(overall['max_drawdown'])}."
+        )
     if overall.get("win_rate") is not None and overall["win_rate"] < BREAKEVEN_WIN_RATE:
         warnings.append(
             f"All-closure win rate is below the simple breakeven threshold: {_fmt_pct(overall['win_rate'])}."
@@ -1057,11 +1168,15 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         warnings.append(f"Fixed-horizon: {warning}")
 
     summary = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "validation_scope": scope,
         "validation_scope_basis": cutoff_source,
-        "current_model_cutoff": cutoff.isoformat() if cutoff is not None and not pd.isna(cutoff) else None,
-        "current_experiment_cutoff": cutoff.isoformat() if cutoff is not None and not pd.isna(cutoff) else None,
+        "current_model_cutoff": cutoff.isoformat()
+        if cutoff is not None and not pd.isna(cutoff)
+        else None,
+        "current_experiment_cutoff": cutoff.isoformat()
+        if cutoff is not None and not pd.isna(cutoff)
+        else None,
         "all_time_closed_positions": int(len(all_time_closed)),
         "stale_closed_positions_excluded": int(max(0, len(all_time_closed) - len(closed))),
         "total_signals": total_signals,
@@ -1095,48 +1210,62 @@ def build_summary(scope: str = "current_model", since: Optional[str] = None) -> 
         "exit_effectiveness": _exit_effectiveness(closed),
         "exit_policy": _exit_policy_summary(),
         "calls_vs_puts": _side_performance(closed),
-        "dte_buckets": _bucket_performance(closed, "dte_at_entry", [
-            (0, 8, "0-7 DTE"),
-            (8, 15, "8-14 DTE"),
-            (15, 31, "15-30 DTE"),
-            (31, 61, "31-60 DTE"),
-            (61, float("inf"), "61+ DTE"),
-        ]),
-        "spread_buckets": _bucket_performance(closed, "spread_pct", [
-            (0.0, 0.05, "0-5%"),
-            (0.05, 0.10, "5-10%"),
-            (0.10, 0.15, "10-15%"),
-            (0.15, float("inf"), "15%+"),
-        ]),
-        "confidence_buckets": _bucket_performance(closed, "confidence", [
-            (0, 55, "<55"),
-            (55, 70, "55-69"),
-            (70, 85, "70-84"),
-            (85, float("inf"), "85+"),
-        ]),
+        "dte_buckets": _bucket_performance(
+            closed,
+            "dte_at_entry",
+            [
+                (0, 8, "0-7 DTE"),
+                (8, 15, "8-14 DTE"),
+                (15, 31, "15-30 DTE"),
+                (31, 61, "31-60 DTE"),
+                (61, float("inf"), "61+ DTE"),
+            ],
+        ),
+        "spread_buckets": _bucket_performance(
+            closed,
+            "spread_pct",
+            [
+                (0.0, 0.05, "0-5%"),
+                (0.05, 0.10, "5-10%"),
+                (0.10, 0.15, "10-15%"),
+                (0.15, float("inf"), "15%+"),
+            ],
+        ),
+        "confidence_buckets": _bucket_performance(
+            closed,
+            "confidence",
+            [
+                (0, 55, "<55"),
+                (55, 70, "55-69"),
+                (70, 85, "70-84"),
+                (85, float("inf"), "85+"),
+            ],
+        ),
         "factor_ic_basis": "independent_swing_outcomes",
         "factor_ic_reliable_count": reliable_factor_count,
         "factor_ic": factor_ic,
         "all_closure_factor_ic": all_closure_factor_ic,
         "position_aging": _position_aging(open_df),
         "benchmarks": _benchmark_comparison(closed),
-        "random_baseline": _random_baseline(_num(
-            validation_eligible_closed.get("pnl_pct", pd.Series(dtype=float))
-        ).dropna()),
+        "random_baseline": _random_baseline(
+            _num(validation_eligible_closed.get("pnl_pct", pd.Series(dtype=float))).dropna()
+        ),
         "fixed_horizon": fixed_horizon,
         "warnings": warnings,
     }
     return summary
 
 
-def _metric_table(rows: List[Tuple[str, Any]]) -> str:
+def _metric_table(rows: list[tuple[str, Any]]) -> str:
     body = []
     for label, value in rows:
-        body.append(f"<tr><td>{html.escape(str(label))}</td><td>{html.escape(str(value))}</td></tr>")
+        body.append(
+            f"<tr><td>{html.escape(str(label))}</td><td>{html.escape(str(value))}</td></tr>"
+        )
     return "<table><tbody>" + "".join(body) + "</tbody></table>"
 
 
-def _bucket_table(rows: List[Dict[str, Any]]) -> str:
+def _bucket_table(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "<p class='muted'>No rows available.</p>"
     body = []
@@ -1158,7 +1287,7 @@ def _bucket_table(rows: List[Dict[str, Any]]) -> str:
     )
 
 
-def _fixed_horizon_table(summary: Dict[str, Any]) -> str:
+def _fixed_horizon_table(summary: dict[str, Any]) -> str:
     rows = summary.get("by_horizon", []) if isinstance(summary, dict) else []
     if not rows:
         return "<p class='muted'>No matured fixed-session outcomes yet.</p>"
@@ -1170,7 +1299,8 @@ def _fixed_horizon_table(summary: Dict[str, Any]) -> str:
         ci_high = shadow.get("win_rate_ci_high")
         ci = (
             f"{_fmt_pct(ci_low)} to {_fmt_pct(ci_high)}"
-            if ci_low is not None and ci_high is not None else "n/a"
+            if ci_low is not None and ci_high is not None
+            else "n/a"
         )
         body.append(
             "<tr>"
@@ -1193,7 +1323,7 @@ def _fixed_horizon_table(summary: Dict[str, Any]) -> str:
     )
 
 
-def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
+def _factor_ic_table(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "<p class='muted'>No closed positions with factor snapshots yet.</p>"
     body = []
@@ -1201,9 +1331,12 @@ def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
         ic = row.get("ic")
         reliable = bool(row.get("is_reliable"))
         color = (
-            "#64748b" if not reliable
-            else "#047857" if ic is not None and ic > 0
-            else "#b91c1c" if ic is not None and ic < 0
+            "#64748b"
+            if not reliable
+            else "#047857"
+            if ic is not None and ic > 0
+            else "#b91c1c"
+            if ic is not None and ic < 0
             else "#475569"
         )
         body.append(
@@ -1223,7 +1356,7 @@ def _factor_ic_table(rows: List[Dict[str, Any]]) -> str:
     )
 
 
-def _asset_table(assets: Dict[str, Any]) -> str:
+def _asset_table(assets: dict[str, Any]) -> str:
     body = []
     for asset, row in (assets or {}).items():
         overall = row.get("overall", {})
@@ -1261,7 +1394,7 @@ def _asset_table(assets: Dict[str, Any]) -> str:
     )
 
 
-def render_html(summary: Dict[str, Any]) -> str:
+def render_html(summary: dict[str, Any]) -> str:
     overall = summary["overall"]
     slip = summary["after_slippage"]
     bench = summary["benchmarks"]
@@ -1273,9 +1406,7 @@ def render_html(summary: Dict[str, Any]) -> str:
         else {}
     )
     fixed_horizon = (
-        summary.get("fixed_horizon")
-        if isinstance(summary.get("fixed_horizon"), dict)
-        else {}
+        summary.get("fixed_horizon") if isinstance(summary.get("fixed_horizon"), dict) else {}
     )
     option_market_data = (
         fixed_horizon.get("option_market_data")
@@ -1283,7 +1414,10 @@ def render_html(summary: Dict[str, Any]) -> str:
         else {}
     )
     warnings = summary.get("warnings") or []
-    warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>No major validation warnings.</li>"
+    warning_html = (
+        "".join(f"<li>{html.escape(w)}</li>" for w in warnings)
+        or "<li>No major validation warnings.</li>"
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1309,8 +1443,20 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 <body>
 <main>
   <h1>Optedge Validation Report</h1>
-  <div class="muted">Generated {html.escape(summary["generated_at"])} from local signal logs and position state.</div>
-  <div class="muted">Scope: {html.escape(str(summary.get("validation_scope", "current_model")))}; basis: {html.escape(str(summary.get("validation_scope_basis") or "n/a"))}; cutoff: {html.escape(str(summary.get("current_experiment_cutoff") or summary.get("current_model_cutoff") or "n/a"))}</div>
+  <div class="muted">Generated {
+        html.escape(summary["generated_at"])
+    } from local signal logs and position state.</div>
+  <div class="muted">Scope: {
+        html.escape(str(summary.get("validation_scope", "current_model")))
+    }; basis: {html.escape(str(summary.get("validation_scope_basis") or "n/a"))}; cutoff: {
+        html.escape(
+            str(
+                summary.get("current_experiment_cutoff")
+                or summary.get("current_model_cutoff")
+                or "n/a"
+            )
+        )
+    }</div>
 
   <section class="warn">
     <h2>Warnings</h2>
@@ -1320,67 +1466,102 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
   <div class="grid">
     <section>
       <h2>Core Metrics</h2>
-      {_metric_table([
-          ("Total logged signals", summary["total_signals"]),
-          ("Closed positions", summary["closed_positions"]),
-          ("Raw numeric closures", summary.get("raw_priced_closed_positions", 0)),
-          ("Validation-excluded closures", summary.get("validation_excluded_closed_positions", 0)),
-          ("Priced closures", summary.get("priced_closed_positions", 0)),
-          ("Unresolved closures", summary.get("unresolved_closed_positions", 0)),
-          ("Open positions", summary["open_positions"]),
-          ("All-time closed positions", summary.get("all_time_closed_positions", 0)),
-          ("Stale closed excluded", summary.get("stale_closed_positions_excluded", 0)),
-          ("Win rate", _fmt_pct(overall.get("win_rate"))),
-          ("Average return", _fmt_pct(overall.get("avg_return"))),
-          ("Median return", _fmt_pct(overall.get("median_return"))),
-          ("Profit factor", _fmt(overall.get("profit_factor"))),
-          ("Max drawdown", _fmt_pct(overall.get("max_drawdown"))),
-          ("Drawdown mode", equity.get("mode", "n/a")),
-          ("Default signal allocation", _fmt_pct(equity.get("default_allocation_pct"))),
-      ])}
+      {
+        _metric_table(
+            [
+                ("Total logged signals", summary["total_signals"]),
+                ("Closed positions", summary["closed_positions"]),
+                ("Raw numeric closures", summary.get("raw_priced_closed_positions", 0)),
+                (
+                    "Validation-excluded closures",
+                    summary.get("validation_excluded_closed_positions", 0),
+                ),
+                ("Priced closures", summary.get("priced_closed_positions", 0)),
+                ("Unresolved closures", summary.get("unresolved_closed_positions", 0)),
+                ("Open positions", summary["open_positions"]),
+                ("All-time closed positions", summary.get("all_time_closed_positions", 0)),
+                ("Stale closed excluded", summary.get("stale_closed_positions_excluded", 0)),
+                ("Win rate", _fmt_pct(overall.get("win_rate"))),
+                ("Average return", _fmt_pct(overall.get("avg_return"))),
+                ("Median return", _fmt_pct(overall.get("median_return"))),
+                ("Profit factor", _fmt(overall.get("profit_factor"))),
+                ("Max drawdown", _fmt_pct(overall.get("max_drawdown"))),
+                ("Drawdown mode", equity.get("mode", "n/a")),
+                ("Default signal allocation", _fmt_pct(equity.get("default_allocation_pct"))),
+            ]
+        )
+    }
     </section>
     <section>
       <h2>Executable Swing Sample</h2>
-      {_metric_table([
-          ("Validation basis", summary.get("validation_basis", "n/a")),
-          ("Executable closures", summary.get("swing_eligible_closed_positions", 0)),
-          ("Excluded from executable sample", summary.get("swing_excluded_closed_positions", 0)),
-          ("After-slippage win rate", _fmt_pct(swing.get("win_rate"))),
-          ("After-slippage average", _fmt_pct(swing.get("avg_return"))),
-          ("After-slippage median", _fmt_pct(swing.get("median_return"))),
-          ("After-slippage profit factor", _fmt(swing.get("profit_factor"))),
-          ("After-slippage max drawdown", _fmt_pct(swing.get("max_drawdown"))),
-      ])}
+      {
+        _metric_table(
+            [
+                ("Validation basis", summary.get("validation_basis", "n/a")),
+                ("Executable closures", summary.get("swing_eligible_closed_positions", 0)),
+                (
+                    "Excluded from executable sample",
+                    summary.get("swing_excluded_closed_positions", 0),
+                ),
+                ("After-slippage win rate", _fmt_pct(swing.get("win_rate"))),
+                ("After-slippage average", _fmt_pct(swing.get("avg_return"))),
+                ("After-slippage median", _fmt_pct(swing.get("median_return"))),
+                ("After-slippage profit factor", _fmt(swing.get("profit_factor"))),
+                ("After-slippage max drawdown", _fmt_pct(swing.get("max_drawdown"))),
+            ]
+        )
+    }
     </section>
     <section>
       <h2>After Slippage</h2>
-      {_metric_table([
-          ("Win rate", _fmt_pct(slip.get("win_rate"))),
-          ("Average return", _fmt_pct(slip.get("avg_return"))),
-          ("Median return", _fmt_pct(slip.get("median_return"))),
-          ("Profit factor", _fmt(slip.get("profit_factor"))),
-          ("Max drawdown", _fmt_pct(slip.get("max_drawdown"))),
-      ])}
+      {
+        _metric_table(
+            [
+                ("Win rate", _fmt_pct(slip.get("win_rate"))),
+                ("Average return", _fmt_pct(slip.get("avg_return"))),
+                ("Median return", _fmt_pct(slip.get("median_return"))),
+                ("Profit factor", _fmt(slip.get("profit_factor"))),
+                ("Max drawdown", _fmt_pct(slip.get("max_drawdown"))),
+            ]
+        )
+    }
     </section>
     <section>
       <h2>Baselines</h2>
-      {_metric_table([
-          ("SPY period return", _fmt_pct(bench.get("SPY"))),
-          ("QQQ period return", _fmt_pct(bench.get("QQQ"))),
-          ("Random baseline avg", _fmt_pct(baseline.get("avg_return"))),
-          ("Random baseline win rate", _fmt_pct(baseline.get("win_rate"))),
-      ])}
+      {
+        _metric_table(
+            [
+                ("SPY period return", _fmt_pct(bench.get("SPY"))),
+                ("QQQ period return", _fmt_pct(bench.get("QQQ"))),
+                ("Random baseline avg", _fmt_pct(baseline.get("avg_return"))),
+                ("Random baseline win rate", _fmt_pct(baseline.get("win_rate"))),
+            ]
+        )
+    }
     </section>
   </div>
 
   <section>
     <h2>Independent Fixed-Session Forward Test</h2>
     <p class="muted">One thesis per asset, ticker, direction, and entry day. Shadow rows passed the current strategy before portfolio-level guardrails, allowing evidence to accumulate while execution stays blocked. Only completed market sessions are scored. Shares and futures use observed closes. Options prefer exact non-interpolated Robinhood trade bars and use a labeled constant-entry-IV proxy only when no exact target-date bar is cached. Neither source proves an Optedge fill.</p>
-    {_metric_table([
-        ("Broker-observed option outcomes", str(int(option_market_data.get("broker_observed_outcomes") or 0))),
-        ("Modeled option outcomes", str(int(option_market_data.get("modeled_proxy_outcomes") or 0))),
-        ("Observed option coverage", _fmt_pct(option_market_data.get("broker_observed_coverage_pct"))),
-    ])}
+    {
+        _metric_table(
+            [
+                (
+                    "Broker-observed option outcomes",
+                    str(int(option_market_data.get("broker_observed_outcomes") or 0)),
+                ),
+                (
+                    "Modeled option outcomes",
+                    str(int(option_market_data.get("modeled_proxy_outcomes") or 0)),
+                ),
+                (
+                    "Observed option coverage",
+                    _fmt_pct(option_market_data.get("broker_observed_coverage_pct")),
+                ),
+            ]
+        )
+    }
     {_fixed_horizon_table(fixed_horizon)}
   </section>
 
@@ -1391,7 +1572,11 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 
   <section>
     <h2>Equity Curve</h2>
-    <p class="muted">{html.escape(str(equity.get("description") or "Equity curve uses normalized signal allocation."))}</p>
+    <p class="muted">{
+        html.escape(
+            str(equity.get("description") or "Equity curve uses normalized signal allocation.")
+        )
+    }</p>
     <img src="equity_curve.png" alt="Optedge equity curve">
   </section>
 
@@ -1413,7 +1598,7 @@ img {{ max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; }}
 """
 
 
-def write_report(scope: str = "current_model", since: Optional[str] = None) -> Dict[str, Any]:
+def write_report(scope: str = "current_model", since: str | None = None) -> dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     summary = build_summary(scope=scope, since=since)
     open_df, closed_raw = load_positions()
@@ -1446,10 +1631,14 @@ def write_report(scope: str = "current_model", since: Optional[str] = None) -> D
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build Optedge validation report")
-    parser.add_argument("--all-time", action="store_true",
-                        help="Use every historical closed position instead of the current unarchived experiment")
-    parser.add_argument("--since", default=None,
-                        help="ISO date/time cutoff for primary validation metrics")
+    parser.add_argument(
+        "--all-time",
+        action="store_true",
+        help="Use every historical closed position instead of the current unarchived experiment",
+    )
+    parser.add_argument(
+        "--since", default=None, help="ISO date/time cutoff for primary validation metrics"
+    )
     args = parser.parse_args()
     summary = write_report(scope="all_time" if args.all_time else "current_model", since=args.since)
     print(f"Validation report: {REPORT_HTML}")

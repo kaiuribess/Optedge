@@ -7,6 +7,7 @@ whole-unit trade plan, then converts an actionable plan into manual Robinhood
 MCP review instructions.  The packet boundary checks the current clock only to
 reject stale or overlong review packets.  A review packet never places an order.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -136,7 +137,9 @@ def _prompt_text(value: Any, *, limit: int = 180) -> str:
 def _required_positive(value: Any, field: str, errors: list[dict[str, str]]) -> float | None:
     result = _number(value)
     if result is None:
-        errors.append(_issue(f"missing_or_invalid_{field}", field, f"{field} must be a finite number."))
+        errors.append(
+            _issue(f"missing_or_invalid_{field}", field, f"{field} must be a finite number.")
+        )
         return None
     if result <= 0:
         errors.append(_issue(f"non_positive_{field}", field, f"{field} must be greater than zero."))
@@ -147,7 +150,9 @@ def _required_positive(value: Any, field: str, errors: list[dict[str, str]]) -> 
 def _required_nonnegative(value: Any, field: str, errors: list[dict[str, str]]) -> float | None:
     result = _number(value)
     if result is None:
-        errors.append(_issue(f"missing_or_invalid_{field}", field, f"{field} must be a finite number."))
+        errors.append(
+            _issue(f"missing_or_invalid_{field}", field, f"{field} must be a finite number.")
+        )
         return None
     if result < 0:
         errors.append(_issue(f"negative_{field}", field, f"{field} cannot be negative."))
@@ -216,9 +221,13 @@ def calculate_account_limits(
     if not errors and equity is not None and risk is not None and allocation is not None:
         risk_budget = equity * risk
         requested_allocation = equity * allocation
-        effective_allocation = min(requested_allocation, power) if power is not None else requested_allocation
+        effective_allocation = (
+            min(requested_allocation, power) if power is not None else requested_allocation
+        )
         if effective_allocation == 0:
-            errors.append(_issue("no_buying_power", "buying_power", "No positive buying power is available."))
+            errors.append(
+                _issue("no_buying_power", "buying_power", "No positive buying power is available.")
+            )
 
     return {
         "schema": ACCOUNT_LIMITS_SCHEMA,
@@ -305,7 +314,9 @@ def size_share_trade(
     clean_symbol = _clean_symbol(symbol, errors)
     clean_direction = str(direction or "").strip().lower()
     if clean_direction not in {"long", "short"}:
-        errors.append(_issue("invalid_direction", "direction", "direction must be 'long' or 'short'."))
+        errors.append(
+            _issue("invalid_direction", "direction", "direction must be 'long' or 'short'.")
+        )
 
     entry = _required_positive(entry_price, "entry_price", errors)
     stop = _required_nonnegative(stop_price, "stop_price", errors)
@@ -328,17 +339,41 @@ def size_share_trade(
 
     if entry is not None and stop is not None:
         if clean_direction == "long" and stop >= entry:
-            errors.append(_issue("invalid_long_stop", "stop_price", "A long-share stop must be below entry."))
+            errors.append(
+                _issue("invalid_long_stop", "stop_price", "A long-share stop must be below entry.")
+            )
         if clean_direction == "short" and stop <= entry:
-            errors.append(_issue("invalid_short_stop", "stop_price", "A short-share stop must be above entry."))
+            errors.append(
+                _issue(
+                    "invalid_short_stop", "stop_price", "A short-share stop must be above entry."
+                )
+            )
     if entry is not None and target is not None:
         if clean_direction == "long" and target <= entry:
-            errors.append(_issue("invalid_long_target", "target_price", "A long-share target must be above entry."))
+            errors.append(
+                _issue(
+                    "invalid_long_target",
+                    "target_price",
+                    "A long-share target must be above entry.",
+                )
+            )
         if clean_direction == "short" and target >= entry:
-            errors.append(_issue("invalid_short_target", "target_price", "A short-share target must be below entry."))
+            errors.append(
+                _issue(
+                    "invalid_short_target",
+                    "target_price",
+                    "A short-share target must be below entry.",
+                )
+            )
 
     side = "buy" if clean_direction == "long" else "sell" if clean_direction == "short" else None
-    intent = "open_long" if clean_direction == "long" else "open_short" if clean_direction == "short" else None
+    intent = (
+        "open_long"
+        if clean_direction == "long"
+        else "open_short"
+        if clean_direction == "short"
+        else None
+    )
     order = {
         "asset": "share",
         "symbol": clean_symbol or None,
@@ -499,7 +534,9 @@ def size_long_option_trade(
     clean_expiry = str(expiry or "").strip()
     clean_underlying = str(underlying_type or "").strip().lower()
     if clean_type not in {"call", "put"}:
-        errors.append(_issue("invalid_option_type", "option_type", "option_type must be 'call' or 'put'."))
+        errors.append(
+            _issue("invalid_option_type", "option_type", "option_type must be 'call' or 'put'.")
+        )
     parsed_expiry = None
     try:
         parsed_expiry = date.fromisoformat(clean_expiry)
@@ -509,7 +546,11 @@ def size_long_option_trade(
         errors.append(_issue("expired_contract", "expiry", "expiry cannot be in the past."))
     if clean_underlying not in {"equity", "index"}:
         errors.append(
-            _issue("invalid_underlying_type", "underlying_type", "underlying_type must be 'equity' or 'index'.")
+            _issue(
+                "invalid_underlying_type",
+                "underlying_type",
+                "underlying_type must be 'equity' or 'index'.",
+            )
         )
 
     strike_value = _required_positive(strike, "strike", errors)
@@ -533,11 +574,29 @@ def size_long_option_trade(
     if target is not None:
         target = _cent_price(target)
     if multiplier is not None and not float(multiplier).is_integer():
-        errors.append(_issue("non_integer_multiplier", "contract_multiplier", "contract_multiplier must be an integer."))
+        errors.append(
+            _issue(
+                "non_integer_multiplier",
+                "contract_multiplier",
+                "contract_multiplier must be an integer.",
+            )
+        )
     if entry is not None and stop is not None and stop >= entry:
-        errors.append(_issue("invalid_long_option_stop", "stop_premium", "A long-option stop must be below entry."))
+        errors.append(
+            _issue(
+                "invalid_long_option_stop",
+                "stop_premium",
+                "A long-option stop must be below entry.",
+            )
+        )
     if entry is not None and target is not None and target <= entry:
-        errors.append(_issue("invalid_long_option_target", "target_premium", "A long-option target must be above entry."))
+        errors.append(
+            _issue(
+                "invalid_long_option_target",
+                "target_premium",
+                "A long-option target must be above entry.",
+            )
+        )
 
     direction = f"long_{clean_type}" if clean_type in {"call", "put"} else ""
     contract_label = None
@@ -564,7 +623,9 @@ def size_long_option_trade(
         "limit_price": _money(entry),
         "stop_price": _money(stop),
         "target_price": _money(target),
-        "contract_multiplier": int(multiplier) if multiplier is not None and multiplier.is_integer() else None,
+        "contract_multiplier": int(multiplier)
+        if multiplier is not None and multiplier.is_integer()
+        else None,
         "estimated_debit_dollars": None,
         "stop_order_included": False,
         "target_order_included": False,
@@ -689,37 +750,80 @@ def _review_errors(trade_plan: Any, expected_asset: str) -> list[dict[str, str]]
     if not isinstance(trade_plan, dict):
         return [_issue("invalid_trade_plan", "trade_plan", "trade_plan must be a dictionary.")]
     if trade_plan.get("schema") != TRADE_PLAN_SCHEMA:
-        errors.append(_issue("invalid_trade_plan_schema", "schema", "Trade plan schema is missing or unsupported."))
-    if trade_plan.get("asset") != expected_asset:
         errors.append(
-            _issue("wrong_asset", "asset", f"Expected a {expected_asset} trade plan.")
+            _issue(
+                "invalid_trade_plan_schema",
+                "schema",
+                "Trade plan schema is missing or unsupported.",
+            )
         )
+    if trade_plan.get("asset") != expected_asset:
+        errors.append(_issue("wrong_asset", "asset", f"Expected a {expected_asset} trade plan."))
     if trade_plan.get("status") != "ready_for_manual_review":
-        errors.append(_issue("invalid_trade_plan_status", "status", "Trade plan is not ready for manual review."))
+        errors.append(
+            _issue(
+                "invalid_trade_plan_status", "status", "Trade plan is not ready for manual review."
+            )
+        )
     if trade_plan.get("is_actionable") is not True:
-        errors.append(_issue("trade_plan_not_actionable", "status", "Trade plan is not actionable."))
-    validation = trade_plan.get("validation") if isinstance(trade_plan.get("validation"), dict) else {}
+        errors.append(
+            _issue("trade_plan_not_actionable", "status", "Trade plan is not actionable.")
+        )
+    validation = (
+        trade_plan.get("validation") if isinstance(trade_plan.get("validation"), dict) else {}
+    )
     if validation.get("ok") is not True or validation.get("errors"):
-        errors.append(_issue("trade_plan_has_errors", "validation", "Trade plan contains validation errors."))
+        errors.append(
+            _issue("trade_plan_has_errors", "validation", "Trade plan contains validation errors.")
+        )
     order = trade_plan.get("order") if isinstance(trade_plan.get("order"), dict) else {}
     if order.get("asset") != expected_asset:
-        errors.append(_issue("order_asset_mismatch", "order.asset", "Order asset does not match the trade plan."))
+        errors.append(
+            _issue(
+                "order_asset_mismatch", "order.asset", "Order asset does not match the trade plan."
+            )
+        )
     symbol = str(order.get("symbol") or "").strip().upper()
     if not SYMBOL_PATTERN.fullmatch(symbol):
-        errors.append(_issue("invalid_order_symbol", "symbol", "Order symbol is missing or invalid."))
+        errors.append(
+            _issue("invalid_order_symbol", "symbol", "Order symbol is missing or invalid.")
+        )
     quantity = order.get("quantity")
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
-        errors.append(_issue("invalid_quantity", "quantity", "A positive whole-unit quantity is required."))
+        errors.append(
+            _issue("invalid_quantity", "quantity", "A positive whole-unit quantity is required.")
+        )
     limit_price = _number(order.get("limit_price"))
     if limit_price is None or limit_price <= 0:
-        errors.append(_issue("missing_limit_price", "limit_price", "A positive finite limit price is required."))
+        errors.append(
+            _issue(
+                "missing_limit_price", "limit_price", "A positive finite limit price is required."
+            )
+        )
     if order.get("order_type") != "limit":
-        errors.append(_issue("unsupported_order_type", "order_type", "Only limit entry orders are supported."))
+        errors.append(
+            _issue("unsupported_order_type", "order_type", "Only limit entry orders are supported.")
+        )
     if order.get("time_in_force") != "gfd":
-        errors.append(_issue("unsupported_time_in_force", "time_in_force", "Only good-for-day orders are supported."))
+        errors.append(
+            _issue(
+                "unsupported_time_in_force",
+                "time_in_force",
+                "Only good-for-day orders are supported.",
+            )
+        )
     if order.get("market_hours") != "regular_hours":
-        errors.append(_issue("unsupported_market_hours", "market_hours", "Only regular-hours review is supported."))
-    if order.get("stop_order_included") is not False or order.get("target_order_included") is not False:
+        errors.append(
+            _issue(
+                "unsupported_market_hours",
+                "market_hours",
+                "Only regular-hours review is supported.",
+            )
+        )
+    if (
+        order.get("stop_order_included") is not False
+        or order.get("target_order_included") is not False
+    ):
         errors.append(
             _issue(
                 "ambiguous_exit_order",
@@ -746,7 +850,13 @@ def _review_errors(trade_plan: Any, expected_asset: str) -> list[dict[str, str]]
         )
     planned_max_loss = _number(risk.get("planned_max_loss_dollars"))
     if planned_max_loss is None or planned_max_loss <= 0:
-        errors.append(_issue("missing_max_loss", "planned_max_loss_dollars", "A positive maximum-loss reference is required."))
+        errors.append(
+            _issue(
+                "missing_max_loss",
+                "planned_max_loss_dollars",
+                "A positive maximum-loss reference is required.",
+            )
+        )
     return errors
 
 
@@ -790,8 +900,17 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
         )
     quantity = order.get("quantity")
     limit_price = _number(order.get("limit_price"))
-    risk = trade_plan.get("risk") if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict) else {}
-    if isinstance(quantity, int) and not isinstance(quantity, bool) and quantity > 0 and limit_price is not None:
+    risk = (
+        trade_plan.get("risk")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict)
+        else {}
+    )
+    if (
+        isinstance(quantity, int)
+        and not isinstance(quantity, bool)
+        and quantity > 0
+        and limit_price is not None
+    ):
         expected_notional = round(quantity * limit_price, 2)
         if not _same_money(order.get("estimated_notional_dollars"), expected_notional):
             errors.append(
@@ -830,9 +949,7 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
         stop_price = _number(order.get("stop_price"))
         target_price = _number(order.get("target_price"))
         planned_risk_per_unit = _number(risk.get("planned_risk_per_unit_dollars"))
-        planned_stop_risk_per_unit = _number(
-            risk.get("planned_stop_risk_per_unit_dollars")
-        )
+        planned_stop_risk_per_unit = _number(risk.get("planned_stop_risk_per_unit_dollars"))
         planned_stop_loss = _number(risk.get("planned_stop_loss_dollars"))
         risk_budget = _number(risk.get("risk_budget_dollars"))
         if entry_price is None or not _same_money(entry_price, limit_price):
@@ -892,7 +1009,11 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                     "Planned stop loss must equal per-share stop risk times quantity.",
                 )
             )
-        if risk_budget is None or planned_stop_loss is None or planned_stop_loss > risk_budget + 0.01:
+        if (
+            risk_budget is None
+            or planned_stop_loss is None
+            or planned_stop_loss > risk_budget + 0.01
+        ):
             errors.append(
                 _issue(
                     "share_stop_loss_exceeds_risk_budget",
@@ -985,9 +1106,17 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
     order = trade_plan.get("order") if isinstance(trade_plan, dict) else {}
     for field in ("symbol", "option_type", "expiry", "strike", "underlying_type"):
         if order.get(field) in (None, ""):
-            errors.append(_issue(f"missing_{field}", field, f"{field} is required for exact contract lookup."))
+            errors.append(
+                _issue(f"missing_{field}", field, f"{field} is required for exact contract lookup.")
+            )
     if order.get("intent") != "buy_to_open":
-        errors.append(_issue("unsupported_option_intent", "intent", "Only long buy-to-open options are supported."))
+        errors.append(
+            _issue(
+                "unsupported_option_intent",
+                "intent",
+                "Only long buy-to-open options are supported.",
+            )
+        )
     if order.get("side") != "buy" or order.get("position_effect") != "open":
         errors.append(
             _issue(
@@ -997,7 +1126,9 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             )
         )
     if order.get("option_type") not in {"call", "put"}:
-        errors.append(_issue("invalid_option_type", "option_type", "Option type must be call or put."))
+        errors.append(
+            _issue("invalid_option_type", "option_type", "Option type must be call or put.")
+        )
     if re.search(r"\d", str(order.get("symbol") or "")):
         errors.append(
             _issue(
@@ -1016,7 +1147,10 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
     strike_value = _number(order.get("strike"))
     if strike_value is None or strike_value <= 0:
         errors.append(_issue("invalid_strike", "strike", "A positive finite strike is required."))
-    elif SYMBOL_PATTERN.fullmatch(str(order.get("symbol") or "")) and order.get("option_type") in {"call", "put"}:
+    elif SYMBOL_PATTERN.fullmatch(str(order.get("symbol") or "")) and order.get("option_type") in {
+        "call",
+        "put",
+    }:
         expected_label = (
             f"{order['symbol']} {order.get('expiry')} "
             f"{str(order['option_type']).upper()} {strike_value:g}"
@@ -1030,7 +1164,13 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                 )
             )
     if order.get("underlying_type") not in {"equity", "index"}:
-        errors.append(_issue("invalid_underlying_type", "underlying_type", "Underlying type must be equity or index."))
+        errors.append(
+            _issue(
+                "invalid_underlying_type",
+                "underlying_type",
+                "Underlying type must be equity or index.",
+            )
+        )
     elif order.get("underlying_type") != "equity":
         errors.append(
             _issue(
@@ -1048,7 +1188,11 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                 "Manual Robinhood review requires 100x, but multiplier alone does not prove a standard deliverable; live instrument and preview checks must also pass.",
             )
         )
-    risk = trade_plan.get("risk") if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict) else {}
+    risk = (
+        trade_plan.get("risk")
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("risk"), dict)
+        else {}
+    )
     full_debit = _number(risk.get("full_option_debit_at_risk_dollars"))
     risk_budget = _number(risk.get("risk_budget_dollars"))
     quantity = order.get("quantity")
@@ -1077,7 +1221,9 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             )
         )
     allocation_cap = _number(risk.get("allocation_cap_dollars"))
-    if expected_debit is not None and (allocation_cap is None or expected_debit > allocation_cap + 0.01):
+    if expected_debit is not None and (
+        allocation_cap is None or expected_debit > allocation_cap + 0.01
+    ):
         errors.append(
             _issue(
                 "option_debit_exceeds_allocation_cap",
@@ -1085,11 +1231,7 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
                 "Full option debit must fit inside the allocation cap.",
             )
         )
-    if (
-        full_debit is None
-        or risk_budget is None
-        or full_debit > risk_budget + 0.01
-    ):
+    if full_debit is None or risk_budget is None or full_debit > risk_budget + 0.01:
         errors.append(
             _issue(
                 "full_debit_exceeds_risk_budget",
@@ -1339,12 +1481,7 @@ def _account_drawdown_review_errors(
             )
         )
     count = drawdown.get("eligible_account_count")
-    if (
-        not isinstance(count, int)
-        or isinstance(count, bool)
-        or count < 1
-        or count != len(rows)
-    ):
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1 or count != len(rows):
         errors.append(
             _issue(
                 "drawdown_account_count_mismatch",
@@ -1441,11 +1578,7 @@ def _account_drawdown_review_errors(
             )
 
         observations = row.get("observation_count")
-        if (
-            not isinstance(observations, int)
-            or isinstance(observations, bool)
-            or observations < 2
-        ):
+        if not isinstance(observations, int) or isinstance(observations, bool) or observations < 2:
             errors.append(
                 _issue(
                     "insufficient_account_equity_history",
@@ -1617,7 +1750,15 @@ def _account_drawdown_review_errors(
         expected_multiplier = None
         if high_water_drawdown is not None:
             loss = max(0.0, -high_water_drawdown)
-            expected_multiplier = 0.0 if loss >= 0.10 - 1e-12 else 0.25 if loss >= 0.08 - 1e-12 else 0.5 if loss >= 0.05 - 1e-12 else 1.0
+            expected_multiplier = (
+                0.0
+                if loss >= 0.10 - 1e-12
+                else 0.25
+                if loss >= 0.08 - 1e-12
+                else 0.5
+                if loss >= 0.05 - 1e-12
+                else 1.0
+            )
         if session_loss is not None and session_loss <= -0.03 + 1e-12:
             expected_multiplier = 0.0
         if (
@@ -1737,11 +1878,29 @@ def _share_candidate_review_errors(
         else {}
     )
     if candidate.get("schema") != SHARE_CANDIDATE_REVIEW_SCHEMA:
-        errors.append(_issue("invalid_share_candidate_schema", f"{root}.schema", "The share candidate attestation schema is unsupported."))
+        errors.append(
+            _issue(
+                "invalid_share_candidate_schema",
+                f"{root}.schema",
+                "The share candidate attestation schema is unsupported.",
+            )
+        )
     if candidate.get("status") != "allowed" or candidate.get("allowed") is not True:
-        errors.append(_issue("share_candidate_not_allowed", f"{root}.allowed", "The exact share candidate must be explicitly allowed."))
+        errors.append(
+            _issue(
+                "share_candidate_not_allowed",
+                f"{root}.allowed",
+                "The exact share candidate must be explicitly allowed.",
+            )
+        )
     if candidate.get("blockers") != []:
-        errors.append(_issue("share_candidate_has_blockers", f"{root}.blockers", "An allowed share candidate must contain an explicit empty blocker list."))
+        errors.append(
+            _issue(
+                "share_candidate_has_blockers",
+                f"{root}.blockers",
+                "An allowed share candidate must contain an explicit empty blocker list.",
+            )
+        )
     symbol = str(order.get("symbol") or "").strip().upper()
     if (
         candidate.get("asset") != "share"
@@ -1749,19 +1908,58 @@ def _share_candidate_review_errors(
         or candidate.get("symbol") != symbol
         or trade_plan.get("direction") != "long"
     ):
-        errors.append(_issue("share_candidate_identity_mismatch", root, "Candidate asset, symbol, and long direction must exactly match the plan."))
+        errors.append(
+            _issue(
+                "share_candidate_identity_mismatch",
+                root,
+                "Candidate asset, symbol, and long direction must exactly match the plan.",
+            )
+        )
     if candidate.get("source_pattern") != "top_shares_*.parquet":
-        errors.append(_issue("invalid_share_candidate_source_pattern", f"{root}.source_pattern", "Share candidates must come from the latest top_shares artifact family."))
+        errors.append(
+            _issue(
+                "invalid_share_candidate_source_pattern",
+                f"{root}.source_pattern",
+                "Share candidates must come from the latest top_shares artifact family.",
+            )
+        )
     source_file = candidate.get("source_file")
-    if not isinstance(source_file, str) or re.fullmatch(r"top_shares_[^/\\]+\.parquet", source_file) is None:
-        errors.append(_issue("invalid_share_candidate_source_file", f"{root}.source_file", "A safe top_shares artifact filename is required."))
+    if (
+        not isinstance(source_file, str)
+        or re.fullmatch(r"top_shares_[^/\\]+\.parquet", source_file) is None
+    ):
+        errors.append(
+            _issue(
+                "invalid_share_candidate_source_file",
+                f"{root}.source_file",
+                "A safe top_shares artifact filename is required.",
+            )
+        )
     if not _is_sha256(candidate.get("source_artifact_digest_sha256")):
-        errors.append(_issue("invalid_share_candidate_artifact_digest", f"{root}.source_artifact_digest_sha256", "A full artifact digest must bind the share candidate."))
+        errors.append(
+            _issue(
+                "invalid_share_candidate_artifact_digest",
+                f"{root}.source_artifact_digest_sha256",
+                "A full artifact digest must bind the share candidate.",
+            )
+        )
     if not _is_sha256(candidate.get("candidate_row_digest_sha256")):
-        errors.append(_issue("invalid_share_candidate_row_digest", f"{root}.candidate_row_digest_sha256", "A full row digest must bind the selected share candidate."))
+        errors.append(
+            _issue(
+                "invalid_share_candidate_row_digest",
+                f"{root}.candidate_row_digest_sha256",
+                "A full row digest must bind the selected share candidate.",
+            )
+        )
     fingerprint = candidate.get("candidate_fingerprint")
     if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{24}", fingerprint) is None:
-        errors.append(_issue("invalid_share_candidate_fingerprint", f"{root}.candidate_fingerprint", "A 24-character candidate fingerprint is required."))
+        errors.append(
+            _issue(
+                "invalid_share_candidate_fingerprint",
+                f"{root}.candidate_fingerprint",
+                "A 24-character candidate fingerprint is required.",
+            )
+        )
     if (
         request.get("candidate_fingerprint") != fingerprint
         or request.get("source_file") != source_file
@@ -1770,13 +1968,17 @@ def _share_candidate_review_errors(
             and request.get("source_generated_at") != candidate.get("candidate_source_generated_at")
         )
     ):
-        errors.append(_issue("share_candidate_request_mismatch", "candidate_request", "The loaded candidate request must match the frozen candidate provenance."))
+        errors.append(
+            _issue(
+                "share_candidate_request_mismatch",
+                "candidate_request",
+                "The loaded candidate request must match the frozen candidate provenance.",
+            )
+        )
     price_session_text = candidate.get("candidate_source_price_session")
     try:
         price_session = (
-            date.fromisoformat(price_session_text)
-            if isinstance(price_session_text, str)
-            else None
+            date.fromisoformat(price_session_text) if isinstance(price_session_text, str) else None
         )
     except ValueError:
         price_session = None
@@ -1789,36 +1991,86 @@ def _share_candidate_review_errors(
             and ((issue_date - price_session).days < 0 or (issue_date - price_session).days > 4)
         )
     ):
-        errors.append(_issue("stale_or_invalid_share_price_session", f"{root}.candidate_source_price_session", "The last completed price-bar session must be nonfuture and no more than four calendar days old."))
+        errors.append(
+            _issue(
+                "stale_or_invalid_share_price_session",
+                f"{root}.candidate_source_price_session",
+                "The last completed price-bar session must be nonfuture and no more than four calendar days old.",
+            )
+        )
     if candidate.get("candidate_source_price_basis") != "history_last_bar_close":
-        errors.append(_issue("invalid_share_price_basis", f"{root}.candidate_source_price_basis", "Share candidate geometry must use history_last_bar_close."))
+        errors.append(
+            _issue(
+                "invalid_share_price_basis",
+                f"{root}.candidate_source_price_basis",
+                "Share candidate geometry must use history_last_bar_close.",
+            )
+        )
 
     max_age = _number(candidate.get("max_source_age_minutes"))
     artifact_at = _parse_aware_utc_timestamp(candidate.get("source_artifact_at"))
     reported_artifact_age = _number(candidate.get("source_artifact_age_minutes"))
     if max_age is None or max_age <= 0 or max_age > 45:
-        errors.append(_issue("unsafe_share_candidate_max_age", f"{root}.max_source_age_minutes", "Share candidate source age must be capped at 45 minutes."))
+        errors.append(
+            _issue(
+                "unsafe_share_candidate_max_age",
+                f"{root}.max_source_age_minutes",
+                "Share candidate source age must be capped at 45 minutes.",
+            )
+        )
     if artifact_at is None:
-        errors.append(_issue("missing_share_candidate_artifact_time", f"{root}.source_artifact_at", "A timezone-aware artifact timestamp is required."))
+        errors.append(
+            _issue(
+                "missing_share_candidate_artifact_time",
+                f"{root}.source_artifact_at",
+                "A timezone-aware artifact timestamp is required.",
+            )
+        )
     elif issued_at is not None and max_age is not None:
         actual_age = (issued_at - artifact_at).total_seconds() / 60.0
         if actual_age < -1 or actual_age > max_age + 1e-9:
-            errors.append(_issue("stale_or_future_share_candidate_artifact", f"{root}.source_artifact_at", "The selected top_shares artifact must be current at packet issue."))
+            errors.append(
+                _issue(
+                    "stale_or_future_share_candidate_artifact",
+                    f"{root}.source_artifact_at",
+                    "The selected top_shares artifact must be current at packet issue.",
+                )
+            )
         if reported_artifact_age is None or abs(reported_artifact_age - max(0.0, actual_age)) > 1.0:
-            errors.append(_issue("share_candidate_artifact_age_mismatch", f"{root}.source_artifact_age_minutes", "Reported artifact age must reconcile to its timestamp."))
+            errors.append(
+                _issue(
+                    "share_candidate_artifact_age_mismatch",
+                    f"{root}.source_artifact_age_minutes",
+                    "Reported artifact age must reconcile to its timestamp.",
+                )
+            )
 
     quote_fields_supplied = any(
         candidate.get(field) not in (None, "")
         for field in (
-            "candidate_source_quote_at", "candidate_source_bid", "candidate_source_ask",
+            "candidate_source_quote_at",
+            "candidate_source_bid",
+            "candidate_source_ask",
             "candidate_source_spread_fraction",
         )
     )
     quote_available = candidate.get("candidate_quote_available")
     if quote_available not in {True, False}:
-        errors.append(_issue("missing_share_candidate_quote_availability", f"{root}.candidate_quote_available", "Candidate quote availability must be explicit."))
+        errors.append(
+            _issue(
+                "missing_share_candidate_quote_availability",
+                f"{root}.candidate_quote_available",
+                "Candidate quote availability must be explicit.",
+            )
+        )
     elif quote_available is not quote_fields_supplied:
-        errors.append(_issue("share_candidate_quote_availability_mismatch", f"{root}.candidate_quote_available", "Candidate quote availability must match the frozen quote fields."))
+        errors.append(
+            _issue(
+                "share_candidate_quote_availability_mismatch",
+                f"{root}.candidate_quote_available",
+                "Candidate quote availability must match the frozen quote fields.",
+            )
+        )
     quote_at = _parse_aware_utc_timestamp(candidate.get("candidate_source_quote_at"))
     quote_basis = str(candidate.get("candidate_source_quote_time_basis") or "").strip().lower()
     bid = _number(candidate.get("candidate_source_bid"))
@@ -1831,11 +2083,23 @@ def _share_candidate_review_errors(
     )
     if quote_fields_supplied:
         if quote_at is None:
-            errors.append(_issue("missing_share_candidate_quote_time", f"{root}.candidate_source_quote_at", "A supplied source quote needs a timezone-aware timestamp."))
+            errors.append(
+                _issue(
+                    "missing_share_candidate_quote_time",
+                    f"{root}.candidate_source_quote_at",
+                    "A supplied source quote needs a timezone-aware timestamp.",
+                )
+            )
         elif issued_at is not None and max_age is not None:
             quote_age = (issued_at - quote_at).total_seconds() / 60.0
             if quote_age < -1 or quote_age > max_age + 1e-9:
-                errors.append(_issue("stale_or_future_share_candidate_quote", f"{root}.candidate_source_quote_at", "A supplied candidate source quote must be current at packet issue."))
+                errors.append(
+                    _issue(
+                        "stale_or_future_share_candidate_quote",
+                        f"{root}.candidate_source_quote_at",
+                        "A supplied candidate source quote must be current at packet issue.",
+                    )
+                )
         if not quote_basis or (
             quote_basis != "provider_response_received_at"
             and not (
@@ -1843,27 +2107,79 @@ def _share_candidate_review_errors(
                 and "quote" in quote_basis
             )
         ):
-            errors.append(_issue("invalid_share_candidate_quote_basis", f"{root}.candidate_source_quote_time_basis", "A supplied quote time needs explicit provider, broker, or exchange provenance."))
+            errors.append(
+                _issue(
+                    "invalid_share_candidate_quote_basis",
+                    f"{root}.candidate_source_quote_time_basis",
+                    "A supplied quote time needs explicit provider, broker, or exchange provenance.",
+                )
+            )
         if not str(candidate.get("candidate_quote_quality") or "").strip():
-            errors.append(_issue("missing_share_candidate_quote_quality", f"{root}.candidate_quote_quality", "Supplied candidate quote quality must be explicit."))
-        if expected_spread is None or spread is None or abs(spread - expected_spread) > 1e-6 or spread > 0.01 + 1e-12:
-            errors.append(_issue("unsafe_share_candidate_source_spread", f"{root}.candidate_source_spread_fraction", "Supplied candidate bid/ask must be positive, ordered, arithmetically consistent, and no wider than 1%."))
+            errors.append(
+                _issue(
+                    "missing_share_candidate_quote_quality",
+                    f"{root}.candidate_quote_quality",
+                    "Supplied candidate quote quality must be explicit.",
+                )
+            )
+        if (
+            expected_spread is None
+            or spread is None
+            or abs(spread - expected_spread) > 1e-6
+            or spread > 0.01 + 1e-12
+        ):
+            errors.append(
+                _issue(
+                    "unsafe_share_candidate_source_spread",
+                    f"{root}.candidate_source_spread_fraction",
+                    "Supplied candidate bid/ask must be positive, ordered, arithmetically consistent, and no wider than 1%.",
+                )
+            )
 
     if candidate.get("setup_gate_status") != "ready":
-        errors.append(_issue("share_candidate_setup_not_ready", f"{root}.setup_gate_status", "The exact share candidate must clear its setup gate."))
+        errors.append(
+            _issue(
+                "share_candidate_setup_not_ready",
+                f"{root}.setup_gate_status",
+                "The exact share candidate must clear its setup gate.",
+            )
+        )
     if str(candidate.get("trade_status") or "").strip().lower() in {"", "watch", "skip", "blocked"}:
-        errors.append(_issue("share_candidate_not_actionable", f"{root}.trade_status", "The exact share candidate must be actionable."))
+        errors.append(
+            _issue(
+                "share_candidate_not_actionable",
+                f"{root}.trade_status",
+                "The exact share candidate must be actionable.",
+            )
+        )
     if str(candidate.get("research_guard_status") or "").strip().lower() not in {
-        "pass", "passed", "ok", "ready", "allowed", "validated",
+        "pass",
+        "passed",
+        "ok",
+        "ready",
+        "allowed",
+        "validated",
     }:
-        errors.append(_issue("share_candidate_research_guard_not_passed", f"{root}.research_guard_status", "The exact share candidate must pass the research guard."))
+        errors.append(
+            _issue(
+                "share_candidate_research_guard_not_passed",
+                f"{root}.research_guard_status",
+                "The exact share candidate must pass the research guard.",
+            )
+        )
     for label, order_field, candidate_field in (
         ("entry", "limit_price", "entry_price"),
         ("stop", "stop_price", "stop_price"),
         ("target", "target_price", "target_price"),
     ):
         if not _same_money(order.get(order_field), candidate.get(candidate_field)):
-            errors.append(_issue(f"share_candidate_{label}_mismatch", f"{root}.{candidate_field}", f"Share {label} must exactly match the frozen candidate geometry."))
+            errors.append(
+                _issue(
+                    f"share_candidate_{label}_mismatch",
+                    f"{root}.{candidate_field}",
+                    f"Share {label} must exactly match the frozen candidate geometry.",
+                )
+            )
     quantity = order.get("quantity")
     max_units = candidate.get("max_units")
     if (
@@ -1876,7 +2192,13 @@ def _share_candidate_review_errors(
         or quantity > max_units
         or candidate.get("planned_quantity") != quantity
     ):
-        errors.append(_issue("share_candidate_quantity_cap_mismatch", f"{root}.max_units", "Planned share quantity must be positive and no greater than the candidate cap."))
+        errors.append(
+            _issue(
+                "share_candidate_quantity_cap_mismatch",
+                f"{root}.max_units",
+                "Planned share quantity must be positive and no greater than the candidate cap.",
+            )
+        )
     planned_notional = _number(order.get("estimated_notional_dollars"))
     attested_notional = _number(candidate.get("planned_notional_dollars"))
     max_notional = _number(candidate.get("max_notional_dollars"))
@@ -1887,12 +2209,30 @@ def _share_candidate_review_errors(
         or not _same_money(planned_notional, attested_notional)
         or planned_notional > max_notional + 0.011
     ):
-        errors.append(_issue("share_candidate_notional_cap_mismatch", f"{root}.max_notional_dollars", "Planned share notional must match the attestation and fit its capital cap."))
+        errors.append(
+            _issue(
+                "share_candidate_notional_cap_mismatch",
+                f"{root}.max_notional_dollars",
+                "Planned share notional must match the attestation and fit its capital cap.",
+            )
+        )
     if candidate.get("top_rank_limit") != 3:
-        errors.append(_issue("unsafe_share_candidate_rank_limit", f"{root}.top_rank_limit", "Only the latest three actionable share candidates may enter review."))
+        errors.append(
+            _issue(
+                "unsafe_share_candidate_rank_limit",
+                f"{root}.top_rank_limit",
+                "Only the latest three actionable share candidates may enter review.",
+            )
+        )
     for flag in ("require_exact_geometry", "require_loaded_candidate_fingerprint"):
         if candidate.get(flag) is not True:
-            errors.append(_issue(f"missing_share_candidate_{flag}", f"{root}.{flag}", f"Candidate control {flag} must be explicitly enabled."))
+            errors.append(
+                _issue(
+                    f"missing_share_candidate_{flag}",
+                    f"{root}.{flag}",
+                    f"Candidate control {flag} must be explicitly enabled.",
+                )
+            )
     return errors
 
 
@@ -1920,28 +2260,79 @@ def _option_candidate_review_errors(
         if isinstance(trade_plan.get("candidate_request"), dict)
         else {}
     )
-    execution_profile = str(
-        trade_plan.get("execution_profile") or "swing_execution"
-    ).strip().lower()
+    execution_profile = (
+        str(trade_plan.get("execution_profile") or "swing_execution").strip().lower()
+    )
     is_leaps_swing = execution_profile == LEAPS_SWING_PROFILE.name
 
     if candidate.get("schema") != OPTION_CANDIDATE_REVIEW_SCHEMA:
-        errors.append(_issue("invalid_option_candidate_schema", f"{root}.schema", "The option candidate attestation schema is unsupported."))
+        errors.append(
+            _issue(
+                "invalid_option_candidate_schema",
+                f"{root}.schema",
+                "The option candidate attestation schema is unsupported.",
+            )
+        )
     if candidate.get("status") != "allowed" or candidate.get("allowed") is not True:
-        errors.append(_issue("option_candidate_not_allowed", f"{root}.allowed", "The exact option candidate must be explicitly allowed."))
+        errors.append(
+            _issue(
+                "option_candidate_not_allowed",
+                f"{root}.allowed",
+                "The exact option candidate must be explicitly allowed.",
+            )
+        )
     if candidate.get("blockers") != []:
-        errors.append(_issue("option_candidate_has_blockers", f"{root}.blockers", "An allowed option candidate must contain an explicit empty blocker list."))
+        errors.append(
+            _issue(
+                "option_candidate_has_blockers",
+                f"{root}.blockers",
+                "An allowed option candidate must contain an explicit empty blocker list.",
+            )
+        )
     if is_leaps_swing:
         if candidate.get("execution_profile") != LEAPS_SWING_PROFILE.name:
-            errors.append(_issue("leaps_candidate_profile_mismatch", f"{root}.execution_profile", "A LEAPS swing review requires the exact profile-isolated candidate lane."))
+            errors.append(
+                _issue(
+                    "leaps_candidate_profile_mismatch",
+                    f"{root}.execution_profile",
+                    "A LEAPS swing review requires the exact profile-isolated candidate lane.",
+                )
+            )
         if candidate.get("strategy_evidence_lane") != LEAPS_EVIDENCE_LANE:
-            errors.append(_issue("leaps_candidate_evidence_lane_mismatch", f"{root}.strategy_evidence_lane", "The LEAPS candidate must use its dedicated evidence lane."))
+            errors.append(
+                _issue(
+                    "leaps_candidate_evidence_lane_mismatch",
+                    f"{root}.strategy_evidence_lane",
+                    "The LEAPS candidate must use its dedicated evidence lane.",
+                )
+            )
         if candidate.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
-            errors.append(_issue("leaps_candidate_policy_version_mismatch", f"{root}.profile_policy_version", "The LEAPS candidate policy version must match the active canonical policy."))
-        if candidate.get("leaps_swing_status") != "execution_ready" or candidate.get("leaps_execution_ready") is not True:
-            errors.append(_issue("leaps_candidate_not_execution_ready", f"{root}.leaps_swing_status", "Research-only or blocked LEAPS candidates cannot enter broker review."))
+            errors.append(
+                _issue(
+                    "leaps_candidate_policy_version_mismatch",
+                    f"{root}.profile_policy_version",
+                    "The LEAPS candidate policy version must match the active canonical policy.",
+                )
+            )
+        if (
+            candidate.get("leaps_swing_status") != "execution_ready"
+            or candidate.get("leaps_execution_ready") is not True
+        ):
+            errors.append(
+                _issue(
+                    "leaps_candidate_not_execution_ready",
+                    f"{root}.leaps_swing_status",
+                    "Research-only or blocked LEAPS candidates cannot enter broker review.",
+                )
+            )
         if candidate.get("leaps_hard_blockers") != [] or candidate.get("leaps_data_blockers") != []:
-            errors.append(_issue("leaps_candidate_has_profile_blockers", root, "A LEAPS candidate entering broker review must have explicit empty policy and data blocker lists."))
+            errors.append(
+                _issue(
+                    "leaps_candidate_has_profile_blockers",
+                    root,
+                    "A LEAPS candidate entering broker review must have explicit empty policy and data blocker lists.",
+                )
+            )
 
     symbol = str(order.get("symbol") or "").strip().upper()
     option_type = str(order.get("option_type") or "").strip().lower()
@@ -1962,48 +2353,118 @@ def _option_candidate_review_errors(
         or candidate.get("expiry") != expiry
         or trade_plan.get("direction") != f"long_{option_type}"
     ):
-        errors.append(_issue("option_candidate_identity_mismatch", root, "Candidate action, contract identity, equity underlying, and long-entry intent must exactly match the plan."))
+        errors.append(
+            _issue(
+                "option_candidate_identity_mismatch",
+                root,
+                "Candidate action, contract identity, equity underlying, and long-entry intent must exactly match the plan.",
+            )
+        )
 
     fingerprint = candidate.get("candidate_fingerprint")
     row_digest = candidate.get("candidate_row_digest_sha256")
     if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{24}", fingerprint) is None:
-        errors.append(_issue("invalid_option_candidate_fingerprint", f"{root}.candidate_fingerprint", "A 24-character candidate fingerprint is required."))
+        errors.append(
+            _issue(
+                "invalid_option_candidate_fingerprint",
+                f"{root}.candidate_fingerprint",
+                "A 24-character candidate fingerprint is required.",
+            )
+        )
     if not _is_sha256(row_digest):
-        errors.append(_issue("invalid_option_candidate_row_digest", f"{root}.candidate_row_digest_sha256", "A full digest must bind the exact candidate row."))
+        errors.append(
+            _issue(
+                "invalid_option_candidate_row_digest",
+                f"{root}.candidate_row_digest_sha256",
+                "A full digest must bind the exact candidate row.",
+            )
+        )
     elif fingerprint != row_digest[:24]:
-        errors.append(_issue("option_candidate_fingerprint_digest_mismatch", f"{root}.candidate_fingerprint", "The candidate fingerprint must be the canonical row-digest prefix."))
+        errors.append(
+            _issue(
+                "option_candidate_fingerprint_digest_mismatch",
+                f"{root}.candidate_fingerprint",
+                "The candidate fingerprint must be the canonical row-digest prefix.",
+            )
+        )
     if not _is_sha256(candidate.get("cycle_digest_sha256")):
-        errors.append(_issue("invalid_option_cycle_digest", f"{root}.cycle_digest_sha256", "A full digest must bind the source cycle."))
+        errors.append(
+            _issue(
+                "invalid_option_cycle_digest",
+                f"{root}.cycle_digest_sha256",
+                "A full digest must bind the source cycle.",
+            )
+        )
     if not _is_sha256(candidate.get("queue_digest_sha256")):
-        errors.append(_issue("invalid_option_queue_digest", f"{root}.queue_digest_sha256", "A full digest must bind the source queue."))
+        errors.append(
+            _issue(
+                "invalid_option_queue_digest",
+                f"{root}.queue_digest_sha256",
+                "A full digest must bind the source queue.",
+            )
+        )
     if request.get("candidate_fingerprint") not in (None, "", fingerprint):
-        errors.append(_issue("option_candidate_request_mismatch", "candidate_request.candidate_fingerprint", "The loaded option-candidate fingerprint must match the frozen attestation."))
+        errors.append(
+            _issue(
+                "option_candidate_request_mismatch",
+                "candidate_request.candidate_fingerprint",
+                "The loaded option-candidate fingerprint must match the frozen attestation.",
+            )
+        )
 
     if candidate.get("source_cycle_schema") != "optedge_robinhood_agentic_cycle_v1":
-        errors.append(_issue("invalid_option_cycle_schema", f"{root}.source_cycle_schema", "Option review requires the current agentic-cycle schema."))
+        errors.append(
+            _issue(
+                "invalid_option_cycle_schema",
+                f"{root}.source_cycle_schema",
+                "Option review requires the current agentic-cycle schema.",
+            )
+        )
     if candidate.get("source_queue_schema") != "optedge_robinhood_agentic_options_queue_v1":
-        errors.append(_issue("invalid_option_queue_schema", f"{root}.source_queue_schema", "Option review requires the current agentic options-queue schema."))
+        errors.append(
+            _issue(
+                "invalid_option_queue_schema",
+                f"{root}.source_queue_schema",
+                "Option review requires the current agentic options-queue schema.",
+            )
+        )
     max_age = _number(candidate.get("max_source_age_minutes"))
     if max_age is None or max_age <= 0 or max_age > 45:
-        errors.append(_issue("unsafe_option_candidate_max_age", f"{root}.max_source_age_minutes", "Option candidate sources must expire within 45 minutes."))
+        errors.append(
+            _issue(
+                "unsafe_option_candidate_max_age",
+                f"{root}.max_source_age_minutes",
+                "Option candidate sources must expire within 45 minutes.",
+            )
+        )
     cycle_at = _parse_aware_utc_timestamp(candidate.get("cycle_generated_at"))
     queue_at = _parse_aware_utc_timestamp(candidate.get("queue_generated_at"))
     for label, timestamp in (("cycle", cycle_at), ("queue", queue_at)):
         if timestamp is None:
-            errors.append(_issue(f"missing_option_{label}_timestamp", f"{root}.{label}_generated_at", f"A timezone-aware {label} timestamp is required."))
+            errors.append(
+                _issue(
+                    f"missing_option_{label}_timestamp",
+                    f"{root}.{label}_generated_at",
+                    f"A timezone-aware {label} timestamp is required.",
+                )
+            )
         elif issued_at is not None and max_age is not None:
             age = (issued_at - timestamp).total_seconds() / 60.0
             if age < -1 or age > max_age + 1e-9:
-                errors.append(_issue(f"stale_or_future_option_{label}", f"{root}.{label}_generated_at", f"The option {label} must be current at packet issue."))
+                errors.append(
+                    _issue(
+                        f"stale_or_future_option_{label}",
+                        f"{root}.{label}_generated_at",
+                        f"The option {label} must be current at packet issue.",
+                    )
+                )
     dte = candidate.get("dte")
     try:
         expiry_date = date.fromisoformat(expiry)
     except ValueError:
         expiry_date = None
     dte_floor = (
-        LEAPS_SWING_PROFILE.option_min_dte
-        if is_leaps_swing
-        else SWING_EXECUTION_OPTION_MIN_DTE
+        LEAPS_SWING_PROFILE.option_min_dte if is_leaps_swing else SWING_EXECUTION_OPTION_MIN_DTE
     )
     dte_ceiling = LEAPS_SWING_PROFILE.option_max_dte if is_leaps_swing else None
     if (
@@ -2020,14 +2481,38 @@ def _option_candidate_review_errors(
             if dte_ceiling is not None
             else f"at least {dte_floor} days"
         )
-        errors.append(_issue("option_candidate_dte_mismatch", f"{root}.dte", f"Candidate DTE must exactly reconcile the expiry and cycle date and be {dte_requirement}."))
+        errors.append(
+            _issue(
+                "option_candidate_dte_mismatch",
+                f"{root}.dte",
+                f"Candidate DTE must exactly reconcile the expiry and cycle date and be {dte_requirement}.",
+            )
+        )
 
     if candidate.get("exact_candidate_count_cycle") != 1:
-        errors.append(_issue("option_cycle_membership_not_unique", f"{root}.exact_candidate_count_cycle", "The exact contract must occur once in the cycle candidate set."))
+        errors.append(
+            _issue(
+                "option_cycle_membership_not_unique",
+                f"{root}.exact_candidate_count_cycle",
+                "The exact contract must occur once in the cycle candidate set.",
+            )
+        )
     if candidate.get("exact_candidate_count_queue") != 1:
-        errors.append(_issue("option_queue_membership_not_unique", f"{root}.exact_candidate_count_queue", "The exact contract must occur once in the source queue."))
+        errors.append(
+            _issue(
+                "option_queue_membership_not_unique",
+                f"{root}.exact_candidate_count_queue",
+                "The exact contract must occur once in the source queue.",
+            )
+        )
     if candidate.get("candidate_rows_match") is not True:
-        errors.append(_issue("option_cycle_queue_candidate_mismatch", f"{root}.candidate_rows_match", "Cycle and queue must attest the same exact candidate row."))
+        errors.append(
+            _issue(
+                "option_cycle_queue_candidate_mismatch",
+                f"{root}.candidate_rows_match",
+                "Cycle and queue must attest the same exact candidate row.",
+            )
+        )
     for field, expected in (
         ("entry_gate_new_entries_allowed_after_live_checks", True),
         ("cycle_auto_submit_allowed", False),
@@ -2036,9 +2521,21 @@ def _option_candidate_review_errors(
         ("queue_execution_enabled", False),
     ):
         if candidate.get(field) is not expected:
-            errors.append(_issue(f"unsafe_option_candidate_{field}", f"{root}.{field}", f"Option candidate control {field} must be exactly {expected}."))
+            errors.append(
+                _issue(
+                    f"unsafe_option_candidate_{field}",
+                    f"{root}.{field}",
+                    f"Option candidate control {field} must be exactly {expected}.",
+                )
+            )
     if candidate.get("queue_max_orders_to_submit") != 0:
-        errors.append(_issue("unsafe_option_queue_submission_cap", f"{root}.queue_max_orders_to_submit", "The research queue must authorize zero broker submissions."))
+        errors.append(
+            _issue(
+                "unsafe_option_queue_submission_cap",
+                f"{root}.queue_max_orders_to_submit",
+                "The research queue must authorize zero broker submissions.",
+            )
+        )
 
     plan_quantity = order.get("quantity")
     quantity_cap = candidate.get("candidate_quantity_cap")
@@ -2052,7 +2549,13 @@ def _option_candidate_review_errors(
         or plan_quantity > quantity_cap
         or candidate.get("planned_quantity") != plan_quantity
     ):
-        errors.append(_issue("option_candidate_quantity_cap_mismatch", f"{root}.candidate_quantity_cap", "Planned contracts must be positive and no greater than the exact candidate cap."))
+        errors.append(
+            _issue(
+                "option_candidate_quantity_cap_mismatch",
+                f"{root}.candidate_quantity_cap",
+                "Planned contracts must be positive and no greater than the exact candidate cap.",
+            )
+        )
     plan_limit = _number(order.get("limit_price"))
     limit_cap = _number(candidate.get("candidate_limit_cap"))
     attested_limit = _number(candidate.get("planned_limit"))
@@ -2067,7 +2570,13 @@ def _option_candidate_review_errors(
         or abs(plan_limit - _cent_price(plan_limit)) > 1e-9
         or abs(limit_cap - _cent_price(limit_cap)) > 1e-9
     ):
-        errors.append(_issue("option_candidate_limit_cap_mismatch", f"{root}.candidate_limit_cap", "The cent-valid planned buy limit must match the attestation and not exceed the candidate cap."))
+        errors.append(
+            _issue(
+                "option_candidate_limit_cap_mismatch",
+                f"{root}.candidate_limit_cap",
+                "The cent-valid planned buy limit must match the attestation and not exceed the candidate cap.",
+            )
+        )
 
     spread_cap = _number(candidate.get("max_spread_fraction"))
     quote_at = _parse_aware_utc_timestamp(candidate.get("candidate_source_quote_at"))
@@ -2086,15 +2595,39 @@ def _option_candidate_review_errors(
         else SWING_EXECUTION_MAX_OPTION_SPREAD_PCT
     )
     if spread_cap is None or spread_cap <= 0 or spread_cap > profile_spread_cap:
-        errors.append(_issue("unsafe_option_candidate_spread_cap", f"{root}.max_spread_fraction", f"The frozen option-candidate spread cap must be positive and no greater than {profile_spread_cap:.0%}."))
+        errors.append(
+            _issue(
+                "unsafe_option_candidate_spread_cap",
+                f"{root}.max_spread_fraction",
+                f"The frozen option-candidate spread cap must be positive and no greater than {profile_spread_cap:.0%}.",
+            )
+        )
     if quote_at is None:
-        errors.append(_issue("missing_option_candidate_quote_time", f"{root}.candidate_source_quote_at", "The candidate needs a timezone-aware source quote timestamp."))
+        errors.append(
+            _issue(
+                "missing_option_candidate_quote_time",
+                f"{root}.candidate_source_quote_at",
+                "The candidate needs a timezone-aware source quote timestamp.",
+            )
+        )
     elif issued_at is not None and max_age is not None:
         quote_age = (issued_at - quote_at).total_seconds() / 60.0
         if quote_age < -1 or quote_age > max_age + 1e-9:
-            errors.append(_issue("stale_or_future_option_candidate_quote", f"{root}.candidate_source_quote_at", "The candidate source quote must be current at packet issue."))
+            errors.append(
+                _issue(
+                    "stale_or_future_option_candidate_quote",
+                    f"{root}.candidate_source_quote_at",
+                    "The candidate source quote must be current at packet issue.",
+                )
+            )
         if is_leaps_swing and quote_age * 60.0 > LEAPS_SWING_PROFILE.max_quote_age_seconds + 1e-9:
-            errors.append(_issue("stale_leaps_candidate_quote", f"{root}.candidate_source_quote_at", f"LEAPS broker-review quotes must be no older than {LEAPS_SWING_PROFILE.max_quote_age_seconds:g} seconds."))
+            errors.append(
+                _issue(
+                    "stale_leaps_candidate_quote",
+                    f"{root}.candidate_source_quote_at",
+                    f"LEAPS broker-review quotes must be no older than {LEAPS_SWING_PROFILE.max_quote_age_seconds:g} seconds.",
+                )
+            )
     if not quote_basis or (
         quote_basis != "provider_response_received_at"
         and not (
@@ -2102,13 +2635,37 @@ def _option_candidate_review_errors(
             and "quote" in quote_basis
         )
     ):
-        errors.append(_issue("invalid_option_candidate_quote_basis", f"{root}.candidate_source_quote_time_basis", "Option quote time needs explicit provider, broker, or exchange provenance."))
+        errors.append(
+            _issue(
+                "invalid_option_candidate_quote_basis",
+                f"{root}.candidate_source_quote_time_basis",
+                "Option quote time needs explicit provider, broker, or exchange provenance.",
+            )
+        )
     if not str(candidate.get("candidate_quote_quality") or "").strip():
-        errors.append(_issue("missing_option_candidate_quote_quality", f"{root}.candidate_quote_quality", "Option candidate quote quality must be explicit."))
+        errors.append(
+            _issue(
+                "missing_option_candidate_quote_quality",
+                f"{root}.candidate_quote_quality",
+                "Option candidate quote quality must be explicit.",
+            )
+        )
     if not str(candidate.get("candidate_data_delay") or "").strip():
-        errors.append(_issue("missing_option_candidate_data_delay", f"{root}.candidate_data_delay", "Option candidate data delay must be explicit."))
+        errors.append(
+            _issue(
+                "missing_option_candidate_data_delay",
+                f"{root}.candidate_data_delay",
+                "Option candidate data delay must be explicit.",
+            )
+        )
     if candidate.get("candidate_quote_is_research_only") not in {True, False}:
-        errors.append(_issue("missing_option_candidate_quote_scope", f"{root}.candidate_quote_is_research_only", "Research-only quote scope must be explicit."))
+        errors.append(
+            _issue(
+                "missing_option_candidate_quote_scope",
+                f"{root}.candidate_quote_is_research_only",
+                "Research-only quote scope must be explicit.",
+            )
+        )
     if (
         expected_spread is None
         or spread is None
@@ -2117,9 +2674,21 @@ def _option_candidate_review_errors(
         or spread > spread_cap + 1e-12
         or spread > profile_spread_cap + 1e-12
     ):
-        errors.append(_issue("unsafe_option_candidate_source_spread", f"{root}.candidate_source_spread_fraction", f"Candidate bid/ask must be positive, ordered, arithmetically consistent, and within the frozen {profile_spread_cap:.0%} hard cap."))
+        errors.append(
+            _issue(
+                "unsafe_option_candidate_source_spread",
+                f"{root}.candidate_source_spread_fraction",
+                f"Candidate bid/ask must be positive, ordered, arithmetically consistent, and within the frozen {profile_spread_cap:.0%} hard cap.",
+            )
+        )
     if is_leaps_swing and candidate.get("candidate_quote_is_research_only") is not False:
-        errors.append(_issue("leaps_candidate_quote_not_live", f"{root}.candidate_quote_is_research_only", "A delayed, free, indicative, or research-only quote cannot authorize a LEAPS broker review."))
+        errors.append(
+            _issue(
+                "leaps_candidate_quote_not_live",
+                f"{root}.candidate_quote_is_research_only",
+                "A delayed, free, indicative, or research-only quote cannot authorize a LEAPS broker review.",
+            )
+        )
 
     exact_quote_fields = (
         "candidate_source_quote_at",
@@ -2130,15 +2699,37 @@ def _option_candidate_review_errors(
     )
     for field in exact_quote_fields:
         if quote.get(field) != candidate.get(field):
-            errors.append(_issue("option_candidate_quote_constraint_mismatch", f"review_constraints.quote.{field}", "Quote constraints must exactly match the frozen option-candidate attestation."))
-    for field in ("candidate_source_bid", "candidate_source_ask", "candidate_source_spread_fraction"):
+            errors.append(
+                _issue(
+                    "option_candidate_quote_constraint_mismatch",
+                    f"review_constraints.quote.{field}",
+                    "Quote constraints must exactly match the frozen option-candidate attestation.",
+                )
+            )
+    for field in (
+        "candidate_source_bid",
+        "candidate_source_ask",
+        "candidate_source_spread_fraction",
+    ):
         left = _number(quote.get(field))
         right = _number(candidate.get(field))
         if left is None or right is None or abs(left - right) > 1e-6:
-            errors.append(_issue("option_candidate_quote_constraint_mismatch", f"review_constraints.quote.{field}", "Quote constraints must exactly match the frozen option-candidate attestation."))
+            errors.append(
+                _issue(
+                    "option_candidate_quote_constraint_mismatch",
+                    f"review_constraints.quote.{field}",
+                    "Quote constraints must exactly match the frozen option-candidate attestation.",
+                )
+            )
     quote_spread_cap = _number(quote.get("max_spread_fraction"))
     if spread_cap is None or quote_spread_cap is None or abs(spread_cap - quote_spread_cap) > 1e-12:
-        errors.append(_issue("option_candidate_quote_constraint_mismatch", "review_constraints.quote.max_spread_fraction", "The live spread cap must equal the stricter frozen candidate cap."))
+        errors.append(
+            _issue(
+                "option_candidate_quote_constraint_mismatch",
+                "review_constraints.quote.max_spread_fraction",
+                "The live spread cap must equal the stricter frozen candidate cap.",
+            )
+        )
     return errors
 
 
@@ -2154,9 +2745,11 @@ def _manual_review_context_errors(
     """Require the Trade Desk's bounded account, quote, and gate context."""
     errors: list[dict[str, str]] = []
     asset = trade_plan.get("asset") if isinstance(trade_plan, dict) else None
-    execution_profile = str(
-        trade_plan.get("execution_profile") or "swing_execution"
-    ).strip().lower() if isinstance(trade_plan, dict) else "swing_execution"
+    execution_profile = (
+        str(trade_plan.get("execution_profile") or "swing_execution").strip().lower()
+        if isinstance(trade_plan, dict)
+        else "swing_execution"
+    )
     is_leaps_swing = asset == "option" and execution_profile == LEAPS_SWING_PROFILE.name
     if execution_profile not in {"swing_execution", LEAPS_SWING_PROFILE.name}:
         errors.append(
@@ -2176,11 +2769,31 @@ def _manual_review_context_errors(
         )
     if is_leaps_swing:
         if trade_plan.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
-            errors.append(_issue("leaps_policy_version_mismatch", "profile_policy_version", "The trade plan must bind the active canonical LEAPS policy version."))
+            errors.append(
+                _issue(
+                    "leaps_policy_version_mismatch",
+                    "profile_policy_version",
+                    "The trade plan must bind the active canonical LEAPS policy version.",
+                )
+            )
         if trade_plan.get("strategy_evidence_lane") != LEAPS_EVIDENCE_LANE:
-            errors.append(_issue("leaps_evidence_lane_mismatch", "strategy_evidence_lane", "The trade plan must bind the dedicated LEAPS evidence lane."))
-        holding = trade_plan.get("holding_policy") if isinstance(trade_plan.get("holding_policy"), dict) else {}
-        management = trade_plan.get("management_references") if isinstance(trade_plan.get("management_references"), dict) else {}
+            errors.append(
+                _issue(
+                    "leaps_evidence_lane_mismatch",
+                    "strategy_evidence_lane",
+                    "The trade plan must bind the dedicated LEAPS evidence lane.",
+                )
+            )
+        holding = (
+            trade_plan.get("holding_policy")
+            if isinstance(trade_plan.get("holding_policy"), dict)
+            else {}
+        )
+        management = (
+            trade_plan.get("management_references")
+            if isinstance(trade_plan.get("management_references"), dict)
+            else {}
+        )
         planned_hold = holding.get("planned_hold_sessions")
         if (
             not isinstance(planned_hold, int)
@@ -2191,7 +2804,13 @@ def _manual_review_context_errors(
             or holding.get("max_hold_sessions") != LEAPS_SWING_PROFILE.max_hold_sessions
             or holding.get("contract_dte_is_not_hold_time") is not True
         ):
-            errors.append(_issue("unsafe_leaps_holding_policy", "holding_policy", "LEAPS contract runway must remain separate from the bounded 3/5/10-session review and 20-session maximum hold policy."))
+            errors.append(
+                _issue(
+                    "unsafe_leaps_holding_policy",
+                    "holding_policy",
+                    "LEAPS contract runway must remain separate from the bounded 3/5/10-session review and 20-session maximum hold policy.",
+                )
+            )
         expected_management = {
             "stop_loss_fraction": LEAPS_SWING_PROFILE.stop_loss_fraction,
             "target_gain_fraction": LEAPS_SWING_PROFILE.target_gain_fraction,
@@ -2199,10 +2818,20 @@ def _manual_review_context_errors(
             "manual_management_only": True,
         }
         if management != expected_management:
-            errors.append(_issue("unsafe_leaps_management_policy", "management_references", "LEAPS management references must match the canonical manual-only policy."))
+            errors.append(
+                _issue(
+                    "unsafe_leaps_management_policy",
+                    "management_references",
+                    "LEAPS management references must match the canonical manual-only policy.",
+                )
+            )
 
     clean_snapshot_id = _prompt_text(snapshot_id, limit=160)
-    if not isinstance(snapshot_id, str) or not snapshot_id.strip() or clean_snapshot_id != snapshot_id.strip():
+    if (
+        not isinstance(snapshot_id, str)
+        or not snapshot_id.strip()
+        or clean_snapshot_id != snapshot_id.strip()
+    ):
         errors.append(
             _issue(
                 "missing_or_invalid_snapshot_id",
@@ -2316,10 +2945,7 @@ def _manual_review_context_errors(
                 f"Risk fraction cannot exceed {MAX_TRADE_RISK_FRACTION:.2%}.",
             )
         )
-    if (
-        allocation_fraction is not None
-        and allocation_fraction > MAX_ACCOUNT_ALLOCATION_FRACTION
-    ):
+    if allocation_fraction is not None and allocation_fraction > MAX_ACCOUNT_ALLOCATION_FRACTION:
         errors.append(
             _issue(
                 "allocation_fraction_above_hard_cap",
@@ -2360,13 +2986,10 @@ def _manual_review_context_errors(
             )
         )
     plan_allocation_cap = _number(risk.get("allocation_cap_dollars"))
-    if (
-        allocation_cap is not None
-        and (
-            plan_allocation_cap is None
-            or plan_allocation_cap <= 0
-            or plan_allocation_cap > allocation_cap + 0.011
-        )
+    if allocation_cap is not None and (
+        plan_allocation_cap is None
+        or plan_allocation_cap <= 0
+        or plan_allocation_cap > allocation_cap + 0.011
     ):
         errors.append(
             _issue(
@@ -2392,9 +3015,13 @@ def _manual_review_context_errors(
         constraints = {}
     evidence = constraints.get("evidence") if isinstance(constraints.get("evidence"), dict) else {}
     account = constraints.get("account") if isinstance(constraints.get("account"), dict) else {}
-    portfolio = constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
+    portfolio = (
+        constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
+    )
     drawdown = constraints.get("drawdown") if isinstance(constraints.get("drawdown"), dict) else {}
-    candidate = constraints.get("candidate") if isinstance(constraints.get("candidate"), dict) else {}
+    candidate = (
+        constraints.get("candidate") if isinstance(constraints.get("candidate"), dict) else {}
+    )
     quote = constraints.get("quote") if isinstance(constraints.get("quote"), dict) else {}
     if not evidence:
         errors.append(
@@ -2405,7 +3032,13 @@ def _manual_review_context_errors(
             )
         )
     if not account:
-        errors.append(_issue("missing_account_review_constraints", "review_constraints.account", "Account review constraints are required."))
+        errors.append(
+            _issue(
+                "missing_account_review_constraints",
+                "review_constraints.account",
+                "Account review constraints are required.",
+            )
+        )
     if not portfolio:
         errors.append(
             _issue(
@@ -2423,7 +3056,13 @@ def _manual_review_context_errors(
             )
         )
     if not quote:
-        errors.append(_issue("missing_quote_review_constraints", "review_constraints.quote", "Live-quote review constraints are required."))
+        errors.append(
+            _issue(
+                "missing_quote_review_constraints",
+                "review_constraints.quote",
+                "Live-quote review constraints are required.",
+            )
+        )
     if asset == "share":
         errors.extend(
             _share_candidate_review_errors(
@@ -2444,48 +3083,152 @@ def _manual_review_context_errors(
 
     expected_evidence_asset = "option" if asset == "option" else "share"
     if evidence.get("schema") != "optedge_edge_lab_review_attestation_v1":
-        errors.append(_issue("invalid_edge_evidence_schema", "review_constraints.evidence.schema", "The Edge Lab review attestation schema is unsupported."))
+        errors.append(
+            _issue(
+                "invalid_edge_evidence_schema",
+                "review_constraints.evidence.schema",
+                "The Edge Lab review attestation schema is unsupported.",
+            )
+        )
     if evidence.get("source_schema") != "optedge_edge_lab_v1":
-        errors.append(_issue("invalid_edge_evidence_source", "review_constraints.evidence.source_schema", "Review evidence must come from the Edge Lab report."))
+        errors.append(
+            _issue(
+                "invalid_edge_evidence_source",
+                "review_constraints.evidence.source_schema",
+                "Review evidence must come from the Edge Lab report.",
+            )
+        )
     evidence_digest = evidence.get("report_digest_sha256")
-    if not isinstance(evidence_digest, str) or re.fullmatch(r"[0-9a-f]{64}", evidence_digest) is None:
-        errors.append(_issue("invalid_edge_evidence_digest", "review_constraints.evidence.report_digest_sha256", "A full lowercase SHA-256 digest must bind the packet to one Edge Lab report."))
+    if (
+        not isinstance(evidence_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", evidence_digest) is None
+    ):
+        errors.append(
+            _issue(
+                "invalid_edge_evidence_digest",
+                "review_constraints.evidence.report_digest_sha256",
+                "A full lowercase SHA-256 digest must bind the packet to one Edge Lab report.",
+            )
+        )
     if evidence.get("asset") != expected_evidence_asset:
-        errors.append(_issue("edge_evidence_asset_mismatch", "review_constraints.evidence.asset", "Edge evidence must match the proposed asset class."))
+        errors.append(
+            _issue(
+                "edge_evidence_asset_mismatch",
+                "review_constraints.evidence.asset",
+                "Edge evidence must match the proposed asset class.",
+            )
+        )
     if evidence.get("edge_lab_status") != "validated":
-        errors.append(_issue("edge_lab_not_validated", "review_constraints.evidence.edge_lab_status", "Edge Lab must have at least one validated live-capital lane."))
+        errors.append(
+            _issue(
+                "edge_lab_not_validated",
+                "review_constraints.evidence.edge_lab_status",
+                "Edge Lab must have at least one validated live-capital lane.",
+            )
+        )
     if evidence.get("asset_lane_status") != "validated":
-        errors.append(_issue("asset_edge_lane_not_validated", "review_constraints.evidence.asset_lane_status", "The proposed asset lane must be validated."))
+        errors.append(
+            _issue(
+                "asset_edge_lane_not_validated",
+                "review_constraints.evidence.asset_lane_status",
+                "The proposed asset lane must be validated.",
+            )
+        )
     if evidence.get("asset_lane_live_capital_eligible") is not True:
-        errors.append(_issue("asset_edge_lane_not_eligible", "review_constraints.evidence.asset_lane_live_capital_eligible", "The proposed asset lane must explicitly pass the live-capital evidence gate."))
+        errors.append(
+            _issue(
+                "asset_edge_lane_not_eligible",
+                "review_constraints.evidence.asset_lane_live_capital_eligible",
+                "The proposed asset lane must explicitly pass the live-capital evidence gate.",
+            )
+        )
     expected_evidence_lane = LEAPS_EVIDENCE_LANE if is_leaps_swing else "current_method_executable"
     if evidence.get("evidence_lane") != expected_evidence_lane:
-        errors.append(_issue("non_executable_edge_evidence", "review_constraints.evidence.evidence_lane", "Only the exact profile-isolated current-method evidence lane can authorize manual review."))
+        errors.append(
+            _issue(
+                "non_executable_edge_evidence",
+                "review_constraints.evidence.evidence_lane",
+                "Only the exact profile-isolated current-method evidence lane can authorize manual review.",
+            )
+        )
     if evidence.get("require_current_method_executable") is not True:
-        errors.append(_issue("missing_current_method_edge_requirement", "review_constraints.evidence.require_current_method_executable", "The review must explicitly require current-method executable evidence."))
+        errors.append(
+            _issue(
+                "missing_current_method_edge_requirement",
+                "review_constraints.evidence.require_current_method_executable",
+                "The review must explicitly require current-method executable evidence.",
+            )
+        )
     if is_leaps_swing:
         if evidence.get("execution_profile") != LEAPS_SWING_PROFILE.name:
-            errors.append(_issue("leaps_evidence_profile_mismatch", "review_constraints.evidence.execution_profile", "LEAPS evidence must be explicitly bound to the LEAPS swing profile."))
+            errors.append(
+                _issue(
+                    "leaps_evidence_profile_mismatch",
+                    "review_constraints.evidence.execution_profile",
+                    "LEAPS evidence must be explicitly bound to the LEAPS swing profile.",
+                )
+            )
         if evidence.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
-            errors.append(_issue("leaps_evidence_policy_version_mismatch", "review_constraints.evidence.profile_policy_version", "LEAPS evidence must match the active profile policy version."))
-        if evidence.get("required_horizons_sessions") != list(LEAPS_SWING_PROFILE.evidence_horizons_sessions):
-            errors.append(_issue("leaps_evidence_horizons_mismatch", "review_constraints.evidence.required_horizons_sessions", "LEAPS live-capital evidence must independently pass every 5/10/20-session horizon."))
+            errors.append(
+                _issue(
+                    "leaps_evidence_policy_version_mismatch",
+                    "review_constraints.evidence.profile_policy_version",
+                    "LEAPS evidence must match the active profile policy version.",
+                )
+            )
+        if evidence.get("required_horizons_sessions") != list(
+            LEAPS_SWING_PROFILE.evidence_horizons_sessions
+        ):
+            errors.append(
+                _issue(
+                    "leaps_evidence_horizons_mismatch",
+                    "review_constraints.evidence.required_horizons_sessions",
+                    "LEAPS live-capital evidence must independently pass every 5/10/20-session horizon.",
+                )
+            )
         if evidence.get("require_broker_market_observed") is not True:
-            errors.append(_issue("leaps_evidence_not_broker_observed", "review_constraints.evidence.require_broker_market_observed", "Modeled option marks cannot authorize LEAPS capital; exact broker-observed outcomes are required."))
+            errors.append(
+                _issue(
+                    "leaps_evidence_not_broker_observed",
+                    "review_constraints.evidence.require_broker_market_observed",
+                    "Modeled option marks cannot authorize LEAPS capital; exact broker-observed outcomes are required.",
+                )
+            )
     headline_horizon = evidence.get("headline_horizon_sessions")
     if (
         not isinstance(headline_horizon, int)
         or isinstance(headline_horizon, bool)
         or headline_horizon <= 0
     ):
-        errors.append(_issue("invalid_edge_evidence_horizon", "review_constraints.evidence.headline_horizon_sessions", "A positive integer evidence horizon is required."))
+        errors.append(
+            _issue(
+                "invalid_edge_evidence_horizon",
+                "review_constraints.evidence.headline_horizon_sessions",
+                "A positive integer evidence horizon is required.",
+            )
+        )
 
     if equity is not None and not _same_money(account.get("assumed_equity_dollars"), equity):
-        errors.append(_issue("review_equity_context_mismatch", "review_constraints.account.assumed_equity_dollars", "Review equity must match the trade-plan account assumption."))
-    for field, expected in (("risk_fraction", risk_fraction), ("allocation_fraction", allocation_fraction)):
+        errors.append(
+            _issue(
+                "review_equity_context_mismatch",
+                "review_constraints.account.assumed_equity_dollars",
+                "Review equity must match the trade-plan account assumption.",
+            )
+        )
+    for field, expected in (
+        ("risk_fraction", risk_fraction),
+        ("allocation_fraction", allocation_fraction),
+    ):
         actual = _number(account.get(field))
         if expected is not None and (actual is None or abs(actual - expected) > 1e-9):
-            errors.append(_issue(f"review_{field}_context_mismatch", f"review_constraints.account.{field}", f"Review {field} must match the trade-plan account assumption."))
+            errors.append(
+                _issue(
+                    f"review_{field}_context_mismatch",
+                    f"review_constraints.account.{field}",
+                    f"Review {field} must match the trade-plan account assumption.",
+                )
+            )
     match_count = account.get("eligible_same_account_match_count")
     if not isinstance(match_count, int) or isinstance(match_count, bool) or match_count < 1:
         errors.append(
@@ -2497,12 +3240,30 @@ def _manual_review_context_errors(
         )
     for field in ("require_active", "require_agentic_allowed", "use_conservative_buying_power"):
         if account.get(field) is not True:
-            errors.append(_issue(f"missing_{field}", f"review_constraints.account.{field}", f"{field} must be explicitly enabled."))
+            errors.append(
+                _issue(
+                    f"missing_{field}",
+                    f"review_constraints.account.{field}",
+                    f"{field} must be explicitly enabled.",
+                )
+            )
     if asset == "option" and account.get("require_options_approval") is not True:
-        errors.append(_issue("missing_options_approval_gate", "review_constraints.account.require_options_approval", "Option review must require options approval on the selected account."))
+        errors.append(
+            _issue(
+                "missing_options_approval_gate",
+                "review_constraints.account.require_options_approval",
+                "Option review must require options approval on the selected account.",
+            )
+        )
     overstatement = _number(account.get("max_equity_overstatement_fraction"))
     if overstatement is None or overstatement < 0 or overstatement > 0.05:
-        errors.append(_issue("unsafe_equity_overstatement_tolerance", "review_constraints.account.max_equity_overstatement_fraction", "Equity overstatement tolerance must be between 0% and 5%."))
+        errors.append(
+            _issue(
+                "unsafe_equity_overstatement_tolerance",
+                "review_constraints.account.max_equity_overstatement_fraction",
+                "Equity overstatement tolerance must be between 0% and 5%.",
+            )
+        )
     expected_account_key_derivation = {
         "schema": ACCOUNT_KEY_DERIVATION_SCHEMA,
         "algorithm": "sha256",
@@ -2547,9 +3308,7 @@ def _manual_review_context_errors(
                 "Portfolio exposure requires a complete Robinhood read bundle.",
             )
         )
-    snapshot_generated = _parse_aware_utc_timestamp(
-        portfolio.get("broker_snapshot_generated_at")
-    )
+    snapshot_generated = _parse_aware_utc_timestamp(portfolio.get("broker_snapshot_generated_at"))
     if snapshot_generated is None:
         errors.append(
             _issue(
@@ -2558,7 +3317,9 @@ def _manual_review_context_errors(
                 "A timezone-aware broker snapshot timestamp is required.",
             )
         )
-    elif issued is not None and snapshot_generated > issued + timedelta(seconds=MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS):
+    elif issued is not None and snapshot_generated > issued + timedelta(
+        seconds=MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS
+    ):
         errors.append(
             _issue(
                 "portfolio_snapshot_after_packet_issue",
@@ -2567,7 +3328,10 @@ def _manual_review_context_errors(
             )
         )
     snapshot_digest = portfolio.get("broker_snapshot_digest_sha256")
-    if not isinstance(snapshot_digest, str) or re.fullmatch(r"[0-9a-f]{64}", snapshot_digest) is None:
+    if (
+        not isinstance(snapshot_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", snapshot_digest) is None
+    ):
         errors.append(
             _issue(
                 "invalid_portfolio_snapshot_digest",
@@ -2790,7 +3554,10 @@ def _manual_review_context_errors(
         post_trade = _number(row.get("post_trade_capital_at_risk_dollars"))
         headroom_before = _number(row.get("headroom_before_trade_dollars"))
         headroom_after = _number(row.get("headroom_after_trade_dollars"))
-        if any(value is None or value <= 0 for value in (assumed, live, basis, row_allocation, cap, proposed)):
+        if any(
+            value is None or value <= 0
+            for value in (assumed, live, basis, row_allocation, cap, proposed)
+        ):
             errors.append(
                 _issue(
                     "missing_portfolio_attestation_capacity",
@@ -2812,32 +3579,84 @@ def _manual_review_context_errors(
         assert row_allocation is not None and cap is not None and proposed is not None
         assert current is not None and post_trade is not None
         if not _same_money(assumed, equity):
-            errors.append(_issue("portfolio_assumed_equity_mismatch", f"{field}.assumed_equity_dollars", "Portfolio assumed equity must match the planner context."))
+            errors.append(
+                _issue(
+                    "portfolio_assumed_equity_mismatch",
+                    f"{field}.assumed_equity_dollars",
+                    "Portfolio assumed equity must match the planner context.",
+                )
+            )
         if not _same_money(basis, min(assumed, live)):
-            errors.append(_issue("portfolio_equity_basis_mismatch", f"{field}.equity_basis_dollars", "Portfolio equity basis must equal the lower of assumed and live equity."))
+            errors.append(
+                _issue(
+                    "portfolio_equity_basis_mismatch",
+                    f"{field}.equity_basis_dollars",
+                    "Portfolio equity basis must equal the lower of assumed and live equity.",
+                )
+            )
         if allocation_fraction is None or abs(row_allocation - allocation_fraction) > 1e-9:
-            errors.append(_issue("portfolio_allocation_fraction_mismatch", f"{field}.allocation_fraction", "Portfolio allocation fraction must match the planner context."))
+            errors.append(
+                _issue(
+                    "portfolio_allocation_fraction_mismatch",
+                    f"{field}.allocation_fraction",
+                    "Portfolio allocation fraction must match the planner context.",
+                )
+            )
         if not _same_money(cap, basis * row_allocation):
-            errors.append(_issue("portfolio_allocation_cap_mismatch", f"{field}.allocation_cap_dollars", "Portfolio allocation cap arithmetic does not reconcile."))
+            errors.append(
+                _issue(
+                    "portfolio_allocation_cap_mismatch",
+                    f"{field}.allocation_cap_dollars",
+                    "Portfolio allocation cap arithmetic does not reconcile.",
+                )
+            )
         if expected_proposed is None or not _same_money(proposed, expected_proposed):
-            errors.append(_issue("portfolio_proposed_exposure_mismatch", f"{field}.proposed_capital_at_risk_dollars", "Proposed portfolio exposure must match the full option debit or share notional."))
+            errors.append(
+                _issue(
+                    "portfolio_proposed_exposure_mismatch",
+                    f"{field}.proposed_capital_at_risk_dollars",
+                    "Proposed portfolio exposure must match the full option debit or share notional.",
+                )
+            )
         if not _same_money(post_trade, current + proposed):
-            errors.append(_issue("portfolio_post_trade_exposure_mismatch", f"{field}.post_trade_capital_at_risk_dollars", "Post-trade exposure must equal current plus proposed exposure."))
+            errors.append(
+                _issue(
+                    "portfolio_post_trade_exposure_mismatch",
+                    f"{field}.post_trade_capital_at_risk_dollars",
+                    "Post-trade exposure must equal current plus proposed exposure.",
+                )
+            )
         if post_trade > cap + 0.011:
-            errors.append(_issue("portfolio_allocation_cap_exceeded", f"{field}.post_trade_capital_at_risk_dollars", "Post-trade exposure exceeds the total-open allocation cap."))
+            errors.append(
+                _issue(
+                    "portfolio_allocation_cap_exceeded",
+                    f"{field}.post_trade_capital_at_risk_dollars",
+                    "Post-trade exposure exceeds the total-open allocation cap.",
+                )
+            )
         if headroom_before is None or not _same_money(headroom_before, cap - current):
-            errors.append(_issue("portfolio_headroom_before_mismatch", f"{field}.headroom_before_trade_dollars", "Pre-trade portfolio headroom arithmetic does not reconcile."))
+            errors.append(
+                _issue(
+                    "portfolio_headroom_before_mismatch",
+                    f"{field}.headroom_before_trade_dollars",
+                    "Pre-trade portfolio headroom arithmetic does not reconcile.",
+                )
+            )
         if headroom_after is None or not _same_money(headroom_after, cap - post_trade):
-            errors.append(_issue("portfolio_headroom_after_mismatch", f"{field}.headroom_after_trade_dollars", "Post-trade portfolio headroom arithmetic does not reconcile."))
+            errors.append(
+                _issue(
+                    "portfolio_headroom_after_mismatch",
+                    f"{field}.headroom_after_trade_dollars",
+                    "Post-trade portfolio headroom arithmetic does not reconcile.",
+                )
+            )
 
     if drawdown:
         errors.extend(
             _account_drawdown_review_errors(
                 drawdown,
                 risk_fraction=risk_fraction,
-                portfolio_snapshot_digest=portfolio.get(
-                    "broker_snapshot_digest_sha256"
-                ),
+                portfolio_snapshot_digest=portfolio.get("broker_snapshot_digest_sha256"),
                 portfolio_rows=portfolio_rows,
                 match_count=match_count,
                 issued_at=issued,
@@ -2846,10 +3665,22 @@ def _manual_review_context_errors(
 
     expected_quote_tool = "get_option_quotes" if asset == "option" else "get_equity_quotes"
     if quote.get("quote_tool") != expected_quote_tool:
-        errors.append(_issue("missing_exact_quote_tool", "review_constraints.quote.quote_tool", f"Review must require {expected_quote_tool}."))
+        errors.append(
+            _issue(
+                "missing_exact_quote_tool",
+                "review_constraints.quote.quote_tool",
+                f"Review must require {expected_quote_tool}.",
+            )
+        )
     max_quote_age = _number(quote.get("max_live_quote_age_seconds"))
     if max_quote_age is None or max_quote_age <= 0 or max_quote_age > 120:
-        errors.append(_issue("unsafe_live_quote_age", "review_constraints.quote.max_live_quote_age_seconds", "Live quote age must be capped between 1 and 120 seconds."))
+        errors.append(
+            _issue(
+                "unsafe_live_quote_age",
+                "review_constraints.quote.max_live_quote_age_seconds",
+                "Live quote age must be capped between 1 and 120 seconds.",
+            )
+        )
     max_spread = _number(quote.get("max_spread_fraction"))
     hard_spread_cap = SWING_EXECUTION_MAX_OPTION_SPREAD_PCT if asset == "option" else 0.01
     if max_spread is None or max_spread <= 0 or max_spread > hard_spread_cap:
@@ -2861,22 +3692,64 @@ def _manual_review_context_errors(
             )
         )
     if quote.get("require_positive_bid_ask") is not True:
-        errors.append(_issue("missing_positive_quote_gate", "review_constraints.quote.require_positive_bid_ask", "Review must require a positive, ordered bid and ask."))
+        errors.append(
+            _issue(
+                "missing_positive_quote_gate",
+                "review_constraints.quote.require_positive_bid_ask",
+                "Review must require a positive, ordered bid and ask.",
+            )
+        )
     if quote.get("require_live_tick_validation") is not True:
-        errors.append(_issue("missing_live_tick_gate", "review_constraints.quote.require_live_tick_validation", "Review must validate the live instrument tick size before preview."))
+        errors.append(
+            _issue(
+                "missing_live_tick_gate",
+                "review_constraints.quote.require_live_tick_validation",
+                "Review must validate the live instrument tick size before preview.",
+            )
+        )
     if quote.get("limit_price_may_increase") is not False:
-        errors.append(_issue("unsafe_limit_price_policy", "review_constraints.quote.limit_price_may_increase", "The packet limit price may never increase."))
+        errors.append(
+            _issue(
+                "unsafe_limit_price_policy",
+                "review_constraints.quote.limit_price_may_increase",
+                "The packet limit price may never increase.",
+            )
+        )
     if asset == "option":
         order = trade_plan.get("order") if isinstance(trade_plan.get("order"), dict) else {}
         expected_chain_symbol = str(order.get("symbol") or "").strip().upper()
         if quote.get("expected_underlying_type") != "equity":
-            errors.append(_issue("missing_option_equity_underlying_gate", "review_constraints.quote.expected_underlying_type", "Option review must require an equity underlying."))
+            errors.append(
+                _issue(
+                    "missing_option_equity_underlying_gate",
+                    "review_constraints.quote.expected_underlying_type",
+                    "Option review must require an equity underlying.",
+                )
+            )
         if quote.get("expected_chain_symbol") != expected_chain_symbol:
-            errors.append(_issue("option_chain_symbol_constraint_mismatch", "review_constraints.quote.expected_chain_symbol", "The live instrument chain_symbol must exactly match the planned underlying."))
+            errors.append(
+                _issue(
+                    "option_chain_symbol_constraint_mismatch",
+                    "review_constraints.quote.expected_chain_symbol",
+                    "The live instrument chain_symbol must exactly match the planned underlying.",
+                )
+            )
         if re.search(r"\d", expected_chain_symbol):
-            errors.append(_issue("numeric_adjusted_option_root", "order.symbol", "Numeric adjusted option roots cannot open a new position."))
+            errors.append(
+                _issue(
+                    "numeric_adjusted_option_root",
+                    "order.symbol",
+                    "Numeric adjusted option roots cannot open a new position.",
+                )
+            )
         if quote.get("expected_contract_multiplier") != 100:
-            errors.append(_issue("missing_standard_option_multiplier_gate", "review_constraints.quote.expected_contract_multiplier", "The live chain multiplier must be exactly 100."))
+            errors.append(
+                _issue(
+                    "missing_standard_option_multiplier_gate",
+                    "review_constraints.quote.expected_contract_multiplier",
+                    "The live chain multiplier must be exactly 100.",
+                )
+            )
         for field in (
             "require_active_instrument",
             "require_buy_to_open_tradable",
@@ -2893,7 +3766,13 @@ def _manual_review_context_errors(
             "block_adjusted_or_nonstandard_deliverables",
         ):
             if quote.get(field) is not True:
-                errors.append(_issue(f"missing_option_{field}", f"review_constraints.quote.{field}", f"Option control {field} must be explicitly enabled."))
+                errors.append(
+                    _issue(
+                        f"missing_option_{field}",
+                        f"review_constraints.quote.{field}",
+                        f"Option control {field} must be explicitly enabled.",
+                    )
+                )
     return errors
 
 
@@ -2931,8 +3810,7 @@ def _expected_confirmation_summary(trade_plan: Any) -> dict[str, Any]:
     )
     assumptions = (
         trade_plan.get("account_assumptions")
-        if isinstance(trade_plan, dict)
-        and isinstance(trade_plan.get("account_assumptions"), dict)
+        if isinstance(trade_plan, dict) and isinstance(trade_plan.get("account_assumptions"), dict)
         else {}
     )
     return {
@@ -2955,12 +3833,8 @@ def _expected_confirmation_summary(trade_plan: Any) -> dict[str, Any]:
         "allocation_cap_dollars": assumptions.get("allocation_cap_dollars"),
         "planned_stop_loss_dollars": risk.get("planned_stop_loss_dollars"),
         "planned_max_loss_dollars": risk.get("planned_max_loss_dollars"),
-        "full_share_notional_at_risk_dollars": risk.get(
-            "full_share_notional_at_risk_dollars"
-        ),
-        "full_option_debit_at_risk_dollars": risk.get(
-            "full_option_debit_at_risk_dollars"
-        ),
+        "full_share_notional_at_risk_dollars": risk.get("full_share_notional_at_risk_dollars"),
+        "full_option_debit_at_risk_dollars": risk.get("full_option_debit_at_risk_dollars"),
         "max_loss_is_unbounded": risk.get("max_loss_is_unbounded") is True,
         "stop_is_not_broker_order": risk.get("stop_is_not_broker_order") is True,
     }
@@ -3184,7 +4058,9 @@ def validate_manual_robinhood_review_packet(
     )
     errors.extend(context_errors)
 
-    controls = packet.get("manual_controls") if isinstance(packet.get("manual_controls"), dict) else {}
+    controls = (
+        packet.get("manual_controls") if isinstance(packet.get("manual_controls"), dict) else {}
+    )
     for field, expected in (
         ("one_broker_preview_only", True),
         ("stop_after_broker_preview", True),
@@ -3250,7 +4126,13 @@ def build_manual_robinhood_review_packet(
             "optedge_robinhood_unknown_review_plan_v1",
             str(asset or "unknown"),
             "unknown",
-            [_issue("unsupported_asset", "asset", "Only share and long-option review packets are supported.")],
+            [
+                _issue(
+                    "unsupported_asset",
+                    "asset",
+                    "Only share and long-option review packets are supported.",
+                )
+            ],
         )
 
     review_gate_attested = isinstance(external_blockers, list)
@@ -3361,32 +4243,55 @@ def build_manual_robinhood_review_packet(
     }
     packet["content_digest_sha256"] = _packet_content_digest(packet)
     packet["prompt"] = _render_manual_robinhood_review_prompt_unchecked(packet)
-    packet["prompt_digest_sha256"] = hashlib.sha256(
-        packet["prompt"].encode("utf-8")
-    ).hexdigest()
+    packet["prompt_digest_sha256"] = hashlib.sha256(packet["prompt"].encode("utf-8")).hexdigest()
     return packet
 
 
 def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> str:
     """Render strict instructions for one manual Codex/Robinhood review."""
     review = packet.get("review_plan") if isinstance(packet.get("review_plan"), dict) else {}
-    summary = packet.get("confirmation_summary") if isinstance(packet.get("confirmation_summary"), dict) else {}
-    constraints = packet.get("review_constraints") if isinstance(packet.get("review_constraints"), dict) else {}
-    evidence_constraints = constraints.get("evidence") if isinstance(constraints.get("evidence"), dict) else {}
-    account_constraints = constraints.get("account") if isinstance(constraints.get("account"), dict) else {}
-    portfolio_constraints = constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
-    drawdown_constraints = constraints.get("drawdown") if isinstance(constraints.get("drawdown"), dict) else {}
-    candidate_constraints = constraints.get("candidate") if isinstance(constraints.get("candidate"), dict) else {}
-    quote_constraints = constraints.get("quote") if isinstance(constraints.get("quote"), dict) else {}
+    summary = (
+        packet.get("confirmation_summary")
+        if isinstance(packet.get("confirmation_summary"), dict)
+        else {}
+    )
+    constraints = (
+        packet.get("review_constraints")
+        if isinstance(packet.get("review_constraints"), dict)
+        else {}
+    )
+    evidence_constraints = (
+        constraints.get("evidence") if isinstance(constraints.get("evidence"), dict) else {}
+    )
+    account_constraints = (
+        constraints.get("account") if isinstance(constraints.get("account"), dict) else {}
+    )
+    portfolio_constraints = (
+        constraints.get("portfolio") if isinstance(constraints.get("portfolio"), dict) else {}
+    )
+    drawdown_constraints = (
+        constraints.get("drawdown") if isinstance(constraints.get("drawdown"), dict) else {}
+    )
+    candidate_constraints = (
+        constraints.get("candidate") if isinstance(constraints.get("candidate"), dict) else {}
+    )
+    quote_constraints = (
+        constraints.get("quote") if isinstance(constraints.get("quote"), dict) else {}
+    )
     asset = _prompt_text(review.get("asset"))
-    ready = packet.get("status") == "manual_review_required" and review.get("review_allowed") is True
+    ready = (
+        packet.get("status") == "manual_review_required" and review.get("review_allowed") is True
+    )
     if not ready:
         errors = (review.get("validation") or {}).get("errors") or []
-        error_lines = "\n".join(
-            f"- {_prompt_text(row.get('code'))}: {_prompt_text(row.get('message'))}"
-            for row in errors
-            if isinstance(row, dict)
-        ) or "- The packet is not actionable."
+        error_lines = (
+            "\n".join(
+                f"- {_prompt_text(row.get('code'))}: {_prompt_text(row.get('message'))}"
+                for row in errors
+                if isinstance(row, dict)
+            )
+            or "- The packet is not actionable."
+        )
         return (
             "# Optedge Manual Robinhood Review\n\n"
             "STATUS: BLOCKED\n\n"
@@ -3396,9 +4301,13 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
             f"Validation errors:\n{error_lines}\n"
         )
 
-    order_label = _prompt_text(summary.get("contract") or summary.get("symbol") or "unknown instrument")
+    order_label = _prompt_text(
+        summary.get("contract") or summary.get("symbol") or "unknown instrument"
+    )
     review_tool = _prompt_text(review.get("review_tool"))
-    preflight = ", ".join(_prompt_text(value, limit=80) for value in (review.get("preflight_read_tools") or []))
+    preflight = ", ".join(
+        _prompt_text(value, limit=80) for value in (review.get("preflight_read_tools") or [])
+    )
     planned_stop = _number(summary.get("planned_stop_loss_dollars"))
     maximum_loss = _number(summary.get("planned_max_loss_dollars"))
     stop_price = _number(summary.get("stop_price"))
@@ -3469,9 +4378,8 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         else ""
     )
     stop_target_lines = (
-        (f"- Planning stop reference: ${stop_price:.2f}\n" if stop_price is not None else "")
-        + (f"- Planning target reference: ${target_price:.2f}\n" if target_price is not None else "")
-    )
+        f"- Planning stop reference: ${stop_price:.2f}\n" if stop_price is not None else ""
+    ) + (f"- Planning target reference: ${target_price:.2f}\n" if target_price is not None else "")
     multiplier_line = (
         f"- Expected contract multiplier: {int(multiplier)}x; verify it from the live chain\n"
         if isinstance(multiplier, int) and not isinstance(multiplier, bool)
@@ -3481,7 +4389,9 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         f"- Planner account-equity assumption: ${assumed_equity:.2f}\n"
         f"- Per-trade risk fraction: {risk_fraction:.2%}\n"
         f"- Maximum total-open allocation fraction: {allocation_fraction:.2%}\n"
-        if assumed_equity is not None and risk_fraction is not None and allocation_fraction is not None
+        if assumed_equity is not None
+        and risk_fraction is not None
+        and allocation_fraction is not None
         else ""
     )
     portfolio_lines = "".join(
@@ -3595,13 +4505,11 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         "## Exact review template\n"
         f"{review_template}\n\n"
         + (
-            "## Exact option lookup template\n"
-            f"{lookup_template}\n\n"
+            f"## Exact option lookup template\n{lookup_template}\n\n"
             if review.get("contract_lookup")
             else ""
         )
-        +
-        "## Mandatory sequence\n"
+        + "## Mandatory sequence\n"
         "1. Use get_accounts and have the user choose or clearly identify the account. Never default an account. For every candidate, strip surrounding whitespace from the exact get_accounts.account_number, compute SHA-256 over the UTF-8 text 'optedge-robinhood-account-v1|' plus that trimmed account number, take the first 16 lowercase hexadecimal characters, and prefix them with 'acct_'. Require that derived account_key to exactly match an eligible account_key below; the last-four mask is display-only and is not a unique identity. Never print, return, or persist the raw account number.\n"
         "2. The chosen derived account_key must match both an eligible snapshot account and a blocker-free account-loss firewall row above, and both rows must show the same mask. Call get_portfolio for that exact account. Use total_value as live equity and the smaller of buying_power and unleveraged_buying_power as conservative buying power. Require live equity to match the packet's latest chained observation, the requested risk to remain within the displayed drawdown-adjusted ceiling, and the same account to be active, agentic_allowed, sufficiently funded, and options-approved when applicable.\n"
         f"   {live_risk_rule}\n"
@@ -3632,11 +4540,14 @@ def render_manual_robinhood_review_prompt(
     if isinstance(packet, dict) and packet.get("status") == "manual_review_required":
         integrity = validate_manual_robinhood_review_packet(packet, now=now)
         if integrity.get("ok") is not True:
-            error_lines = "\n".join(
-                f"- {_prompt_text(row.get('code'))}: {_prompt_text(row.get('message'))}"
-                for row in (integrity.get("errors") or [])
-                if isinstance(row, dict)
-            ) or "- Packet integrity or freshness could not be proven."
+            error_lines = (
+                "\n".join(
+                    f"- {_prompt_text(row.get('code'))}: {_prompt_text(row.get('message'))}"
+                    for row in (integrity.get("errors") or [])
+                    if isinstance(row, dict)
+                )
+                or "- Packet integrity or freshness could not be proven."
+            )
             return (
                 "# Optedge Manual Robinhood Review\n\n"
                 "STATUS: BLOCKED\n\n"

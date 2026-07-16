@@ -1,11 +1,12 @@
 # Purpose: Shared dynamic exit review logic for options, shares, and futures.
 """Shared dynamic exit review logic for options, shares, and futures."""
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -22,7 +23,7 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _position_id(position: Dict[str, Any], asset: str) -> str:
+def _position_id(position: dict[str, Any], asset: str) -> str:
     if position.get("position_id"):
         return str(position["position_id"])
     if asset == "option":
@@ -32,7 +33,7 @@ def _position_id(position: Dict[str, Any], asset: str) -> str:
     return f"{position.get('ticker')}|{position.get('entry_time')}"
 
 
-def _current_score(position: Dict[str, Any], current_signal: Optional[Dict[str, Any]]) -> Optional[float]:
+def _current_score(position: dict[str, Any], current_signal: dict[str, Any] | None) -> float | None:
     if not current_signal:
         return None
     for key in ("fused_score", "rank_score", "share_score", "futures_score"):
@@ -41,14 +42,16 @@ def _current_score(position: Dict[str, Any], current_signal: Optional[Dict[str, 
     return None
 
 
-def _entry_score(position: Dict[str, Any]) -> float:
+def _entry_score(position: dict[str, Any]) -> float:
     for key in ("fused_score", "rank_score", "share_score", "futures_score"):
         if key in position and position.get(key) is not None:
             return _num(position.get(key))
     return 0.0
 
 
-def _tightened_stop(position: Dict[str, Any], asset: str, current_price: Optional[float]) -> Optional[float]:
+def _tightened_stop(
+    position: dict[str, Any], asset: str, current_price: float | None
+) -> float | None:
     if current_price is None:
         return None
     old_stop = _num(position.get("stop_price"), 0.0)
@@ -74,9 +77,9 @@ def _tightened_stop(position: Dict[str, Any], asset: str, current_price: Optiona
     return candidate if candidate < current_price else old_stop
 
 
-def compute_exit_pressure(position: Dict[str, Any],
-                          current_signal: Optional[Dict[str, Any]] = None,
-                          asset: str = "option") -> Dict[str, Any]:
+def compute_exit_pressure(
+    position: dict[str, Any], current_signal: dict[str, Any] | None = None, asset: str = "option"
+) -> dict[str, Any]:
     from backtest.exit_learning import get_policy_for_asset
 
     policy = get_policy_for_asset(asset)
@@ -128,8 +131,16 @@ def compute_exit_pressure(position: Dict[str, Any],
         pressure += 12
         reasons.append("macro regime changed")
 
-    guard_status = str(position.get("research_guard_status") or (current_signal or {}).get("research_guard_status") or "")
-    guard_warnings = str(position.get("research_guard_warnings") or (current_signal or {}).get("research_guard_warnings") or "")
+    guard_status = str(
+        position.get("research_guard_status")
+        or (current_signal or {}).get("research_guard_status")
+        or ""
+    )
+    guard_warnings = str(
+        position.get("research_guard_warnings")
+        or (current_signal or {}).get("research_guard_warnings")
+        or ""
+    )
     if "blocked" in guard_status:
         pressure += 90
         reasons.append("research guard blocked")
@@ -157,7 +168,9 @@ def compute_exit_pressure(position: Dict[str, Any],
             pressure += 8
             reasons.append("near earnings IV-crush risk")
     elif asset == "share":
-        if (current_signal or {}).get("tech_score") is not None and _num((current_signal or {}).get("tech_score")) < -0.5:
+        if (current_signal or {}).get("tech_score") is not None and _num(
+            (current_signal or {}).get("tech_score")
+        ) < -0.5:
             pressure += 12
             reasons.append("trend deteriorated")
         for key, label in [
@@ -173,13 +186,19 @@ def compute_exit_pressure(position: Dict[str, Any],
     elif asset == "futures":
         direction = str(position.get("direction", "long")).lower()
         fs = (current_signal or {}).get("futures_score")
-        if fs is not None and ((direction == "long" and _num(fs) < -0.3) or (direction == "short" and _num(fs) > 0.3)):
+        if fs is not None and (
+            (direction == "long" and _num(fs) < -0.3) or (direction == "short" and _num(fs) > 0.3)
+        ):
             pressure += 35
             reasons.append("futures score reversed")
-        if (current_signal or {}).get("hv20") is not None and _num((current_signal or {}).get("hv20")) > _num(position.get("hv20"), 0) * 1.5:
+        if (current_signal or {}).get("hv20") is not None and _num(
+            (current_signal or {}).get("hv20")
+        ) > _num(position.get("hv20"), 0) * 1.5:
             pressure += 10
             reasons.append("volatility spike")
-        if (current_signal or {}).get("range_pos") is not None and position.get("range_pos") is not None:
+        if (current_signal or {}).get("range_pos") is not None and position.get(
+            "range_pos"
+        ) is not None:
             old_range = _num(position.get("range_pos"), 0.5)
             new_range = _num((current_signal or {}).get("range_pos"), 0.5)
             if direction == "long" and old_range < 0.35 and new_range > 0.85:
@@ -219,7 +238,7 @@ def compute_exit_pressure(position: Dict[str, Any],
     old_stop = position.get("stop_price")
     new_stop = _tightened_stop(position, asset, current_price) if action == "tighten_stop" else None
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "asset": asset,
         "position_id": _position_id(position, asset),
         "ticker": position.get("ticker") or position.get("symbol"),
@@ -244,8 +263,9 @@ def compute_exit_pressure(position: Dict[str, Any],
     }
 
 
-def apply_dynamic_exit_action(position: Dict[str, Any], exit_review: Dict[str, Any],
-                              current_price: Optional[float] = None) -> Dict[str, Any]:
+def apply_dynamic_exit_action(
+    position: dict[str, Any], exit_review: dict[str, Any], current_price: float | None = None
+) -> dict[str, Any]:
     out = dict(position)
     action = exit_review.get("action")
     if action == "watch":
@@ -266,7 +286,7 @@ def apply_dynamic_exit_action(position: Dict[str, Any], exit_review: Dict[str, A
     return out
 
 
-def log_exit_review(review: Dict[str, Any]) -> None:
+def log_exit_review(review: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with EXIT_REVIEWS_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(review, default=str) + "\n")

@@ -6,6 +6,7 @@ validation report. It never treats average per-signal P&L as drawdown and it
 fails conservatively when the validation artifact is missing, stale, or
 malformed. Live Robinhood review has a separate account-equity interlock.
 """
+
 from __future__ import annotations
 
 import json
@@ -82,9 +83,7 @@ def compute_breaker_state(window_days: int = 14) -> dict[str, Any]:
         generated_at = datetime.fromisoformat(str(generated).replace("Z", "+00:00"))
         if generated_at.tzinfo is None:
             generated_at = generated_at.replace(tzinfo=UTC)
-        age_days = (
-            datetime.now(UTC) - generated_at.astimezone(UTC)
-        ).total_seconds() / 86400.0
+        age_days = (datetime.now(UTC) - generated_at.astimezone(UTC)).total_seconds() / 86400.0
     except Exception:
         return _conservative_unavailable("timestamp missing")
     if age_days < -1.0 or age_days > max(1, int(window_days)):

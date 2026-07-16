@@ -13,34 +13,56 @@ Backward-compatible: if an old log lacks `entry_time`, file mtime is used as fal
 
 Run: `python run.py --forward`
 """
+
 from __future__ import annotations
+
 import glob
 import logging
 import math
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Any
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from utils import bs_price, safe_float, safe_int
+import data_provider  # noqa: E402
+from utils import bs_price, safe_float, safe_int  # noqa: E402
 
 log = logging.getLogger("optedge.forward")
 LOGS_DIR = ROOT / "logs"
 FEATURE_COLS = [
-    "z_mispricing", "z_iv_rank", "z_skew", "z_sent", "z_fund", "z_insider",
-    "z_macro", "z_news", "z_earnings", "z_value", "z_congress", "z_social",
-    "z_analyst", "pred_stock_return_pct", "pred_option_return_pct", "ev_pct",
-    "kelly_pct", "suggested_contracts", "actual_dollars",
-    "mispricing_pct", "net_edge_pct", "buyer_edge_pct", "seller_edge_pct",
-    "pricing_direction", "pricing_edge_ok", "trade_gate_reason",
+    "z_mispricing",
+    "z_iv_rank",
+    "z_skew",
+    "z_sent",
+    "z_fund",
+    "z_insider",
+    "z_macro",
+    "z_news",
+    "z_earnings",
+    "z_value",
+    "z_congress",
+    "z_social",
+    "z_analyst",
+    "pred_stock_return_pct",
+    "pred_option_return_pct",
+    "ev_pct",
+    "kelly_pct",
+    "suggested_contracts",
+    "actual_dollars",
+    "mispricing_pct",
+    "net_edge_pct",
+    "buyer_edge_pct",
+    "seller_edge_pct",
+    "pricing_direction",
+    "pricing_edge_ok",
+    "trade_gate_reason",
 ]
 
 
@@ -61,7 +83,7 @@ def _load_logs(prefix: str) -> pd.DataFrame:
             if df.empty:
                 continue
             if "entry_time" not in df.columns or df["entry_time"].isna().all():
-                mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=timezone.utc)
+                mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=UTC)
                 df["entry_time"] = mtime.isoformat()
             df["_log_file"] = Path(f).name
             dfs.append(df)
@@ -85,7 +107,7 @@ def _load_all_logs() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
-def _carry_features(row: pd.Series, out: Dict[str, Any]) -> Dict[str, Any]:
+def _carry_features(row: pd.Series, out: dict[str, Any]) -> dict[str, Any]:
     """Keep model feature columns on re-priced rows so retraining can learn."""
     for col in FEATURE_COLS:
         if col in row.index:
@@ -99,13 +121,14 @@ def _slippage_adjusted_pnl(row: pd.Series, pnl_pct: float, asset: str) -> float:
         return pnl_pct
     try:
         from config import FILL_SLIPPAGE_PCT
+
         slippage = float(FILL_SLIPPAGE_PCT)
     except Exception:
         slippage = 0.04
     return pnl_pct - slippage
 
 
-def _truthy(value: Any) -> Optional[bool]:
+def _truthy(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     if value is None or (isinstance(value, float) and math.isnan(value)):
@@ -118,7 +141,7 @@ def _truthy(value: Any) -> Optional[bool]:
     return None
 
 
-def _age_days(entry_time: Any) -> Optional[float]:
+def _age_days(entry_time: Any) -> float | None:
     entry = pd.to_datetime(entry_time, errors="coerce", utc=True)
     if pd.isna(entry):
         return None
@@ -126,7 +149,7 @@ def _age_days(entry_time: Any) -> Optional[float]:
 
 
 # -------- Re-pricing per asset type -----------------------------------
-def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
+def _price_option_now(row: pd.Series, spot_now: float) -> float | None:
     """Re-price an option contract at current spot, holding entry IV constant."""
     try:
         K = safe_float(row.get("strike"))
@@ -138,10 +161,10 @@ def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
         if not exp_str:
             return None
         try:
-            exp = datetime.strptime(str(exp_str), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            exp = datetime.strptime(str(exp_str), "%Y-%m-%d").replace(tzinfo=UTC)
         except Exception:
             return None
-        T_days = (exp - datetime.now(timezone.utc)).total_seconds() / 86400
+        T_days = (exp - datetime.now(UTC)).total_seconds() / 86400
         if T_days <= 0:
             return max(0.0, (spot_now - K) if is_call else (K - spot_now))
         T = T_days / 365.25
@@ -150,8 +173,9 @@ def _price_option_now(row: pd.Series, spot_now: float) -> Optional[float]:
         return None
 
 
-def _process_option(row: pd.Series,
-                    histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+def _process_option(
+    row: pd.Series, histories: dict[str, pd.DataFrame] | None = None
+) -> dict[str, Any]:
     ticker = row.get("ticker")
     if not ticker:
         return {"ticker": None, "_drop_reason": "no_ticker"}
@@ -168,12 +192,14 @@ def _process_option(row: pd.Series,
     if new_price is None:
         new_price = 0.0
     is_buy = bool(row.get("is_buy", True))
-    pnl_pct = ((new_price - entry_mid) / entry_mid) if is_buy else ((entry_mid - new_price) / entry_mid)
+    pnl_pct = (
+        ((new_price - entry_mid) / entry_mid) if is_buy else ((entry_mid - new_price) / entry_mid)
+    )
     out = {
         "asset": "option",
         "ticker": ticker,
         "contract": row.get("contract"),
-        "side": row.get("side"),                          # call / put
+        "side": row.get("side"),  # call / put
         "confidence": safe_int(row.get("confidence")),
         "entry_time": row.get("entry_time"),
         "age_days": _age_days(row.get("entry_time")),
@@ -186,8 +212,9 @@ def _process_option(row: pd.Series,
     return _carry_features(row, out)
 
 
-def _process_share(row: pd.Series,
-                   histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+def _process_share(
+    row: pd.Series, histories: dict[str, pd.DataFrame] | None = None
+) -> dict[str, Any]:
     ticker = row.get("ticker")
     if not ticker:
         return {"ticker": None, "_drop_reason": "no_ticker"}
@@ -219,8 +246,9 @@ def _process_share(row: pd.Series,
     return _carry_features(row, out)
 
 
-def _process_future(row: pd.Series,
-                    histories: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+def _process_future(
+    row: pd.Series, histories: dict[str, pd.DataFrame] | None = None
+) -> dict[str, Any]:
     """Futures P&L: point-based, scaled by point_value × n_contracts."""
     symbol = row.get("symbol")
     if not symbol:
@@ -231,7 +259,9 @@ def _process_future(row: pd.Series,
     if is_long is None:
         is_long = direction in {"long", "buy", "long futures"}
     point_value = safe_float(row.get("point_value"))
-    n_contracts = safe_int(row.get("n_contracts") or row.get("suggested_contracts") or row.get("contracts"))
+    n_contracts = safe_int(
+        row.get("n_contracts") or row.get("suggested_contracts") or row.get("contracts")
+    )
     if entry <= 0 or point_value <= 0:
         return {"_drop_reason": "no_entry_or_pointvalue"}
     # Prefer the actual continuous futures series; use the ETF only as a fallback.
@@ -295,33 +325,37 @@ def _bucket_by_confidence(pnl: pd.DataFrame) -> pd.DataFrame:
         sub = pnl[(pnl["confidence"] >= lo) & (pnl["confidence"] < hi)]
         if sub.empty:
             continue
-        out.append({
-            "bucket": lab,
-            "n": len(sub),
-            "win_rate": float((sub["pnl_pct"] > 0).mean()),
-            "avg_pnl": float(sub["pnl_pct"].mean()),
-            "median_pnl": float(sub["pnl_pct"].median()),
-        })
+        out.append(
+            {
+                "bucket": lab,
+                "n": len(sub),
+                "win_rate": float((sub["pnl_pct"] > 0).mean()),
+                "avg_pnl": float(sub["pnl_pct"].mean()),
+                "median_pnl": float(sub["pnl_pct"].median()),
+            }
+        )
     return pd.DataFrame(out)
 
 
-def _bucket_by_side(pnl: pd.DataFrame, sides: List[str]) -> pd.DataFrame:
+def _bucket_by_side(pnl: pd.DataFrame, sides: list[str]) -> pd.DataFrame:
     out = []
     for s in sides:
         sub = pnl[pnl["side"] == s]
         if sub.empty:
             continue
-        out.append({
-            "type": s,
-            "n": len(sub),
-            "win_rate": float((sub["pnl_pct"] > 0).mean()),
-            "avg_pnl": float(sub["pnl_pct"].mean()),
-            "median_pnl": float(sub["pnl_pct"].median()),
-        })
+        out.append(
+            {
+                "type": s,
+                "n": len(sub),
+                "win_rate": float((sub["pnl_pct"] > 0).mean()),
+                "avg_pnl": float(sub["pnl_pct"].mean()),
+                "median_pnl": float(sub["pnl_pct"].median()),
+            }
+        )
     return pd.DataFrame(out)
 
 
-def _risk_metrics(pnl: pd.DataFrame) -> Dict[str, float]:
+def _risk_metrics(pnl: pd.DataFrame) -> dict[str, float]:
     """Sharpe-style metrics on the per-signal P&L series."""
     if pnl.empty:
         return {}
@@ -346,17 +380,22 @@ def _risk_metrics(pnl: pd.DataFrame) -> Dict[str, float]:
     }
 
 
-def _prefetch_current_histories(opt_df: pd.DataFrame, sh_df: pd.DataFrame,
-                                fut_df: pd.DataFrame, max_workers: int) -> Dict[str, pd.DataFrame]:
+def _prefetch_current_histories(
+    opt_df: pd.DataFrame, sh_df: pd.DataFrame, fut_df: pd.DataFrame, max_workers: int
+) -> dict[str, pd.DataFrame]:
     """Fetch one daily history per unique symbol for current-mark telemetry."""
     symbols = set()
-    for frame, column in ((opt_df, "ticker"), (sh_df, "ticker"), (fut_df, "symbol"),
-                          (fut_df, "etf")):
+    for frame, column in (
+        (opt_df, "ticker"),
+        (sh_df, "ticker"),
+        (fut_df, "symbol"),
+        (fut_df, "etf"),
+    ):
         if frame is None or frame.empty or column not in frame.columns:
             continue
         values = frame[column].dropna().astype(str).str.strip().str.upper()
         symbols.update(value for value in values if value and value not in {"NAN", "NONE"})
-    histories: Dict[str, pd.DataFrame] = {}
+    histories: dict[str, pd.DataFrame] = {}
 
     def fetch(symbol: str):
         return symbol, data_provider.get_history(symbol, period="1y")
@@ -375,8 +414,7 @@ def _prefetch_current_histories(opt_df: pd.DataFrame, sh_df: pd.DataFrame,
 
 
 # -------- Public --------------------------------------------------
-def run_forward_test(max_workers: int = 8,
-                     include_fixed_horizon: bool = True) -> Dict[str, Any]:
+def run_forward_test(max_workers: int = 8, include_fixed_horizon: bool = True) -> dict[str, Any]:
     """Re-price every logged signal across options/shares/futures.
 
     Returns:
@@ -408,8 +446,13 @@ def run_forward_test(max_workers: int = 8,
         log.info("no signal logs found yet — run `python run.py` first to log signals")
         return {"signals": pd.DataFrame(), "summary": pd.DataFrame()}
 
-    log.info("forward test: %d option + %d shares + %d futures = %d signals",
-             len(opt_df), len(sh_df), len(fut_df), total)
+    log.info(
+        "forward test: %d option + %d shares + %d futures = %d signals",
+        len(opt_df),
+        len(sh_df),
+        len(fut_df),
+        total,
+    )
 
     histories = _prefetch_current_histories(opt_df, sh_df, fut_df, max_workers)
 
@@ -417,7 +460,7 @@ def run_forward_test(max_workers: int = 8,
     rows = []
     dropped = {}
 
-    def _push(r: Dict[str, Any]):
+    def _push(r: dict[str, Any]):
         if not r:
             return
         if r.get("_drop_reason"):
@@ -464,15 +507,17 @@ def run_forward_test(max_workers: int = 8,
         sub = pnl[pnl["asset"] == asset]
         if sub.empty:
             continue
-        by_asset.append({
-            "asset": asset,
-            "n": len(sub),
-            "win_rate": float((sub["pnl_pct"] > 0).mean()),
-            "avg_pnl": float(sub["pnl_pct"].mean()),
-            "median_pnl": float(sub["pnl_pct"].median()),
-            "sharpe": _risk_metrics(sub).get("sharpe"),
-            "max_drawdown_pct": _risk_metrics(sub).get("max_drawdown_pct"),
-        })
+        by_asset.append(
+            {
+                "asset": asset,
+                "n": len(sub),
+                "win_rate": float((sub["pnl_pct"] > 0).mean()),
+                "avg_pnl": float(sub["pnl_pct"].mean()),
+                "median_pnl": float(sub["pnl_pct"].median()),
+                "sharpe": _risk_metrics(sub).get("sharpe"),
+                "max_drawdown_pct": _risk_metrics(sub).get("max_drawdown_pct"),
+            }
+        )
 
     result = {
         "signals": pnl,
@@ -488,7 +533,8 @@ def run_forward_test(max_workers: int = 8,
             from backtest.fixed_horizon import run_fixed_horizon_test
 
             fixed = run_fixed_horizon_test(
-                signals=_load_all_logs(), max_workers=max_workers,
+                signals=_load_all_logs(),
+                max_workers=max_workers,
             )
             result["fixed_horizon"] = fixed["summary"]
             result["fixed_horizon_outcomes"] = fixed["outcomes"]

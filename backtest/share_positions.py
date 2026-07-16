@@ -1,12 +1,12 @@
 # Purpose: Track mark and close share positions.
 """Share position lifecycle tracking."""
+
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -19,27 +19,84 @@ log = logging.getLogger("optedge.share_positions")
 
 ENTRY_FACTOR_PREFIXES = ("z_", "factor_")
 ENTRY_FACTOR_COLUMNS = {
-    "mentions", "sentiment_now", "sentiment_delta", "sentiment_decay", "velocity",
-    "news_delta", "news_velocity", "top_headline", "n_24h", "fund_score",
-    "classification", "rev_growth", "op_margin", "pe", "market_cap",
-    "insider_score", "n_buys", "n_sells", "buys_value", "sells_value",
-    "earnings_date", "next_earnings_date", "days_to_earnings", "earnings_score",
-    "value_score", "value_bucket", "earnings_yield", "fcf_yield", "graham_score",
-    "congress_score", "congress_buys_n", "congress_top_buyer", "social_score",
-    "stocktwits_n", "stocktwits_avg_sent", "analyst_score", "analyst_total",
-    "analyst_avg", "analyst_momentum", "sector_rs_score", "sector_etf",
-    "ticker_ret_20d", "sector_ret_20d", "dark_pool_score", "short_vol_ratio",
-    "fda_score", "days_to_catalyst", "sector_flow_score", "tech_score", "rsi",
-    "macd_hist", "bb_percent_b", "ma_cross", "adx", "stoch_k", "obv_slope",
-    "short_int_score", "short_pct_of_float", "short_ratio_days_to_cover",
-    "cot_score", "thirteen_f_score", "vix_term_score", "eia_score",
-    "wasde_score", "buyback_score", "gtrends_score", "form_144_score",
-    "whisper_score", "hyperliquid_score", "twitter_score", "r_options_score",
-    "curve_score", "credit_score", "cluster_buys_score",
+    "mentions",
+    "sentiment_now",
+    "sentiment_delta",
+    "sentiment_decay",
+    "velocity",
+    "news_delta",
+    "news_velocity",
+    "top_headline",
+    "n_24h",
+    "fund_score",
+    "classification",
+    "rev_growth",
+    "op_margin",
+    "pe",
+    "market_cap",
+    "insider_score",
+    "n_buys",
+    "n_sells",
+    "buys_value",
+    "sells_value",
+    "earnings_date",
+    "next_earnings_date",
+    "days_to_earnings",
+    "earnings_score",
+    "value_score",
+    "value_bucket",
+    "earnings_yield",
+    "fcf_yield",
+    "graham_score",
+    "congress_score",
+    "congress_buys_n",
+    "congress_top_buyer",
+    "social_score",
+    "stocktwits_n",
+    "stocktwits_avg_sent",
+    "analyst_score",
+    "analyst_total",
+    "analyst_avg",
+    "analyst_momentum",
+    "sector_rs_score",
+    "sector_etf",
+    "ticker_ret_20d",
+    "sector_ret_20d",
+    "dark_pool_score",
+    "short_vol_ratio",
+    "fda_score",
+    "days_to_catalyst",
+    "sector_flow_score",
+    "tech_score",
+    "rsi",
+    "macd_hist",
+    "bb_percent_b",
+    "ma_cross",
+    "adx",
+    "stoch_k",
+    "obv_slope",
+    "short_int_score",
+    "short_pct_of_float",
+    "short_ratio_days_to_cover",
+    "cot_score",
+    "thirteen_f_score",
+    "vix_term_score",
+    "eia_score",
+    "wasde_score",
+    "buyback_score",
+    "gtrends_score",
+    "form_144_score",
+    "whisper_score",
+    "hyperliquid_score",
+    "twitter_score",
+    "r_options_score",
+    "curve_score",
+    "credit_score",
+    "cluster_buys_score",
 }
 
 
-def _load(path: Path) -> List[Dict]:
+def _load(path: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
@@ -48,7 +105,7 @@ def _load(path: Path) -> List[Dict]:
         return []
 
 
-def _save(path: Path, rows: List[Dict]) -> None:
+def _save(path: Path, rows: list[dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
 
@@ -78,9 +135,10 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _latest_price(ticker: str) -> Optional[float]:
+def _latest_price(ticker: str) -> float | None:
     try:
         import data_provider
+
         hist = data_provider.get_history(ticker, period="5d")
         if hist is None or hist.empty or "Close" not in hist.columns:
             return None
@@ -90,7 +148,7 @@ def _latest_price(ticker: str) -> Optional[float]:
         return None
 
 
-def _signal_map(current_signals: Optional[pd.DataFrame]) -> Dict[str, Dict]:
+def _signal_map(current_signals: pd.DataFrame | None) -> dict[str, dict]:
     if current_signals is None or current_signals.empty or "ticker" not in current_signals.columns:
         return {}
     return {
@@ -137,7 +195,9 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
             "current_price": entry,
             "suggested_dollars": float(s.get("suggested_dollars") or 0),
             "confidence": float(s.get("confidence") or 0),
-            "fused_score": float(s.get("fused_score") or s.get("share_score") or s.get("rank_score") or 0),
+            "fused_score": float(
+                s.get("fused_score") or s.get("share_score") or s.get("rank_score") or 0
+            ),
             "rank_score": float(s.get("rank_score") or s.get("share_score") or 0),
             "ev_pct": float(s.get("ev_pct") or 0),
             "kelly_pct": float(s.get("kelly_pct") or 0),
@@ -167,7 +227,7 @@ def add_new_share_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
     return added
 
 
-def _close(pos: Dict, asof: datetime, price: float, reason: str) -> Dict:
+def _close(pos: dict, asof: datetime, price: float, reason: str) -> dict:
     entry = float(pos.get("entry_price") or 0)
     pnl_pct = (price - entry) / entry if entry > 0 else 0.0
     dollars = float(pos.get("suggested_dollars") or 0) * pnl_pct
@@ -181,10 +241,13 @@ def _close(pos: Dict, asof: datetime, price: float, reason: str) -> Dict:
     }
 
 
-def mark_to_market_shares(asof: datetime,
-                          current_signals: Optional[pd.DataFrame] = None) -> Dict[str, float]:
+def mark_to_market_shares(
+    asof: datetime, current_signals: pd.DataFrame | None = None
+) -> dict[str, float]:
     from backtest.exit_rules import (
-        apply_dynamic_exit_action, compute_exit_pressure, log_exit_review,
+        apply_dynamic_exit_action,
+        compute_exit_pressure,
+        log_exit_review,
     )
 
     rows = _load(OPEN_FILE)
@@ -197,7 +260,11 @@ def mark_to_market_shares(asof: datetime,
         price = _latest_price(ticker)
         now_ts = pd.Timestamp(asof)
         entry_ts = pd.to_datetime(pos.get("entry_time"), errors="coerce", utc=True)
-        age_days = max(0.0, (now_ts - entry_ts).total_seconds() / 86400.0) if not pd.isna(entry_ts) else 0.0
+        age_days = (
+            max(0.0, (now_ts - entry_ts).total_seconds() / 86400.0)
+            if not pd.isna(entry_ts)
+            else 0.0
+        )
         pos["age_days"] = age_days
         if price is None:
             pos["reprice_failed_count"] = int(pos.get("reprice_failed_count") or 0) + 1
@@ -211,14 +278,26 @@ def mark_to_market_shares(asof: datetime,
         if price <= float(pos.get("stop_price") or 0):
             closed = _close(pos, asof, price, "hard_stop")
             review = compute_exit_pressure(closed, signals.get(ticker), asset="share")
-            review.update({"action": "hard_stop", "current_price": price, "current_pnl_pct": closed["pnl_pct"]})
+            review.update(
+                {
+                    "action": "hard_stop",
+                    "current_price": price,
+                    "current_pnl_pct": closed["pnl_pct"],
+                }
+            )
             log_exit_review(review)
             newly_closed.append(closed)
             continue
         if price >= float(pos.get("target_price") or float("inf")):
             closed = _close(pos, asof, price, "hard_target")
             review = compute_exit_pressure(closed, signals.get(ticker), asset="share")
-            review.update({"action": "hard_target", "current_price": price, "current_pnl_pct": closed["pnl_pct"]})
+            review.update(
+                {
+                    "action": "hard_target",
+                    "current_price": price,
+                    "current_pnl_pct": closed["pnl_pct"],
+                }
+            )
             log_exit_review(review)
             newly_closed.append(closed)
             continue
@@ -234,7 +313,7 @@ def mark_to_market_shares(asof: datetime,
     return {"open": len(still_open), "closed_this_iter": len(newly_closed)}
 
 
-def summary() -> Dict[str, float]:
+def summary() -> dict[str, float]:
     open_rows = _load(OPEN_FILE)
     closed_rows = _load(CLOSED_FILE)
     pnls = [float(r.get("pnl_pct") or 0) for r in closed_rows]

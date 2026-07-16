@@ -1,12 +1,13 @@
 # Purpose: Learn guarded exits from completed position evidence.
 """Conservative self-learning exit policy."""
+
 from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import pandas as pd
 
@@ -53,11 +54,11 @@ DEFAULT_POLICY = {
 }
 
 
-def _deepcopy_default() -> Dict[str, Any]:
+def _deepcopy_default() -> dict[str, Any]:
     return json.loads(json.dumps(DEFAULT_POLICY))
 
 
-def _policy_is_stale(policy: Dict[str, Any]) -> bool:
+def _policy_is_stale(policy: dict[str, Any]) -> bool:
     generated = pd.to_datetime(policy.get("generated_at"), errors="coerce", utc=True)
     if pd.isna(generated):
         return True
@@ -65,7 +66,7 @@ def _policy_is_stale(policy: Dict[str, Any]) -> bool:
     return age_days > MAX_POLICY_AGE_DAYS
 
 
-def load_exit_policy() -> Dict[str, Any]:
+def load_exit_policy() -> dict[str, Any]:
     if not POLICY_FILE.exists():
         return _deepcopy_default()
     try:
@@ -85,7 +86,7 @@ def load_exit_policy() -> Dict[str, Any]:
         return _deepcopy_default()
 
 
-def save_exit_policy(policy: Dict[str, Any]) -> None:
+def save_exit_policy(policy: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     POLICY_FILE.write_text(json.dumps(policy, indent=2, default=str), encoding="utf-8")
 
@@ -152,10 +153,16 @@ def _episode_id(row: pd.Series, asset: str) -> str:
 
 def _holding_hours(closed: pd.DataFrame) -> pd.Series:
     missing = pd.Series(pd.NaT, index=closed.index, dtype="datetime64[ns, UTC]")
-    entry = pd.to_datetime(closed["entry_time"], errors="coerce", utc=True) \
-        if "entry_time" in closed.columns else missing
-    exit_time = pd.to_datetime(closed["exit_time"], errors="coerce", utc=True) \
-        if "exit_time" in closed.columns else missing
+    entry = (
+        pd.to_datetime(closed["entry_time"], errors="coerce", utc=True)
+        if "entry_time" in closed.columns
+        else missing
+    )
+    exit_time = (
+        pd.to_datetime(closed["exit_time"], errors="coerce", utc=True)
+        if "exit_time" in closed.columns
+        else missing
+    )
     hours = (exit_time - entry).dt.total_seconds() / 3600.0
     if "age_days" in closed.columns:
         fallback = pd.to_numeric(closed["age_days"], errors="coerce") * 24.0
@@ -209,11 +216,15 @@ def execution_eligibility_flags(asset: str, closed_positions: pd.DataFrame) -> p
         return pd.DataFrame(index=closed.index)
     status = _normalized_text(closed, "entry_trade_status", "trade_status")
     guard = _normalized_text(
-        closed, "entry_research_guard_status", "research_guard_status",
+        closed,
+        "entry_research_guard_status",
+        "research_guard_status",
     )
     flags = pd.DataFrame(index=closed.index)
     flags["explicit_not_actionable"] = _explicit_false(
-        closed, "entry_is_actionable", "is_actionable",
+        closed,
+        "entry_is_actionable",
+        "is_actionable",
     )
     flags["non_actionable_status"] = status.isin(NON_ACTIONABLE_ENTRY_STATUSES)
     flags["guard_blocked"] = guard.eq("blocked")
@@ -222,8 +233,7 @@ def execution_eligibility_flags(asset: str, closed_positions: pd.DataFrame) -> p
     return flags
 
 
-def execution_eligibility_summary(asset: str,
-                                  closed_positions: pd.DataFrame) -> Dict[str, int]:
+def execution_eligibility_summary(asset: str, closed_positions: pd.DataFrame) -> dict[str, int]:
     """Return transparent entry-eligibility counts for validation reporting."""
     closed = _asset_rows(closed_positions, asset)
     flags = execution_eligibility_flags(asset, closed_positions)
@@ -274,8 +284,7 @@ def eligible_closed_for_learning(asset: str, closed_positions: pd.DataFrame) -> 
     closed["_holding_hours"] = _holding_hours(closed)
     reasons = closed.get("exit_reason", pd.Series("", index=closed.index)).fillna("").astype(str)
     immediate_dynamic = reasons.eq("dynamic_exit") & (
-        closed["_holding_hours"].isna()
-        | (closed["_holding_hours"] < MIN_LEARNING_HOLD_HOURS)
+        closed["_holding_hours"].isna() | (closed["_holding_hours"] < MIN_LEARNING_HOLD_HOURS)
     )
     closed = closed[~immediate_dynamic].copy()
     if closed.empty:
@@ -294,8 +303,9 @@ def _distinct_trading_days(rows: pd.DataFrame, primary: str, fallback: str) -> i
     return int(parsed.dt.date.nunique())
 
 
-def enough_data_for_learning(asset: str, closed_positions: pd.DataFrame,
-                             exit_reviews: pd.DataFrame) -> bool:
+def enough_data_for_learning(
+    asset: str, closed_positions: pd.DataFrame, exit_reviews: pd.DataFrame
+) -> bool:
     closed = eligible_closed_for_learning(asset, closed_positions)
     reviews = _asset_rows(exit_reviews, asset)
     if len(closed) < MIN_LEARNING_CLOSED_POSITIONS or len(reviews) < MIN_LEARNING_EXIT_REVIEWS:
@@ -305,7 +315,7 @@ def enough_data_for_learning(asset: str, closed_positions: pd.DataFrame,
     return closed_days >= MIN_LEARNING_TRADING_DAYS and review_days >= MIN_LEARNING_TRADING_DAYS
 
 
-def _clamp_thresholds(asset_policy: Dict[str, Any]) -> Dict[str, Any]:
+def _clamp_thresholds(asset_policy: dict[str, Any]) -> dict[str, Any]:
     out = dict(asset_policy)
     out["watch_pressure_threshold"] = int(max(35, min(55, out["watch_pressure_threshold"])))
     out["tighten_pressure_threshold"] = int(max(55, min(75, out["tighten_pressure_threshold"])))
@@ -321,8 +331,9 @@ def _step(old: int, proposed: int) -> int:
     return int(old + max(-5, min(5, proposed - old)))
 
 
-def _learn_asset(asset: str, current: Dict[str, Any],
-                 closed: pd.DataFrame, reviews: pd.DataFrame) -> tuple[Dict[str, Any], list[str]]:
+def _learn_asset(
+    asset: str, current: dict[str, Any], closed: pd.DataFrame, reviews: pd.DataFrame
+) -> tuple[dict[str, Any], list[str]]:
     policy = dict(current)
     reasons = []
     c = eligible_closed_for_learning(asset, closed)
@@ -335,7 +346,11 @@ def _learn_asset(asset: str, current: Dict[str, Any],
     c["pnl_pct"] = pd.to_numeric(c.get("pnl_pct"), errors="coerce")
     high_holds = r[(r["exit_pressure"] >= 70) & (r.get("action") == "hold")]
     loss_rate = float((c["pnl_pct"] < 0).mean()) if not c.empty else 0.0
-    close_success = r[(r.get("action") == "close_early") & (r["current_pnl_pct"] < 0)] if "current_pnl_pct" in r else pd.DataFrame()
+    close_success = (
+        r[(r.get("action") == "close_early") & (r["current_pnl_pct"] < 0)]
+        if "current_pnl_pct" in r
+        else pd.DataFrame()
+    )
 
     proposed_close = int(policy["close_pressure_threshold"])
     proposed_tighten = int(policy["tighten_pressure_threshold"])
@@ -352,14 +367,18 @@ def _learn_asset(asset: str, current: Dict[str, Any],
         proposed_close += 3
         reasons.append("closed sample has enough winners to avoid over-tightening")
 
-    policy["tighten_pressure_threshold"] = _step(int(policy["tighten_pressure_threshold"]), proposed_tighten)
-    policy["close_pressure_threshold"] = _step(int(policy["close_pressure_threshold"]), proposed_close)
+    policy["tighten_pressure_threshold"] = _step(
+        int(policy["tighten_pressure_threshold"]), proposed_tighten
+    )
+    policy["close_pressure_threshold"] = _step(
+        int(policy["close_pressure_threshold"]), proposed_close
+    )
     policy["learned_active"] = True
     policy = _clamp_thresholds(policy)
     return policy, reasons or ["thresholds retained"]
 
 
-def refit_exit_policy() -> Dict[str, Any]:
+def refit_exit_policy() -> dict[str, Any]:
     current = load_exit_policy()
     default = _deepcopy_default()
     closed = _closed_positions()
@@ -367,8 +386,8 @@ def refit_exit_policy() -> Dict[str, Any]:
     new_policy = _deepcopy_default()
     old_assets = current.get("assets", {})
     history = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "policy_version": datetime.now(timezone.utc).strftime("exit_%Y%m%d_%H%M%S"),
+        "timestamp": datetime.now(UTC).isoformat(),
+        "policy_version": datetime.now(UTC).strftime("exit_%Y%m%d_%H%M%S"),
         "assets": {},
     }
     new_policy["policy_version"] = history["policy_version"]
@@ -383,7 +402,9 @@ def refit_exit_policy() -> Dict[str, Any]:
             "closed_positions": int(len(raw_closed)),
             "learning_eligible_closed_positions": int(len(eligible_closed)),
             "excluded_closed_positions": int(max(0, len(raw_closed) - len(eligible_closed))),
-            "closed_trading_days": _distinct_trading_days(eligible_closed, "entry_time", "exit_time"),
+            "closed_trading_days": _distinct_trading_days(
+                eligible_closed, "entry_time", "exit_time"
+            ),
             "exit_reviews": int(len(_asset_rows(reviews, asset))),
             "old_thresholds": {
                 "watch": old.get("watch_pressure_threshold"),
@@ -405,7 +426,7 @@ def refit_exit_policy() -> Dict[str, Any]:
     return new_policy
 
 
-def get_policy_for_asset(asset: str) -> Dict[str, Any]:
+def get_policy_for_asset(asset: str) -> dict[str, Any]:
     policy = load_exit_policy()
     defaults = _deepcopy_default()["assets"].get(asset, {})
     out = dict(policy.get("assets", {}).get(asset, defaults))

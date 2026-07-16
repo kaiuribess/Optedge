@@ -7,20 +7,24 @@ history stack, retains an exact non-interpolated Robinhood option bar as
 validation-excluded telemetry, and otherwise returns an explicitly unresolved
 valuation.
 """
+
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from backtest.option_history import (
     SNAPSHOT_PATH as DEFAULT_OPTION_HISTORY_PATH,
+)
+from backtest.option_history import (
     contract_key_from_row,
     load_option_histories,
     observed_option_close,
@@ -108,10 +112,9 @@ def _previous_recognized_exchange_session(day: date) -> date:
 def _underlying_session_provenance(target: date, observed: date) -> str:
     if observed == target and _is_recognized_exchange_session(target):
         return "expiry_exchange_session"
-    if (
-        not _is_recognized_exchange_session(target)
-        and observed == _previous_recognized_exchange_session(target)
-    ):
+    if not _is_recognized_exchange_session(
+        target
+    ) and observed == _previous_recognized_exchange_session(target):
         return "recognized_prior_exchange_session"
     return "stale_gap_before_expiry"
 
@@ -160,9 +163,9 @@ def _underlying_type(position: dict[str, Any]) -> str:
     symbol = _text(position.get("ticker") or position.get("symbol")).upper()
     if is_known_index_option_symbol(symbol):
         return "index"
-    raw = _text(_first_present(
-        position, "underlying_type", "underlying_asset_type", "asset_class"
-    )).lower()
+    raw = _text(
+        _first_present(position, "underlying_type", "underlying_asset_type", "asset_class")
+    ).lower()
     if raw in {"equity", "stock", "common_stock"}:
         return "equity"
     if raw in {"etf", "fund", "exchange_traded_fund"}:
@@ -173,12 +176,14 @@ def _underlying_type(position: dict[str, Any]) -> str:
 
 
 def _settlement_style(position: dict[str, Any]) -> str:
-    return _text(_first_present(
-        position,
-        "official_settlement_style",
-        "settlement_style",
-        "exercise_settlement_style",
-    )).lower()
+    return _text(
+        _first_present(
+            position,
+            "official_settlement_style",
+            "settlement_style",
+            "exercise_settlement_style",
+        )
+    ).lower()
 
 
 def _is_am_settled(style: str) -> bool:
@@ -187,29 +192,27 @@ def _is_am_settled(style: str) -> bool:
 
 
 def _contract_provenance(position: dict[str, Any], underlying_type: str) -> dict[str, Any]:
-    multiplier = _number(_first_present(
-        position, "contract_multiplier", "trade_value_multiplier", "multiplier"
-    ))
+    multiplier = _number(
+        _first_present(position, "contract_multiplier", "trade_value_multiplier", "multiplier")
+    )
     raw_deliverable = _first_present(
         position, "deliverable", "deliverable_description", "contract_deliverable"
     )
     deliverable_type = _text(position.get("deliverable_type")).lower()
     deliverable_units = _number(position.get("deliverable_units"))
     if isinstance(raw_deliverable, dict):
-        deliverable_type = _text(
-            raw_deliverable.get("type") or raw_deliverable.get("asset_type")
-        ).lower() or deliverable_type
-        deliverable_units = _number(
-            raw_deliverable.get("units") or raw_deliverable.get("quantity")
-        ) or deliverable_units
-        deliverable = _text(
-            raw_deliverable.get("description") or raw_deliverable.get("label")
+        deliverable_type = (
+            _text(raw_deliverable.get("type") or raw_deliverable.get("asset_type")).lower()
+            or deliverable_type
         )
+        deliverable_units = (
+            _number(raw_deliverable.get("units") or raw_deliverable.get("quantity"))
+            or deliverable_units
+        )
+        deliverable = _text(raw_deliverable.get("description") or raw_deliverable.get("label"))
     else:
         deliverable = _text(raw_deliverable)
-    normalized_deliverable = re.sub(
-        r"[^a-z0-9]+", "_", deliverable.lower()
-    ).strip("_")
+    normalized_deliverable = re.sub(r"[^a-z0-9]+", "_", deliverable.lower()).strip("_")
     adjusted = any(
         _truthy(position.get(key))
         for key in (
@@ -223,16 +226,15 @@ def _contract_provenance(position: dict[str, Any], underlying_type: str) -> dict
         for token in ("adjusted", "non_standard", "corporate_action", "special_deliverable")
     )
     if underlying_type == "index" or "cash" in _settlement_style(position):
-        deliverable_ok = (
-            "cash" in normalized_deliverable or deliverable_type in {"cash", "cash_settlement"}
-        )
+        deliverable_ok = "cash" in normalized_deliverable or deliverable_type in {
+            "cash",
+            "cash_settlement",
+        }
     else:
         deliverable_ok = (
-            ("100" in normalized_deliverable and "share" in normalized_deliverable)
-            or (
-                deliverable_units == 100
-                and deliverable_type in {"share", "shares", "equity", "stock"}
-            )
+            "100" in normalized_deliverable and "share" in normalized_deliverable
+        ) or (
+            deliverable_units == 100 and deliverable_type in {"share", "shares", "equity", "stock"}
         )
     reasons: list[str] = []
     if multiplier != 100:
@@ -271,25 +273,23 @@ def _raw_close_basis_verified(value: str) -> bool:
 
 
 def _official_settlement(position: dict[str, Any]) -> dict[str, Any]:
-    value = _number(_first_present(
-        position,
-        "official_underlying_settlement_value",
-        "official_settlement_value",
-        "settlement_value",
-    ))
+    value = _number(
+        _first_present(
+            position,
+            "official_underlying_settlement_value",
+            "official_settlement_value",
+            "settlement_value",
+        )
+    )
     style = _settlement_style(position)
     source = _text(position.get("official_settlement_source"))
-    source_id = _text(_first_present(
-        position, "official_settlement_source_id", "official_settlement_record_id"
-    ))
+    source_id = _text(
+        _first_present(position, "official_settlement_source_id", "official_settlement_record_id")
+    )
     published_at = _text(position.get("official_settlement_published_at"))
     explicit_verified = position.get("official_settlement_verified")
     captured = bool(
-        value is not None
-        and value > 0
-        and style
-        and source
-        and explicit_verified is True
+        value is not None and value > 0 and style and source and explicit_verified is True
     )
     return {
         "official_settlement_value": value,
@@ -326,9 +326,7 @@ def expiry_exit_time(position: dict[str, Any]) -> datetime | None:
     if "T" in raw:
         return parsed.to_pydatetime()
     local_time = time(9, 30) if _is_am_settled(_settlement_style(position)) else time(16, 0)
-    local_close = datetime.combine(
-        parsed.date(), local_time, tzinfo=ZoneInfo("America/New_York")
-    )
+    local_close = datetime.combine(parsed.date(), local_time, tzinfo=ZoneInfo("America/New_York"))
     return local_close.astimezone(UTC)
 
 
@@ -358,9 +356,7 @@ def unresolved_valuation(position: dict[str, Any]) -> dict[str, Any]:
         "contract_key": valuation_key(position),
         "option_value": None,
         "price_source": "unresolved_no_expiry_market_data",
-        "valuation_date": (
-            expiry_date(position).isoformat() if expiry_date(position) else None
-        ),
+        "valuation_date": (expiry_date(position).isoformat() if expiry_date(position) else None),
         "underlying_price": None,
         "underlying_price_date": None,
         "underlying_session_gap_days": None,
@@ -398,9 +394,7 @@ def _call_history_fetcher(
     return frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
 
 
-def _history_close(
-    frame: pd.DataFrame, target: date
-) -> dict[str, Any] | None:
+def _history_close(frame: pd.DataFrame, target: date) -> dict[str, Any] | None:
     if frame is None or frame.empty:
         return None
     close_col = next(
@@ -565,7 +559,8 @@ def resolve_expiry_valuations(
                     "option_value": intrinsic,
                     "price_source": (
                         "intrinsic_proxy_from_underlying_expiry_close"
-                        if session_provenance in {
+                        if session_provenance
+                        in {
                             "expiry_exchange_session",
                             "recognized_prior_exchange_session",
                         }

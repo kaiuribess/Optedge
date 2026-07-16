@@ -26,10 +26,11 @@ Two related calculations per trade:
 Reference: research from FlashAlpha, Option Alpha, IntraAlpha — fractional Kelly
 is the consensus approach for retail traders to avoid drawdowns.
 """
+
 from __future__ import annotations
-import math
+
 import logging
-from typing import Dict, Tuple
+import math
 
 import numpy as np
 import pandas as pd
@@ -40,14 +41,14 @@ log = logging.getLogger("optedge.sizing")
 # Aggressive mode = half Kelly + larger caps + bigger total exposure.
 KELLY_FRACTION = 0.25
 MAX_PER_OPTION_TRADE = 0.05
-MAX_PER_SHARE_TRADE  = 0.08
-TOTAL_OPTIONS_CAP    = 0.30
+MAX_PER_SHARE_TRADE = 0.08
+TOTAL_OPTIONS_CAP = 0.30
 
 # Aggressive overrides — set when --aggressive flag is passed
 KELLY_FRACTION_AGGRESSIVE = 0.50
 MAX_PER_OPTION_TRADE_AGGRESSIVE = 0.10
-MAX_PER_SHARE_TRADE_AGGRESSIVE  = 0.15
-TOTAL_OPTIONS_CAP_AGGRESSIVE    = 0.60
+MAX_PER_SHARE_TRADE_AGGRESSIVE = 0.15
+TOTAL_OPTIONS_CAP_AGGRESSIVE = 0.60
 MIN_OPTION_BUYER_EDGE_PCT = 0.0
 
 DEFAULT_BANKROLL = 10_000
@@ -58,6 +59,7 @@ DEFAULT_BANKROLL = 10_000
 # optimistic. Default 4% can be overridden via config or env var.
 try:
     from config import FILL_SLIPPAGE_PCT as _CFG_SLIPPAGE
+
     DEFAULT_FILL_SLIPPAGE_PCT = float(_CFG_SLIPPAGE)
 except Exception:
     DEFAULT_FILL_SLIPPAGE_PCT = 0.04
@@ -73,7 +75,7 @@ def _bounded(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def _option_buyer_edge(row: pd.Series) -> Tuple[float, bool]:
+def _option_buyer_edge(row: pd.Series) -> tuple[float, bool]:
     """Return buyer-directed edge and whether directional data was available."""
     raw = row.get("buyer_edge_pct")
     if raw is not None and not pd.isna(raw):
@@ -91,7 +93,8 @@ def add_directional_option_edges(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     mispricing = pd.to_numeric(out["mispricing_pct"], errors="coerce")
     spread = pd.to_numeric(
-        out.get("spread_pct", pd.Series(0.0, index=out.index)), errors="coerce",
+        out.get("spread_pct", pd.Series(0.0, index=out.index)),
+        errors="coerce",
     ).fillna(0.0)
     anomaly = mispricing.abs() - spread
     buyer = -mispricing - spread
@@ -105,7 +108,8 @@ def add_directional_option_edges(df: pd.DataFrame) -> pd.DataFrame:
             out[column] = computed
         else:
             out[column] = pd.to_numeric(out[column], errors="coerce").where(
-                pd.to_numeric(out[column], errors="coerce").notna(), computed,
+                pd.to_numeric(out[column], errors="coerce").notna(),
+                computed,
             )
     direction = pd.Series(
         np.select(
@@ -186,10 +190,7 @@ def _add_trade_status(df: pd.DataFrame, asset: str) -> pd.DataFrame:
             buyer_edge_bad = buyer_edge.notna() & (buyer_edge < MIN_OPTION_BUYER_EDGE_PCT)
         else:
             buyer_edge_bad = pd.Series(False, index=out.index)
-        trade = (
-            (ev > 0) & (kelly > 0) & (contracts > 0)
-            & ~spread_bad & ~buyer_edge_bad
-        )
+        trade = (ev > 0) & (kelly > 0) & (contracts > 0) & ~spread_bad & ~buyer_edge_bad
     else:
         dollars = out.get("suggested_dollars", pd.Series(0.0, index=out.index)).fillna(0.0)
         spread_bad = pd.Series(False, index=out.index)
@@ -229,7 +230,9 @@ def add_pre_guard_qualification(df: pd.DataFrame, asset: str) -> pd.DataFrame:
         return df
     out = df.copy()
     status = out.get("trade_status", pd.Series("", index=out.index)).fillna("").astype(str)
-    actionable = out.get("is_actionable", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    actionable = (
+        out.get("is_actionable", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    )
     out["pre_guard_trade_status"] = status
     out["pre_guard_is_actionable"] = actionable
     if asset in {"option", "futures"}:
@@ -244,19 +247,20 @@ def add_pre_guard_qualification(df: pd.DataFrame, asset: str) -> pd.DataFrame:
             errors="coerce",
         ).fillna(0.0)
         out["pre_guard_suggested_dollars"] = size
-    out["strategy_qualified_pre_guard"] = (
-        status.str.lower().eq("trade") & actionable & (size > 0)
-    )
+    out["strategy_qualified_pre_guard"] = status.str.lower().eq("trade") & actionable & (size > 0)
     return out
 
 
 def get_sizing_params(aggressive: bool = False):
     """Return (kelly_fraction, max_option_pct, max_share_pct, total_cap)."""
     if aggressive:
-        return (KELLY_FRACTION_AGGRESSIVE, MAX_PER_OPTION_TRADE_AGGRESSIVE,
-                MAX_PER_SHARE_TRADE_AGGRESSIVE, TOTAL_OPTIONS_CAP_AGGRESSIVE)
-    return (KELLY_FRACTION, MAX_PER_OPTION_TRADE,
-            MAX_PER_SHARE_TRADE, TOTAL_OPTIONS_CAP)
+        return (
+            KELLY_FRACTION_AGGRESSIVE,
+            MAX_PER_OPTION_TRADE_AGGRESSIVE,
+            MAX_PER_SHARE_TRADE_AGGRESSIVE,
+            TOTAL_OPTIONS_CAP_AGGRESSIVE,
+        )
+    return (KELLY_FRACTION, MAX_PER_OPTION_TRADE, MAX_PER_SHARE_TRADE, TOTAL_OPTIONS_CAP)
 
 
 def _time_of_day_kelly_mult() -> float:
@@ -268,23 +272,24 @@ def _time_of_day_kelly_mult() -> float:
     Prime hours 10am-3:30pm ET → 1.0× (no discount)
     """
     try:
-        from zoneinfo import ZoneInfo
         from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo
+
         now = _dt.now(ZoneInfo("US/Eastern"))
     except Exception:
-        return 1.0   # if tz lib missing, don't penalize
+        return 1.0  # if tz lib missing, don't penalize
     weekday = now.weekday()
-    if weekday >= 5:                  # Sat/Sun = totally stale
+    if weekday >= 5:  # Sat/Sun = totally stale
         return 0.5
     h, m = now.hour, now.minute
     minutes = h * 60 + m
     if minutes < 9 * 60 + 30 or minutes >= 16 * 60:
-        return 0.5                    # outside RTH
+        return 0.5  # outside RTH
     if 9 * 60 + 30 <= minutes < 10 * 60:
-        return 0.7                    # opening 30min
+        return 0.7  # opening 30min
     if 15 * 60 + 30 <= minutes < 16 * 60:
-        return 0.7                    # closing 30min
-    return 1.0                        # prime time
+        return 0.7  # closing 30min
+    return 1.0  # prime time
 
 
 def _earnings_iv_crush_mult(row: pd.Series) -> float:
@@ -304,15 +309,21 @@ def _earnings_iv_crush_mult(row: pd.Series) -> float:
         return 1.0
     if not (0 <= days_to_earn <= dte):
         return 1.0
-    if days_to_earn <= 2:  return 0.50
-    if days_to_earn <= 7:  return 0.65
-    if days_to_earn <= 14: return 0.80
+    if days_to_earn <= 2:
+        return 0.50
+    if days_to_earn <= 7:
+        return 0.65
+    if days_to_earn <= 14:
+        return 0.80
     return 0.90
 
 
-def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
-                                  fill_slippage_pct: float = None,
-                                  realized_win_rate: float = None) -> Dict[str, float]:
+def compute_option_ev_and_kelly(
+    row: pd.Series,
+    aggressive: bool = False,
+    fill_slippage_pct: float = None,
+    realized_win_rate: float = None,
+) -> dict[str, float]:
     """Per-row EV and Kelly fraction for a long option.
 
     v20.7 changes:
@@ -328,7 +339,9 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     if fill_slippage_pct is None:
         fill_slippage_pct = DEFAULT_FILL_SLIPPAGE_PCT
     pred_raw = row.get("pred_option_return_pct")
-    has_prediction = pred_raw is not None and not (isinstance(pred_raw, float) and math.isnan(pred_raw))
+    has_prediction = pred_raw is not None and not (
+        isinstance(pred_raw, float) and math.isnan(pred_raw)
+    )
     pred = float(pred_raw or 0)
     crush_mult = _earnings_iv_crush_mult(row)
     tod_mult = _time_of_day_kelly_mult()
@@ -357,28 +370,38 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     prob_win = max(0.05, min(0.90, abs(delta) * dte_factor))
 
     if mid <= 0 or not has_prediction:
-        return {"ev_pct": float("nan"), "ev_dollar_per_contract": float("nan"),
-                "kelly_full": float("nan"), "kelly_pct": float("nan"),
-                "prob_win": prob_win, "spread_to_edge_ratio": spread_to_edge,
-                "liquidity_penalty_pct": spread_penalty,
-                "pricing_edge_penalty_pct": pricing_edge_penalty}
+        return {
+            "ev_pct": float("nan"),
+            "ev_dollar_per_contract": float("nan"),
+            "kelly_full": float("nan"),
+            "kelly_pct": float("nan"),
+            "prob_win": prob_win,
+            "spread_to_edge_ratio": spread_to_edge,
+            "liquidity_penalty_pct": spread_penalty,
+            "pricing_edge_penalty_pct": pricing_edge_penalty,
+        }
 
     ev_pct = pred_net
     ev_dollar = ev_pct * mid * 100
 
     if pred_net <= 0:
-        return {"ev_pct": ev_pct, "ev_dollar_per_contract": ev_dollar,
-                "kelly_full": 0.0, "kelly_pct": 0.0, "prob_win": prob_win,
-                "spread_to_edge_ratio": spread_to_edge,
-                "liquidity_penalty_pct": spread_penalty,
-                "pricing_edge_penalty_pct": pricing_edge_penalty}
+        return {
+            "ev_pct": ev_pct,
+            "ev_dollar_per_contract": ev_dollar,
+            "kelly_full": 0.0,
+            "kelly_pct": 0.0,
+            "prob_win": prob_win,
+            "spread_to_edge_ratio": spread_to_edge,
+            "liquidity_penalty_pct": spread_penalty,
+            "pricing_edge_penalty_pct": pricing_edge_penalty,
+        }
 
     # v20.7: conservative Kelly prior. Until we have 500+ logged signals AND
     # 10+ days of forward P&L, use a less-optimistic avg_win.
     if realized_win_rate is not None and 0 < realized_win_rate < 1:
         avg_win = max(0.30, abs(pred_net) * 1.5)
     else:
-        avg_win = max(0.30, abs(pred_net) * 1.3)   # was 0.50, abs(pred)*2
+        avg_win = max(0.30, abs(pred_net) * 1.3)  # was 0.50, abs(pred)*2
     avg_loss = 0.60
     b = avg_win / avg_loss
     p = prob_win
@@ -402,11 +425,14 @@ def compute_option_ev_and_kelly(row: pd.Series, aggressive: bool = False,
     }
 
 
-def compute_share_ev_and_kelly(row: pd.Series, hv_proxy: float = 0.30,
-                                aggressive: bool = False) -> Dict[str, float]:
+def compute_share_ev_and_kelly(
+    row: pd.Series, hv_proxy: float = 0.30, aggressive: bool = False
+) -> dict[str, float]:
     """Per-row EV and Kelly fraction for a long share buy."""
     pred_raw = row.get("pred_stock_return_pct")
-    has_prediction = pred_raw is not None and not (isinstance(pred_raw, float) and math.isnan(pred_raw))
+    has_prediction = pred_raw is not None and not (
+        isinstance(pred_raw, float) and math.isnan(pred_raw)
+    )
     if not has_prediction:
         return {"ev_pct": float("nan"), "kelly_full": float("nan"), "kelly_pct": float("nan")}
     pred = float(pred_raw or 0)
@@ -415,11 +441,11 @@ def compute_share_ev_and_kelly(row: pd.Series, hv_proxy: float = 0.30,
 
     # For shares, use a more graceful loss model: realized vol acts as the std-dev
     # of outcomes. Average loser ~ 1×hv (one standard-deviation move down over the holding period).
-    hv = hv_proxy   # default 30% annualized vol
+    hv = hv_proxy  # default 30% annualized vol
     # Probability of profit estimated from predicted return / vol via normal approx
     prob_win = 0.5 + max(-0.4, min(0.4, pred / max(hv, 0.05)))
-    avg_win = max(pred, hv * 0.5)                  # bullish baseline
-    avg_loss = hv * 0.5                            # 0.5 sigma down move proxy
+    avg_win = max(pred, hv * 0.5)  # bullish baseline
+    avg_loss = hv * 0.5  # 0.5 sigma down move proxy
 
     ev_pct = prob_win * avg_win - (1 - prob_win) * avg_loss
 
@@ -439,8 +465,7 @@ def compute_share_ev_and_kelly(row: pd.Series, hv_proxy: float = 0.30,
     }
 
 
-def _apply_sector_cap(df: pd.DataFrame, bankroll: float,
-                       sector_cap_pct: float) -> pd.DataFrame:
+def _apply_sector_cap(df: pd.DataFrame, bankroll: float, sector_cap_pct: float) -> pd.DataFrame:
     """v20.7 — sector concentration cap. Walks the ranked options (highest
     Kelly first) and zeros out positions that would exceed `sector_cap_pct`
     of bankroll in any one sector. Sector comes from `classification` or
@@ -451,8 +476,11 @@ def _apply_sector_cap(df: pd.DataFrame, bankroll: float,
     is full, prioritising by Kelly size."""
     if df is None or df.empty:
         return df
-    sector_col = "sector" if "sector" in df.columns else (
-                  "classification" if "classification" in df.columns else None)
+    sector_col = (
+        "sector"
+        if "sector" in df.columns
+        else ("classification" if "classification" in df.columns else None)
+    )
     if sector_col is None:
         return df
     if "kelly_pct" not in df.columns or "actual_dollars" not in df.columns:
@@ -481,16 +509,22 @@ def _apply_sector_cap(df: pd.DataFrame, bankroll: float,
             sector_used[sec] = used + spend
     if capped_idx:
         out["sector_cap_applied"] = out.index.isin(capped_idx)
-        log.info("sector cap: dropped %d options to keep each sector ≤ %.0f%% of bankroll",
-                  len(capped_idx), sector_cap_pct * 100)
+        log.info(
+            "sector cap: dropped %d options to keep each sector ≤ %.0f%% of bankroll",
+            len(capped_idx),
+            sector_cap_pct * 100,
+        )
     return out
 
 
-def add_sizing_to_options(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
-                            aggressive: bool = False,
-                            drawdown_mult: float = 1.0,
-                            fill_slippage_pct: float = None,
-                            sector_cap_pct: float = None) -> pd.DataFrame:
+def add_sizing_to_options(
+    df: pd.DataFrame,
+    bankroll: float = DEFAULT_BANKROLL,
+    aggressive: bool = False,
+    drawdown_mult: float = 1.0,
+    fill_slippage_pct: float = None,
+    sector_cap_pct: float = None,
+) -> pd.DataFrame:
     """Compute EV + Kelly + suggested dollars + contract count + exit triggers.
 
     v20: ``drawdown_mult`` is applied to kelly_pct (default 1.0 = no effect).
@@ -499,9 +533,10 @@ def add_sizing_to_options(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
     if df is None or df.empty:
         return df
     out = add_directional_option_edges(df)
-    rows = [compute_option_ev_and_kelly(r, aggressive=aggressive,
-                                          fill_slippage_pct=fill_slippage_pct)
-            for _, r in out.iterrows()]
+    rows = [
+        compute_option_ev_and_kelly(r, aggressive=aggressive, fill_slippage_pct=fill_slippage_pct)
+        for _, r in out.iterrows()
+    ]
     res = pd.DataFrame(rows, index=out.index)
     out = pd.concat([out, res], axis=1)
     # v20 — apply drawdown breaker multiplier
@@ -510,13 +545,16 @@ def add_sizing_to_options(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
         out["drawdown_mult"] = drawdown_mult
     out["suggested_dollars"] = (out["kelly_pct"] * bankroll).round(0)
     cost_per_contract = (out["mid"].fillna(0) * 100).replace(0, np.nan)
-    out["suggested_contracts"] = np.floor(out["suggested_dollars"] / cost_per_contract).fillna(0).astype(int)
+    out["suggested_contracts"] = (
+        np.floor(out["suggested_dollars"] / cost_per_contract).fillna(0).astype(int)
+    )
     out["actual_dollars"] = out["suggested_contracts"] * cost_per_contract.fillna(0)
     # v20.7 sector concentration cap — applied AFTER raw sizing so we know
     # the dollar exposure per contract before deciding whether the sector is full
     if sector_cap_pct is None:
-        sector_cap_pct = (DEFAULT_SECTOR_OPTIONS_CAP_AGGRESSIVE if aggressive
-                          else DEFAULT_SECTOR_OPTIONS_CAP)
+        sector_cap_pct = (
+            DEFAULT_SECTOR_OPTIONS_CAP_AGGRESSIVE if aggressive else DEFAULT_SECTOR_OPTIONS_CAP
+        )
     out = _apply_sector_cap(out, bankroll, sector_cap_pct)
     # Exit triggers — simple, robust rules
     out["stop_price"] = (out["mid"].fillna(0) * 0.50).round(2)
@@ -524,9 +562,12 @@ def add_sizing_to_options(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
     return _add_trade_status(out, asset="option")
 
 
-def add_sizing_to_shares(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
-                          aggressive: bool = False,
-                          drawdown_mult: float = 1.0) -> pd.DataFrame:
+def add_sizing_to_shares(
+    df: pd.DataFrame,
+    bankroll: float = DEFAULT_BANKROLL,
+    aggressive: bool = False,
+    drawdown_mult: float = 1.0,
+) -> pd.DataFrame:
     """Compute EV + Kelly + suggested dollars + exit triggers for shares.
 
     v20: ``drawdown_mult`` applies the breaker multiplier (default 1.0).
@@ -556,9 +597,7 @@ def add_sizing_to_shares(df: pd.DataFrame, bankroll: float = DEFAULT_BANKROLL,
         if "spot" in out.columns
         else pd.Series(np.nan, index=out.index, dtype=float)
     )
-    reference_entry = existing_entry.where(existing_entry > 0).combine_first(
-        spot.where(spot > 0)
-    )
+    reference_entry = existing_entry.where(existing_entry > 0).combine_first(spot.where(spot > 0))
     out["entry_price"] = reference_entry
     out["stop_price"] = (reference_entry * (1.0 + stop_pct)).round(2)
     out["target_price"] = (reference_entry * (1.0 + target_pct)).round(2)
@@ -578,8 +617,12 @@ def sort_for_trade_selection(df: pd.DataFrame, asset: str = "option") -> pd.Data
     kelly = out.get("kelly_pct", pd.Series(0.0, index=out.index)).fillna(0.0)
     conf = out.get("confidence", pd.Series(50.0, index=out.index)).fillna(50.0) / 100.0
     setup = out.get("setup_quality_mult", pd.Series(1.0, index=out.index)).fillna(1.0)
-    actionable = out.get("is_actionable", pd.Series(False, index=out.index)).fillna(False).astype(bool)
-    base_score = out.get("rank_score", out.get("fused_score", pd.Series(0.0, index=out.index))).fillna(0.0)
+    actionable = (
+        out.get("is_actionable", pd.Series(False, index=out.index)).fillna(False).astype(bool)
+    )
+    base_score = out.get(
+        "rank_score", out.get("fused_score", pd.Series(0.0, index=out.index))
+    ).fillna(0.0)
     out["trade_score"] = (
         actionable.astype(float) * 1000.0
         + np.maximum(ev, 0.0) * 100.0

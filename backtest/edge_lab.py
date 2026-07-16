@@ -220,9 +220,7 @@ def evidence_stats(
     spread_mask = _finite_mask(entry_spread)
     nonnegative_spread = spread_mask & entry_spread.ge(0)
     cost_covers_spread = (
-        slippage_mask
-        & nonnegative_spread
-        & slippage.ge(entry_spread - COST_RECONCILIATION_ATOL)
+        slippage_mask & nonnegative_spread & slippage.ge(entry_spread - COST_RECONCILIATION_ATOL)
     )
     reconciliation = (
         raw_mask

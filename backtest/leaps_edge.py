@@ -7,6 +7,7 @@ completed sessions and refuses to borrow results from shorter-dated option
 strategies.  Modeled option marks remain visible research; only exact broker
 market observations can satisfy the live-capital gate.
 """
+
 from __future__ import annotations
 
 import math
@@ -72,10 +73,16 @@ def _horizon_verdict(
         "is_scored",
         pd.Series(False, index=population.index),
     ).map(_strict_bool)
-    resolution = population.get(
-        "resolution_status",
-        pd.Series("", index=population.index),
-    ).fillna("").astype(str).str.strip().str.lower()
+    resolution = (
+        population.get(
+            "resolution_status",
+            pd.Series("", index=population.index),
+        )
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
     scored_status = resolution.eq("scored")
     pending_status = resolution.eq("pending")
     excluded_status = resolution.eq("excluded")
@@ -88,8 +95,7 @@ def _horizon_verdict(
     excluded = int(excluded_status.sum())
     wrong_population = int((~recognized_status | inconsistent_scored_status).sum())
     resolution_reconciled = (
-        resolved_scored + pending + excluded == population_total
-        and wrong_population == 0
+        resolved_scored + pending + excluded == population_total and wrong_population == 0
     )
 
     executable = population.get(
@@ -148,12 +154,7 @@ def _horizon_verdict(
         _requirement(
             "resolution_complete",
             "Complete, reconciled outcome population",
-            (
-                population_total > 0
-                and resolution_reconciled
-                and pending == 0
-                and excluded == 0
-            ),
+            (population_total > 0 and resolution_reconciled and pending == 0 and excluded == 0),
             {
                 "population": population_total,
                 "scored": resolved_scored,
@@ -163,11 +164,37 @@ def _horizon_verdict(
             },
             "all rows scored; 0 pending, excluded, or wrong-population rows",
         ),
-        _requirement("outcomes", "Independent outcomes", n >= MIN_LIVE_OUTCOMES, n, f">= {MIN_LIVE_OUTCOMES}"),
-        _requirement("entry_days", "Distinct entry days", days >= MIN_LIVE_ENTRY_DAYS, days, f">= {MIN_LIVE_ENTRY_DAYS}"),
-        _requirement("effective_blocks", "Effective horizon blocks", blocks >= MIN_LIVE_EFFECTIVE_BLOCKS, blocks, f">= {MIN_LIVE_EFFECTIVE_BLOCKS}"),
-        _requirement("positive_after_costs", "Average return after costs", avg_return is not None and avg_return > 0, avg_return, "> 0"),
-        _requirement("positive_ci", "90% moving-block lower bound", ci_low is not None and ci_low > 0, ci_low, "> 0"),
+        _requirement(
+            "outcomes", "Independent outcomes", n >= MIN_LIVE_OUTCOMES, n, f">= {MIN_LIVE_OUTCOMES}"
+        ),
+        _requirement(
+            "entry_days",
+            "Distinct entry days",
+            days >= MIN_LIVE_ENTRY_DAYS,
+            days,
+            f">= {MIN_LIVE_ENTRY_DAYS}",
+        ),
+        _requirement(
+            "effective_blocks",
+            "Effective horizon blocks",
+            blocks >= MIN_LIVE_EFFECTIVE_BLOCKS,
+            blocks,
+            f">= {MIN_LIVE_EFFECTIVE_BLOCKS}",
+        ),
+        _requirement(
+            "positive_after_costs",
+            "Average return after costs",
+            avg_return is not None and avg_return > 0,
+            avg_return,
+            "> 0",
+        ),
+        _requirement(
+            "positive_ci",
+            "90% moving-block lower bound",
+            ci_low is not None and ci_low > 0,
+            ci_low,
+            "> 0",
+        ),
         _requirement(
             "profit_factor",
             "Profit factor after costs",
@@ -175,10 +202,34 @@ def _horizon_verdict(
             "no_losses" if no_losses else profit_factor,
             f">= {MIN_LIVE_PROFIT_FACTOR:.2f}",
         ),
-        _requirement("spy_excess", "Average excess return vs SPY", excess is not None and excess > 0, excess, "> 0"),
-        _requirement("double_costs", "Average return at 2x costs", double_costs is not None and double_costs > 0, double_costs, "> 0"),
-        _requirement("first_half", "First-half daily average", first_half is not None and first_half > 0, first_half, "> 0"),
-        _requirement("recent_half", "Recent-half daily average", recent_half is not None and recent_half > 0, recent_half, "> 0"),
+        _requirement(
+            "spy_excess",
+            "Average excess return vs SPY",
+            excess is not None and excess > 0,
+            excess,
+            "> 0",
+        ),
+        _requirement(
+            "double_costs",
+            "Average return at 2x costs",
+            double_costs is not None and double_costs > 0,
+            double_costs,
+            "> 0",
+        ),
+        _requirement(
+            "first_half",
+            "First-half daily average",
+            first_half is not None and first_half > 0,
+            first_half,
+            "> 0",
+        ),
+        _requirement(
+            "recent_half",
+            "Recent-half daily average",
+            recent_half is not None and recent_half > 0,
+            recent_half,
+            "> 0",
+        ),
     ]
     for code, label in (
         ("entry_time_coverage", "Valid entry-time coverage"),
@@ -271,7 +322,9 @@ def analyze_leaps_swing_evidence(
         for horizon in REQUIRED_HORIZONS
     ]
     eligible = bool(horizons) and all(row["live_capital_eligible"] for row in horizons)
-    first_blocker = next((row["primary_blocker"] for row in horizons if row["primary_blocker"]), None)
+    first_blocker = next(
+        (row["primary_blocker"] for row in horizons if row["primary_blocker"]), None
+    )
     return {
         "schema": "optedge_leaps_swing_evidence_v1",
         "profile": PROFILE_NAME,

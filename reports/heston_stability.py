@@ -1,13 +1,14 @@
 # Purpose: Compare Heston pricing stability with Black-Scholes.
 """Validate Heston pricing stability before enabling it in production."""
+
 from __future__ import annotations
 
 import glob
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -37,18 +38,20 @@ def _latest_contracts(max_rows: int = 1500) -> pd.DataFrame:
 def _synthetic_contracts(n: int = 500) -> pd.DataFrame:
     rng = np.random.default_rng(7)
     spot = rng.uniform(20, 500, n)
-    return pd.DataFrame({
-        "spot": spot,
-        "strike": spot * rng.uniform(0.75, 1.25, n),
-        "dte": rng.integers(14, 90, n),
-        "iv_market": rng.uniform(0.15, 0.9, n),
-        "side": np.where(rng.random(n) > 0.5, "call", "put"),
-    })
+    return pd.DataFrame(
+        {
+            "spot": spot,
+            "strike": spot * rng.uniform(0.75, 1.25, n),
+            "dte": rng.integers(14, 90, n),
+            "iv_market": rng.uniform(0.15, 0.9, n),
+            "side": np.where(rng.random(n) > 0.5, "call", "put"),
+        }
+    )
 
 
-def build_report(max_rows: int = 1500) -> Dict[str, Any]:
-    from pricing_models import bs_price_vec, heston_price_vec
+def build_report(max_rows: int = 1500) -> dict[str, Any]:
     from config import RISK_FREE_RATE_DEFAULT
+    from pricing_models import bs_price_vec, heston_price_vec
 
     df = _latest_contracts(max_rows=max_rows)
     source = "latest_contracts"
@@ -60,7 +63,7 @@ def build_report(max_rows: int = 1500) -> Dict[str, Any]:
     missing = sorted(required - set(df.columns))
     if missing:
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "source": source,
             "ok": False,
             "reason": f"missing columns: {', '.join(missing)}",
@@ -76,7 +79,7 @@ def build_report(max_rows: int = 1500) -> Dict[str, Any]:
     spot, strike, dte, sigma, side = spot[mask], strike[mask], dte[mask], sigma[mask], side[mask]
     if len(spot) == 0:
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "source": source,
             "ok": False,
             "reason": "no valid contracts",
@@ -95,7 +98,7 @@ def build_report(max_rows: int = 1500) -> Dict[str, Any]:
     ok_rate = float(nonnegative.mean()) if len(heston) else 0.0
     extreme_rate = float(extreme.mean()) if len(heston) else 1.0
     report = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "source": source,
         "contracts_checked": int(len(heston)),
         "finite_rate": float(finite.mean()),
@@ -103,7 +106,9 @@ def build_report(max_rows: int = 1500) -> Dict[str, Any]:
         "extreme_vs_bs_rate": extreme_rate,
         "median_heston_to_bs": float(np.nanmedian(ratio)) if np.isfinite(ratio).any() else None,
         "p05_heston_to_bs": float(np.nanpercentile(ratio, 5)) if np.isfinite(ratio).any() else None,
-        "p95_heston_to_bs": float(np.nanpercentile(ratio, 95)) if np.isfinite(ratio).any() else None,
+        "p95_heston_to_bs": float(np.nanpercentile(ratio, 95))
+        if np.isfinite(ratio).any()
+        else None,
         "ok": bool(ok_rate >= 0.995 and extreme_rate <= 0.02),
     }
     if not report["ok"]:
@@ -111,7 +116,7 @@ def build_report(max_rows: int = 1500) -> Dict[str, Any]:
     return report
 
 
-def write_report(max_rows: int = 1500) -> Dict[str, Any]:
+def write_report(max_rows: int = 1500) -> dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     report = build_report(max_rows=max_rows)
     OUT_JSON.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

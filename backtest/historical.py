@@ -16,27 +16,29 @@ claims.
 
 Run: python run.py --backtest
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.historical")
 
 HORIZONS = [7, 30, 60, 90]
 
 
-def _process_ticker(t: str) -> List[Dict[str, Any]]:
+def _process_ticker(t: str) -> list[dict[str, Any]]:
     """Return a list of (ticker, horizon, forward_return) rows."""
     out = []
     h = data_provider.get_history(t, period="6mo")
@@ -52,16 +54,19 @@ def _process_ticker(t: str) -> List[Dict[str, Any]]:
         spot_then = float(close.iloc[-(horizon + 1)])
         if spot_then <= 0:
             continue
-        out.append({
-            "ticker": t,
-            "horizon_days": horizon,
-            "fwd_return": round(spot_now / spot_then - 1, 4),
-        })
+        out.append(
+            {
+                "ticker": t,
+                "horizon_days": horizon,
+                "fwd_return": round(spot_now / spot_then - 1, 4),
+            }
+        )
     return out
 
 
-def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFrame],
-                             max_workers: int = 8) -> Dict[str, Any]:
+def run_historical_backtest(
+    universe: list[str], factor_dfs: dict[str, pd.DataFrame], max_workers: int = 8
+) -> dict[str, Any]:
     """factor_dfs maps factor_name -> DataFrame with columns ['ticker', factor_col].
 
     Example: factor_dfs = {
@@ -130,18 +135,20 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
             bot_q = sorted_pair.tail(max(1, len(sorted_pair) // 5))
             top_avg = top_q["fwd_return"].mean()
             bot_avg = bot_q["fwd_return"].mean()
-            ic_rows.append({
-                "horizon_days": h,
-                "factor": f,
-                "ic": round(ic, 3),
-                "n": len(pair),
-                "top_quintile_avg": round(top_avg, 4),
-                "bot_quintile_avg": round(bot_avg, 4),
-                "spread": round(top_avg - bot_avg, 4),
-                "basis": "current_scores_vs_already_realized_returns",
-                "evidence_status": "diagnostic_only_lookahead",
-                "eligible_for_model_promotion": False,
-            })
+            ic_rows.append(
+                {
+                    "horizon_days": h,
+                    "factor": f,
+                    "ic": round(ic, 3),
+                    "n": len(pair),
+                    "top_quintile_avg": round(top_avg, 4),
+                    "bot_quintile_avg": round(bot_avg, 4),
+                    "spread": round(top_avg - bot_avg, 4),
+                    "basis": "current_scores_vs_already_realized_returns",
+                    "evidence_status": "diagnostic_only_lookahead",
+                    "eligible_for_model_promotion": False,
+                }
+            )
 
     # Per-leg analysis: for each factor, compute top-quintile call-leg and put-leg P&L.
     # Call-leg P&L: + return if you'd bought a long call on that ticker (proxy: stock return).
@@ -156,20 +163,24 @@ def run_historical_backtest(universe: List[str], factor_dfs: Dict[str, pd.DataFr
             sorted_sub = sub.sort_values(f, ascending=False)
             top_q = sorted_sub.head(max(1, len(sorted_sub) // 5))
             # Top-quintile factor picks: simulate long-call and long-put leg returns
-            call_avg = float(top_q["fwd_return"].mean())          # call leg = +stock return
-            put_avg = float(-top_q["fwd_return"].mean())          # put leg = -stock return
-            share_avg = call_avg                                   # shares ≈ long stock
-            leg_rows.append({
-                "factor": f, "horizon_days": h, "n": len(top_q),
-                "call_leg_avg": round(call_avg, 4),
-                "put_leg_avg": round(put_avg, 4),
-                "share_leg_avg": round(share_avg, 4),
-                "call_win_rate": float((top_q["fwd_return"] > 0).mean()),
-                "put_win_rate": float((top_q["fwd_return"] < 0).mean()),
-                "basis": "current_scores_vs_already_realized_returns",
-                "evidence_status": "diagnostic_only_lookahead",
-                "eligible_for_model_promotion": False,
-            })
+            call_avg = float(top_q["fwd_return"].mean())  # call leg = +stock return
+            put_avg = float(-top_q["fwd_return"].mean())  # put leg = -stock return
+            share_avg = call_avg  # shares ≈ long stock
+            leg_rows.append(
+                {
+                    "factor": f,
+                    "horizon_days": h,
+                    "n": len(top_q),
+                    "call_leg_avg": round(call_avg, 4),
+                    "put_leg_avg": round(put_avg, 4),
+                    "share_leg_avg": round(share_avg, 4),
+                    "call_win_rate": float((top_q["fwd_return"] > 0).mean()),
+                    "put_win_rate": float((top_q["fwd_return"] < 0).mean()),
+                    "basis": "current_scores_vs_already_realized_returns",
+                    "evidence_status": "diagnostic_only_lookahead",
+                    "eligible_for_model_promotion": False,
+                }
+            )
 
     return {
         "returns": rets,

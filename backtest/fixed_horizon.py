@@ -178,14 +178,10 @@ def _active_model_provenance() -> dict[str, str]:
 
         trust = predictor.model_trust_status()
         predictor_status = (
-            trust.get("predictor")
-            if isinstance(trust.get("predictor"), dict)
-            else {}
+            trust.get("predictor") if isinstance(trust.get("predictor"), dict) else {}
         )
         runtime_status = (
-            trust.get("runtime_weights")
-            if isinstance(trust.get("runtime_weights"), dict)
-            else {}
+            trust.get("runtime_weights") if isinstance(trust.get("runtime_weights"), dict) else {}
         )
         predictor_identity: Any = (
             predictor_status.get("content_digest_sha256")
@@ -202,8 +198,7 @@ def _active_model_provenance() -> dict[str, str]:
             else {
                 "mode": "source_controlled_weights",
                 "weights": {
-                    str(key): float(value)
-                    for key, value in sorted(SIGNAL_WEIGHTS.items())
+                    str(key): float(value) for key, value in sorted(SIGNAL_WEIGHTS.items())
                 },
             }
         )
@@ -358,11 +353,16 @@ def _contract_key(row: pd.Series, asset: str) -> str:
 
 def _execution_profile(row: pd.Series, asset: str) -> str:
     """Return the frozen strategy lane without inferring LEAPS from DTE alone."""
-    raw = _text(
-        row.get("execution_profile"),
-        row.get("strategy_profile"),
-        row.get("strategy_evidence_lane"),
-    ).lower().replace("-", "_").replace(" ", "_")
+    raw = (
+        _text(
+            row.get("execution_profile"),
+            row.get("strategy_profile"),
+            row.get("strategy_evidence_lane"),
+        )
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
     aliases = {
         "option_leaps_swing": "leaps_swing",
         "leaps": "leaps_swing",
@@ -515,8 +515,15 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
     out = out.drop_duplicates("signal_id", keep="first")
     out["entry_date"] = out["entry_time"].dt.date.astype(str)
     out["independent_key"] = (
-        out["execution_profile"] + "|" + out["asset"] + "|" + out["symbol"]
-        + "|" + out["direction"] + "|" + out["entry_date"]
+        out["execution_profile"]
+        + "|"
+        + out["asset"]
+        + "|"
+        + out["symbol"]
+        + "|"
+        + out["direction"]
+        + "|"
+        + out["entry_date"]
     )
     out = out.sort_values(["entry_time", "signal_id"]).reset_index(drop=True)
     out["is_independent"] = ~out.duplicated("independent_key", keep="first")

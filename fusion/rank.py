@@ -11,29 +11,35 @@ Long-only philosophy:
 
 No selling, no credit spreads, no shorting. Maximum diversity (1 idea/ticker).
 """
+
 from __future__ import annotations
+
 import logging
-from typing import Dict, Any, List
 import math
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from config import (
-    SIGNAL_WEIGHTS, TOP_N_CALLS, TOP_N_PUTS, TOP_N_SHARES,
     SHARES_MIN_SCORE,
+    SIGNAL_WEIGHTS,
+    TOP_N_CALLS,
+    TOP_N_PUTS,
+    TOP_N_SHARES,
 )
-from utils import zscore, winsor, safe_int
+from utils import safe_int, winsor, zscore
 
 log = logging.getLogger("optedge.fusion")
 
 
 # -------- Helpers ------------------------------------------------------
-def _regime_adjusted_weights(macro: Dict[str, Any]) -> Dict[str, float]:
+def _regime_adjusted_weights(macro: dict[str, Any]) -> dict[str, float]:
     """Apply small regime-specific nudges to factor weights, then normalize."""
     weights = dict(SIGNAL_WEIGHTS)
     try:
         import config as _cfg
+
         mults = getattr(_cfg, "REGIME_FACTOR_MULTIPLIERS", {})
     except Exception:
         mults = {}
@@ -62,8 +68,8 @@ def _option_reasoning(row: pd.Series) -> str:
     pieces = []
     vp = row.get("vol_premium", 0.0)
     pieces.append(
-        f"IV {row['iv_market']*100:.1f}% vs HV30 {row['fair_vol']*100:.1f}% "
-        f"({'cheap' if vp < 0 else 'rich'} by {abs(vp)*100:.1f} vol pts)."
+        f"IV {row['iv_market'] * 100:.1f}% vs HV30 {row['fair_vol'] * 100:.1f}% "
+        f"({'cheap' if vp < 0 else 'rich'} by {abs(vp) * 100:.1f} vol pts)."
     )
     miss_pct = row.get("mispricing_pct", 0.0) * 100
     if abs(miss_pct) > 3:
@@ -73,7 +79,7 @@ def _option_reasoning(row: pd.Series) -> str:
         pieces.append(f"IV-rank proxy {iv_rank:.0f}.")
     skew = row.get("skew_25d")
     if skew is not None and not (isinstance(skew, float) and math.isnan(skew)):
-        pieces.append(f"25Δ skew (puts−calls): {skew*100:+.1f} vol pts.")
+        pieces.append(f"25Δ skew (puts−calls): {skew * 100:+.1f} vol pts.")
     s_d = row.get("sentiment_delta", 0.0) or 0.0
     mentions = row.get("mentions", 0) or 0
     if mentions and abs(s_d) > 0.05:
@@ -98,7 +104,7 @@ def _option_reasoning(row: pd.Series) -> str:
     dte_e = row.get("days_to_earnings")
     if dte_e is not None and 0 <= dte_e <= 30:
         sup = row.get("last_eps_surprise_pct")
-        sup_str = f", last EPS {sup*100:+.1f}%" if sup is not None else ""
+        sup_str = f", last EPS {sup * 100:+.1f}%" if sup is not None else ""
         pieces.append(f"Earnings in {int(dte_e)}d{sup_str}.")
     macro_tilt = row.get("macro_tilt", 0.0)
     regime = row.get("regime", "neutral")
@@ -109,7 +115,7 @@ def _option_reasoning(row: pd.Series) -> str:
 def _option_risks(row: pd.Series) -> str:
     risks = []
     if row.get("spread_pct", 0) > 0.08:
-        risks.append(f"Wide spread {row['spread_pct']*100:.1f}%")
+        risks.append(f"Wide spread {row['spread_pct'] * 100:.1f}%")
     if row.get("dte", 0) <= 21:
         risks.append("Short DTE: theta decay accelerates")
     if row.get("open_interest", 0) < 500:
@@ -133,11 +139,15 @@ def _share_reasoning(row: pd.Series) -> str:
     s_d = row.get("sentiment_delta", 0.0) or 0.0
     mentions = row.get("mentions", 0) or 0
     if mentions and s_d > 0.05:
-        pieces.append(f"Reddit Δsentiment rising (+{s_d:.2f}, {safe_int(mentions)} mentions, velocity {safe_int(row.get('velocity')):+d}).")
+        pieces.append(
+            f"Reddit Δsentiment rising (+{s_d:.2f}, {safe_int(mentions)} mentions, velocity {safe_int(row.get('velocity')):+d})."
+        )
     fund = row.get("fund_score") or 0
     if fund > 0.3:
         cls = row.get("classification", "")
-        pieces.append(f"Fundamentals +{fund:.1f} ({cls}, rev growth {(row.get('rev_growth') or 0)*100:+.0f}%).")
+        pieces.append(
+            f"Fundamentals +{fund:.1f} ({cls}, rev growth {(row.get('rev_growth') or 0) * 100:+.0f}%)."
+        )
     insider = row.get("insider_score") or 0
     if insider > 0.5:
         n_buys = safe_int(row.get("n_buys"))
@@ -151,7 +161,7 @@ def _share_reasoning(row: pd.Series) -> str:
     dte_e = row.get("days_to_earnings")
     if dte_e is not None and 0 <= dte_e <= 30:
         pieces.append(f"Earnings in {int(dte_e)}d.")
-    pieces.append(f"Macro: {row.get('regime','neutral')} (tilt {row.get('macro_tilt',0):+.2f}).")
+    pieces.append(f"Macro: {row.get('regime', 'neutral')} (tilt {row.get('macro_tilt', 0):+.2f}).")
     return " ".join(pieces) or "Multi-factor bullish signal."
 
 
@@ -176,9 +186,13 @@ def _share_risks(row: pd.Series) -> str:
 
 
 # -------- Joining ------------------------------------------------------
-def _safe_merge_score(df: pd.DataFrame, other: pd.DataFrame,
-                       score_col: str, extra_cols: List[str] = None,
-                       fill_value: float = 0.0) -> pd.DataFrame:
+def _safe_merge_score(
+    df: pd.DataFrame,
+    other: pd.DataFrame,
+    score_col: str,
+    extra_cols: list[str] = None,
+    fill_value: float = 0.0,
+) -> pd.DataFrame:
     """v20 helper — merge a simple {ticker, score_col, extra_cols} engine
     output into df with NaN-fill. Used for all new v20 factors that follow
     the broadcast-or-per-ticker pattern.
@@ -211,160 +225,279 @@ def _safe_merge_score(df: pd.DataFrame, other: pd.DataFrame,
     return df
 
 
-def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
-                     sentiment: pd.DataFrame, fundamentals: pd.DataFrame,
-                     insider: pd.DataFrame, macro: Dict[str, Any],
-                     news: pd.DataFrame = None, earnings: pd.DataFrame = None,
-                     congress: pd.DataFrame = None,
-                     social: pd.DataFrame = None,
-                     analyst: pd.DataFrame = None,
-                     uoa: pd.DataFrame = None,
-                     sector_rs: pd.DataFrame = None,
-                     dark_pool: pd.DataFrame = None,
-                     fda: pd.DataFrame = None,
-                     sector_flow: pd.DataFrame = None,
-                     technicals: pd.DataFrame = None,
-                     short_int: pd.DataFrame = None,
-                     put_call: pd.DataFrame = None,
-                     iv_surface: pd.DataFrame = None,
-                     # ---- v20 new factor frames -----------------------
-                     cot: pd.DataFrame = None,
-                     thirteen_f: pd.DataFrame = None,
-                     vix_term: pd.DataFrame = None,
-                     eia: pd.DataFrame = None,
-                     wasde: pd.DataFrame = None,
-                     buybacks: pd.DataFrame = None,
-                     gtrends: pd.DataFrame = None,
-                     form_144: pd.DataFrame = None,
-                     whisper: pd.DataFrame = None,
-                     hyperliquid: pd.DataFrame = None,
-                     twitter: pd.DataFrame = None,
-                     r_options: pd.DataFrame = None,
-                     yield_curve: pd.DataFrame = None,
-                     credit_spread: pd.DataFrame = None,
-                     cluster_buys: pd.DataFrame = None,
-                     sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
+def _join_per_ticker(
+    contracts: pd.DataFrame,
+    mp_summary: pd.DataFrame,
+    sentiment: pd.DataFrame,
+    fundamentals: pd.DataFrame,
+    insider: pd.DataFrame,
+    macro: dict[str, Any],
+    news: pd.DataFrame = None,
+    earnings: pd.DataFrame = None,
+    congress: pd.DataFrame = None,
+    social: pd.DataFrame = None,
+    analyst: pd.DataFrame = None,
+    uoa: pd.DataFrame = None,
+    sector_rs: pd.DataFrame = None,
+    dark_pool: pd.DataFrame = None,
+    fda: pd.DataFrame = None,
+    sector_flow: pd.DataFrame = None,
+    technicals: pd.DataFrame = None,
+    short_int: pd.DataFrame = None,
+    put_call: pd.DataFrame = None,
+    iv_surface: pd.DataFrame = None,
+    # ---- v20 new factor frames -----------------------
+    cot: pd.DataFrame = None,
+    thirteen_f: pd.DataFrame = None,
+    vix_term: pd.DataFrame = None,
+    eia: pd.DataFrame = None,
+    wasde: pd.DataFrame = None,
+    buybacks: pd.DataFrame = None,
+    gtrends: pd.DataFrame = None,
+    form_144: pd.DataFrame = None,
+    whisper: pd.DataFrame = None,
+    hyperliquid: pd.DataFrame = None,
+    twitter: pd.DataFrame = None,
+    r_options: pd.DataFrame = None,
+    yield_curve: pd.DataFrame = None,
+    credit_spread: pd.DataFrame = None,
+    cluster_buys: pd.DataFrame = None,
+    sec_ftd: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Common merge logic — used by both options and shares tracks."""
     df = contracts.copy() if contracts is not None and not contracts.empty else pd.DataFrame()
     if not df.empty and not mp_summary.empty:
-        df = df.merge(mp_summary[["ticker", "iv_rank", "skew_25d", "term_slope"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            mp_summary[["ticker", "iv_rank", "skew_25d", "term_slope"]], on="ticker", how="left"
+        )
     if not df.empty and sentiment is not None and not sentiment.empty:
         sent_cols = ["ticker", "mentions", "sentiment_now", "sentiment_delta", "velocity"]
         for extra in ("decayed_mentions", "sentiment_decay"):
             if extra in sentiment.columns:
                 sent_cols.append(extra)
-        df = df.merge(sentiment[sent_cols],
-                      on="ticker", how="left")
+        df = df.merge(sentiment[sent_cols], on="ticker", how="left")
     elif not df.empty:
         for c in ["mentions", "sentiment_now", "sentiment_delta", "velocity"]:
             df[c] = 0.0
     if not df.empty and fundamentals is not None and not fundamentals.empty:
-        df = df.merge(fundamentals[["ticker", "fund_score", "classification",
-                                    "earnings_date", "rev_growth", "op_margin", "pe",
-                                    "market_cap"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            fundamentals[
+                [
+                    "ticker",
+                    "fund_score",
+                    "classification",
+                    "earnings_date",
+                    "rev_growth",
+                    "op_margin",
+                    "pe",
+                    "market_cap",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["fund_score", "classification", "earnings_date",
-                  "rev_growth", "op_margin", "pe", "market_cap"]:
+        for c in [
+            "fund_score",
+            "classification",
+            "earnings_date",
+            "rev_growth",
+            "op_margin",
+            "pe",
+            "market_cap",
+        ]:
             df[c] = None
     if not df.empty and insider is not None and not insider.empty:
-        df = df.merge(insider[["ticker", "insider_score", "n_buys", "n_sells",
-                               "buys_value", "sells_value"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            insider[["ticker", "insider_score", "n_buys", "n_sells", "buys_value", "sells_value"]],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
         for c in ["insider_score", "n_buys", "n_sells", "buys_value", "sells_value"]:
             df[c] = 0.0
     # News
     if not df.empty and news is not None and not news.empty:
-        df = df.merge(news[["ticker", "n_24h", "n_7d", "news_sent_24h",
-                            "news_sent_7d", "news_delta", "news_velocity",
-                            "top_headline"]], on="ticker", how="left")
+        df = df.merge(
+            news[
+                [
+                    "ticker",
+                    "n_24h",
+                    "n_7d",
+                    "news_sent_24h",
+                    "news_sent_7d",
+                    "news_delta",
+                    "news_velocity",
+                    "top_headline",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["n_24h", "n_7d", "news_sent_24h", "news_sent_7d",
-                  "news_delta", "news_velocity"]:
+        for c in ["n_24h", "n_7d", "news_sent_24h", "news_sent_7d", "news_delta", "news_velocity"]:
             df[c] = 0.0
         df["top_headline"] = ""
     # Earnings
     if not df.empty and earnings is not None and not earnings.empty:
-        df = df.merge(earnings[["ticker", "next_earnings_date",
-                                "days_to_earnings", "last_eps_surprise_pct",
-                                "earnings_score"]], on="ticker", how="left")
+        df = df.merge(
+            earnings[
+                [
+                    "ticker",
+                    "next_earnings_date",
+                    "days_to_earnings",
+                    "last_eps_surprise_pct",
+                    "earnings_score",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["next_earnings_date", "days_to_earnings",
-                  "last_eps_surprise_pct", "earnings_score"]:
+        for c in [
+            "next_earnings_date",
+            "days_to_earnings",
+            "last_eps_surprise_pct",
+            "earnings_score",
+        ]:
             df[c] = None
 
     # Congress
     if not df.empty and congress is not None and not congress.empty:
-        df = df.merge(congress[["ticker", "congress_score", "congress_buys_n",
-                                "congress_sells_n", "congress_buys_dollar",
-                                "congress_n_reps", "congress_n_sens",
-                                "congress_top_buyer"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            congress[
+                [
+                    "ticker",
+                    "congress_score",
+                    "congress_buys_n",
+                    "congress_sells_n",
+                    "congress_buys_dollar",
+                    "congress_n_reps",
+                    "congress_n_sens",
+                    "congress_top_buyer",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["congress_score", "congress_buys_n", "congress_sells_n",
-                  "congress_buys_dollar", "congress_n_reps", "congress_n_sens"]:
+        for c in [
+            "congress_score",
+            "congress_buys_n",
+            "congress_sells_n",
+            "congress_buys_dollar",
+            "congress_n_reps",
+            "congress_n_sens",
+        ]:
             df[c] = 0
         df["congress_top_buyer"] = ""
 
     # Social (StockTwits + Trump)
     if not df.empty and social is not None and not social.empty:
-        df = df.merge(social[["ticker", "social_score", "stocktwits_n",
-                              "stocktwits_avg_sent", "stocktwits_n_bull",
-                              "stocktwits_n_bear", "trump_n", "trump_avg_sent",
-                              "trump_excerpt"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            social[
+                [
+                    "ticker",
+                    "social_score",
+                    "stocktwits_n",
+                    "stocktwits_avg_sent",
+                    "stocktwits_n_bull",
+                    "stocktwits_n_bear",
+                    "trump_n",
+                    "trump_avg_sent",
+                    "trump_excerpt",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["social_score", "stocktwits_n", "stocktwits_avg_sent",
-                  "stocktwits_n_bull", "stocktwits_n_bear", "trump_n",
-                  "trump_avg_sent"]:
+        for c in [
+            "social_score",
+            "stocktwits_n",
+            "stocktwits_avg_sent",
+            "stocktwits_n_bull",
+            "stocktwits_n_bear",
+            "trump_n",
+            "trump_avg_sent",
+        ]:
             df[c] = 0
         df["trump_excerpt"] = ""
 
     # Analyst (Finnhub recommendations)
     if not df.empty and analyst is not None and not analyst.empty:
-        df = df.merge(analyst[["ticker", "analyst_score", "analyst_strong_buy",
-                                "analyst_buy", "analyst_hold", "analyst_sell",
-                                "analyst_strong_sell", "analyst_total",
-                                "analyst_avg", "analyst_momentum"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            analyst[
+                [
+                    "ticker",
+                    "analyst_score",
+                    "analyst_strong_buy",
+                    "analyst_buy",
+                    "analyst_hold",
+                    "analyst_sell",
+                    "analyst_strong_sell",
+                    "analyst_total",
+                    "analyst_avg",
+                    "analyst_momentum",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
-        for c in ["analyst_score", "analyst_strong_buy", "analyst_buy",
-                  "analyst_hold", "analyst_sell", "analyst_strong_sell",
-                  "analyst_total", "analyst_avg", "analyst_momentum"]:
+        for c in [
+            "analyst_score",
+            "analyst_strong_buy",
+            "analyst_buy",
+            "analyst_hold",
+            "analyst_sell",
+            "analyst_strong_sell",
+            "analyst_total",
+            "analyst_avg",
+            "analyst_momentum",
+        ]:
             df[c] = 0
 
     # UOA (Unusual Options Activity)
     if not df.empty and uoa is not None and not uoa.empty:
-        df = df.merge(uoa[["ticker", "uoa_score", "uoa_max_ratio",
-                            "uoa_call_ratio", "uoa_put_ratio"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            uoa[["ticker", "uoa_score", "uoa_max_ratio", "uoa_call_ratio", "uoa_put_ratio"]],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
         for c in ["uoa_score", "uoa_max_ratio", "uoa_call_ratio", "uoa_put_ratio"]:
             df[c] = 0.0
 
     # Sector relative strength
     if not df.empty and sector_rs is not None and not sector_rs.empty:
-        df = df.merge(sector_rs[["ticker", "sector_etf", "ticker_ret_20d",
-                                  "sector_ret_20d", "sector_rs_score"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            sector_rs[
+                ["ticker", "sector_etf", "ticker_ret_20d", "sector_ret_20d", "sector_rs_score"]
+            ],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
         for c in ["sector_etf", "ticker_ret_20d", "sector_ret_20d", "sector_rs_score"]:
             df[c] = 0.0 if c != "sector_etf" else None
 
     # Dark pool (FINRA short-vol)
     if not df.empty and dark_pool is not None and not dark_pool.empty:
-        df = df.merge(dark_pool[["ticker", "short_vol_ratio", "dark_pool_score"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            dark_pool[["ticker", "short_vol_ratio", "dark_pool_score"]], on="ticker", how="left"
+        )
     elif not df.empty:
         df["short_vol_ratio"] = 0.0
         df["dark_pool_score"] = 0.0
 
     # FDA catalyst
     if not df.empty and fda is not None and not fda.empty:
-        df = df.merge(fda[["ticker", "next_catalyst_date", "days_to_catalyst",
-                            "catalyst_type", "fda_score"]], on="ticker", how="left")
+        df = df.merge(
+            fda[["ticker", "next_catalyst_date", "days_to_catalyst", "catalyst_type", "fda_score"]],
+            on="ticker",
+            how="left",
+        )
     elif not df.empty:
         for c in ["next_catalyst_date", "days_to_catalyst", "catalyst_type"]:
             df[c] = None
@@ -372,41 +505,75 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
 
     # Sector ETF flow (joined via SECTOR_MAP)
     if not df.empty and sector_flow is not None and not sector_flow.empty:
-        df = df.merge(sector_flow[["ticker", "sector_flow_score"]],
-                      on="ticker", how="left", suffixes=("", "_etfflow"))
+        df = df.merge(
+            sector_flow[["ticker", "sector_flow_score"]],
+            on="ticker",
+            how="left",
+            suffixes=("", "_etfflow"),
+        )
     elif not df.empty:
         df["sector_flow_score"] = 0.0
 
     # Technicals (RSI / MACD / Bollinger / MA / 52w distance / ATR / ADX / Stochastic / OBV)
     if not df.empty and technicals is not None and not technicals.empty:
-        tech_cols = ["ticker", "tech_score", "rsi", "macd_hist", "bb_percent_b",
-                     "ma_cross", "dist_52w_high", "dist_52w_low", "adx",
-                     "stoch_k", "obv_slope"]
+        tech_cols = [
+            "ticker",
+            "tech_score",
+            "rsi",
+            "macd_hist",
+            "bb_percent_b",
+            "ma_cross",
+            "dist_52w_high",
+            "dist_52w_low",
+            "adx",
+            "stoch_k",
+            "obv_slope",
+        ]
         keep = [c for c in tech_cols if c in technicals.columns]
         df = df.merge(technicals[keep], on="ticker", how="left", suffixes=("", "_tech"))
     elif not df.empty:
-        for c in ["tech_score", "rsi", "macd_hist", "bb_percent_b", "ma_cross",
-                  "dist_52w_high", "dist_52w_low", "adx", "stoch_k", "obv_slope"]:
+        for c in [
+            "tech_score",
+            "rsi",
+            "macd_hist",
+            "bb_percent_b",
+            "ma_cross",
+            "dist_52w_high",
+            "dist_52w_low",
+            "adx",
+            "stoch_k",
+            "obv_slope",
+        ]:
             df[c] = 0.0
 
     # Short interest (squeeze potential)
     if not df.empty and short_int is not None and not short_int.empty:
-        si_cols = ["ticker", "short_int_score", "short_pct_of_float",
-                   "short_ratio_days_to_cover", "short_int_change_pct",
-                   "shares_short", "shares_short_prior_month",
-                   "finra_short_interest_shares",
-                   "finra_short_interest_prior_shares",
-                   "finra_short_interest_avg_daily_volume",
-                   "finra_short_interest_days_to_cover",
-                   "finra_short_interest_change_pct",
-                   "finra_short_interest_settlement_date",
-                   "finra_short_interest_market_class",
-                   "finra_short_interest_source"]
+        si_cols = [
+            "ticker",
+            "short_int_score",
+            "short_pct_of_float",
+            "short_ratio_days_to_cover",
+            "short_int_change_pct",
+            "shares_short",
+            "shares_short_prior_month",
+            "finra_short_interest_shares",
+            "finra_short_interest_prior_shares",
+            "finra_short_interest_avg_daily_volume",
+            "finra_short_interest_days_to_cover",
+            "finra_short_interest_change_pct",
+            "finra_short_interest_settlement_date",
+            "finra_short_interest_market_class",
+            "finra_short_interest_source",
+        ]
         keep = [c for c in si_cols if c in short_int.columns]
         df = df.merge(short_int[keep], on="ticker", how="left", suffixes=("", "_si"))
     elif not df.empty:
-        for c in ["short_int_score", "short_pct_of_float",
-                  "short_ratio_days_to_cover", "short_int_change_pct"]:
+        for c in [
+            "short_int_score",
+            "short_pct_of_float",
+            "short_ratio_days_to_cover",
+            "short_int_change_pct",
+        ]:
             df[c] = 0.0
 
     # Put/Call ratio (contrarian)
@@ -420,51 +587,75 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
 
     # IV surface anomalies
     if not df.empty and iv_surface is not None and not iv_surface.empty:
-        iv_cols = ["ticker", "iv_surface_score", "iv_anomaly_max_z",
-                   "iv_anomaly_count", "iv_anomaly_top_strike", "iv_anomaly_top_side"]
+        iv_cols = [
+            "ticker",
+            "iv_surface_score",
+            "iv_anomaly_max_z",
+            "iv_anomaly_count",
+            "iv_anomaly_top_strike",
+            "iv_anomaly_top_side",
+        ]
         keep = [c for c in iv_cols if c in iv_surface.columns]
         df = df.merge(iv_surface[keep], on="ticker", how="left", suffixes=("", "_ivs"))
     elif not df.empty:
-        for c in ["iv_surface_score", "iv_anomaly_max_z", "iv_anomaly_count",
-                  "iv_anomaly_top_strike", "iv_anomaly_top_side"]:
+        for c in [
+            "iv_surface_score",
+            "iv_anomaly_max_z",
+            "iv_anomaly_count",
+            "iv_anomaly_top_strike",
+            "iv_anomaly_top_side",
+        ]:
             df[c] = 0.0 if c not in ("iv_anomaly_top_side",) else None
 
     # ---- v20 new factor merges ----------------------------------------
     # All v20 factors follow {ticker, <score_name>, ...meta} pattern.
-    df = _safe_merge_score(df, cot,          "cot_score",
-                            ["cot_market", "cot_net_change", "cot_report_date"])
-    df = _safe_merge_score(df, thirteen_f,   "thirteen_f_score",
-                            ["tf_n_new", "tf_n_growing", "tf_n_cutting",
-                             "tf_n_exiting", "tf_funds"])
-    df = _safe_merge_score(df, vix_term,     "vix_term_score",
-                            ["vix_regime", "vix_contango_ratio"])
-    df = _safe_merge_score(df, eia,          "eia_score",
-                            ["eia_meta", "eia_commodity"])
-    df = _safe_merge_score(df, wasde,        "wasde_score",
-                            ["wasde_proximity", "wasde_days_since"])
-    df = _safe_merge_score(df, buybacks,     "buyback_score",
-                            ["buyback_date_latest", "buyback_n_filings"])
-    df = _safe_merge_score(df, gtrends,      "gtrends_score", ["gtrends_term"])
-    df = _safe_merge_score(df, form_144,     "form_144_score",
-                            ["form_144_count_30d", "form_144_latest_date"])
-    df = _safe_merge_score(df, whisper,      "whisper_score",
-                            ["whisper_eps", "whisper_consensus",
-                             "whisper_gap_pct", "whisper_report_date"])
-    df = _safe_merge_score(df, hyperliquid,  "hyperliquid_score",
-                            ["hl_crypto", "hl_funding_annual"])
-    df = _safe_merge_score(df, twitter,      "twitter_score",
-                            ["twitter_n", "twitter_excerpt"])
-    df = _safe_merge_score(df, r_options,    "r_options_score",
-                            ["r_options_n", "r_options_avg_sent"])
-    df = _safe_merge_score(df, yield_curve,  "curve_score", ["curve_factor"])
-    df = _safe_merge_score(df, credit_spread,"credit_score",
-                            ["credit_hy_oas", "credit_spread_chg_5d"])
-    df = _safe_merge_score(df, cluster_buys, "cluster_buys_score",
-                            ["cluster_n_buyers", "cluster_buys_dollar"])
-    df = _safe_merge_score(df, sec_ftd,      "sec_ftd_score",
-                            ["sec_ftd_latest_date", "sec_ftd_fails",
-                             "sec_ftd_dollars", "sec_ftd_active_days",
-                             "sec_ftd_note"])
+    df = _safe_merge_score(
+        df, cot, "cot_score", ["cot_market", "cot_net_change", "cot_report_date"]
+    )
+    df = _safe_merge_score(
+        df,
+        thirteen_f,
+        "thirteen_f_score",
+        ["tf_n_new", "tf_n_growing", "tf_n_cutting", "tf_n_exiting", "tf_funds"],
+    )
+    df = _safe_merge_score(df, vix_term, "vix_term_score", ["vix_regime", "vix_contango_ratio"])
+    df = _safe_merge_score(df, eia, "eia_score", ["eia_meta", "eia_commodity"])
+    df = _safe_merge_score(df, wasde, "wasde_score", ["wasde_proximity", "wasde_days_since"])
+    df = _safe_merge_score(
+        df, buybacks, "buyback_score", ["buyback_date_latest", "buyback_n_filings"]
+    )
+    df = _safe_merge_score(df, gtrends, "gtrends_score", ["gtrends_term"])
+    df = _safe_merge_score(
+        df, form_144, "form_144_score", ["form_144_count_30d", "form_144_latest_date"]
+    )
+    df = _safe_merge_score(
+        df,
+        whisper,
+        "whisper_score",
+        ["whisper_eps", "whisper_consensus", "whisper_gap_pct", "whisper_report_date"],
+    )
+    df = _safe_merge_score(df, hyperliquid, "hyperliquid_score", ["hl_crypto", "hl_funding_annual"])
+    df = _safe_merge_score(df, twitter, "twitter_score", ["twitter_n", "twitter_excerpt"])
+    df = _safe_merge_score(df, r_options, "r_options_score", ["r_options_n", "r_options_avg_sent"])
+    df = _safe_merge_score(df, yield_curve, "curve_score", ["curve_factor"])
+    df = _safe_merge_score(
+        df, credit_spread, "credit_score", ["credit_hy_oas", "credit_spread_chg_5d"]
+    )
+    df = _safe_merge_score(
+        df, cluster_buys, "cluster_buys_score", ["cluster_n_buyers", "cluster_buys_dollar"]
+    )
+    df = _safe_merge_score(
+        df,
+        sec_ftd,
+        "sec_ftd_score",
+        [
+            "sec_ftd_latest_date",
+            "sec_ftd_fails",
+            "sec_ftd_dollars",
+            "sec_ftd_active_days",
+            "sec_ftd_note",
+        ],
+    )
 
     if not df.empty:
         df = df.copy()
@@ -475,64 +666,106 @@ def _join_per_ticker(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
 
 
 # -------- Options track -----------------------------------------------
-def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
-                 sentiment: pd.DataFrame, fundamentals: pd.DataFrame,
-                 insider: pd.DataFrame, macro: Dict[str, Any],
-                 news: pd.DataFrame = None, earnings: pd.DataFrame = None,
-                 value: pd.DataFrame = None,
-                 congress: pd.DataFrame = None,
-                 social: pd.DataFrame = None,
-                 analyst: pd.DataFrame = None,
-                 uoa: pd.DataFrame = None,
-                 sector_rs: pd.DataFrame = None,
-                 dark_pool: pd.DataFrame = None,
-                 fda: pd.DataFrame = None,
-                 sector_flow: pd.DataFrame = None,
-                 technicals: pd.DataFrame = None,
-                 short_int: pd.DataFrame = None,
-                 put_call: pd.DataFrame = None,
-                 iv_surface: pd.DataFrame = None,
-                 # ---- v20 new factor frames -----------------------
-                 cot: pd.DataFrame = None,
-                 thirteen_f: pd.DataFrame = None,
-                 vix_term: pd.DataFrame = None,
-                 eia: pd.DataFrame = None,
-                 wasde: pd.DataFrame = None,
-                 buybacks: pd.DataFrame = None,
-                 gtrends: pd.DataFrame = None,
-                 form_144: pd.DataFrame = None,
-                 whisper: pd.DataFrame = None,
-                 hyperliquid: pd.DataFrame = None,
-                 twitter: pd.DataFrame = None,
-                 r_options: pd.DataFrame = None,
-                 yield_curve: pd.DataFrame = None,
-                 credit_spread: pd.DataFrame = None,
-                 cluster_buys: pd.DataFrame = None) -> pd.DataFrame:
+def fuse_options(
+    contracts: pd.DataFrame,
+    mp_summary: pd.DataFrame,
+    sentiment: pd.DataFrame,
+    fundamentals: pd.DataFrame,
+    insider: pd.DataFrame,
+    macro: dict[str, Any],
+    news: pd.DataFrame = None,
+    earnings: pd.DataFrame = None,
+    value: pd.DataFrame = None,
+    congress: pd.DataFrame = None,
+    social: pd.DataFrame = None,
+    analyst: pd.DataFrame = None,
+    uoa: pd.DataFrame = None,
+    sector_rs: pd.DataFrame = None,
+    dark_pool: pd.DataFrame = None,
+    fda: pd.DataFrame = None,
+    sector_flow: pd.DataFrame = None,
+    technicals: pd.DataFrame = None,
+    short_int: pd.DataFrame = None,
+    put_call: pd.DataFrame = None,
+    iv_surface: pd.DataFrame = None,
+    # ---- v20 new factor frames -----------------------
+    cot: pd.DataFrame = None,
+    thirteen_f: pd.DataFrame = None,
+    vix_term: pd.DataFrame = None,
+    eia: pd.DataFrame = None,
+    wasde: pd.DataFrame = None,
+    buybacks: pd.DataFrame = None,
+    gtrends: pd.DataFrame = None,
+    form_144: pd.DataFrame = None,
+    whisper: pd.DataFrame = None,
+    hyperliquid: pd.DataFrame = None,
+    twitter: pd.DataFrame = None,
+    r_options: pd.DataFrame = None,
+    yield_curve: pd.DataFrame = None,
+    credit_spread: pd.DataFrame = None,
+    cluster_buys: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Long-only option ranking. Returns one DataFrame with both calls and puts."""
     if contracts is None or contracts.empty:
         return pd.DataFrame()
 
-    df = _join_per_ticker(contracts, mp_summary, sentiment, fundamentals, insider, macro,
-                          news=news, earnings=earnings, congress=congress, social=social,
-                          analyst=analyst, uoa=uoa, sector_rs=sector_rs,
-                          dark_pool=dark_pool, fda=fda, sector_flow=sector_flow,
-                          technicals=technicals, short_int=short_int,
-                          put_call=put_call, iv_surface=iv_surface,
-                          cot=cot, thirteen_f=thirteen_f, vix_term=vix_term,
-                          eia=eia, wasde=wasde, buybacks=buybacks,
-                          gtrends=gtrends, form_144=form_144, whisper=whisper,
-                          hyperliquid=hyperliquid, twitter=twitter,
-                          r_options=r_options, yield_curve=yield_curve,
-                          credit_spread=credit_spread, cluster_buys=cluster_buys)
+    df = _join_per_ticker(
+        contracts,
+        mp_summary,
+        sentiment,
+        fundamentals,
+        insider,
+        macro,
+        news=news,
+        earnings=earnings,
+        congress=congress,
+        social=social,
+        analyst=analyst,
+        uoa=uoa,
+        sector_rs=sector_rs,
+        dark_pool=dark_pool,
+        fda=fda,
+        sector_flow=sector_flow,
+        technicals=technicals,
+        short_int=short_int,
+        put_call=put_call,
+        iv_surface=iv_surface,
+        cot=cot,
+        thirteen_f=thirteen_f,
+        vix_term=vix_term,
+        eia=eia,
+        wasde=wasde,
+        buybacks=buybacks,
+        gtrends=gtrends,
+        form_144=form_144,
+        whisper=whisper,
+        hyperliquid=hyperliquid,
+        twitter=twitter,
+        r_options=r_options,
+        yield_curve=yield_curve,
+        credit_spread=credit_spread,
+        cluster_buys=cluster_buys,
+    )
     # v20.1 — defragment after long merge chain (silences PerformanceWarning)
     df = df.copy()
     # Merge value
     if value is not None and not value.empty:
-        df = df.merge(value[["ticker", "value_score", "value_bucket", "earnings_yield",
-                             "fcf_yield", "graham_score"]], on="ticker", how="left")
+        df = df.merge(
+            value[
+                [
+                    "ticker",
+                    "value_score",
+                    "value_bucket",
+                    "earnings_yield",
+                    "fcf_yield",
+                    "graham_score",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     else:
-        for c in ["value_score", "value_bucket", "earnings_yield",
-                  "fcf_yield", "graham_score"]:
+        for c in ["value_score", "value_bucket", "earnings_yield", "fcf_yield", "graham_score"]:
             df[c] = 0.0 if c == "value_score" else None
 
     # v20.1 — defragment again after the value merge
@@ -548,7 +781,9 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     # Side multiplier — secondary signals are bullish-tilted; align to side
     side_mult = np.where(df["side"] == "call", 1.0, -1.0)
 
-    sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    sent_source = (
+        df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    )
     df["sentiment_aligned"] = sent_source.fillna(0) * side_mult
     df["fund_aligned"] = df["fund_score"].fillna(0) * side_mult
     df["insider_aligned"] = df["insider_score"].fillna(0) * side_mult
@@ -560,64 +795,110 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     # Earnings catalyst, side-aligned (positive surprise + imminent → boost call/dampen put)
     df["earnings_aligned"] = df["earnings_score"].fillna(0) * side_mult
     # Value, side-aligned (cheap stock → bullish → boost call ideas)
-    df["value_aligned"] = df.get("value_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["value_aligned"] = (
+        df.get("value_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Congress, side-aligned (Congressional buying → bullish → boost call ideas)
-    df["congress_aligned"] = df.get("congress_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["congress_aligned"] = (
+        df.get("congress_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Social, side-aligned (positive Trump/StockTwits → bullish → boost calls)
-    df["social_aligned"] = df.get("social_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["social_aligned"] = (
+        df.get("social_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Analyst, side-aligned (analyst momentum bullish → bullish → boost calls)
-    df["analyst_aligned"] = df.get("analyst_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["analyst_aligned"] = (
+        df.get("analyst_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # UOA: positive uoa_score = call-side flow heavy → boost calls
     df["uoa_aligned"] = df.get("uoa_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
     # Sector RS: stock outperforming sector → bullish bias
-    df["sector_rs_aligned"] = df.get("sector_rs_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["sector_rs_aligned"] = (
+        df.get("sector_rs_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Dark pool: high short-vol-ratio → bearish (score is already signed: negative=bearish)
-    df["dark_pool_aligned"] = df.get("dark_pool_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["dark_pool_aligned"] = (
+        df.get("dark_pool_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # FDA catalyst: high score = imminent catalyst — always boosts BOTH directions (vol coming)
     # We bias toward calls since catalysts more often pop than crash; keep neutral if you prefer.
     df["fda_aligned"] = df.get("fda_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
     # Sector flow: hot sector → bullish bias on its constituents
-    df["sector_flow_aligned"] = df.get("sector_flow_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["sector_flow_aligned"] = (
+        df.get("sector_flow_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Technicals: composite directional score (low fusion weight — context, not main driver)
     df["tech_aligned"] = df.get("tech_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
     # Short interest: high SI → squeeze potential → bullish bias
-    df["short_int_aligned"] = df.get("short_int_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["short_int_aligned"] = (
+        df.get("short_int_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Put/Call ratio: contrarian (positive pc_score = bullish at extremes)
-    df["put_call_aligned"] = df.get("pc_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["put_call_aligned"] = (
+        df.get("pc_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # IV surface: anomaly on call strikes = bullish demand; on puts = bearish hedge demand
-    df["iv_surface_aligned"] = df.get("iv_surface_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["iv_surface_aligned"] = (
+        df.get("iv_surface_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
 
     # ---- v20 new factor side-alignment --------------------------------
     # CoT: managed-money net buying = bullish for the ETF/equity bucket
     df["cot_aligned"] = df.get("cot_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
     # 13F: smart-money net adds = bullish
-    df["thirteen_f_aligned"] = df.get("thirteen_f_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["thirteen_f_aligned"] = (
+        df.get("thirteen_f_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # VIX term: contango = bullish equity, backwardation = bearish
-    df["vix_term_aligned"] = df.get("vix_term_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["vix_term_aligned"] = (
+        df.get("vix_term_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # EIA: inventory draw = bullish energy equities
     df["eia_aligned"] = df.get("eia_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
     # WASDE: drift direction already encoded in score
-    df["wasde_aligned"] = df.get("wasde_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["wasde_aligned"] = (
+        df.get("wasde_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Buybacks: announcement = bullish
-    df["buybacks_aligned"] = df.get("buyback_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["buybacks_aligned"] = (
+        df.get("buyback_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Google Trends: rising interest = bullish (retail catching on)
-    df["gtrends_aligned"] = df.get("gtrends_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["gtrends_aligned"] = (
+        df.get("gtrends_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Form 144: pre-sale notices = bearish (score already negative)
-    df["form_144_aligned"] = df.get("form_144_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["form_144_aligned"] = (
+        df.get("form_144_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Whisper: high bar / low bar already encoded
-    df["whisper_aligned"] = df.get("whisper_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["whisper_aligned"] = (
+        df.get("whisper_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Hyperliquid: positive funding (longs paying) = bullish crypto-corr equities
-    df["hyperliquid_aligned"] = df.get("hyperliquid_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["hyperliquid_aligned"] = (
+        df.get("hyperliquid_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Twitter cashtag sentiment, side-aligned
-    df["twitter_aligned"] = df.get("twitter_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["twitter_aligned"] = (
+        df.get("twitter_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # r/options sticky sentiment, side-aligned
-    df["r_options_aligned"] = df.get("r_options_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["r_options_aligned"] = (
+        df.get("r_options_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Yield curve: signed score (banks benefit from rising rates + steepening)
-    df["yield_curve_aligned"] = df.get("curve_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["yield_curve_aligned"] = (
+        df.get("curve_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Credit spread: stress = bearish (score already negative when widening)
-    df["credit_spread_aligned"] = df.get("credit_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["credit_spread_aligned"] = (
+        df.get("credit_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
     # Cluster buys: high-edge insider subset, side-aligned
-    df["cluster_buys_aligned"] = df.get("cluster_buys_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    df["cluster_buys_aligned"] = (
+        df.get("cluster_buys_score", pd.Series(0.0, index=df.index)).fillna(0) * side_mult
+    )
 
     # v20.1 — defragment after the long aligned-column assignment block
     df = df.copy()
@@ -653,20 +934,20 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     df["z_iv_surface"] = zscore(df["iv_surface_aligned"])
 
     # ---- v20 new z-scores ---------------------------------------------
-    df["z_cot"]          = zscore(df["cot_aligned"])
-    df["z_thirteen_f"]   = zscore(df["thirteen_f_aligned"])
-    df["z_vix_term"]     = zscore(df["vix_term_aligned"])
-    df["z_eia"]          = zscore(df["eia_aligned"])
-    df["z_wasde"]        = zscore(df["wasde_aligned"])
-    df["z_buybacks"]     = zscore(df["buybacks_aligned"])
-    df["z_gtrends"]      = zscore(df["gtrends_aligned"])
-    df["z_form_144"]     = zscore(df["form_144_aligned"])
-    df["z_whisper"]      = zscore(df["whisper_aligned"])
-    df["z_hyperliquid"]  = zscore(df["hyperliquid_aligned"])
-    df["z_twitter"]      = zscore(df["twitter_aligned"])
-    df["z_r_options"]    = zscore(df["r_options_aligned"])
-    df["z_yield_curve"]  = zscore(df["yield_curve_aligned"])
-    df["z_credit_spread"]= zscore(df["credit_spread_aligned"])
+    df["z_cot"] = zscore(df["cot_aligned"])
+    df["z_thirteen_f"] = zscore(df["thirteen_f_aligned"])
+    df["z_vix_term"] = zscore(df["vix_term_aligned"])
+    df["z_eia"] = zscore(df["eia_aligned"])
+    df["z_wasde"] = zscore(df["wasde_aligned"])
+    df["z_buybacks"] = zscore(df["buybacks_aligned"])
+    df["z_gtrends"] = zscore(df["gtrends_aligned"])
+    df["z_form_144"] = zscore(df["form_144_aligned"])
+    df["z_whisper"] = zscore(df["whisper_aligned"])
+    df["z_hyperliquid"] = zscore(df["hyperliquid_aligned"])
+    df["z_twitter"] = zscore(df["twitter_aligned"])
+    df["z_r_options"] = zscore(df["r_options_aligned"])
+    df["z_yield_curve"] = zscore(df["yield_curve_aligned"])
+    df["z_credit_spread"] = zscore(df["credit_spread_aligned"])
     df["z_cluster_buys"] = zscore(df["cluster_buys_aligned"])
 
     # v20.1 — defragment one more time before the heavy fusion sum
@@ -675,13 +956,13 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     # Weighted fusion → directional buy score
     w = _regime_adjusted_weights(macro)
     df["fused_score"] = (
-        w["mispricing"]    * df["z_mispricing"]
-        + w["iv_rank"]     * df["z_iv_rank"]
-        + w["skew"]        * df["z_skew"]
+        w["mispricing"] * df["z_mispricing"]
+        + w["iv_rank"] * df["z_iv_rank"]
+        + w["skew"] * df["z_skew"]
         + w["sentiment_d"] * df["z_sent"]
-        + w["fundamentals"]* df["z_fund"]
-        + w["insider"]     * df["z_insider"]
-        + w["macro"]       * df["z_macro"]
+        + w["fundamentals"] * df["z_fund"]
+        + w["insider"] * df["z_insider"]
+        + w["macro"] * df["z_macro"]
         + w.get("news", 0) * df["z_news"]
         + w.get("earnings", 0) * df["z_earnings"]
         + w.get("value", 0) * df["z_value"]
@@ -698,20 +979,20 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
         + w.get("put_call", 0) * df["z_put_call"]
         + w.get("iv_surface", 0) * df["z_iv_surface"]
         # ---- v20 NEW FACTORS ----
-        + w.get("cot", 0)          * df["z_cot"]
-        + w.get("thirteen_f", 0)   * df["z_thirteen_f"]
-        + w.get("vix_term", 0)     * df["z_vix_term"]
-        + w.get("eia", 0)          * df["z_eia"]
-        + w.get("wasde", 0)        * df["z_wasde"]
-        + w.get("buybacks", 0)     * df["z_buybacks"]
-        + w.get("gtrends", 0)      * df["z_gtrends"]
-        + w.get("form_144", 0)     * df["z_form_144"]
-        + w.get("whisper", 0)      * df["z_whisper"]
-        + w.get("hyperliquid", 0)  * df["z_hyperliquid"]
-        + w.get("twitter", 0)      * df["z_twitter"]
-        + w.get("r_options", 0)    * df["z_r_options"]
-        + w.get("yield_curve", 0)  * df["z_yield_curve"]
-        + w.get("credit_spread", 0)* df["z_credit_spread"]
+        + w.get("cot", 0) * df["z_cot"]
+        + w.get("thirteen_f", 0) * df["z_thirteen_f"]
+        + w.get("vix_term", 0) * df["z_vix_term"]
+        + w.get("eia", 0) * df["z_eia"]
+        + w.get("wasde", 0) * df["z_wasde"]
+        + w.get("buybacks", 0) * df["z_buybacks"]
+        + w.get("gtrends", 0) * df["z_gtrends"]
+        + w.get("form_144", 0) * df["z_form_144"]
+        + w.get("whisper", 0) * df["z_whisper"]
+        + w.get("hyperliquid", 0) * df["z_hyperliquid"]
+        + w.get("twitter", 0) * df["z_twitter"]
+        + w.get("r_options", 0) * df["z_r_options"]
+        + w.get("yield_curve", 0) * df["z_yield_curve"]
+        + w.get("credit_spread", 0) * df["z_credit_spread"]
         + w.get("cluster_buys", 0) * df["z_cluster_buys"]
     )
 
@@ -725,7 +1006,9 @@ def fuse_options(contracts: pd.DataFrame, mp_summary: pd.DataFrame,
     df["reasoning"] = df.apply(_option_reasoning, axis=1)
     df["risks"] = df.apply(_option_risks, axis=1)
     df["contract"] = df.apply(
-        lambda r: f"{r['ticker']} {r['expiry']} {'C' if r['side']=='call' else 'P'} {r['strike']:g}",
+        lambda r: (
+            f"{r['ticker']} {r['expiry']} {'C' if r['side'] == 'call' else 'P'} {r['strike']:g}"
+        ),
         axis=1,
     )
     df["rank_score"] = df["fused_score"]
@@ -737,22 +1020,26 @@ def _sector_of(ticker: str) -> str:
     """Quick sector lookup for diversification guard. Returns 'OTHER' if unknown."""
     try:
         from engines.sector_rs import SECTOR_MAP
+
         return SECTOR_MAP.get(ticker, "OTHER")
     except Exception:
         return "OTHER"
 
 
-def top_options(df: pd.DataFrame, max_calls: int = TOP_N_CALLS,
-                max_puts: int = TOP_N_PUTS,
-                max_per_sector: int = 3) -> pd.DataFrame:
+def top_options(
+    df: pd.DataFrame,
+    max_calls: int = TOP_N_CALLS,
+    max_puts: int = TOP_N_PUTS,
+    max_per_sector: int = 3,
+) -> pd.DataFrame:
     """Pick top calls and top puts with diversity rules:
-      - 1 per ticker max
-      - At most `max_per_sector` picks per same sector (prevents 5 tech megacaps).
+    - 1 per ticker max
+    - At most `max_per_sector` picks per same sector (prevents 5 tech megacaps).
     """
     if df.empty:
         return df
     seen_tickers = set()
-    sector_counts: Dict[str, int] = {}
+    sector_counts: dict[str, int] = {}
     calls, puts = [], []
     for _, r in df.iterrows():
         t = r["ticker"]
@@ -777,36 +1064,42 @@ def top_options(df: pd.DataFrame, max_calls: int = TOP_N_CALLS,
 
 
 # -------- Shares track ------------------------------------------------
-def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
-                fundamentals: pd.DataFrame, insider: pd.DataFrame,
-                macro: Dict[str, Any], excluded_tickers: set = None,
-                news: pd.DataFrame = None, earnings: pd.DataFrame = None,
-                value: pd.DataFrame = None,
-                congress: pd.DataFrame = None,
-                social: pd.DataFrame = None,
-                analyst: pd.DataFrame = None,
-                sector_rs: pd.DataFrame = None,
-                dark_pool: pd.DataFrame = None,
-                fda: pd.DataFrame = None,
-                sector_flow: pd.DataFrame = None,
-                technicals: pd.DataFrame = None,
-                short_int: pd.DataFrame = None,
-                cot: pd.DataFrame = None,
-                thirteen_f: pd.DataFrame = None,
-                vix_term: pd.DataFrame = None,
-                eia: pd.DataFrame = None,
-                wasde: pd.DataFrame = None,
-                buybacks: pd.DataFrame = None,
-                gtrends: pd.DataFrame = None,
-                form_144: pd.DataFrame = None,
-                whisper: pd.DataFrame = None,
-                hyperliquid: pd.DataFrame = None,
-                twitter: pd.DataFrame = None,
-                r_options: pd.DataFrame = None,
-                yield_curve: pd.DataFrame = None,
-                credit_spread: pd.DataFrame = None,
-                cluster_buys: pd.DataFrame = None,
-                sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
+def fuse_shares(
+    small_cap_universe: list[str],
+    sentiment: pd.DataFrame,
+    fundamentals: pd.DataFrame,
+    insider: pd.DataFrame,
+    macro: dict[str, Any],
+    excluded_tickers: set = None,
+    news: pd.DataFrame = None,
+    earnings: pd.DataFrame = None,
+    value: pd.DataFrame = None,
+    congress: pd.DataFrame = None,
+    social: pd.DataFrame = None,
+    analyst: pd.DataFrame = None,
+    sector_rs: pd.DataFrame = None,
+    dark_pool: pd.DataFrame = None,
+    fda: pd.DataFrame = None,
+    sector_flow: pd.DataFrame = None,
+    technicals: pd.DataFrame = None,
+    short_int: pd.DataFrame = None,
+    cot: pd.DataFrame = None,
+    thirteen_f: pd.DataFrame = None,
+    vix_term: pd.DataFrame = None,
+    eia: pd.DataFrame = None,
+    wasde: pd.DataFrame = None,
+    buybacks: pd.DataFrame = None,
+    gtrends: pd.DataFrame = None,
+    form_144: pd.DataFrame = None,
+    whisper: pd.DataFrame = None,
+    hyperliquid: pd.DataFrame = None,
+    twitter: pd.DataFrame = None,
+    r_options: pd.DataFrame = None,
+    yield_curve: pd.DataFrame = None,
+    credit_spread: pd.DataFrame = None,
+    cluster_buys: pd.DataFrame = None,
+    sec_ftd: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Score small caps for long shares.
 
     Built from the multi-factor stack only (no option pricing). Bullish-aligned
@@ -830,40 +1123,66 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         for extra in ("decayed_mentions", "sentiment_decay"):
             if extra in sentiment.columns:
                 sent_cols.append(extra)
-        df = df.merge(sentiment[sent_cols],
-                      on="ticker", how="left")
+        df = df.merge(sentiment[sent_cols], on="ticker", how="left")
     else:
         for c in ["mentions", "sentiment_now", "sentiment_delta", "velocity"]:
             df[c] = 0.0
     if fundamentals is not None and not fundamentals.empty:
-        df = df.merge(fundamentals[["ticker", "fund_score", "classification",
-                                    "earnings_date", "rev_growth", "op_margin", "pe",
-                                    "market_cap"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            fundamentals[
+                [
+                    "ticker",
+                    "fund_score",
+                    "classification",
+                    "earnings_date",
+                    "rev_growth",
+                    "op_margin",
+                    "pe",
+                    "market_cap",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     else:
-        for c in ["fund_score", "classification", "earnings_date",
-                  "rev_growth", "op_margin", "pe", "market_cap"]:
+        for c in [
+            "fund_score",
+            "classification",
+            "earnings_date",
+            "rev_growth",
+            "op_margin",
+            "pe",
+            "market_cap",
+        ]:
             df[c] = None
     if insider is not None and not insider.empty:
-        df = df.merge(insider[["ticker", "insider_score", "n_buys", "n_sells",
-                               "buys_value", "sells_value"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            insider[["ticker", "insider_score", "n_buys", "n_sells", "buys_value", "sells_value"]],
+            on="ticker",
+            how="left",
+        )
     else:
         for c in ["insider_score", "n_buys", "n_sells", "buys_value", "sells_value"]:
             df[c] = 0.0
 
     # Merge news + earnings if available
     if news is not None and not news.empty:
-        df = df.merge(news[["ticker", "news_delta", "news_velocity", "top_headline",
-                            "n_24h"]], on="ticker", how="left")
+        df = df.merge(
+            news[["ticker", "news_delta", "news_velocity", "top_headline", "n_24h"]],
+            on="ticker",
+            how="left",
+        )
     else:
         df["news_delta"] = 0.0
         df["news_velocity"] = 0.0
         df["top_headline"] = ""
         df["n_24h"] = 0
     if earnings is not None and not earnings.empty:
-        df = df.merge(earnings[["ticker", "next_earnings_date", "days_to_earnings",
-                                "earnings_score"]], on="ticker", how="left")
+        df = df.merge(
+            earnings[["ticker", "next_earnings_date", "days_to_earnings", "earnings_score"]],
+            on="ticker",
+            how="left",
+        )
     else:
         df["next_earnings_date"] = None
         df["days_to_earnings"] = None
@@ -876,9 +1195,20 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
         df["value_bucket"] = None
 
     if congress is not None and not congress.empty:
-        df = df.merge(congress[["ticker", "congress_score", "congress_buys_n",
-                                "congress_n_reps", "congress_n_sens", "congress_top_buyer"]],
-                      on="ticker", how="left")
+        df = df.merge(
+            congress[
+                [
+                    "ticker",
+                    "congress_score",
+                    "congress_buys_n",
+                    "congress_n_reps",
+                    "congress_n_sens",
+                    "congress_top_buyer",
+                ]
+            ],
+            on="ticker",
+            how="left",
+        )
     else:
         df["congress_score"] = 0.0
         df["congress_buys_n"] = 0
@@ -891,71 +1221,113 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
 
     # Broader non-option factor stack. Shares intentionally skip option-chain
     # fields such as strikes, expiries, IV, Greeks, theo pricing, and spreads.
-    df = _safe_merge_score(df, social, "social_score",
-                           ["stocktwits_n", "stocktwits_avg_sent", "trump_n"])
-    df = _safe_merge_score(df, analyst, "analyst_score",
-                           ["analyst_total", "analyst_avg", "analyst_momentum"])
-    df = _safe_merge_score(df, sector_rs, "sector_rs_score",
-                           ["sector_etf", "ticker_ret_20d", "sector_ret_20d"])
+    df = _safe_merge_score(
+        df, social, "social_score", ["stocktwits_n", "stocktwits_avg_sent", "trump_n"]
+    )
+    df = _safe_merge_score(
+        df, analyst, "analyst_score", ["analyst_total", "analyst_avg", "analyst_momentum"]
+    )
+    df = _safe_merge_score(
+        df, sector_rs, "sector_rs_score", ["sector_etf", "ticker_ret_20d", "sector_ret_20d"]
+    )
     df = _safe_merge_score(df, dark_pool, "dark_pool_score", ["short_vol_ratio"])
-    df = _safe_merge_score(df, fda, "fda_score",
-                           ["next_catalyst_date", "days_to_catalyst", "catalyst_type"])
+    df = _safe_merge_score(
+        df, fda, "fda_score", ["next_catalyst_date", "days_to_catalyst", "catalyst_type"]
+    )
     df = _safe_merge_score(df, sector_flow, "sector_flow_score")
-    df = _safe_merge_score(df, technicals, "tech_score",
-                           ["spot", "source_price_session", "source_price_basis",
-                            "rsi", "macd_hist", "bb_percent_b", "ma_cross",
-                            "dist_52w_high", "dist_52w_low", "adx", "stoch_k",
-                            "obv_slope"])
-    df = _safe_merge_score(df, short_int, "short_int_score",
-                           ["short_pct_of_float", "short_ratio_days_to_cover",
-                            "short_int_change_pct", "shares_short",
-                            "shares_short_prior_month",
-                            "finra_short_interest_shares",
-                            "finra_short_interest_prior_shares",
-                            "finra_short_interest_avg_daily_volume",
-                            "finra_short_interest_days_to_cover",
-                            "finra_short_interest_change_pct",
-                            "finra_short_interest_settlement_date",
-                            "finra_short_interest_market_class",
-                            "finra_short_interest_source"])
-    df = _safe_merge_score(df, cot, "cot_score",
-                           ["cot_market", "cot_net_change", "cot_report_date"])
-    df = _safe_merge_score(df, thirteen_f, "thirteen_f_score",
-                           ["tf_n_new", "tf_n_growing", "tf_n_cutting",
-                            "tf_n_exiting", "tf_funds"])
-    df = _safe_merge_score(df, vix_term, "vix_term_score",
-                           ["vix_regime", "vix_contango_ratio"])
+    df = _safe_merge_score(
+        df,
+        technicals,
+        "tech_score",
+        [
+            "spot",
+            "source_price_session",
+            "source_price_basis",
+            "rsi",
+            "macd_hist",
+            "bb_percent_b",
+            "ma_cross",
+            "dist_52w_high",
+            "dist_52w_low",
+            "adx",
+            "stoch_k",
+            "obv_slope",
+        ],
+    )
+    df = _safe_merge_score(
+        df,
+        short_int,
+        "short_int_score",
+        [
+            "short_pct_of_float",
+            "short_ratio_days_to_cover",
+            "short_int_change_pct",
+            "shares_short",
+            "shares_short_prior_month",
+            "finra_short_interest_shares",
+            "finra_short_interest_prior_shares",
+            "finra_short_interest_avg_daily_volume",
+            "finra_short_interest_days_to_cover",
+            "finra_short_interest_change_pct",
+            "finra_short_interest_settlement_date",
+            "finra_short_interest_market_class",
+            "finra_short_interest_source",
+        ],
+    )
+    df = _safe_merge_score(
+        df, cot, "cot_score", ["cot_market", "cot_net_change", "cot_report_date"]
+    )
+    df = _safe_merge_score(
+        df,
+        thirteen_f,
+        "thirteen_f_score",
+        ["tf_n_new", "tf_n_growing", "tf_n_cutting", "tf_n_exiting", "tf_funds"],
+    )
+    df = _safe_merge_score(df, vix_term, "vix_term_score", ["vix_regime", "vix_contango_ratio"])
     df = _safe_merge_score(df, eia, "eia_score", ["eia_meta", "eia_commodity"])
-    df = _safe_merge_score(df, wasde, "wasde_score",
-                           ["wasde_proximity", "wasde_days_since"])
-    df = _safe_merge_score(df, buybacks, "buyback_score",
-                           ["buyback_date_latest", "buyback_n_filings"])
+    df = _safe_merge_score(df, wasde, "wasde_score", ["wasde_proximity", "wasde_days_since"])
+    df = _safe_merge_score(
+        df, buybacks, "buyback_score", ["buyback_date_latest", "buyback_n_filings"]
+    )
     df = _safe_merge_score(df, gtrends, "gtrends_score", ["gtrends_term"])
-    df = _safe_merge_score(df, form_144, "form_144_score",
-                           ["form_144_count_30d", "form_144_latest_date"])
-    df = _safe_merge_score(df, whisper, "whisper_score",
-                           ["whisper_eps", "whisper_consensus", "whisper_gap_pct",
-                            "whisper_report_date"])
-    df = _safe_merge_score(df, hyperliquid, "hyperliquid_score",
-                           ["hl_crypto", "hl_funding_annual"])
-    df = _safe_merge_score(df, twitter, "twitter_score",
-                           ["twitter_n", "twitter_excerpt"])
-    df = _safe_merge_score(df, r_options, "r_options_score",
-                           ["r_options_n", "r_options_avg_sent"])
+    df = _safe_merge_score(
+        df, form_144, "form_144_score", ["form_144_count_30d", "form_144_latest_date"]
+    )
+    df = _safe_merge_score(
+        df,
+        whisper,
+        "whisper_score",
+        ["whisper_eps", "whisper_consensus", "whisper_gap_pct", "whisper_report_date"],
+    )
+    df = _safe_merge_score(df, hyperliquid, "hyperliquid_score", ["hl_crypto", "hl_funding_annual"])
+    df = _safe_merge_score(df, twitter, "twitter_score", ["twitter_n", "twitter_excerpt"])
+    df = _safe_merge_score(df, r_options, "r_options_score", ["r_options_n", "r_options_avg_sent"])
     df = _safe_merge_score(df, yield_curve, "curve_score", ["curve_factor"])
-    df = _safe_merge_score(df, credit_spread, "credit_score",
-                           ["credit_hy_oas", "credit_spread_chg_5d"])
-    df = _safe_merge_score(df, cluster_buys, "cluster_buys_score",
-                           ["cluster_n_buyers", "cluster_buys_dollar"])
-    df = _safe_merge_score(df, sec_ftd, "sec_ftd_score",
-                           ["sec_ftd_latest_date", "sec_ftd_fails",
-                            "sec_ftd_dollars", "sec_ftd_active_days",
-                            "sec_ftd_note"])
+    df = _safe_merge_score(
+        df, credit_spread, "credit_score", ["credit_hy_oas", "credit_spread_chg_5d"]
+    )
+    df = _safe_merge_score(
+        df, cluster_buys, "cluster_buys_score", ["cluster_n_buyers", "cluster_buys_dollar"]
+    )
+    df = _safe_merge_score(
+        df,
+        sec_ftd,
+        "sec_ftd_score",
+        [
+            "sec_ftd_latest_date",
+            "sec_ftd_fails",
+            "sec_ftd_dollars",
+            "sec_ftd_active_days",
+            "sec_ftd_note",
+        ],
+    )
 
     df = df.copy()
 
     # Cross-sectional z-scores (no side multiplier — shares are inherently long bullish)
-    sent_source = df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    sent_source = (
+        df["sentiment_decay"] if "sentiment_decay" in df.columns else df["sentiment_delta"]
+    )
     df["z_sent"] = zscore(sent_source.fillna(0))
     df["z_fund"] = zscore(df["fund_score"].fillna(0))
     df["z_insider"] = zscore(df["insider_score"].fillna(0))
@@ -1079,73 +1451,129 @@ def fuse_shares(small_cap_universe: List[str], sentiment: pd.DataFrame,
     return df
 
 
-def enrich_futures_context(futures_df: pd.DataFrame, macro: Dict[str, Any],
-                           sentiment: pd.DataFrame = None,
-                           fundamentals: pd.DataFrame = None,
-                           insider: pd.DataFrame = None,
-                           news: pd.DataFrame = None,
-                           earnings: pd.DataFrame = None,
-                           value: pd.DataFrame = None,
-                           congress: pd.DataFrame = None,
-                           social: pd.DataFrame = None,
-                           analyst: pd.DataFrame = None,
-                           sector_rs: pd.DataFrame = None,
-                           dark_pool: pd.DataFrame = None,
-                           fda: pd.DataFrame = None,
-                           sector_flow: pd.DataFrame = None,
-                           technicals: pd.DataFrame = None,
-                           short_int: pd.DataFrame = None,
-                           cot: pd.DataFrame = None,
-                           thirteen_f: pd.DataFrame = None,
-                           vix_term: pd.DataFrame = None,
-                           eia: pd.DataFrame = None,
-                           wasde: pd.DataFrame = None,
-                           buybacks: pd.DataFrame = None,
-                           gtrends: pd.DataFrame = None,
-                           form_144: pd.DataFrame = None,
-                           whisper: pd.DataFrame = None,
-                           hyperliquid: pd.DataFrame = None,
-                           twitter: pd.DataFrame = None,
-                           r_options: pd.DataFrame = None,
-                           yield_curve: pd.DataFrame = None,
-                           credit_spread: pd.DataFrame = None,
-                           cluster_buys: pd.DataFrame = None,
-                           sec_ftd: pd.DataFrame = None) -> pd.DataFrame:
+def enrich_futures_context(
+    futures_df: pd.DataFrame,
+    macro: dict[str, Any],
+    sentiment: pd.DataFrame = None,
+    fundamentals: pd.DataFrame = None,
+    insider: pd.DataFrame = None,
+    news: pd.DataFrame = None,
+    earnings: pd.DataFrame = None,
+    value: pd.DataFrame = None,
+    congress: pd.DataFrame = None,
+    social: pd.DataFrame = None,
+    analyst: pd.DataFrame = None,
+    sector_rs: pd.DataFrame = None,
+    dark_pool: pd.DataFrame = None,
+    fda: pd.DataFrame = None,
+    sector_flow: pd.DataFrame = None,
+    technicals: pd.DataFrame = None,
+    short_int: pd.DataFrame = None,
+    cot: pd.DataFrame = None,
+    thirteen_f: pd.DataFrame = None,
+    vix_term: pd.DataFrame = None,
+    eia: pd.DataFrame = None,
+    wasde: pd.DataFrame = None,
+    buybacks: pd.DataFrame = None,
+    gtrends: pd.DataFrame = None,
+    form_144: pd.DataFrame = None,
+    whisper: pd.DataFrame = None,
+    hyperliquid: pd.DataFrame = None,
+    twitter: pd.DataFrame = None,
+    r_options: pd.DataFrame = None,
+    yield_curve: pd.DataFrame = None,
+    credit_spread: pd.DataFrame = None,
+    cluster_buys: pd.DataFrame = None,
+    sec_ftd: pd.DataFrame = None,
+) -> pd.DataFrame:
     """Attach non-option factor context to futures via their ETF proxy."""
     if futures_df is None or futures_df.empty or "etf" not in futures_df.columns:
         return futures_df
     base = futures_df.copy()
     base["ticker"] = base["etf"]
     out = _join_per_ticker(
-        base, pd.DataFrame(), sentiment, fundamentals, insider, macro,
-        news=news, earnings=earnings, congress=congress, social=social,
-        analyst=analyst, sector_rs=sector_rs, dark_pool=dark_pool, fda=fda,
-        sector_flow=sector_flow, technicals=technicals, short_int=short_int,
-        cot=cot, thirteen_f=thirteen_f, vix_term=vix_term, eia=eia,
-        wasde=wasde, buybacks=buybacks, gtrends=gtrends, form_144=form_144,
-        whisper=whisper, hyperliquid=hyperliquid, twitter=twitter,
-        r_options=r_options, yield_curve=yield_curve,
-        credit_spread=credit_spread, cluster_buys=cluster_buys,
+        base,
+        pd.DataFrame(),
+        sentiment,
+        fundamentals,
+        insider,
+        macro,
+        news=news,
+        earnings=earnings,
+        congress=congress,
+        social=social,
+        analyst=analyst,
+        sector_rs=sector_rs,
+        dark_pool=dark_pool,
+        fda=fda,
+        sector_flow=sector_flow,
+        technicals=technicals,
+        short_int=short_int,
+        cot=cot,
+        thirteen_f=thirteen_f,
+        vix_term=vix_term,
+        eia=eia,
+        wasde=wasde,
+        buybacks=buybacks,
+        gtrends=gtrends,
+        form_144=form_144,
+        whisper=whisper,
+        hyperliquid=hyperliquid,
+        twitter=twitter,
+        r_options=r_options,
+        yield_curve=yield_curve,
+        credit_spread=credit_spread,
+        cluster_buys=cluster_buys,
         sec_ftd=sec_ftd,
     )
     out = out.copy()
     if value is not None and not value.empty:
-        value_cols = ["ticker", "value_score", "value_bucket", "earnings_yield",
-                      "fcf_yield", "graham_score"]
-        out = out.merge(value[[c for c in value_cols if c in value.columns]],
-                        on="ticker", how="left")
+        value_cols = [
+            "ticker",
+            "value_score",
+            "value_bucket",
+            "earnings_yield",
+            "fcf_yield",
+            "graham_score",
+        ]
+        out = out.merge(
+            value[[c for c in value_cols if c in value.columns]], on="ticker", how="left"
+        )
     else:
         out["value_score"] = 0.0
         out["value_bucket"] = None
     factor_cols = [
-        "sentiment_delta", "fund_score", "insider_score", "news_delta",
-        "earnings_score", "value_score", "congress_score", "social_score",
-        "analyst_score", "sector_rs_score", "dark_pool_score", "fda_score",
-        "sector_flow_score", "tech_score", "short_int_score", "cot_score",
-        "thirteen_f_score", "vix_term_score", "eia_score", "wasde_score",
-        "buyback_score", "gtrends_score", "form_144_score", "whisper_score",
-        "hyperliquid_score", "twitter_score", "r_options_score", "curve_score",
-        "credit_score", "cluster_buys_score", "sec_ftd_score",
+        "sentiment_delta",
+        "fund_score",
+        "insider_score",
+        "news_delta",
+        "earnings_score",
+        "value_score",
+        "congress_score",
+        "social_score",
+        "analyst_score",
+        "sector_rs_score",
+        "dark_pool_score",
+        "fda_score",
+        "sector_flow_score",
+        "tech_score",
+        "short_int_score",
+        "cot_score",
+        "thirteen_f_score",
+        "vix_term_score",
+        "eia_score",
+        "wasde_score",
+        "buyback_score",
+        "gtrends_score",
+        "form_144_score",
+        "whisper_score",
+        "hyperliquid_score",
+        "twitter_score",
+        "r_options_score",
+        "curve_score",
+        "credit_score",
+        "cluster_buys_score",
+        "sec_ftd_score",
     ]
     missing = [col for col in factor_cols if col not in out.columns]
     if missing:

@@ -6,6 +6,7 @@ local Python process. This module defines a small, auditable handoff: Optedge
 queues exact contracts that need history, a connected agent records normalized
 read-only bars, and fixed-horizon validation consumes those bars when present.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -167,7 +168,9 @@ def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
 def normalize_contract_record(raw: dict[str, Any]) -> dict[str, Any] | None:
     occ = parse_occ_symbol(raw.get("occ_symbol"))
     symbol = _first_text(
-        raw.get("symbol"), raw.get("chain_symbol"), occ.get("symbol"),
+        raw.get("symbol"),
+        raw.get("chain_symbol"),
+        occ.get("symbol"),
     ).upper()
     expiry = normalize_expiry(
         _first_text(raw.get("expiry"), raw.get("expiration_date"), occ.get("expiry"))
@@ -211,7 +214,9 @@ def normalize_contract_record(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def merge_snapshot_payload(existing: Any, incoming: Any, *, asof: datetime | None = None) -> dict[str, Any]:
+def merge_snapshot_payload(
+    existing: Any, incoming: Any, *, asof: datetime | None = None
+) -> dict[str, Any]:
     merged: dict[str, dict[str, Any]] = {}
     for payload in (existing, incoming):
         for raw in _records_from_payload(payload):
@@ -266,12 +271,14 @@ def load_option_histories(path: Path = SNAPSHOT_PATH) -> dict[str, dict[str, Any
             close = _float(bar.get("close_price"))
             if pd.isna(timestamp) or close is None or close < 0:
                 continue
-            frame_rows.append({
-                "timestamp": timestamp,
-                "Close": close,
-                "interpolated": bool(bar.get("interpolated", False)),
-                "_session_date": timestamp.date(),
-            })
+            frame_rows.append(
+                {
+                    "timestamp": timestamp,
+                    "Close": close,
+                    "interpolated": bool(bar.get("interpolated", False)),
+                    "_session_date": timestamp.date(),
+                }
+            )
         frame = pd.DataFrame(frame_rows)
         if not frame.empty:
             frame = frame.sort_values("timestamp").set_index("timestamp")
@@ -280,7 +287,9 @@ def load_option_histories(path: Path = SNAPSHOT_PATH) -> dict[str, dict[str, Any
     return histories
 
 
-def observed_option_close(record: dict[str, Any] | None, target_date: date) -> tuple[float, dict[str, Any]] | None:
+def observed_option_close(
+    record: dict[str, Any] | None, target_date: date
+) -> tuple[float, dict[str, Any]] | None:
     if not isinstance(record, dict):
         return None
     history = record.get("history")
@@ -325,7 +334,9 @@ def build_requests(
             ].copy()
         else:
             sides = option_rows.get("side", pd.Series("", index=option_rows.index))
-            option_rows = option_rows[sides.fillna("").astype(str).str.lower().isin({"call", "put"})].copy()
+            option_rows = option_rows[
+                sides.fillna("").astype(str).str.lower().isin({"call", "put"})
+            ].copy()
     histories = load_option_histories(snapshot_path)
     required_end = _last_required_date(now)
     grouped: dict[str, dict[str, Any]] = {}
@@ -334,16 +345,21 @@ def build_requests(
         if not key:
             continue
         symbol, expiry, side, strike = key.split("|")
-        entry = pd.to_datetime(raw.get("entry_time") or raw.get("log_time"), errors="coerce", utc=True)
+        entry = pd.to_datetime(
+            raw.get("entry_time") or raw.get("log_time"), errors="coerce", utc=True
+        )
         if pd.isna(entry):
             continue
         cached = histories.get(key)
         cached_frame = cached.get("history") if cached else None
         cached_dates = (
-            list(cached_frame.loc[
-                ~cached_frame["interpolated"].fillna(False).astype(bool), "_session_date"
-            ])
-            if isinstance(cached_frame, pd.DataFrame) and not cached_frame.empty else []
+            list(
+                cached_frame.loc[
+                    ~cached_frame["interpolated"].fillna(False).astype(bool), "_session_date"
+                ]
+            )
+            if isinstance(cached_frame, pd.DataFrame) and not cached_frame.empty
+            else []
         )
         expiry_date = pd.Timestamp(expiry).date()
         contract_required_end = min(required_end, expiry_date)
@@ -355,34 +371,40 @@ def build_requests(
         if cache_complete:
             continue
         strategy = _truthy(raw.get("strategy_qualified_pre_guard"))
-        executable = _truthy(raw.get("is_actionable")) or _text(raw.get("trade_status")).lower() == "trade"
+        executable = (
+            _truthy(raw.get("is_actionable")) or _text(raw.get("trade_status")).lower() == "trade"
+        )
         directional = _float(raw.get("buyer_edge_pct")) is not None
         priority = 0 if strategy else 1 if executable else 2 if directional else 3
-        item = grouped.setdefault(key, {
-            "request_id": key,
-            "contract_key": key,
-            "symbol": symbol,
-            "expiry": expiry,
-            "side": side,
-            "strike": float(strike),
-            "state": "active" if expiry >= now.date().isoformat() else "expired",
-            "start_time": entry.date().isoformat() + "T00:00:00Z",
-            "end_time": (
-                now.isoformat().replace("+00:00", "Z")
-                if expiry_date >= now.date()
-                else expiry_date.isoformat() + "T23:59:59Z"
-            ),
-            "interval": "day",
-            "bounds": "regular",
-            "priority": priority,
-            "signal_count": 0,
-            "latest_entry_time": entry.isoformat(),
-            "cached_through": max(cached_dates).isoformat() if cached_dates else None,
-        })
+        item = grouped.setdefault(
+            key,
+            {
+                "request_id": key,
+                "contract_key": key,
+                "symbol": symbol,
+                "expiry": expiry,
+                "side": side,
+                "strike": float(strike),
+                "state": "active" if expiry >= now.date().isoformat() else "expired",
+                "start_time": entry.date().isoformat() + "T00:00:00Z",
+                "end_time": (
+                    now.isoformat().replace("+00:00", "Z")
+                    if expiry_date >= now.date()
+                    else expiry_date.isoformat() + "T23:59:59Z"
+                ),
+                "interval": "day",
+                "bounds": "regular",
+                "priority": priority,
+                "signal_count": 0,
+                "latest_entry_time": entry.isoformat(),
+                "cached_through": max(cached_dates).isoformat() if cached_dates else None,
+            },
+        )
         item["signal_count"] += 1
         item["priority"] = min(item["priority"], priority)
         item["start_time"] = min(item["start_time"], entry.date().isoformat() + "T00:00:00Z")
         item["latest_entry_time"] = max(item["latest_entry_time"], entry.isoformat())
+
     def request_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
         latest = pd.to_datetime(row.get("latest_entry_time"), errors="coerce", utc=True)
         recency = -latest.timestamp() if not pd.isna(latest) else 0.0
@@ -443,10 +465,16 @@ def build_coverage(
     if outcomes is not None and not outcomes.empty and "asset" in outcomes.columns:
         option_outcomes = outcomes[outcomes["asset"].astype(str).str.lower().eq("option")].copy()
         if "is_scored" in option_outcomes.columns:
-            option_outcomes = option_outcomes[option_outcomes["is_scored"].fillna(False).astype(bool)]
+            option_outcomes = option_outcomes[
+                option_outcomes["is_scored"].fillna(False).astype(bool)
+            ]
     quality = (
-        option_outcomes.get("outcome_quality", pd.Series(dtype=str)).fillna("unknown").value_counts().to_dict()
-        if not option_outcomes.empty else {}
+        option_outcomes.get("outcome_quality", pd.Series(dtype=str))
+        .fillna("unknown")
+        .value_counts()
+        .to_dict()
+        if not option_outcomes.empty
+        else {}
     )
     observed = int(quality.get("broker_market_observed", 0))
     total = int(len(option_outcomes))
@@ -483,22 +511,34 @@ def refresh_artifacts(
     snapshot_path = data_dir / SNAPSHOT_PATH.name
     coverage_path = data_dir / COVERAGE_PATH.name
     packet = build_requests(
-        signals, snapshot_path=snapshot_path, asof=asof, max_requests=max_requests,
+        signals,
+        snapshot_path=snapshot_path,
+        asof=asof,
+        max_requests=max_requests,
     )
     _write_json(requests_path, packet)
     prompt_path.write_text(request_prompt(packet), encoding="utf-8")
     coverage = build_coverage(
-        snapshot_path=snapshot_path, requests=packet, outcomes=outcomes, asof=asof,
+        snapshot_path=snapshot_path,
+        requests=packet,
+        outcomes=outcomes,
+        asof=asof,
     )
     _write_json(coverage_path, coverage)
     return {"requests": packet, "coverage": coverage}
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Refresh read-only Robinhood option-history artifacts")
-    parser.add_argument("--ingest", type=Path, help="Merge a normalized MCP response JSON into the cache")
+    parser = argparse.ArgumentParser(
+        description="Refresh read-only Robinhood option-history artifacts"
+    )
+    parser.add_argument(
+        "--ingest", type=Path, help="Merge a normalized MCP response JSON into the cache"
+    )
     parser.add_argument("--max-requests", type=int, default=50)
-    parser.add_argument("--status", action="store_true", help="Print coverage after refreshing artifacts")
+    parser.add_argument(
+        "--status", action="store_true", help="Print coverage after refreshing artifacts"
+    )
     args = parser.parse_args()
     if args.ingest:
         merge_snapshot_file(args.ingest)

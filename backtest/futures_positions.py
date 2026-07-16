@@ -1,12 +1,12 @@
 # Purpose: Track mark and close futures positions.
 """Futures position lifecycle tracking."""
+
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -19,22 +19,62 @@ log = logging.getLogger("optedge.futures_positions")
 
 ENTRY_FACTOR_PREFIXES = ("z_", "factor_", "z_context_")
 ENTRY_FACTOR_COLUMNS = {
-    "etf", "kind", "ret_5d", "ret_20d", "ret_60d", "hv20", "atr20",
-    "range_pos", "futures_context_score", "rank_score", "macro_tilt",
-    "regime", "mentions", "sentiment_now", "sentiment_delta", "sentiment_decay",
-    "velocity", "news_delta", "news_velocity", "top_headline", "n_24h",
-    "fund_score", "classification", "insider_score", "earnings_score",
-    "days_to_earnings", "value_score", "value_bucket", "congress_score",
-    "social_score", "analyst_score", "sector_rs_score", "dark_pool_score",
-    "fda_score", "sector_flow_score", "tech_score", "short_int_score",
-    "cot_score", "thirteen_f_score", "vix_term_score", "eia_score",
-    "wasde_score", "buyback_score", "gtrends_score", "form_144_score",
-    "whisper_score", "hyperliquid_score", "twitter_score", "r_options_score",
-    "curve_score", "credit_score", "cluster_buys_score",
+    "etf",
+    "kind",
+    "ret_5d",
+    "ret_20d",
+    "ret_60d",
+    "hv20",
+    "atr20",
+    "range_pos",
+    "futures_context_score",
+    "rank_score",
+    "macro_tilt",
+    "regime",
+    "mentions",
+    "sentiment_now",
+    "sentiment_delta",
+    "sentiment_decay",
+    "velocity",
+    "news_delta",
+    "news_velocity",
+    "top_headline",
+    "n_24h",
+    "fund_score",
+    "classification",
+    "insider_score",
+    "earnings_score",
+    "days_to_earnings",
+    "value_score",
+    "value_bucket",
+    "congress_score",
+    "social_score",
+    "analyst_score",
+    "sector_rs_score",
+    "dark_pool_score",
+    "fda_score",
+    "sector_flow_score",
+    "tech_score",
+    "short_int_score",
+    "cot_score",
+    "thirteen_f_score",
+    "vix_term_score",
+    "eia_score",
+    "wasde_score",
+    "buyback_score",
+    "gtrends_score",
+    "form_144_score",
+    "whisper_score",
+    "hyperliquid_score",
+    "twitter_score",
+    "r_options_score",
+    "curve_score",
+    "credit_score",
+    "cluster_buys_score",
 }
 
 
-def _load(path: Path) -> List[Dict]:
+def _load(path: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
@@ -43,7 +83,7 @@ def _load(path: Path) -> List[Dict]:
         return []
 
 
-def _save(path: Path, rows: List[Dict]) -> None:
+def _save(path: Path, rows: list[dict]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, indent=2, default=str), encoding="utf-8")
 
@@ -60,9 +100,10 @@ def _json_value(value):
     return value
 
 
-def _latest_price(symbol: str) -> Optional[float]:
+def _latest_price(symbol: str) -> float | None:
     try:
         import data_provider
+
         hist = data_provider.get_history(symbol, period="5d")
         if hist is None or hist.empty or "Close" not in hist.columns:
             return None
@@ -72,7 +113,7 @@ def _latest_price(symbol: str) -> Optional[float]:
         return None
 
 
-def _signal_map(current_signals: Optional[pd.DataFrame]) -> Dict[str, Dict]:
+def _signal_map(current_signals: pd.DataFrame | None) -> dict[str, dict]:
     if current_signals is None or current_signals.empty or "symbol" not in current_signals.columns:
         return {}
     return {str(r.get("symbol")): r.to_dict() for _, r in current_signals.iterrows()}
@@ -143,7 +184,7 @@ def add_new_futures_signals(new_signals: pd.DataFrame, asof: datetime) -> int:
     return added
 
 
-def _pnl(pos: Dict, price: float) -> tuple[float, float, float]:
+def _pnl(pos: dict, price: float) -> tuple[float, float, float]:
     entry = float(pos.get("entry_price") or price)
     direction = str(pos.get("direction") or "long")
     points = price - entry if direction == "long" else entry - price
@@ -152,7 +193,7 @@ def _pnl(pos: Dict, price: float) -> tuple[float, float, float]:
     return points, dollars, pct
 
 
-def _close(pos: Dict, asof: datetime, price: float, reason: str) -> Dict:
+def _close(pos: dict, asof: datetime, price: float, reason: str) -> dict:
     points, dollars, pct = _pnl(pos, price)
     return {
         **pos,
@@ -165,10 +206,13 @@ def _close(pos: Dict, asof: datetime, price: float, reason: str) -> Dict:
     }
 
 
-def mark_to_market_futures(asof: datetime,
-                           current_signals: Optional[pd.DataFrame] = None) -> Dict[str, float]:
+def mark_to_market_futures(
+    asof: datetime, current_signals: pd.DataFrame | None = None
+) -> dict[str, float]:
     from backtest.exit_rules import (
-        apply_dynamic_exit_action, compute_exit_pressure, log_exit_review,
+        apply_dynamic_exit_action,
+        compute_exit_pressure,
+        log_exit_review,
     )
 
     rows = _load(OPEN_FILE)
@@ -180,7 +224,11 @@ def mark_to_market_futures(asof: datetime,
         symbol = str(pos.get("symbol") or "")
         price = _latest_price(symbol)
         entry_ts = pd.to_datetime(pos.get("entry_time"), errors="coerce", utc=True)
-        pos["age_days"] = max(0.0, (pd.Timestamp(asof) - entry_ts).total_seconds() / 86400.0) if not pd.isna(entry_ts) else 0.0
+        pos["age_days"] = (
+            max(0.0, (pd.Timestamp(asof) - entry_ts).total_seconds() / 86400.0)
+            if not pd.isna(entry_ts)
+            else 0.0
+        )
         sig = signals.get(symbol)
         if price is None:
             pos["reprice_failed_count"] = int(pos.get("reprice_failed_count") or 0) + 1
@@ -189,7 +237,14 @@ def mark_to_market_futures(asof: datetime,
             still_open.append(apply_dynamic_exit_action(pos, review))
             continue
         points, dollars, pct = _pnl(pos, price)
-        pos.update({"current_price": price, "pnl_points": points, "pnl_dollars": dollars, "unrealized_pct": pct})
+        pos.update(
+            {
+                "current_price": price,
+                "pnl_points": points,
+                "pnl_dollars": dollars,
+                "unrealized_pct": pct,
+            }
+        )
         direction = str(pos.get("direction") or "long")
         stop = float(pos.get("stop_price") or 0)
         target = float(pos.get("target_price") or 0)
@@ -211,8 +266,21 @@ def mark_to_market_futures(asof: datetime,
         if hard_reason:
             closed = _close(pos, asof, price, hard_reason)
             review = compute_exit_pressure(closed, sig, asset="futures")
-            action = "hard_stop" if hard_reason == "hard_stop" else "hard_target" if hard_reason == "hard_target" else "close_early"
-            review.update({"action": action, "current_price": price, "current_pnl_pct": closed["pnl_pct"], "current_pnl_dollars": closed["pnl_dollars"]})
+            action = (
+                "hard_stop"
+                if hard_reason == "hard_stop"
+                else "hard_target"
+                if hard_reason == "hard_target"
+                else "close_early"
+            )
+            review.update(
+                {
+                    "action": action,
+                    "current_price": price,
+                    "current_pnl_pct": closed["pnl_pct"],
+                    "current_pnl_dollars": closed["pnl_dollars"],
+                }
+            )
             log_exit_review(review)
             newly_closed.append(closed)
             continue
@@ -228,7 +296,7 @@ def mark_to_market_futures(asof: datetime,
     return {"open": len(still_open), "closed_this_iter": len(newly_closed)}
 
 
-def summary() -> Dict[str, float]:
+def summary() -> dict[str, float]:
     open_rows = _load(OPEN_FILE)
     closed_rows = _load(CLOSED_FILE)
     pnls = [float(r.get("pnl_pct") or 0) for r in closed_rows]
