@@ -82,12 +82,8 @@ def _write_sources(data_dir: Path, *, entry_allowed: bool = True) -> tuple[dict,
     import json
 
     queue, cycle = _sources(entry_allowed=entry_allowed)
-    (data_dir / "robinhood_agentic_queue.json").write_text(
-        json.dumps(queue), encoding="utf-8"
-    )
-    (data_dir / "robinhood_agentic_cycle.json").write_text(
-        json.dumps(cycle), encoding="utf-8"
-    )
+    (data_dir / "robinhood_agentic_queue.json").write_text(json.dumps(queue), encoding="utf-8")
+    (data_dir / "robinhood_agentic_cycle.json").write_text(json.dumps(cycle), encoding="utf-8")
     return queue, cycle
 
 
@@ -109,17 +105,19 @@ class _Manager:
             "break_even_price": "74.5000",
             "updated_at": (NOW - timedelta(seconds=3)).isoformat(),
         }
-        self.instruments = [{
-            "id": OPTION_ID,
-            "chain_id": CHAIN_ID,
-            "chain_symbol": "HYG",
-            "underlying_type": "equity",
-            "expiration_date": "2026-12-18",
-            "strike_price": "75.0000",
-            "type": "put",
-            "state": "active",
-            "tradability": "tradable",
-        }]
+        self.instruments = [
+            {
+                "id": OPTION_ID,
+                "chain_id": CHAIN_ID,
+                "chain_symbol": "HYG",
+                "underlying_type": "equity",
+                "expiration_date": "2026-12-18",
+                "strike_price": "75.0000",
+                "type": "put",
+                "state": "active",
+                "tradability": "tradable",
+            }
+        ]
 
     def read_tool_input_schema(self, name: str) -> dict:
         if name == "get_option_chains":
@@ -163,15 +161,22 @@ class _Manager:
         assert 0 < timeout_seconds <= 12
         self.calls.append((name, dict(arguments)))
         if name == "get_option_chains":
-            return {"data": {"chains": [{
-                "id": CHAIN_ID,
-                "symbol": "HYG",
-                "can_open_position": True,
-                "cash_component": None,
-                "expiration_dates": ["2026-12-18"],
-                "trade_value_multiplier": "100.0000",
-                "underlying_instruments": [{"symbol": "HYG", "instrument": "equity-1"}],
-            }], "next": None}}
+            return {
+                "data": {
+                    "chains": [
+                        {
+                            "id": CHAIN_ID,
+                            "symbol": "HYG",
+                            "can_open_position": True,
+                            "cash_component": None,
+                            "expiration_dates": ["2026-12-18"],
+                            "trade_value_multiplier": "100.0000",
+                            "underlying_instruments": [{"symbol": "HYG", "instrument": "equity-1"}],
+                        }
+                    ],
+                    "next": None,
+                }
+            }
         if name == "get_option_instruments":
             return {"data": {"instruments": copy.deepcopy(self.instruments), "next": None}}
         if name == "get_option_quotes":
@@ -199,7 +204,9 @@ def test_happy_path_checks_only_exact_finalist_and_returns_loadable_live_plan(tm
     assert report["planner_candidate"]["plan_ready"] is True
     assert report["planner_candidate"]["entry_price"] == 0.5
     assert [name for name, _ in manager.calls] == [
-        "get_option_chains", "get_option_instruments", "get_option_quotes"
+        "get_option_chains",
+        "get_option_instruments",
+        "get_option_quotes",
     ]
     assert manager.calls[0][1] == {"underlying_symbol": "HYG"}
     assert manager.calls[1][1]["chain_id"] == CHAIN_ID
@@ -210,9 +217,7 @@ def test_happy_path_checks_only_exact_finalist_and_returns_loadable_live_plan(tm
 
 def test_market_check_can_pass_while_local_optedge_gate_still_blocks_review(tmp_path: Path):
     _write_sources(tmp_path, entry_allowed=False)
-    report = check_best_option_finalist(
-        _Manager(), data_dir=tmp_path, now=NOW, write=False
-    )
+    report = check_best_option_finalist(_Manager(), data_dir=tmp_path, now=NOW, write=False)
     assert report["market_check_passed"] is True
     assert report["ready_for_manual_review"] is False
     assert report["candidate_lane"] == "review_only_entry_candidates"
@@ -268,9 +273,7 @@ def test_blank_underlying_symbol_without_stable_reference_stays_blocked(tmp_path
                 timeout_seconds=timeout_seconds,
             )
             if name == "get_option_chains":
-                result["data"]["chains"][0]["underlying_instruments"] = [
-                    {"symbol": None}
-                ]
+                result["data"]["chains"][0]["underlying_instruments"] = [{"symbol": None}]
             return result
 
     report = check_best_option_finalist(
@@ -280,10 +283,7 @@ def test_blank_underlying_symbol_without_stable_reference_stays_blocked(tmp_path
         write=False,
     )
     assert report["market_check_passed"] is False
-    assert any(
-        "exact equity underlying" in blocker.lower()
-        for blocker in report["blockers"]
-    )
+    assert any("exact equity underlying" in blocker.lower() for blocker in report["blockers"])
     assert report["broker_read_calls"] == [
         "get_option_chains",
         "get_option_instruments",
@@ -293,16 +293,16 @@ def test_blank_underlying_symbol_without_stable_reference_stays_blocked(tmp_path
 def test_wide_stale_expensive_and_illiquid_quote_fails_closed(tmp_path: Path):
     _write_sources(tmp_path)
     manager = _Manager()
-    manager.quote.update({
-        "bid_price": "0.10",
-        "ask_price": "0.60",
-        "open_interest": 5,
-        "volume": 0,
-        "updated_at": (NOW - timedelta(minutes=5)).isoformat(),
-    })
-    report = check_best_option_finalist(
-        manager, data_dir=tmp_path, now=NOW, write=False
+    manager.quote.update(
+        {
+            "bid_price": "0.10",
+            "ask_price": "0.60",
+            "open_interest": 5,
+            "volume": 0,
+            "updated_at": (NOW - timedelta(minutes=5)).isoformat(),
+        }
     )
+    report = check_best_option_finalist(manager, data_dir=tmp_path, now=NOW, write=False)
     assert report["status"] == "blocked"
     assert report["market_check_passed"] is False
     assert report["planner_candidate"]["plan_ready"] is False
@@ -319,28 +319,24 @@ def test_ambiguous_instrument_blocks_before_quote_call(tmp_path: Path):
     manager = _Manager()
     manager.instruments.append(copy.deepcopy(manager.instruments[0]))
     manager.instruments[1]["id"] = "option-2"
-    report = check_best_option_finalist(
-        manager, data_dir=tmp_path, now=NOW, write=False
-    )
+    report = check_best_option_finalist(manager, data_dir=tmp_path, now=NOW, write=False)
     assert report["market_check_passed"] is False
     assert any("exactly one" in blocker.lower() for blocker in report["blockers"])
-    assert [name for name, _ in manager.calls] == [
-        "get_option_chains", "get_option_instruments"
-    ]
+    assert [name for name, _ in manager.calls] == ["get_option_chains", "get_option_instruments"]
 
 
 def test_live_check_overlay_is_bound_to_unchanged_queue_and_cycle(tmp_path: Path):
     queue, cycle = _write_sources(tmp_path)
-    report = check_best_option_finalist(
-        _Manager(), data_dir=tmp_path, now=NOW, write=False
-    )
-    plan = {"order": {
-        "symbol": "HYG",
-        "option_type": "put",
-        "strike": 75,
-        "expiry": "2026-12-18",
-        "underlying_type": "equity",
-    }}
+    report = check_best_option_finalist(_Manager(), data_dir=tmp_path, now=NOW, write=False)
+    plan = {
+        "order": {
+            "symbol": "HYG",
+            "option_type": "put",
+            "strike": 75,
+            "expiry": "2026-12-18",
+            "underlying_type": "equity",
+        }
+    }
     live_cycle, live_queue, status = apply_finalist_check_to_sources(
         plan, cycle, queue, report, now=NOW
     )
@@ -374,9 +370,7 @@ def test_unknown_required_schema_field_blocks_without_guessing_or_calling(tmp_pa
 
     manager = ChangedManager()
     with pytest.raises(RobinhoodFinalistCheckError) as caught:
-        check_best_option_finalist(
-            manager, data_dir=tmp_path, now=NOW, write=False
-        )
+        check_best_option_finalist(manager, data_dir=tmp_path, now=NOW, write=False)
     assert caught.value.code == "tool_schema_changed"
     assert manager.calls == []
 

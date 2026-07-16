@@ -1,24 +1,26 @@
 # Purpose: Test external paper-tracking exports.
-from pathlib import Path
-import sys
 import json
+import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import pandas as pd
+import pandas as pd  # noqa: E402
 
-from optedge.strategy_profile import LEAPS_SWING_PROFILE
-from scripts.export_external_paper_track import (
+from optedge.strategy_profile import LEAPS_SWING_PROFILE  # noqa: E402
+from scripts.export_external_paper_track import (  # noqa: E402
     _load_option_chain_shortlist,
     build_external_orders,
     export_candidates,
+)
+from scripts.export_external_paper_track import (  # noqa: E402
     write_outputs as write_external_outputs,
 )
-from scripts.export_robinhood_agentic_queue import (
+from scripts.export_robinhood_agentic_queue import (  # noqa: E402
     build_queue_from_candidates,
     build_robinhood_queue,
 )
@@ -110,7 +112,10 @@ def test_includes_watch_only_with_include_watch():
 
 
 def test_caps_max_new_orders():
-    opts = [_option(ticker=f"T{i}", contract=f"T{i} 2026-09-18 C 10", rank_score=10 - i) for i in range(7)]
+    opts = [
+        _option(ticker=f"T{i}", contract=f"T{i} 2026-09-18 C 10", rank_score=10 - i)
+        for i in range(7)
+    ]
     out = _export(options=opts, max_new=3, max_options=10)
     assert len(out) == 3
 
@@ -156,7 +161,9 @@ def test_dry_run_includes_exclusion_reasons():
 
 
 def test_excludes_short_dated_options_by_default():
-    out = _export(options=[_option(expiry="2026-06-18", contract="AAPL 2026-06-18 C 200")], dry_run=True)
+    out = _export(
+        options=[_option(expiry="2026-06-18", contract="AAPL 2026-06-18 C 200")], dry_run=True
+    )
     assert len(out) == 1
     assert "dte below 90" in out.loc[0, "reason_excluded"]
 
@@ -180,43 +187,50 @@ def test_query_filters_to_matching_ticker_or_contract():
 def test_build_external_orders_includes_chain_shortlist_candidates():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated_at = datetime.now(timezone.utc).isoformat()
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": generated_at,
-            "rows": [{
-                "generated_at": generated_at,
-                "symbol": "AAPL",
-                "contract_query": "AAPL 2027-01-15 C 220",
-                "side": "call",
-                "expiry": "2027-01-15",
-                "strike": 220.0,
-                "dte": 216,
-                "mid": 1.20,
-                "bid": 1.176,
-                "ask": 1.224,
-                "quote_updated_at": generated_at,
-                "source_quote_at": "2026-07-12T17:45:00+00:00",
-                "source_quote_time_basis": "provider_quote_timestamp",
-                "premium_dollars": 120.0,
-                "stop_price_reference": 0.70,
-                "target_price_reference": 2.30,
-                "spread_pct": 0.04,
-                "openInterest": 1200,
-                "contract_grade": "A",
-                "readiness_label": "ready",
-                "readiness_score": 91,
-                "contract_quality_score": 94,
-                "swing_fit_score": 93,
-                "swing_fit_label": "clean_swing",
-                "swing_fit_reasons": ["long swing runway", "tight spread"],
-                "swing_fit_warnings": ["verify delayed quote"],
-                "breakeven_move_label": "moderate",
-                "liquidity_label": "deep",
-                "chain_source": "cboe",
-                "quote_quality": "free_or_delayed",
-                "data_delay": "delayed",
-            }],
-        }), encoding="utf-8")
+        generated_at = datetime.now(UTC).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": generated_at,
+                    "rows": [
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 220",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 220.0,
+                            "dte": 216,
+                            "mid": 1.20,
+                            "bid": 1.176,
+                            "ask": 1.224,
+                            "quote_updated_at": generated_at,
+                            "source_quote_at": "2026-07-12T17:45:00+00:00",
+                            "source_quote_time_basis": "provider_quote_timestamp",
+                            "premium_dollars": 120.0,
+                            "stop_price_reference": 0.70,
+                            "target_price_reference": 2.30,
+                            "spread_pct": 0.04,
+                            "openInterest": 1200,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "readiness_score": 91,
+                            "contract_quality_score": 94,
+                            "swing_fit_score": 93,
+                            "swing_fit_label": "clean_swing",
+                            "swing_fit_reasons": ["long swing runway", "tight spread"],
+                            "swing_fit_warnings": ["verify delayed quote"],
+                            "breakeven_move_label": "moderate",
+                            "liquidity_label": "deep",
+                            "chain_source": "cboe",
+                            "quote_quality": "free_or_delayed",
+                            "data_delay": "delayed",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         out = build_external_orders(data_dir, asset="option", query="AAPL", max_options=3)
 
@@ -244,27 +258,34 @@ def test_build_external_orders_includes_chain_shortlist_candidates():
 def test_external_track_does_not_promote_artifact_times_to_quote_provenance():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated_at = datetime.now(timezone.utc).isoformat()
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": generated_at,
-            "rows": [{
-                "generated_at": generated_at,
-                "symbol": "AAPL",
-                "contract_query": "AAPL 2027-01-15 C 220",
-                "side": "call",
-                "expiry": "2027-01-15",
-                "strike": 220.0,
-                "dte": 216,
-                "mid": 1.20,
-                "bid": 1.18,
-                "ask": 1.22,
-                "premium_dollars": 120.0,
-                "contract_grade": "A",
-                "readiness_label": "ready",
-                "quote_quality": "free_or_delayed",
-                "data_delay": "delayed",
-            }],
-        }), encoding="utf-8")
+        generated_at = datetime.now(UTC).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": generated_at,
+                    "rows": [
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 220",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 220.0,
+                            "dte": 216,
+                            "mid": 1.20,
+                            "bid": 1.18,
+                            "ask": 1.22,
+                            "premium_dollars": 120.0,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "quote_quality": "free_or_delayed",
+                            "data_delay": "delayed",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         loaded = _load_option_chain_shortlist(data_dir)
         out = build_external_orders(data_dir, asset="option", query="AAPL")
@@ -284,93 +305,100 @@ def test_external_track_does_not_promote_artifact_times_to_quote_provenance():
 def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated_at = datetime.now(timezone.utc).isoformat()
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": generated_at,
-            "rows": [
+        generated_at = datetime.now(UTC).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
                 {
                     "generated_at": generated_at,
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 230",
-                    "side": "call",
-                    "expiry": "2027-01-15",
-                    "strike": 230.0,
-                    "dte": 216,
-                    "mid": 1.30,
-                    "bid": 1.2675,
-                    "ask": 1.3325,
-                    "quote_updated_at": generated_at,
-                    "source_quote_at": generated_at,
-                    "source_quote_time_basis": "provider_response_received_at",
-                    "premium_dollars": 130.0,
-                    "stop_price_reference": 0.70,
-                    "target_price_reference": 2.60,
-                    "spread_pct": 0.05,
-                    "openInterest": 700,
-                    "contract_grade": "B",
-                    "readiness_label": "review",
-                    "readiness_score": 80,
-                    "contract_quality_score": 70,
-                    "swing_fit_score": 90,
-                    "swing_fit_label": "clean_swing",
-                    "swing_fit_reasons": ["long swing runway", "tight spread"],
-                    "swing_fit_warnings": [],
-                },
-                {
-                    "generated_at": generated_at,
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 260",
-                    "side": "call",
-                    "expiry": "2027-01-15",
-                    "strike": 260.0,
-                    "dte": 216,
-                    "mid": 1.00,
-                    "bid": 0.975,
-                    "ask": 1.025,
-                    "quote_updated_at": generated_at,
-                    "premium_dollars": 100.0,
-                    "stop_price_reference": 0.50,
-                    "target_price_reference": 2.00,
-                    "spread_pct": 0.05,
-                    "openInterest": 900,
-                    "contract_grade": "A",
-                    "readiness_label": "ready",
-                    "readiness_score": 95,
-                    "contract_quality_score": 80,
-                    "swing_fit_score": 60,
-                    "swing_fit_label": "speculative_swing",
-                    "swing_fit_reasons": ["inside premium budget"],
-                    "swing_fit_warnings": ["speculative break-even move"],
-                },
-                {
-                    "generated_at": generated_at,
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 300",
-                    "side": "call",
-                    "expiry": "2027-01-15",
-                    "strike": 300.0,
-                    "dte": 216,
-                    "mid": 0.60,
-                    "bid": 0.585,
-                    "ask": 0.615,
-                    "quote_updated_at": generated_at,
-                    "premium_dollars": 60.0,
-                    "stop_price_reference": 0.30,
-                    "target_price_reference": 1.20,
-                    "spread_pct": 0.05,
-                    "openInterest": 1000,
-                    "contract_grade": "A",
-                    "readiness_label": "ready",
-                    "readiness_score": 99,
-                    "contract_quality_score": 99,
-                    "swing_fit_score": 30,
-                    "swing_fit_label": "avoid",
-                },
-            ],
-        }), encoding="utf-8")
+                    "rows": [
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 230",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 230.0,
+                            "dte": 216,
+                            "mid": 1.30,
+                            "bid": 1.2675,
+                            "ask": 1.3325,
+                            "quote_updated_at": generated_at,
+                            "source_quote_at": generated_at,
+                            "source_quote_time_basis": "provider_response_received_at",
+                            "premium_dollars": 130.0,
+                            "stop_price_reference": 0.70,
+                            "target_price_reference": 2.60,
+                            "spread_pct": 0.05,
+                            "openInterest": 700,
+                            "contract_grade": "B",
+                            "readiness_label": "review",
+                            "readiness_score": 80,
+                            "contract_quality_score": 70,
+                            "swing_fit_score": 90,
+                            "swing_fit_label": "clean_swing",
+                            "swing_fit_reasons": ["long swing runway", "tight spread"],
+                            "swing_fit_warnings": [],
+                        },
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 260",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 260.0,
+                            "dte": 216,
+                            "mid": 1.00,
+                            "bid": 0.975,
+                            "ask": 1.025,
+                            "quote_updated_at": generated_at,
+                            "premium_dollars": 100.0,
+                            "stop_price_reference": 0.50,
+                            "target_price_reference": 2.00,
+                            "spread_pct": 0.05,
+                            "openInterest": 900,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "readiness_score": 95,
+                            "contract_quality_score": 80,
+                            "swing_fit_score": 60,
+                            "swing_fit_label": "speculative_swing",
+                            "swing_fit_reasons": ["inside premium budget"],
+                            "swing_fit_warnings": ["speculative break-even move"],
+                        },
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 300",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 300.0,
+                            "dte": 216,
+                            "mid": 0.60,
+                            "bid": 0.585,
+                            "ask": 0.615,
+                            "quote_updated_at": generated_at,
+                            "premium_dollars": 60.0,
+                            "stop_price_reference": 0.30,
+                            "target_price_reference": 1.20,
+                            "spread_pct": 0.05,
+                            "openInterest": 1000,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "readiness_score": 99,
+                            "contract_quality_score": 99,
+                            "swing_fit_score": 30,
+                            "swing_fit_label": "avoid",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selected = build_external_orders(data_dir, asset="option", query="AAPL", max_options=2)
-        dry_run = build_external_orders(data_dir, asset="option", query="AAPL", max_options=3, dry_run=True)
+        dry_run = build_external_orders(
+            data_dir, asset="option", query="AAPL", max_options=3, dry_run=True
+        )
 
     assert list(selected["contract"]) == [
         "AAPL 2027-01-15 C 230",
@@ -382,71 +410,79 @@ def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
 def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated_at = datetime.now(timezone.utc).isoformat()
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": generated_at,
-            "rows": [
+        generated_at = datetime.now(UTC).isoformat()
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
                 {
                     "generated_at": generated_at,
-                    "symbol": "MSFT",
-                    "underlying_type": "equity",
-                    "contract_query": "MSFT 2027-01-15 C 500",
-                    "side": "call",
-                    "expiry": "2027-01-15",
-                    "strike": 500.0,
-                    "dte": 216,
-                    "mid": 1.10,
-                    "bid": 1.0835,
-                    "ask": 1.1165,
-                    "quote_updated_at": generated_at,
-                    "source_quote_at": generated_at,
-                    "source_quote_time_basis": "provider_response_received_at",
-                    "premium_dollars": 110.0,
-                    "spread_pct": 0.03,
-                    "openInterest": 1500,
-                    "contract_grade": "A",
-                    "readiness_label": "ready",
-                    "readiness_score": 92,
-                    "contract_quality_score": 95,
-                    "swing_fit_score": 91,
-                    "swing_fit_label": "clean_swing",
-                    "swing_fit_reasons": ["long swing runway", "tight spread"],
-                    "swing_fit_warnings": ["verify delayed quote"],
-                    "chain_source": "cboe",
-                    "quote_quality": "free_or_delayed",
-                    "data_delay": "delayed",
-                },
-                {
-                    "generated_at": generated_at,
-                    "symbol": "MSFT",
-                    "underlying_type": "equity",
-                    "contract_query": "MSFT 2026-10-16 C 520",
-                    "side": "call",
-                    "expiry": "2026-10-16",
-                    "strike": 520.0,
-                    "dte": 124,
-                    "mid": 0.55,
-                    "bid": 0.539,
-                    "ask": 0.561,
-                    "quote_updated_at": generated_at,
-                    "source_quote_at": generated_at,
-                    "source_quote_time_basis": "provider_response_received_at",
-                    "premium_dollars": 55.0,
-                    "spread_pct": 0.04,
-                    "openInterest": 900,
-                    "contract_grade": "B",
-                    "readiness_label": "ready",
-                    "readiness_score": 84,
-                    "contract_quality_score": 80,
-                    "chain_source": "cboe",
-                    "quote_quality": "free_or_delayed",
-                    "data_delay": "delayed",
-                },
-            ],
-        }), encoding="utf-8")
+                    "rows": [
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "MSFT",
+                            "underlying_type": "equity",
+                            "contract_query": "MSFT 2027-01-15 C 500",
+                            "side": "call",
+                            "expiry": "2027-01-15",
+                            "strike": 500.0,
+                            "dte": 216,
+                            "mid": 1.10,
+                            "bid": 1.0835,
+                            "ask": 1.1165,
+                            "quote_updated_at": generated_at,
+                            "source_quote_at": generated_at,
+                            "source_quote_time_basis": "provider_response_received_at",
+                            "premium_dollars": 110.0,
+                            "spread_pct": 0.03,
+                            "openInterest": 1500,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "readiness_score": 92,
+                            "contract_quality_score": 95,
+                            "swing_fit_score": 91,
+                            "swing_fit_label": "clean_swing",
+                            "swing_fit_reasons": ["long swing runway", "tight spread"],
+                            "swing_fit_warnings": ["verify delayed quote"],
+                            "chain_source": "cboe",
+                            "quote_quality": "free_or_delayed",
+                            "data_delay": "delayed",
+                        },
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "MSFT",
+                            "underlying_type": "equity",
+                            "contract_query": "MSFT 2026-10-16 C 520",
+                            "side": "call",
+                            "expiry": "2026-10-16",
+                            "strike": 520.0,
+                            "dte": 124,
+                            "mid": 0.55,
+                            "bid": 0.539,
+                            "ask": 0.561,
+                            "quote_updated_at": generated_at,
+                            "source_quote_at": generated_at,
+                            "source_quote_time_basis": "provider_response_received_at",
+                            "premium_dollars": 55.0,
+                            "spread_pct": 0.04,
+                            "openInterest": 900,
+                            "contract_grade": "B",
+                            "readiness_label": "ready",
+                            "readiness_score": 84,
+                            "contract_quality_score": 80,
+                            "chain_source": "cboe",
+                            "quote_quality": "free_or_delayed",
+                            "data_delay": "delayed",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         research = build_external_orders(
-            data_dir, asset="option", query="MSFT", min_option_dte=180,
+            data_dir,
+            asset="option",
+            query="MSFT",
+            min_option_dte=180,
         )
         queue = build_robinhood_queue(
             data_dir,
@@ -464,8 +500,7 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     assert queue["orders"][0]["symbol"] == "MSFT"
     assert queue["orders"][0]["fresh_robinhood_quote_required"] is True
     assert any(
-        "delayed/free" in warning
-        for warning in queue["orders"][0]["research_quote_warnings"]
+        "delayed/free" in warning for warning in queue["orders"][0]["research_quote_warnings"]
     )
     assert queue["readiness"]["label"] == "ready"
     assert queue["readiness"]["ready_to_submit_count"] == 0
@@ -477,53 +512,60 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
 def test_leaps_shortlist_evidence_survives_external_json_round_trip_into_queue():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated = datetime.now(UTC).replace(microsecond=0)
         generated_at = generated.isoformat()
         expiry = (generated + timedelta(days=500)).date().isoformat()
         contract = f"AAPL {expiry} C 200"
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": generated_at,
-            "execution_profile": LEAPS_SWING_PROFILE.name,
-            "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
-            "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
-            "rows": [{
-                "generated_at": generated_at,
-                "symbol": "AAPL",
-                "underlying_type": "equity",
-                "contract_query": contract,
-                "side": "call",
-                "expiry": expiry,
-                "strike": 200.0,
-                "dte": 500,
-                "mid": 1.20,
-                "bid": 1.17,
-                "ask": 1.23,
-                "source_quote_at": generated_at,
-                "source_quote_time_basis": "provider_response_received_at",
-                "premium_dollars": 120.0,
-                "stop_price_reference": 0.90,
-                "target_price_reference": 1.62,
-                "spread_pct": 0.05,
-                "openInterest": 1_200,
-                "volume": 45,
-                "delta": 0.67,
-                "confidence": 73,
-                "after_cost_edge_pct": 0.04,
-                "planned_hold_sessions": 10,
-                "execution_profile": LEAPS_SWING_PROFILE.name,
-                "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
-                "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
-                "contract_grade": "A",
-                "readiness_label": "ready",
-                "readiness_score": 99,
-                "contract_quality_score": 94,
-                "swing_fit_score": 91,
-                "swing_fit_label": "clean_swing",
-                "chain_source": "cboe",
-                "quote_quality": "free_or_delayed",
-                "data_delay": "delayed",
-            }],
-        }), encoding="utf-8")
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": generated_at,
+                    "execution_profile": LEAPS_SWING_PROFILE.name,
+                    "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
+                    "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+                    "rows": [
+                        {
+                            "generated_at": generated_at,
+                            "symbol": "AAPL",
+                            "underlying_type": "equity",
+                            "contract_query": contract,
+                            "side": "call",
+                            "expiry": expiry,
+                            "strike": 200.0,
+                            "dte": 500,
+                            "mid": 1.20,
+                            "bid": 1.17,
+                            "ask": 1.23,
+                            "source_quote_at": generated_at,
+                            "source_quote_time_basis": "provider_response_received_at",
+                            "premium_dollars": 120.0,
+                            "stop_price_reference": 0.90,
+                            "target_price_reference": 1.62,
+                            "spread_pct": 0.05,
+                            "openInterest": 1_200,
+                            "volume": 45,
+                            "delta": 0.67,
+                            "confidence": 73,
+                            "after_cost_edge_pct": 0.04,
+                            "planned_hold_sessions": 10,
+                            "execution_profile": LEAPS_SWING_PROFILE.name,
+                            "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
+                            "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+                            "contract_grade": "A",
+                            "readiness_label": "ready",
+                            "readiness_score": 99,
+                            "contract_quality_score": 94,
+                            "swing_fit_score": 91,
+                            "swing_fit_label": "clean_swing",
+                            "chain_source": "cboe",
+                            "quote_quality": "free_or_delayed",
+                            "data_delay": "delayed",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         shortlist = _load_option_chain_shortlist(data_dir)
         external = build_external_orders(

@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import sec_ftd
-from fusion import rank as fusion_rank
+from engines import sec_ftd  # noqa: E402
+from fusion import rank as fusion_rank  # noqa: E402
 
 
 def test_sec_ftd_parser_and_summary_normalize_official_pipe_file():
@@ -48,13 +48,15 @@ def test_sec_ftd_zip_link_parser_keeps_latest_page_order():
 def test_sec_ftd_cached_zip_records_restore_date_types():
     old_cache_get = sec_ftd.data_provider.cache_get
     try:
-        sec_ftd.data_provider.cache_get = lambda *args, **kwargs: [{
-            "ticker": "ABCD",
-            "settlement_date": "2026-05-30",
-            "sec_ftd_fails": "500000",
-            "sec_ftd_price": "3.00",
-            "sec_ftd_description": "ABCD INC",
-        }]
+        sec_ftd.data_provider.cache_get = lambda *args, **kwargs: [
+            {
+                "ticker": "ABCD",
+                "settlement_date": "2026-05-30",
+                "sec_ftd_fails": "500000",
+                "sec_ftd_price": "3.00",
+                "sec_ftd_description": "ABCD INC",
+            }
+        ]
         frame = sec_ftd._fetch_zip_frame("https://example.test/cnsfails202605b.zip")
     finally:
         sec_ftd.data_provider.cache_get = old_cache_get
@@ -66,24 +68,26 @@ def test_sec_ftd_cached_zip_records_restore_date_types():
 
 
 def test_sec_ftd_context_flows_into_shares_and_futures_without_option_fields():
-    ftd = pd.DataFrame([
-        {
-            "ticker": "ABCD",
-            "sec_ftd_score": 2.0,
-            "sec_ftd_latest_date": "2026-05-30",
-            "sec_ftd_fails": 500000,
-            "sec_ftd_dollars": 1500000.0,
-            "sec_ftd_active_days": 2,
-        },
-        {
-            "ticker": "SPY",
-            "sec_ftd_score": 1.0,
-            "sec_ftd_latest_date": "2026-05-30",
-            "sec_ftd_fails": 100000,
-            "sec_ftd_dollars": 5000000.0,
-            "sec_ftd_active_days": 1,
-        },
-    ])
+    ftd = pd.DataFrame(
+        [
+            {
+                "ticker": "ABCD",
+                "sec_ftd_score": 2.0,
+                "sec_ftd_latest_date": "2026-05-30",
+                "sec_ftd_fails": 500000,
+                "sec_ftd_dollars": 1500000.0,
+                "sec_ftd_active_days": 2,
+            },
+            {
+                "ticker": "SPY",
+                "sec_ftd_score": 1.0,
+                "sec_ftd_latest_date": "2026-05-30",
+                "sec_ftd_fails": 100000,
+                "sec_ftd_dollars": 5000000.0,
+                "sec_ftd_active_days": 1,
+            },
+        ]
+    )
     old_min = fusion_rank.SHARES_MIN_SCORE
     try:
         fusion_rank.SHARES_MIN_SCORE = -999
@@ -100,9 +104,11 @@ def test_sec_ftd_context_flows_into_shares_and_futures_without_option_fields():
     assert "sec_ftd_score" in shares.columns
     assert "z_sec_ftd" in shares.columns
 
-    futures = pd.DataFrame([
-        {"symbol": "ES=F", "name": "S&P 500 E-mini", "etf": "SPY", "futures_score": 1.0},
-    ])
+    futures = pd.DataFrame(
+        [
+            {"symbol": "ES=F", "name": "S&P 500 E-mini", "etf": "SPY", "futures_score": 1.0},
+        ]
+    )
     enriched = fusion_rank.enrich_futures_context(
         futures,
         {"regime": "neutral", "macro_tilt": 0.0},

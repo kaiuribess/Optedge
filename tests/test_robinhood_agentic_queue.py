@@ -137,13 +137,16 @@ def test_explicit_leaps_profile_applies_true_leaps_policy_and_metadata():
 
 
 def test_delayed_leaps_quote_stays_research_only_and_never_execution_ready():
-    queue = _queue([
-        _leaps_candidate(
-            source_quote_time_basis="provider_response_received_at",
-            quote_quality="free_or_delayed",
-            data_delay="delayed",
-        )
-    ], execution_profile="leaps_swing")
+    queue = _queue(
+        [
+            _leaps_candidate(
+                source_quote_time_basis="provider_response_received_at",
+                quote_quality="free_or_delayed",
+                data_delay="delayed",
+            )
+        ],
+        execution_profile="leaps_swing",
+    )
 
     order = queue["orders"][0]
     assert order["leaps_swing_status"] == "research_only"
@@ -155,12 +158,15 @@ def test_delayed_leaps_quote_stays_research_only_and_never_execution_ready():
 
 
 def test_delayed_data_label_cannot_be_overridden_by_a_live_quality_label():
-    queue = _queue([
-        _leaps_candidate(
-            quote_quality="live_or_broker",
-            data_delay="delayed_15_minutes",
-        )
-    ], execution_profile="leaps_swing")
+    queue = _queue(
+        [
+            _leaps_candidate(
+                quote_quality="live_or_broker",
+                data_delay="delayed_15_minutes",
+            )
+        ],
+        execution_profile="leaps_swing",
+    )
 
     order = queue["orders"][0]
     assert order["leaps_swing_status"] == "research_only"
@@ -197,11 +203,13 @@ def test_leaps_candidate_requires_exact_profile_lane_and_policy_identity():
 
 def test_dte_alone_never_infers_the_leaps_execution_profile():
     queue = _queue(
-        [_leaps_candidate(
-            execution_profile="",
-            strategy_evidence_lane="",
-            profile_policy_version="",
-        )],
+        [
+            _leaps_candidate(
+                execution_profile="",
+                strategy_evidence_lane="",
+                profile_policy_version="",
+            )
+        ],
         execution_profile="swing_execution",
         min_dte=365,
     )
@@ -214,10 +222,12 @@ def test_dte_alone_never_infers_the_leaps_execution_profile():
 
 
 def test_queue_is_options_only():
-    queue = _queue([
-        _candidate(),
-        _candidate(asset="share", ticker_or_symbol="NVDA", action="BUY", entry_price=100),
-    ])
+    queue = _queue(
+        [
+            _candidate(),
+            _candidate(asset="share", ticker_or_symbol="NVDA", action="BUY", entry_price=100),
+        ]
+    )
     assert len(queue["orders"]) == 1
     assert queue["orders"][0]["asset"] == "option"
     assert "not an option candidate" in queue["rejected"][0]["reasons"]
@@ -289,11 +299,15 @@ def test_queue_rejects_unknown_quote_quality():
 
 
 def test_queue_keeps_fresh_free_provider_receipt_as_research_shortlist_only():
-    queue = _queue([_candidate(
-        source_quote_time_basis="provider_response_received_at",
-        quote_quality="free_or_delayed",
-        data_delay="delayed",
-    )])
+    queue = _queue(
+        [
+            _candidate(
+                source_quote_time_basis="provider_response_received_at",
+                quote_quality="free_or_delayed",
+                data_delay="delayed",
+            )
+        ]
+    )
 
     assert len(queue["orders"]) == 1
     order = queue["orders"][0]
@@ -319,17 +333,21 @@ def test_fresh_free_chain_receipt_reaches_manual_research_shortlist_without_time
             "provider_response_received_at": received_at,
             "expirations": ["2027-01-15"],
             "chains": {
-                "2027-01-15": pd.DataFrame([{
-                    "strike": 220.0,
-                    "side": "call",
-                    "bid": 1.18,
-                    "ask": 1.22,
-                    "lastPrice": 1.20,
-                    "volume": 100,
-                    "openInterest": 1500,
-                    "impliedVolatility": 0.30,
-                    "delta": 0.42,
-                }]),
+                "2027-01-15": pd.DataFrame(
+                    [
+                        {
+                            "strike": 220.0,
+                            "side": "call",
+                            "bid": 1.18,
+                            "ask": 1.22,
+                            "lastPrice": 1.20,
+                            "volume": 100,
+                            "openInterest": 1500,
+                            "impliedVolatility": 0.30,
+                            "delta": 0.42,
+                        }
+                    ]
+                ),
             },
         }
 
@@ -380,8 +398,7 @@ def test_queue_rejects_stale_source_quote_timestamp():
 
     assert queue["orders"] == []
     assert any(
-        reason.startswith("source quote older than ")
-        for reason in queue["rejected"][0]["reasons"]
+        reason.startswith("source quote older than ") for reason in queue["rejected"][0]["reasons"]
     )
 
 
@@ -389,20 +406,14 @@ def test_queue_rejects_implausibly_future_source_quote_timestamp():
     queue = _queue([_candidate(source_quote_at="2026-06-11T10:06:00+00:00")])
 
     assert queue["orders"] == []
-    assert (
-        "source quote timestamp is implausibly in the future"
-        in queue["rejected"][0]["reasons"]
-    )
+    assert "source quote timestamp is implausibly in the future" in queue["rejected"][0]["reasons"]
 
 
 def test_queue_recomputes_spread_from_bid_ask_and_rejects_serialized_zero():
     queue = _queue([_candidate(bid=0.50, ask=1.00, spread_pct=0.0)])
 
     assert queue["orders"] == []
-    assert any(
-        reason.startswith("spread above ")
-        for reason in queue["rejected"][0]["reasons"]
-    )
+    assert any(reason.startswith("spread above ") for reason in queue["rejected"][0]["reasons"])
 
 
 def test_queue_accepts_ticker_fallback_and_writes_aliases():
@@ -416,25 +427,29 @@ def test_queue_accepts_ticker_fallback_and_writes_aliases():
 
 
 def test_ready_queue_with_guarded_rejects_is_labeled_ready_guarded():
-    queue = _queue([
-        _candidate(ticker_or_symbol="AAPL", rank_score=5.0),
-        _candidate(
-            ticker_or_symbol="TSLA",
-            contract="TSLA 2027-01-15 CALL 500",
-            reason_excluded="research guard blocked",
-            rank_score=4.0,
-        ),
-    ])
+    queue = _queue(
+        [
+            _candidate(ticker_or_symbol="AAPL", rank_score=5.0),
+            _candidate(
+                ticker_or_symbol="TSLA",
+                contract="TSLA 2027-01-15 CALL 500",
+                reason_excluded="research guard blocked",
+                rank_score=4.0,
+            ),
+        ]
+    )
     assert len(queue["orders"]) == 1
     assert queue["diagnostics"]["label"] == "ready_guarded"
     assert queue["diagnostics"]["reason_groups"]["research_guard_blocked"] == 1
 
 
 def test_queue_rejects_contracts_above_500_budget_caps():
-    queue = _queue([
-        _candidate(entry_price=2.50, confidence=90, rank_score=9.0),
-        _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500"),
-    ])
+    queue = _queue(
+        [
+            _candidate(entry_price=2.50, confidence=90, rank_score=9.0),
+            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500"),
+        ]
+    )
     symbols = {row["symbol"] for row in queue["orders"]}
     assert symbols == {"MSFT"}
     rejected = [row for row in queue["rejected"] if row["ticker"] == "AAPL"][0]
@@ -475,18 +490,28 @@ def test_queue_sizes_and_totals_against_buffered_limit_cost():
 
 def test_queue_blocks_bullish_calls_with_active_sec_offering_risk():
     risks = {
-        "AAPL": [{
-            "ticker": "AAPL",
-            "form": "S-3",
-            "filing_date": "2026-06-10",
-            "days_old": 1,
-            "signal": "dilution_or_offering_watch",
-        }]
+        "AAPL": [
+            {
+                "ticker": "AAPL",
+                "form": "S-3",
+                "filing_date": "2026-06-10",
+                "days_old": 1,
+                "signal": "dilution_or_offering_watch",
+            }
+        ]
     }
-    queue = _queue([
-        _candidate(ticker_or_symbol="AAPL", option_side="call", direction="long_call"),
-        _candidate(ticker_or_symbol="AAPL", option_side="put", direction="long_put", contract="AAPL 2027-01-15 PUT 200"),
-    ], sec_offering_risks=risks)
+    queue = _queue(
+        [
+            _candidate(ticker_or_symbol="AAPL", option_side="call", direction="long_call"),
+            _candidate(
+                ticker_or_symbol="AAPL",
+                option_side="put",
+                direction="long_put",
+                contract="AAPL 2027-01-15 PUT 200",
+            ),
+        ],
+        sec_offering_risks=risks,
+    )
     assert len(queue["orders"]) == 1
     assert queue["orders"][0]["option_side"] == "put"
     assert queue["sec_offering_risks"]["AAPL"][0]["form"] == "S-3"
@@ -499,23 +524,25 @@ def test_queue_blocks_bullish_calls_with_active_sec_offering_risk():
 
 
 def test_queue_carries_public_cboe_activity_context():
-    activity = pd.DataFrame([
-        {
-            "ticker": "AAPL",
-            "expiry": "2027-01-15",
-            "strike": 200.0,
-            "option_side": "call",
-            "cboe_activity_volume": 321,
-            "cboe_activity_matched": 300,
-            "cboe_activity_routed": 21,
-            "cboe_activity_bid": 0.70,
-            "cboe_activity_ask": 0.75,
-            "cboe_activity_last": 0.72,
-            "cboe_activity_contract": "AAPL Jan 15 200.0 Call",
-            "cboe_activity_venues": "Cboe Options",
-            "cboe_activity_source": "cboe_symbol_data",
-        }
-    ])
+    activity = pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "expiry": "2027-01-15",
+                "strike": 200.0,
+                "option_side": "call",
+                "cboe_activity_volume": 321,
+                "cboe_activity_matched": 300,
+                "cboe_activity_routed": 21,
+                "cboe_activity_bid": 0.70,
+                "cboe_activity_ask": 0.75,
+                "cboe_activity_last": 0.72,
+                "cboe_activity_contract": "AAPL Jan 15 200.0 Call",
+                "cboe_activity_venues": "Cboe Options",
+                "cboe_activity_source": "cboe_symbol_data",
+            }
+        ]
+    )
     queue = _queue([_candidate()], cboe_activity=activity)
     order = queue["orders"][0]
     assert order["cboe_activity_volume"] == 321
@@ -529,9 +556,15 @@ def test_queue_carries_public_cboe_activity_context():
 def test_queue_caps_candidate_count_separately_from_order_count():
     queue = _queue(
         [
-            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0),
-            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0),
-            _candidate(ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0),
+            _candidate(
+                ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0
+            ),
+            _candidate(
+                ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0
+            ),
+            _candidate(
+                ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0
+            ),
         ],
         max_orders=2,
         max_total_premium=500,
@@ -558,8 +591,12 @@ def test_queue_rejects_short_dated_options_by_default():
 def test_queue_enforces_total_premium_cap_and_summarizes_rejections():
     queue = _queue(
         [
-            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0),
-            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0),
+            _candidate(
+                ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0
+            ),
+            _candidate(
+                ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0
+            ),
         ],
         max_total_premium=100,
         max_premium_per_order=100,
@@ -631,9 +668,15 @@ def test_queue_prompt_flattens_malicious_artifact_newlines_and_bounds_lines():
 def test_cycle_open_gate_exposes_manual_review_candidates_never_entry_candidates():
     queue = _queue(
         [
-            _candidate(ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0),
-            _candidate(ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0),
-            _candidate(ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0),
+            _candidate(
+                ticker_or_symbol="AAPL", contract="AAPL 2027-01-15 CALL 200", rank_score=5.0
+            ),
+            _candidate(
+                ticker_or_symbol="MSFT", contract="MSFT 2027-01-15 CALL 500", rank_score=4.0
+            ),
+            _candidate(
+                ticker_or_symbol="NVDA", contract="NVDA 2027-01-15 CALL 200", rank_score=3.0
+            ),
         ],
         max_orders=2,
         max_candidates=3,
@@ -655,11 +698,7 @@ def test_robinhood_read_plan_uses_expanded_read_only_tool_surface():
     plan = robinhood_mcp_read_plan(["aapl", "AAPL", "msft"])
     assert plan["read_only"] is True
     assert plan["symbol_scope"] == ["AAPL", "MSFT"]
-    tools = {
-        tool
-        for stage in plan["stages"]
-        for tool in stage["tools"]
-    }
+    tools = {tool for stage in plan["stages"] for tool in stage["tools"]}
     assert {
         "search",
         "get_scans",
@@ -697,13 +736,15 @@ def test_queue_defaults_to_manual_on_demand_review_and_management_rules():
 
 
 def test_empty_queue_diagnostics_explain_stale_and_short_dte_rows():
-    queue = _queue([
-        _candidate(
-            expiry="2026-07-17",
-            contract="AAPL 2026-07-17 CALL 200",
-            reason_excluded="stale row; dte below 180",
-        )
-    ])
+    queue = _queue(
+        [
+            _candidate(
+                expiry="2026-07-17",
+                contract="AAPL 2026-07-17 CALL 200",
+                reason_excluded="stale row; dte below 180",
+            )
+        ]
+    )
     diagnostics = queue["diagnostics"]
     assert diagnostics["label"] == "refresh_chain_scan"
     assert diagnostics["reason_groups"]["stale"] >= 1
@@ -734,44 +775,62 @@ def test_cycle_packet_summarizes_open_positions_exits_and_validation():
     queue = _queue([_candidate()])
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "open_positions.json").write_text(json.dumps([
-            {
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200,
-                "expiry": "2027-01-15",
-                "entry_price": 0.75,
-                "current_price": 1.1,
-                "stop_price": 0.35,
-                "target_price": 1.6,
-                "latest_exit_pressure": 65,
-                "latest_exit_action": "tighten_stop",
-                "reprice_failed_count": 0,
-            }
-        ]), encoding="utf-8")
-        (data_dir / "validation_summary.json").write_text(json.dumps({
-            "generated_at": "2026-06-11T10:00:00+00:00",
-            "closed_positions": 25,
-            "open_positions": 1,
-            "overall": {"win_rate": 0.40, "avg_return": 0.02, "profit_factor": 1.1, "max_drawdown": -0.15},
-            "equity_curve": {
-                "mode": "normalized_signal_allocation",
-                "default_allocation_pct": 0.01,
-                "description": "Drawdown uses normalized signal allocation.",
-            },
-            "warnings": ["Sample size is still small."],
-        }), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "ticker": "AAPL",
+                        "side": "call",
+                        "strike": 200,
+                        "expiry": "2027-01-15",
+                        "entry_price": 0.75,
+                        "current_price": 1.1,
+                        "stop_price": 0.35,
+                        "target_price": 1.6,
+                        "latest_exit_pressure": 65,
+                        "latest_exit_action": "tighten_stop",
+                        "reprice_failed_count": 0,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (data_dir / "validation_summary.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-11T10:00:00+00:00",
+                    "closed_positions": 25,
+                    "open_positions": 1,
+                    "overall": {
+                        "win_rate": 0.40,
+                        "avg_return": 0.02,
+                        "profit_factor": 1.1,
+                        "max_drawdown": -0.15,
+                    },
+                    "equity_curve": {
+                        "mode": "normalized_signal_allocation",
+                        "default_allocation_pct": 0.01,
+                        "description": "Drawdown uses normalized signal allocation.",
+                    },
+                    "warnings": ["Sample size is still small."],
+                }
+            ),
+            encoding="utf-8",
+        )
         (data_dir / "exit_reviews.jsonl").write_text(
-            json.dumps({
-                "timestamp": "2026-06-11T10:00:00+00:00",
-                "asset": "option",
-                "position_id": "AAPL|call|200|2027-01-15",
-                "ticker": "AAPL",
-                "action": "close_early",
-                "exit_pressure": 82,
-                "current_price": 1.1,
-                "current_pnl_pct": 0.46,
-            }) + "\n",
+            json.dumps(
+                {
+                    "timestamp": "2026-06-11T10:00:00+00:00",
+                    "asset": "option",
+                    "position_id": "AAPL|call|200|2027-01-15",
+                    "ticker": "AAPL",
+                    "action": "close_early",
+                    "exit_pressure": 82,
+                    "current_price": 1.1,
+                    "current_pnl_pct": 0.46,
+                }
+            )
+            + "\n",
             encoding="utf-8",
         )
 
@@ -818,22 +877,27 @@ def test_cycle_packet_blocks_entries_on_bad_validation_but_keeps_review_context(
     queue = _queue([_candidate()])
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "validation_summary.json").write_text(json.dumps({
-            "closed_positions": 120,
-            "overall": {
-                "win_rate": 0.18,
-                "avg_return": -0.04,
-                "profit_factor": 0.72,
-                "max_drawdown": -0.35,
-                "max_drawdown_mode": "normalized_signal_allocation",
-            },
-            "equity_curve": {
-                "mode": "normalized_signal_allocation",
-                "default_allocation_pct": 0.01,
-                "description": "Drawdown uses normalized signal allocation.",
-            },
-            "warnings": ["Max drawdown is worse than -20%: -35.0%."],
-        }), encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(
+            json.dumps(
+                {
+                    "closed_positions": 120,
+                    "overall": {
+                        "win_rate": 0.18,
+                        "avg_return": -0.04,
+                        "profit_factor": 0.72,
+                        "max_drawdown": -0.35,
+                        "max_drawdown_mode": "normalized_signal_allocation",
+                    },
+                    "equity_curve": {
+                        "mode": "normalized_signal_allocation",
+                        "default_allocation_pct": 0.01,
+                        "description": "Drawdown uses normalized signal allocation.",
+                    },
+                    "warnings": ["Max drawdown is worse than -20%: -35.0%."],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         packet = build_agentic_cycle_packet(queue, data_dir)
         assert packet["entry_gate"]["status"] == "blocked"
@@ -843,7 +907,9 @@ def test_cycle_packet_blocks_entries_on_bad_validation_but_keeps_review_context(
         assert packet["queue_summary"]["gated_ready_to_submit_count"] == 0
         assert packet["queue_summary"]["review_only_entry_candidate_count"] == 1
         assert any("drawdown" in reason.lower() for reason in packet["entry_gate"]["blockers"])
-        assert any("normalized_signal_allocation" in reason for reason in packet["entry_gate"]["blockers"])
+        assert any(
+            "normalized_signal_allocation" in reason for reason in packet["entry_gate"]["blockers"]
+        )
         assert any("win rate" in reason.lower() for reason in packet["entry_gate"]["blockers"])
 
         prompt = render_cycle_prompt(packet)
@@ -855,18 +921,21 @@ def test_cycle_packet_blocks_entries_on_bad_validation_but_keeps_review_context(
 
 def test_agent_decision_log_normalizes_appends_and_feeds_cycle_prompt():
     with tempfile.TemporaryDirectory() as td:
-        row = normalize_agent_decision({
-            "action": "SKIPPED",
-            "ticker_or_symbol": "aapl",
-            "contract": "AAPL 2027-01-15 CALL 200",
-            "option_side": "CALL",
-            "strike": 200,
-            "expiry": "2027-01-15",
-            "quantity": 1,
-            "max_limit_price": 0.8,
-            "reason": "entry gate blocked",
-            "entry_gate_status": "blocked",
-        }, generated_at="2026-06-11T10:05:00+00:00")
+        row = normalize_agent_decision(
+            {
+                "action": "SKIPPED",
+                "ticker_or_symbol": "aapl",
+                "contract": "AAPL 2027-01-15 CALL 200",
+                "option_side": "CALL",
+                "strike": 200,
+                "expiry": "2027-01-15",
+                "quantity": 1,
+                "max_limit_price": 0.8,
+                "reason": "entry gate blocked",
+                "entry_gate_status": "blocked",
+            },
+            generated_at="2026-06-11T10:05:00+00:00",
+        )
         assert row["decision"] == "skipped"
         assert row["symbol"] == "AAPL"
         assert row["option_side"] == "call"
@@ -948,12 +1017,16 @@ def test_build_robinhood_queue_can_refresh_chain_before_loading_candidates():
         assert kwargs["min_option_dte"] == 90
         assert kwargs["include_chain_shortlist"] is True
         quote_at = pd.Timestamp.now(tz="UTC").isoformat()
-        return pd.DataFrame([_candidate(
-            generated_at=quote_at,
-            source_quote_at=quote_at,
-            expiry="2026-12-18",
-            contract="AAPL 2026-12-18 CALL 200",
-        )])
+        return pd.DataFrame(
+            [
+                _candidate(
+                    generated_at=quote_at,
+                    source_quote_at=quote_at,
+                    expiry="2026-12-18",
+                    contract="AAPL 2026-12-18 CALL 200",
+                )
+            ]
+        )
 
     try:
         rh_module.refresh_option_chain_shortlist = fake_refresh
@@ -1062,16 +1135,23 @@ def test_build_robinhood_queue_loads_watchlist_sec_filing_risk():
         rh_module.build_external_orders = fake_build_external_orders
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
-            (data_dir / "watchlist_sec_filings.json").write_text(json.dumps({
-                "rows": [{
-                    "ticker": "AAPL",
-                    "form": "424B5",
-                    "filing_date": "2026-06-10",
-                    "days_old": 1,
-                    "signal": "dilution_or_offering_watch",
-                    "description": "prospectus supplement",
-                }]
-            }), encoding="utf-8")
+            (data_dir / "watchlist_sec_filings.json").write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "ticker": "AAPL",
+                                "form": "424B5",
+                                "filing_date": "2026-06-10",
+                                "days_old": 1,
+                                "signal": "dilution_or_offering_watch",
+                                "description": "prospectus supplement",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             queue = build_robinhood_queue(data_dir=data_dir, min_dte=90)
         assert queue["orders"] == []
         assert queue["sec_offering_risks"]["AAPL"][0]["form"] == "424B5"

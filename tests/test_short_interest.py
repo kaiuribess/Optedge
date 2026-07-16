@@ -6,8 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import engines.short_interest as short_interest
-
+import engines.short_interest as short_interest  # noqa: E402
 
 SAMPLE_FINRA_SI = """accountingYearMonthNumber|symbolCode|issueName|issuerServicesGroupExchangeCode|marketClassCode|currentShortPositionQuantity|previousShortPositionQuantity|stockSplitFlag|averageDailyVolumeQuantity|daysToCoverQuantity|revisionFlag|changePercent|changePreviousNumber|settlementDate
 20260529|AAPL|Apple Inc.|Q|NASDAQ|1000|800||500|2.00||25.00|200|2026-05-29

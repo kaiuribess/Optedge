@@ -6,8 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import short_sale_circuit
-
+from engines import short_sale_circuit  # noqa: E402
 
 SAMPLE_FILE = """Symbol,Security Name,Market Category,Trigger Time
 MOVE,Move Corp Cmn,R,6/16/2026 9:30:00 AM
@@ -32,7 +31,9 @@ class _Session:
             return _Response(
                 '<a href="/dynamic/symdir/shorthalts/shorthalts20260616.txt">Download</a>'
             )
-        assert url == "https://www.nasdaqtrader.com/dynamic/symdir/shorthalts/shorthalts20260616.txt"
+        assert (
+            url == "https://www.nasdaqtrader.com/dynamic/symdir/shorthalts/shorthalts20260616.txt"
+        )
         return _Response(SAMPLE_FILE)
 
 

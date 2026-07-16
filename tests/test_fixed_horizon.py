@@ -162,9 +162,7 @@ def test_option_outcomes_are_labeled_proxies_and_expiry_is_not_stretched():
     assert proxy["eligible_for_shadow_metrics"].all()
     assert proxy["pnl_pct"].notna().all()
     assert set(proxy["slippage_assumption_pct"]) == {0.12}
-    assert set(proxy["slippage_assumption_basis"]) == {
-        "max_configured_floor_and_entry_spread"
-    }
+    assert set(proxy["slippage_assumption_basis"]) == {"max_configured_floor_and_entry_spread"}
     assert excluded == {}
     expiry_rows = outcomes[
         outcomes.get("resolution_reason", pd.Series("", index=outcomes.index))

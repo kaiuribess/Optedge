@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import scripts.sec_filings as sec_filings
+import scripts.sec_filings as sec_filings  # noqa: E402
 
 
 def _fact(value, end="2026-03-31", filed="2026-05-01", form="10-Q"):

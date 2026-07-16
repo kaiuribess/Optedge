@@ -1,5 +1,6 @@
 # Purpose: Test the synchronous Robinhood MCP connection manager.
 """Thread, timeout, OAuth, sanitization, and one-shot operation tests."""
+
 from __future__ import annotations
 
 import asyncio

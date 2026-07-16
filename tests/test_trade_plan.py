@@ -171,17 +171,13 @@ def _with_manual_review_context(
         "allocation_cap_dollars": risk["allocation_cap_dollars"],
     }
     plan["candidate_request"] = {
-        "candidate_fingerprint": (
-            "1" * 24 if plan["asset"] == "share" else "3" * 24
-        ),
+        "candidate_fingerprint": ("1" * 24 if plan["asset"] == "share" else "3" * 24),
         "source_file": (
             "top_shares_20260713_120000.parquet"
             if plan["asset"] == "share"
             else "robinhood_agentic_queue.json"
         ),
-        "source_generated_at": (
-            None if plan["asset"] == "share" else snapshot_time.isoformat()
-        ),
+        "source_generated_at": (None if plan["asset"] == "share" else snapshot_time.isoformat()),
     }
     plan["review_constraints"] = {
         "evidence": {
@@ -235,34 +231,36 @@ def _with_manual_review_context(
                 else "full_share_notional_at_risk_dollars"
             ),
             "eligible_account_count": 1,
-            "eligible_accounts": [{
-                "schema": "optedge_post_trade_portfolio_gate_v1",
-                "status": "allowed",
-                "allowed": True,
-                "account_key": "acct_0123456789abcdef",
-                "account_mask": "...0001",
-                "asof": snapshot_time.date().isoformat(),
-                "exposure_schema": "optedge_broker_portfolio_exposure_v1",
-                "position_count": 0,
-                "same_account_nonterminal_order_count": 0,
-                "equity_basis_method": "min_assumed_and_live_same_account_equity",
-                "assumed_equity_dollars": account_equity,
-                "live_equity_dollars": account_equity,
-                "equity_basis_dollars": account_equity,
-                "allocation_fraction": allocation_fraction,
-                "allocation_cap_dollars": portfolio_cap,
-                "current_capital_at_risk_dollars": 0.0,
-                "proposed_capital_at_risk_dollars": proposed_capital,
-                "post_trade_capital_at_risk_dollars": proposed_capital,
-                "headroom_before_trade_dollars": portfolio_cap,
-                "headroom_after_trade_dollars": round(
-                    portfolio_cap - proposed_capital,
-                    2,
-                ),
-                "utilization_before": 0.0,
-                "utilization_after": round(proposed_capital / portfolio_cap, 6),
-                "blockers": [],
-            }],
+            "eligible_accounts": [
+                {
+                    "schema": "optedge_post_trade_portfolio_gate_v1",
+                    "status": "allowed",
+                    "allowed": True,
+                    "account_key": "acct_0123456789abcdef",
+                    "account_mask": "...0001",
+                    "asof": snapshot_time.date().isoformat(),
+                    "exposure_schema": "optedge_broker_portfolio_exposure_v1",
+                    "position_count": 0,
+                    "same_account_nonterminal_order_count": 0,
+                    "equity_basis_method": "min_assumed_and_live_same_account_equity",
+                    "assumed_equity_dollars": account_equity,
+                    "live_equity_dollars": account_equity,
+                    "equity_basis_dollars": account_equity,
+                    "allocation_fraction": allocation_fraction,
+                    "allocation_cap_dollars": portfolio_cap,
+                    "current_capital_at_risk_dollars": 0.0,
+                    "proposed_capital_at_risk_dollars": proposed_capital,
+                    "post_trade_capital_at_risk_dollars": proposed_capital,
+                    "headroom_before_trade_dollars": portfolio_cap,
+                    "headroom_after_trade_dollars": round(
+                        portfolio_cap - proposed_capital,
+                        2,
+                    ),
+                    "utilization_before": 0.0,
+                    "utilization_after": round(proposed_capital / portfolio_cap, 6),
+                    "blockers": [],
+                }
+            ],
         },
         "drawdown": {
             "schema": "optedge_account_drawdown_review_constraints_v1",
@@ -275,86 +273,92 @@ def _with_manual_review_context(
             "base_risk_fraction": 0.01,
             "requested_risk_fraction": risk_fraction,
             "eligible_account_count": 1,
-            "eligible_accounts": [{
-                "schema": "optedge_robinhood_account_drawdown_interlock_v1",
-                "policy_version": "robinhood_account_drawdown_v2",
-                "status": "ready",
-                "review_ready": True,
-                "allowed": True,
-                "account_key": "acct_0123456789abcdef",
-                "account_mask": "...0001",
-                "asof": snapshot_time.isoformat(),
-                "observation_count": 2,
-                "baseline_started_at": (snapshot_time - timedelta(hours=24)).isoformat(),
-                "baseline_span_hours": 24.0,
-                "baseline_ny_calendar_date_count": 2,
-                "current_equity_dollars": account_equity,
-                "high_water_equity_dollars": account_equity,
-                "high_water_drawdown_fraction": 0.0,
-                "ny_session_date": snapshot_time.date().isoformat(),
-                "ny_session_reference_equity_dollars": account_equity,
-                "ny_session_loss_fraction": 0.0,
-                "risk_multiplier": 1.0,
-                "max_allowed_risk_fraction": 0.01,
-                "source_snapshot_digest_sha256": "b" * 64,
-                "ledger_digest_sha256": "c" * 64,
-                "blockers": [],
-                "policy": {
-                    "max_observation_age_minutes": 90.0,
-                    "minimum_baseline_observations": 2,
-                    "minimum_baseline_ny_calendar_dates": 2,
-                    "minimum_baseline_span_hours": 18.0,
-                    "half_risk_at_drawdown_fraction": 0.05,
-                    "quarter_risk_at_drawdown_fraction": 0.08,
-                    "block_at_drawdown_fraction": 0.10,
-                    "block_at_ny_session_loss_fraction": -0.03,
-                    "block_at_unexplained_adjacent_jump_fraction": 0.25,
-                    "missing_or_unsafe_state_policy": "block_new_entries",
-                    "risk_multiplier_may_increase_risk": False,
-                },
-                "does_not_place_orders": True,
-            }],
+            "eligible_accounts": [
+                {
+                    "schema": "optedge_robinhood_account_drawdown_interlock_v1",
+                    "policy_version": "robinhood_account_drawdown_v2",
+                    "status": "ready",
+                    "review_ready": True,
+                    "allowed": True,
+                    "account_key": "acct_0123456789abcdef",
+                    "account_mask": "...0001",
+                    "asof": snapshot_time.isoformat(),
+                    "observation_count": 2,
+                    "baseline_started_at": (snapshot_time - timedelta(hours=24)).isoformat(),
+                    "baseline_span_hours": 24.0,
+                    "baseline_ny_calendar_date_count": 2,
+                    "current_equity_dollars": account_equity,
+                    "high_water_equity_dollars": account_equity,
+                    "high_water_drawdown_fraction": 0.0,
+                    "ny_session_date": snapshot_time.date().isoformat(),
+                    "ny_session_reference_equity_dollars": account_equity,
+                    "ny_session_loss_fraction": 0.0,
+                    "risk_multiplier": 1.0,
+                    "max_allowed_risk_fraction": 0.01,
+                    "source_snapshot_digest_sha256": "b" * 64,
+                    "ledger_digest_sha256": "c" * 64,
+                    "blockers": [],
+                    "policy": {
+                        "max_observation_age_minutes": 90.0,
+                        "minimum_baseline_observations": 2,
+                        "minimum_baseline_ny_calendar_dates": 2,
+                        "minimum_baseline_span_hours": 18.0,
+                        "half_risk_at_drawdown_fraction": 0.05,
+                        "quarter_risk_at_drawdown_fraction": 0.08,
+                        "block_at_drawdown_fraction": 0.10,
+                        "block_at_ny_session_loss_fraction": -0.03,
+                        "block_at_unexplained_adjacent_jump_fraction": 0.25,
+                        "missing_or_unsafe_state_policy": "block_new_entries",
+                        "risk_multiplier_may_increase_risk": False,
+                    },
+                    "does_not_place_orders": True,
+                }
+            ],
         },
-        "candidate": ({
-            "schema": "optedge_share_candidate_review_attestation_v1",
-            "status": "allowed",
-            "allowed": True,
-            "asset": "share",
-            "direction": "long",
-            "symbol": plan["order"]["symbol"],
-            "source_pattern": "top_shares_*.parquet",
-            "source_file": "top_shares_20260713_120000.parquet",
-            "source_artifact_at": snapshot_time.isoformat(),
-            "source_artifact_age_minutes": 0.0,
-            "max_source_age_minutes": 45.0,
-            "source_artifact_digest_sha256": "d" * 64,
-            "candidate_row_digest_sha256": "f" * 64,
-            "candidate_fingerprint": "1" * 24,
-            "candidate_source_generated_at": None,
-            "candidate_source_price_session": snapshot_time.date().isoformat(),
-            "candidate_source_price_basis": "history_last_bar_close",
-            "candidate_source_quote_at": None,
-            "candidate_quote_available": False,
-            "candidate_source_quote_time_basis": None,
-            "candidate_source_bid": None,
-            "candidate_source_ask": None,
-            "candidate_source_spread_fraction": None,
-            "candidate_quote_quality": None,
-            "trade_status": "Trade",
-            "setup_gate_status": "ready",
-            "research_guard_status": "pass",
-            "entry_price": plan["order"]["limit_price"],
-            "stop_price": plan["order"]["stop_price"],
-            "target_price": plan["order"]["target_price"],
-            "max_units": plan["order"]["quantity"],
-            "max_notional_dollars": proposed_capital,
-            "planned_quantity": plan["order"]["quantity"],
-            "planned_notional_dollars": proposed_capital,
-            "top_rank_limit": 3,
-            "require_exact_geometry": True,
-            "require_loaded_candidate_fingerprint": True,
-            "blockers": [],
-        } if plan["asset"] == "share" else option_candidate),
+        "candidate": (
+            {
+                "schema": "optedge_share_candidate_review_attestation_v1",
+                "status": "allowed",
+                "allowed": True,
+                "asset": "share",
+                "direction": "long",
+                "symbol": plan["order"]["symbol"],
+                "source_pattern": "top_shares_*.parquet",
+                "source_file": "top_shares_20260713_120000.parquet",
+                "source_artifact_at": snapshot_time.isoformat(),
+                "source_artifact_age_minutes": 0.0,
+                "max_source_age_minutes": 45.0,
+                "source_artifact_digest_sha256": "d" * 64,
+                "candidate_row_digest_sha256": "f" * 64,
+                "candidate_fingerprint": "1" * 24,
+                "candidate_source_generated_at": None,
+                "candidate_source_price_session": snapshot_time.date().isoformat(),
+                "candidate_source_price_basis": "history_last_bar_close",
+                "candidate_source_quote_at": None,
+                "candidate_quote_available": False,
+                "candidate_source_quote_time_basis": None,
+                "candidate_source_bid": None,
+                "candidate_source_ask": None,
+                "candidate_source_spread_fraction": None,
+                "candidate_quote_quality": None,
+                "trade_status": "Trade",
+                "setup_gate_status": "ready",
+                "research_guard_status": "pass",
+                "entry_price": plan["order"]["limit_price"],
+                "stop_price": plan["order"]["stop_price"],
+                "target_price": plan["order"]["target_price"],
+                "max_units": plan["order"]["quantity"],
+                "max_notional_dollars": proposed_capital,
+                "planned_quantity": plan["order"]["quantity"],
+                "planned_notional_dollars": proposed_capital,
+                "top_rank_limit": 3,
+                "require_exact_geometry": True,
+                "require_loaded_candidate_fingerprint": True,
+                "blockers": [],
+            }
+            if plan["asset"] == "share"
+            else option_candidate
+        ),
         "quote": {
             "quote_tool": (
                 "get_option_quotes" if plan["asset"] == "option" else "get_equity_quotes"
@@ -364,32 +368,42 @@ def _with_manual_review_context(
             "require_positive_bid_ask": True,
             "require_live_tick_validation": True,
             "limit_price_may_increase": False,
-            **({
-                "candidate_source_quote_at": option_candidate["candidate_source_quote_at"],
-                "candidate_source_quote_time_basis": option_candidate["candidate_source_quote_time_basis"],
-                "candidate_source_bid": option_candidate["candidate_source_bid"],
-                "candidate_source_ask": option_candidate["candidate_source_ask"],
-                "candidate_source_spread_fraction": option_candidate["candidate_source_spread_fraction"],
-                "candidate_quote_quality": option_candidate["candidate_quote_quality"],
-                "candidate_data_delay": option_candidate["candidate_data_delay"],
-                "candidate_quote_is_research_only": option_candidate["candidate_quote_is_research_only"],
-                "expected_underlying_type": "equity",
-                "expected_chain_symbol": plan["order"]["symbol"],
-                "expected_contract_multiplier": 100,
-                "require_active_instrument": True,
-                "require_buy_to_open_tradable": True,
-                "require_exact_chain_symbol": True,
-                "require_exact_instrument_chain_id_match": True,
-                "require_unique_chain_record": True,
-                "require_unique_instrument_across_all_expiry_chains": True,
-                "require_chain_can_open_position": True,
-                "require_chain_cash_component_null": True,
-                "require_chain_underlying_instrument_match": True,
-                "require_complete_instrument_and_chain_lookup": True,
-                "reject_numeric_adjusted_roots": True,
-                "require_standard_contract_proof": True,
-                "block_adjusted_or_nonstandard_deliverables": True,
-            } if plan["asset"] == "option" else {}),
+            **(
+                {
+                    "candidate_source_quote_at": option_candidate["candidate_source_quote_at"],
+                    "candidate_source_quote_time_basis": option_candidate[
+                        "candidate_source_quote_time_basis"
+                    ],
+                    "candidate_source_bid": option_candidate["candidate_source_bid"],
+                    "candidate_source_ask": option_candidate["candidate_source_ask"],
+                    "candidate_source_spread_fraction": option_candidate[
+                        "candidate_source_spread_fraction"
+                    ],
+                    "candidate_quote_quality": option_candidate["candidate_quote_quality"],
+                    "candidate_data_delay": option_candidate["candidate_data_delay"],
+                    "candidate_quote_is_research_only": option_candidate[
+                        "candidate_quote_is_research_only"
+                    ],
+                    "expected_underlying_type": "equity",
+                    "expected_chain_symbol": plan["order"]["symbol"],
+                    "expected_contract_multiplier": 100,
+                    "require_active_instrument": True,
+                    "require_buy_to_open_tradable": True,
+                    "require_exact_chain_symbol": True,
+                    "require_exact_instrument_chain_id_match": True,
+                    "require_unique_chain_record": True,
+                    "require_unique_instrument_across_all_expiry_chains": True,
+                    "require_chain_can_open_position": True,
+                    "require_chain_cash_component_null": True,
+                    "require_chain_underlying_instrument_match": True,
+                    "require_complete_instrument_and_chain_lookup": True,
+                    "reject_numeric_adjusted_roots": True,
+                    "require_standard_contract_proof": True,
+                    "block_adjusted_or_nonstandard_deliverables": True,
+                }
+                if plan["asset"] == "option"
+                else {}
+            ),
         },
     }
     return plan
@@ -421,25 +435,27 @@ def _with_leaps_review_context(plan):
         "manual_management_only": True,
     }
     evidence = plan["review_constraints"]["evidence"]
-    evidence.update({
-        "execution_profile": LEAPS_SWING_PROFILE.name,
-        "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
-        "evidence_lane": LEAPS_EVIDENCE_LANE,
-        "required_horizons_sessions": list(
-            LEAPS_SWING_PROFILE.evidence_horizons_sessions
-        ),
-        "require_broker_market_observed": True,
-    })
+    evidence.update(
+        {
+            "execution_profile": LEAPS_SWING_PROFILE.name,
+            "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
+            "evidence_lane": LEAPS_EVIDENCE_LANE,
+            "required_horizons_sessions": list(LEAPS_SWING_PROFILE.evidence_horizons_sessions),
+            "require_broker_market_observed": True,
+        }
+    )
     candidate = plan["review_constraints"]["candidate"]
-    candidate.update({
-        "execution_profile": LEAPS_SWING_PROFILE.name,
-        "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
-        "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
-        "leaps_swing_status": "execution_ready",
-        "leaps_execution_ready": True,
-        "leaps_hard_blockers": [],
-        "leaps_data_blockers": [],
-    })
+    candidate.update(
+        {
+            "execution_profile": LEAPS_SWING_PROFILE.name,
+            "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
+            "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
+            "leaps_swing_status": "execution_ready",
+            "leaps_execution_ready": True,
+            "leaps_hard_blockers": [],
+            "leaps_data_blockers": [],
+        }
+    )
     return plan
 
 
@@ -462,8 +478,7 @@ def test_account_limits_enforce_hard_risk_and_allocation_caps():
     assert safe["validation"]["ok"] is True
     assert risky["status"] == "invalid"
     assert any(
-        row["code"] == "risk_fraction_above_hard_cap"
-        for row in risky["validation"]["errors"]
+        row["code"] == "risk_fraction_above_hard_cap" for row in risky["validation"]["errors"]
     )
     assert concentrated["status"] == "invalid"
     assert any(
@@ -688,8 +703,7 @@ def test_index_option_can_be_sized_for_research_but_not_broker_reviewed():
 
     assert review["review_allowed"] is False
     assert any(
-        row["code"] == "unsupported_index_option_review"
-        for row in review["validation"]["errors"]
+        row["code"] == "unsupported_index_option_review" for row in review["validation"]["errors"]
     )
 
 
@@ -724,9 +738,7 @@ def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
     assert review["requires_short_sale_review"] is False
     assert review["automation_allowed"] is False
     assert review["repeat_orders_allowed"] is False
-    assert {"get_equity_positions", "get_equity_orders"} <= set(
-        review["preflight_read_tools"]
-    )
+    assert {"get_equity_positions", "get_equity_orders"} <= set(review["preflight_read_tools"])
     args = review["review_arguments_template"]
     assert args["account_number"] == "<explicit_user_confirmed_account_number>"
     assert args["symbol"] == "AAPL"
@@ -734,13 +746,12 @@ def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
     assert args["quantity"] == "40"
     assert args["type"] == "limit"
     assert args["limit_price"] == "50.00"
-    assert any(
-        "stop after presenting the broker response" in rule
-        for rule in review["hard_rules"]
-    )
+    assert any("stop after presenting the broker response" in rule for rule in review["hard_rules"])
     assert any("every data.next/cursor page to null" in rule for rule in review["hard_rules"])
     assert any("recent matching filled opening order" in rule for rule in review["hard_rules"])
-    assert any("fresh option quote for every held option_id" in rule for rule in review["hard_rules"])
+    assert any(
+        "fresh option quote for every held option_id" in rule for rule in review["hard_rules"]
+    )
 
     packet = build_manual_robinhood_review_packet(
         _with_manual_review_context(
@@ -760,8 +771,7 @@ def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
     blocked = build_robinhood_equity_review_plan(_short_share_plan())
     assert blocked["review_allowed"] is False
     assert any(
-        row["code"] == "unsupported_equity_intent"
-        for row in blocked["validation"]["errors"]
+        row["code"] == "unsupported_equity_intent" for row in blocked["validation"]["errors"]
     )
 
 
@@ -782,17 +792,18 @@ def test_option_review_plan_requires_exact_lookup_and_review_first():
     args = review["review_arguments_template"]
     assert args["type"] == "limit"
     assert args["price"] == "2.00"
-    assert args["legs"] == [{
-        "option_id": "<option_id_from_get_option_instruments>",
-        "side": "buy",
-        "position_effect": "open",
-        "ratio_quantity": 1,
-    }]
+    assert args["legs"] == [
+        {
+            "option_id": "<option_id_from_get_option_instruments>",
+            "side": "buy",
+            "position_effect": "open",
+            "ratio_quantity": 1,
+        }
+    ]
+    assert any("stop after presenting the broker response" in rule for rule in review["hard_rules"])
     assert any(
-        "stop after presenting the broker response" in rule
-        for rule in review["hard_rules"]
+        "every option chain containing the exact expiry" in rule for rule in review["hard_rules"]
     )
-    assert any("every option chain containing the exact expiry" in rule for rule in review["hard_rules"])
     assert any("can_open_position true" in rule for rule in review["hard_rules"])
 
 
@@ -893,7 +904,10 @@ def test_option_packet_preserves_account_assumptions_and_live_quote_constraints(
     assert "Live quote maximum age: 120 seconds" in prompt
     assert "Maximum live bid/ask spread: 12.00%" in prompt
     assert "Call get_portfolio for that exact account" in prompt
-    assert "smaller of buying_power and unleveraged_buying_power as conservative buying power" in prompt
+    assert (
+        "smaller of buying_power and unleveraged_buying_power as conservative buying power"
+        in prompt
+    )
     assert "same account to be active, agentic_allowed, sufficiently funded" in prompt
     assert "strip surrounding whitespace from the exact get_accounts.account_number" in prompt
     assert "optedge-robinhood-account-v1|" in prompt
@@ -907,8 +921,13 @@ def test_option_packet_preserves_account_assumptions_and_live_quote_constraints(
     assert "quote.updated_at no older than the packet's maximum quote age" in prompt
     assert "bid_price > 0" in prompt
     assert "ask_price >= bid_price" in prompt
-    assert "(ask_price - bid_price) / ((ask_price + bid_price) / 2) <= the packet spread cap" in prompt
-    assert "If the live ask is above the packet limit, STOP and rebuild; never raise the limit" in prompt
+    assert (
+        "(ask_price - bid_price) / ((ask_price + bid_price) / 2) <= the packet spread cap" in prompt
+    )
+    assert (
+        "If the live ask is above the packet limit, STOP and rebuild; never raise the limit"
+        in prompt
+    )
     assert "packet limit may never increase" in prompt
     assert "minimum tick/tick-size rules" in prompt
     assert "get_equity_positions" in prompt
@@ -944,7 +963,9 @@ def test_equity_packet_recomputes_share_stop_notional_and_venue_quote_gates():
     assert "min(planner equity, live total_value)" in prompt
     assert "order notional <= conservative buying power" in prompt
     assert "Call get_equity_quotes for the exact symbol" in prompt
-    assert "venue_bid_time and venue_ask_time no older than the packet's maximum quote age" in prompt
+    assert (
+        "venue_bid_time and venue_ask_time no older than the packet's maximum quote age" in prompt
+    )
     assert "Live quote maximum age: 120 seconds" in prompt
     assert "Maximum live bid/ask spread: 1.00%" in prompt
     assert "bid_price > 0" in prompt
@@ -960,10 +981,7 @@ def test_manual_packet_fails_closed_without_trade_desk_context_or_gate_attestati
     assert packet["status"] == "blocked"
     assert packet["review_gate_attested"] is False
     assert packet["context_validation"]["ok"] is False
-    codes = {
-        row["code"]
-        for row in packet["review_plan"]["validation"]["errors"]
-    }
+    codes = {row["code"] for row in packet["review_plan"]["validation"]["errors"]}
     assert {
         "missing_or_invalid_snapshot_id",
         "missing_or_invalid_issued_at",
@@ -988,10 +1006,7 @@ def test_manual_packet_rejects_expired_or_overlong_review_windows():
         plan,
         **_fresh_review_kwargs(issued_at=datetime.now(UTC) - timedelta(minutes=20)),
     )
-    expired_codes = {
-        row["code"]
-        for row in expired["review_plan"]["validation"]["errors"]
-    }
+    expired_codes = {row["code"] for row in expired["review_plan"]["validation"]["errors"]}
     assert expired["status"] == "blocked"
     assert "review_packet_expired" in expired_codes
 
@@ -999,10 +1014,7 @@ def test_manual_packet_rejects_expired_or_overlong_review_windows():
         plan,
         **_fresh_review_kwargs(ttl_minutes=16),
     )
-    overlong_codes = {
-        row["code"]
-        for row in overlong["review_plan"]["validation"]["errors"]
-    }
+    overlong_codes = {row["code"] for row in overlong["review_plan"]["validation"]["errors"]}
     assert overlong["status"] == "blocked"
     assert "review_window_too_long" in overlong_codes
 
@@ -1037,8 +1049,7 @@ def test_ready_packet_detects_post_build_mutation_and_use_after_expiry():
     prompt_validation = validate_manual_robinhood_review_packet(changed_prompt, now=issued)
     assert prompt_validation["ok"] is False
     assert any(
-        row["code"] == "manual_review_packet_prompt_changed"
-        for row in prompt_validation["errors"]
+        row["code"] == "manual_review_packet_prompt_changed" for row in prompt_validation["errors"]
     )
 
     changed_submission = deepcopy(packet)
@@ -1061,10 +1072,7 @@ def test_ready_packet_detects_post_build_mutation_and_use_after_expiry():
         now=after_expiry,
     )
     assert expired_validation["ok"] is False
-    assert any(
-        row["code"] == "review_packet_expired"
-        for row in expired_validation["errors"]
-    )
+    assert any(row["code"] == "review_packet_expired" for row in expired_validation["errors"])
     assert "STATUS: BLOCKED" in render_manual_robinhood_review_prompt(
         packet,
         now=after_expiry,
@@ -1109,10 +1117,7 @@ def test_manual_packet_requires_drawdown_and_pre_preview_reread_controls():
         tampered["manual_controls"][field] = False
         validation = validate_manual_robinhood_review_packet(tampered, now=issued)
         assert validation["ok"] is False
-        assert any(
-            row["code"] == f"unsafe_manual_control_{field}"
-            for row in validation["errors"]
-        )
+        assert any(row["code"] == f"unsafe_manual_control_{field}" for row in validation["errors"])
 
 
 def test_option_review_requires_standard_active_exact_chain_attestation():
@@ -1131,7 +1136,9 @@ def test_option_review_requires_standard_active_exact_chain_attestation():
     missing_standard["review_constraints"]["quote"]["require_standard_contract_proof"] = False
     cases.append((missing_standard, "missing_option_require_standard_contract_proof"))
     missing_deliverable = deepcopy(base)
-    missing_deliverable["review_constraints"]["quote"]["block_adjusted_or_nonstandard_deliverables"] = False
+    missing_deliverable["review_constraints"]["quote"][
+        "block_adjusted_or_nonstandard_deliverables"
+    ] = False
     cases.append((missing_deliverable, "missing_option_block_adjusted_or_nonstandard_deliverables"))
     missing_chain_binding = deepcopy(base)
     missing_chain_binding["review_constraints"]["quote"][
@@ -1144,12 +1151,8 @@ def test_option_review_requires_standard_active_exact_chain_attestation():
         )
     )
     missing_cash_check = deepcopy(base)
-    missing_cash_check["review_constraints"]["quote"][
-        "require_chain_cash_component_null"
-    ] = False
-    cases.append(
-        (missing_cash_check, "missing_option_require_chain_cash_component_null")
-    )
+    missing_cash_check["review_constraints"]["quote"]["require_chain_cash_component_null"] = False
+    cases.append((missing_cash_check, "missing_option_require_chain_cash_component_null"))
     missing_all_chain_uniqueness = deepcopy(base)
     missing_all_chain_uniqueness["review_constraints"]["quote"][
         "require_unique_instrument_across_all_expiry_chains"
@@ -1161,12 +1164,10 @@ def test_option_review_requires_standard_active_exact_chain_attestation():
         )
     )
     missing_open_permission = deepcopy(base)
-    missing_open_permission["review_constraints"]["quote"][
-        "require_chain_can_open_position"
-    ] = False
-    cases.append(
-        (missing_open_permission, "missing_option_require_chain_can_open_position")
+    missing_open_permission["review_constraints"]["quote"]["require_chain_can_open_position"] = (
+        False
     )
+    cases.append((missing_open_permission, "missing_option_require_chain_can_open_position"))
 
     for plan, expected_code in cases:
         packet = build_manual_robinhood_review_packet(plan, **_fresh_review_kwargs())
@@ -1229,12 +1230,8 @@ def test_manual_packet_rejects_missing_stale_or_tampered_option_candidate():
     malformed_digest["review_constraints"]["candidate"]["queue_digest_sha256"] = "bad"
     cases.append((malformed_digest, "invalid_option_queue_digest"))
     unrelated_fingerprint = deepcopy(base)
-    unrelated_fingerprint["review_constraints"]["candidate"][
-        "candidate_fingerprint"
-    ] = "f" * 24
-    cases.append(
-        (unrelated_fingerprint, "option_candidate_fingerprint_digest_mismatch")
-    )
+    unrelated_fingerprint["review_constraints"]["candidate"]["candidate_fingerprint"] = "f" * 24
+    cases.append((unrelated_fingerprint, "option_candidate_fingerprint_digest_mismatch"))
     below_swing_floor = deepcopy(base)
     below_swing_floor["review_constraints"]["candidate"]["dte"] = 89
     cases.append((below_swing_floor, "option_candidate_dte_mismatch"))
@@ -1262,10 +1259,7 @@ def test_manual_packet_rejects_weakened_account_or_quote_context():
     plan["review_constraints"]["quote"]["limit_price_may_increase"] = True
 
     packet = build_manual_robinhood_review_packet(plan, **_fresh_review_kwargs())
-    codes = {
-        row["code"]
-        for row in packet["review_plan"]["validation"]["errors"]
-    }
+    codes = {row["code"] for row in packet["review_plan"]["validation"]["errors"]}
     assert packet["status"] == "blocked"
     assert {
         "no_eligible_same_account_match",
@@ -1287,9 +1281,9 @@ def test_manual_packet_requires_exact_versioned_account_key_derivation():
     missing["review_constraints"]["account"].pop("account_key_derivation")
     cases.append(missing)
     wrong_namespace = deepcopy(base)
-    wrong_namespace["review_constraints"]["account"]["account_key_derivation"][
-        "namespace"
-    ] = "unsafe|"
+    wrong_namespace["review_constraints"]["account"]["account_key_derivation"]["namespace"] = (
+        "unsafe|"
+    )
     cases.append(wrong_namespace)
     raw_number_persistence = deepcopy(base)
     raw_number_persistence["review_constraints"]["account"]["account_key_derivation"][
@@ -1364,10 +1358,13 @@ def test_manual_packet_enforces_asset_specific_spread_hard_caps():
         allocation_fraction=0.03,
         max_spread_fraction=0.15,
     )
-    assert build_manual_robinhood_review_packet(
-        exact_option,
-        **_fresh_review_kwargs(),
-    )["status"] == "manual_review_required"
+    assert (
+        build_manual_robinhood_review_packet(
+            exact_option,
+            **_fresh_review_kwargs(),
+        )["status"]
+        == "manual_review_required"
+    )
 
 
 def test_leaps_manual_packet_requires_profile_isolated_evidence_and_candidate():
@@ -1402,9 +1399,7 @@ def test_generic_option_evidence_cannot_authorize_a_leaps_packet():
     candidate["leaps_execution_ready"] = False
     candidate["leaps_data_blockers"] = ["quote is delayed"]
     candidate["candidate_quote_is_research_only"] = True
-    research_only["review_constraints"]["quote"][
-        "candidate_quote_is_research_only"
-    ] = True
+    research_only["review_constraints"]["quote"]["candidate_quote_is_research_only"] = True
     cases.append((research_only, "leaps_candidate_not_execution_ready"))
 
     wrong_hold = deepcopy(base)
@@ -1416,9 +1411,7 @@ def test_generic_option_evidence_cannot_authorize_a_leaps_packet():
             plan,
             **_fresh_review_kwargs(),
         )
-        codes = {
-            row["code"] for row in packet["review_plan"]["validation"]["errors"]
-        }
+        codes = {row["code"] for row in packet["review_plan"]["validation"]["errors"]}
         assert packet["status"] == "blocked"
         assert expected_code in codes
 
@@ -1453,7 +1446,9 @@ def test_manual_packet_rejects_missing_stale_or_tampered_share_candidate():
     wrong_basis["review_constraints"]["candidate"]["candidate_source_price_basis"] = "live_quote"
     cases.append((wrong_basis, "invalid_share_price_basis"))
     stale_session = deepcopy(base)
-    stale_session["review_constraints"]["candidate"]["candidate_source_price_session"] = "2020-01-01"
+    stale_session["review_constraints"]["candidate"]["candidate_source_price_session"] = (
+        "2020-01-01"
+    )
     cases.append((stale_session, "stale_or_invalid_share_price_session"))
 
     for plan, expected_code in cases:
@@ -1474,9 +1469,7 @@ def test_manual_packet_rejects_missing_or_tampered_portfolio_attestation():
 
     cases = []
     wrong_evidence_lane = deepcopy(base)
-    wrong_evidence_lane["review_constraints"]["evidence"]["evidence_lane"] = (
-        "legacy_research_only"
-    )
+    wrong_evidence_lane["review_constraints"]["evidence"]["evidence_lane"] = "legacy_research_only"
     cases.append((wrong_evidence_lane, "non_executable_edge_evidence"))
 
     wrong_evidence_asset = deepcopy(base)
@@ -1528,10 +1521,7 @@ def test_manual_packet_rejects_missing_or_tampered_portfolio_attestation():
             plan,
             **_fresh_review_kwargs(),
         )
-        codes = {
-            row["code"]
-            for row in packet["review_plan"]["validation"]["errors"]
-        }
+        codes = {row["code"] for row in packet["review_plan"]["validation"]["errors"]}
         assert packet["status"] == "blocked"
         assert expected_code in codes
 
@@ -1551,9 +1541,7 @@ def test_manual_packet_rejects_missing_or_tampered_drawdown_attestation():
     cases.append((missing, "missing_account_drawdown_constraints"))
 
     wrong_snapshot = deepcopy(base)
-    wrong_snapshot["review_constraints"]["drawdown"][
-        "broker_snapshot_digest_sha256"
-    ] = "d" * 64
+    wrong_snapshot["review_constraints"]["drawdown"]["broker_snapshot_digest_sha256"] = "d" * 64
     cases.append((wrong_snapshot, "drawdown_portfolio_snapshot_mismatch"))
 
     one_observation = deepcopy(base)
@@ -1575,9 +1563,9 @@ def test_manual_packet_rejects_missing_or_tampered_drawdown_attestation():
     cases.append((one_ny_date, "insufficient_drawdown_baseline_ny_dates"))
 
     weakened_baseline_policy = deepcopy(base)
-    weakened_baseline_policy["review_constraints"]["drawdown"]["eligible_accounts"][0][
-        "policy"
-    ]["minimum_baseline_span_hours"] = 1.0
+    weakened_baseline_policy["review_constraints"]["drawdown"]["eligible_accounts"][0]["policy"][
+        "minimum_baseline_span_hours"
+    ] = 1.0
     cases.append((weakened_baseline_policy, "unsafe_account_drawdown_policy_threshold"))
 
     tampered_ledger = deepcopy(base)
@@ -1587,9 +1575,9 @@ def test_manual_packet_rejects_missing_or_tampered_drawdown_attestation():
     cases.append((tampered_ledger, "invalid_account_equity_ledger_digest"))
 
     wrong_account_mask = deepcopy(base)
-    wrong_account_mask["review_constraints"]["drawdown"]["eligible_accounts"][0][
-        "account_mask"
-    ] = "...9999"
+    wrong_account_mask["review_constraints"]["drawdown"]["eligible_accounts"][0]["account_mask"] = (
+        "...9999"
+    )
     cases.append((wrong_account_mask, "drawdown_portfolio_account_mask_mismatch"))
 
     weakened_multiplier = deepcopy(base)
@@ -1606,10 +1594,7 @@ def test_manual_packet_rejects_missing_or_tampered_drawdown_attestation():
             plan,
             **_fresh_review_kwargs(),
         )
-        codes = {
-            row["code"]
-            for row in packet["review_plan"]["validation"]["errors"]
-        }
+        codes = {row["code"] for row in packet["review_plan"]["validation"]["errors"]}
         assert packet["status"] == "blocked"
         assert expected_code in codes
 
@@ -1623,16 +1608,18 @@ def test_drawdown_reduction_enforces_a_lower_manual_review_risk_ceiling():
         max_spread_fraction=0.01,
     )
     row = plan["review_constraints"]["drawdown"]["eligible_accounts"][0]
-    row.update({
-        "status": "reduced",
-        "current_equity_dollars": 20_000,
-        "high_water_equity_dollars": 21_052.63,
-        "high_water_drawdown_fraction": -0.05,
-        "ny_session_reference_equity_dollars": 20_000,
-        "ny_session_loss_fraction": 0.0,
-        "risk_multiplier": 0.5,
-        "max_allowed_risk_fraction": 0.005,
-    })
+    row.update(
+        {
+            "status": "reduced",
+            "current_equity_dollars": 20_000,
+            "high_water_equity_dollars": 21_052.63,
+            "high_water_drawdown_fraction": -0.05,
+            "ny_session_reference_equity_dollars": 20_000,
+            "ny_session_loss_fraction": 0.0,
+            "risk_multiplier": 0.5,
+            "max_allowed_risk_fraction": 0.005,
+        }
+    )
 
     packet = build_manual_robinhood_review_packet(
         plan,

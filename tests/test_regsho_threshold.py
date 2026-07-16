@@ -6,8 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import regsho_threshold
-
+from engines import regsho_threshold  # noqa: E402
 
 SAMPLE_FILE = """Symbol|Security Name|Market Category|Reg SHO Threshold Flag|Rule 3210|Filler
 MOVE|Move Corp Cmn|S|Y|N|
@@ -30,9 +29,7 @@ class _Session:
     def get(self, url, timeout=12):
         self.urls.append((url, timeout))
         if url == regsho_threshold.REGSHO_PAGE_URL:
-            return _Response(
-                '<a href="/dynamic/symdir/regsho/nasdaqth20260615.txt">Download</a>'
-            )
+            return _Response('<a href="/dynamic/symdir/regsho/nasdaqth20260615.txt">Download</a>')
         assert url == "https://www.nasdaqtrader.com/dynamic/symdir/regsho/nasdaqth20260615.txt"
         return _Response(SAMPLE_FILE)
 

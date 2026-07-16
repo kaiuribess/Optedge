@@ -1,16 +1,16 @@
 # Purpose: Keep repository documentation complete and compatibility diagnostics fail-closed.
 """Repository-map, packaging, and diagnostic-surface regression checks."""
+
 from __future__ import annotations
 
-from collections import Counter
-from pathlib import Path
 import re
 import subprocess
 import tomllib
+from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 MAP_PATH = ROOT / "docs" / "PROJECT_MAP.md"
@@ -30,16 +30,14 @@ def _tracked_paths() -> set[str]:
         pytest.skip("Git is unavailable; project-map coverage requires a checkout")
     if result.returncode != 0 or not result.stdout:
         pytest.skip("project-map coverage requires a Git checkout")
-    return {
-        raw.decode("utf-8").replace("\\", "/")
-        for raw in result.stdout.split(b"\0")
-        if raw
-    }
+    return {raw.decode("utf-8").replace("\\", "/") for raw in result.stdout.split(b"\0") if raw}
 
 
 def _map_rows() -> list[tuple[str, str]]:
     text = MAP_PATH.read_text(encoding="utf-8")
-    return [(path.replace("\\", "/"), purpose.strip()) for path, purpose in ROW_PATTERN.findall(text)]
+    return [
+        (path.replace("\\", "/"), purpose.strip()) for path, purpose in ROW_PATTERN.findall(text)
+    ]
 
 
 def test_project_map_covers_every_tracked_path_once() -> None:

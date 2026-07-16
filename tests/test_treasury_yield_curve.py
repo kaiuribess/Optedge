@@ -1,5 +1,6 @@
 # Purpose: Test public Treasury yield-curve factors.
 """Direct-run tests for the official Treasury yield-curve fallback."""
+
 from __future__ import annotations
 
 import sys
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import yield_curve_pca
+from engines import yield_curve_pca  # noqa: E402
 
 
 class _FakeResponse:

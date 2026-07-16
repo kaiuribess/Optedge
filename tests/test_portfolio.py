@@ -71,9 +71,7 @@ def _snapshot() -> dict:
 
 
 def test_summary_uses_conservative_long_exposure_for_only_requested_account():
-    summary = summarize_broker_account_capital_at_risk(
-        _snapshot(), "agentic", asof="2026-07-13"
-    )
+    summary = summarize_broker_account_capital_at_risk(_snapshot(), "agentic", asof="2026-07-13")
 
     assert summary["status"] == "ready"
     assert summary["capital_at_risk_dollars"] == 360.0
@@ -100,15 +98,17 @@ def test_equity_falls_back_to_absolute_quantity_times_current_price():
 def test_equity_market_value_must_reconcile_with_quantity_times_current_price():
     snapshot = _snapshot()
     snapshot["option_positions"] = []
-    snapshot["equity_positions"] = [{
-        "account_key": "agentic",
-        "symbol": "AAPL",
-        "position_type": "long",
-        "quantity": 100,
-        "signed_quantity": 100,
-        "market_value": 100,
-        "current_price": 100,
-    }]
+    snapshot["equity_positions"] = [
+        {
+            "account_key": "agentic",
+            "symbol": "AAPL",
+            "position_type": "long",
+            "quantity": 100,
+            "signed_quantity": 100,
+            "market_value": 100,
+            "current_price": 100,
+        }
+    ]
 
     summary = summarize_broker_account_capital_at_risk(snapshot, "agentic", "2026-07-13")
 
@@ -266,9 +266,7 @@ def test_normalization_blockers_or_duplicate_account_scope_fail_closed():
 
 
 def test_post_trade_gate_uses_lower_equity_and_returns_attestation_arithmetic():
-    summary = summarize_broker_account_capital_at_risk(
-        _snapshot(), "agentic", asof="2026-07-13"
-    )
+    summary = summarize_broker_account_capital_at_risk(_snapshot(), "agentic", asof="2026-07-13")
 
     gate = evaluate_post_trade_portfolio(
         summary,
@@ -293,9 +291,7 @@ def test_post_trade_gate_uses_lower_equity_and_returns_attestation_arithmetic():
 
 
 def test_post_trade_gate_blocks_cap_breach_and_blocked_exposure():
-    summary = summarize_broker_account_capital_at_risk(
-        _snapshot(), "agentic", asof="2026-07-13"
-    )
+    summary = summarize_broker_account_capital_at_risk(_snapshot(), "agentic", asof="2026-07-13")
     over_cap = evaluate_post_trade_portfolio(
         summary,
         proposed_capital_at_risk=500,

@@ -28,9 +28,7 @@ def test_versioned_default_is_used_without_mutating_the_repository() -> None:
         default_dir = root / "defaults"
         default_dir.mkdir()
         payload = _payload()
-        (default_dir / "options_call.json").write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        (default_dir / "options_call.json").write_text(json.dumps(payload), encoding="utf-8")
         old_runtime = learning.WEIGHTS_DIR
         old_defaults = learning.DEFAULT_WEIGHTS_DIR
         learning.WEIGHTS_DIR = runtime_dir
@@ -51,9 +49,7 @@ def test_cold_start_copies_defaults_to_ignored_runtime_state() -> None:
         default_dir = root / "defaults"
         default_dir.mkdir()
         payload = _payload(0.31)
-        (default_dir / "options_call.json").write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        (default_dir / "options_call.json").write_text(json.dumps(payload), encoding="utf-8")
         old_runtime = learning.WEIGHTS_DIR
         old_defaults = learning.DEFAULT_WEIGHTS_DIR
         old_buckets = learning.BUCKET_KEYS

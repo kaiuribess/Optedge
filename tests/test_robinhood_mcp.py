@@ -1,5 +1,6 @@
 # Purpose: Test the official Robinhood MCP connector safety foundation.
 """Deterministic tests for OAuth, keyring, tool policy, and result decoding."""
+
 from __future__ import annotations
 
 import asyncio
@@ -70,10 +71,7 @@ class _FakeKeyring:
         return self.values.get((service, username))
 
     def set_password(self, service: str, username: str, password: str):
-        if (
-            self.max_password_chars is not None
-            and len(password) > self.max_password_chars
-        ):
+        if self.max_password_chars is not None and len(password) > self.max_password_chars:
             raise OSError(1783, "The stub received bad data")
         self.values[(service, username)] = password
 
@@ -90,9 +88,7 @@ def _tool(name: str, schema: dict | None = None) -> dict:
 
 def _complete_tools() -> list[dict]:
     names = (
-        set(REQUIRED_PREFLIGHT_READ_TOOLS)
-        | set(REVIEW_TOOL_ALLOWLIST)
-        | set(PLACE_TOOL_ALLOWLIST)
+        set(REQUIRED_PREFLIGHT_READ_TOOLS) | set(REVIEW_TOOL_ALLOWLIST) | set(PLACE_TOOL_ALLOWLIST)
     )
     return [_tool(name) for name in sorted(names)]
 
@@ -105,9 +101,7 @@ class _FakeSession:
         self.results: dict[str, object] = {
             "get_accounts": {
                 "structuredContent": {
-                    "data": {
-                        "accounts": [{"account_number": "123456789", "agentic_allowed": True}]
-                    }
+                    "data": {"accounts": [{"account_number": "123456789", "agentic_allowed": True}]}
                 },
                 "isError": False,
             },
@@ -137,9 +131,10 @@ def _session_factory(session: _FakeSession):
 def test_endpoint_is_fixed_and_callback_uri_is_exact_loopback():
     assert ROBINHOOD_MCP_ENDPOINT == "https://agent.robinhood.com/mcp/trading"
     assert validate_callback_uri(CALLBACK_URI) == CALLBACK_URI
-    assert validate_callback_uri(
-        "http://localhost:9000/oauth/robinhood/callback"
-    ) == "http://localhost:9000/oauth/robinhood/callback"
+    assert (
+        validate_callback_uri("http://localhost:9000/oauth/robinhood/callback")
+        == "http://localhost:9000/oauth/robinhood/callback"
+    )
 
     invalid = [
         "https://127.0.0.1:8765/oauth/robinhood/callback",
@@ -228,10 +223,7 @@ def test_keyring_storage_chunks_large_tokens_inside_the_os_vault_limit():
         )
 
         await storage.clear()
-        assert not any(
-            service == storage.service_name
-            for service, _username in fake.values
-        )
+        assert not any(service == storage.service_name for service, _username in fake.values)
 
     asyncio.run(run())
 
@@ -247,9 +239,7 @@ def test_keyring_storage_rejects_tampered_or_missing_chunks():
         )
         await storage.set_tokens(tokens)
         chunk_key = next(
-            key
-            for key in fake.values
-            if key[0] == storage.service_name and ":chunk:" in key[1]
+            key for key in fake.values if key[0] == storage.service_name and ":chunk:" in key[1]
         )
         original = fake.values[chunk_key]
         fake.values[chunk_key] = ("x" if original[0] != "x" else "y") + original[1:]
@@ -295,9 +285,7 @@ def test_keyring_storage_accepts_recognized_system_vault_for_current_platform(
     backend_identity: tuple[str, str],
 ):
     monkeypatch.setattr("optedge.robinhood_mcp.sys.platform", platform_name)
-    KeyringTokenStorage(
-        keyring_module=_FakeKeyring(backend_identity=backend_identity)
-    )
+    KeyringTokenStorage(keyring_module=_FakeKeyring(backend_identity=backend_identity))
 
 
 def test_keyring_storage_rejects_system_vault_for_a_different_platform(monkeypatch):
@@ -349,9 +337,7 @@ def test_oauth_coordinator_validates_one_time_state_without_publicly_exposing_it
         assert await waiter == ("code-secret", "state-secret")
         assert coordinator.public_status()["status"] == "complete"
         with pytest.raises(OAuthStateError):
-            coordinator.submit_callback(
-                f"{CALLBACK_URI}?code=second-code&state=state-secret"
-            )
+            coordinator.submit_callback(f"{CALLBACK_URI}?code=second-code&state=state-secret")
 
     asyncio.run(run())
 
@@ -363,9 +349,7 @@ def test_oauth_coordinator_rejects_wrong_state_and_callback_route():
         with pytest.raises(OAuthStateError):
             coordinator.submit_callback(f"{CALLBACK_URI}?code=x&state=wrong")
         with pytest.raises(OAuthStateError):
-            coordinator.submit_callback(
-                "http://127.0.0.1:8765/wrong?code=x&state=expected"
-            )
+            coordinator.submit_callback("http://127.0.0.1:8765/wrong?code=x&state=expected")
         coordinator.reset()
 
     asyncio.run(run())
@@ -374,22 +358,16 @@ def test_oauth_coordinator_rejects_wrong_state_and_callback_route():
 def test_oauth_error_callback_requires_state_and_preserves_failed_status():
     async def run():
         coordinator = OAuthCallbackCoordinator(CALLBACK_URI)
-        await coordinator.redirect_handler(
-            "https://robinhood.example/auth?state=expected"
-        )
+        await coordinator.redirect_handler("https://robinhood.example/auth?state=expected")
         waiter = asyncio.create_task(coordinator.callback_handler())
 
         with pytest.raises(OAuthStateError):
-            coordinator.submit_callback(
-                f"{CALLBACK_URI}?error=access_denied&state=wrong"
-            )
+            coordinator.submit_callback(f"{CALLBACK_URI}?error=access_denied&state=wrong")
         assert coordinator.public_status()["status"] == "authorization_required"
         assert waiter.done() is False
 
         with pytest.raises(OAuthStateError):
-            coordinator.submit_callback(
-                f"{CALLBACK_URI}?error=access_denied&state=expected"
-            )
+            coordinator.submit_callback(f"{CALLBACK_URI}?error=access_denied&state=expected")
         with pytest.raises(OAuthStateError):
             await waiter
         assert coordinator.public_status()["status"] == "failed"
@@ -401,9 +379,7 @@ def test_oauth_error_callback_requires_state_and_preserves_failed_status():
 def test_oauth_reset_cannot_be_overwritten_by_cancelled_callback_waiter():
     async def run():
         coordinator = OAuthCallbackCoordinator(CALLBACK_URI)
-        await coordinator.redirect_handler(
-            "https://robinhood.example/auth?state=expected"
-        )
+        await coordinator.redirect_handler("https://robinhood.example/auth?state=expected")
         waiter = asyncio.create_task(coordinator.callback_handler())
         await asyncio.sleep(0)
         coordinator.reset()
@@ -439,9 +415,11 @@ def test_catalog_validation_separates_read_review_place_and_unknown_tools():
 
     duplicate = validate_tool_catalog([_tool("get_accounts"), _tool("get_accounts")])
     assert duplicate["schema_valid"] is False
-    malformed = validate_tool_catalog([
-        _tool("get_accounts", {"type": "array"}),
-    ])
+    malformed = validate_tool_catalog(
+        [
+            _tool("get_accounts", {"type": "array"}),
+        ]
+    )
     assert malformed["schema_valid"] is False
 
 
@@ -449,10 +427,12 @@ def test_tool_result_decoder_accepts_structured_or_json_text_and_rejects_errors(
     assert decode_tool_result({"structuredContent": {"data": {"ok": True}}}) == {
         "data": {"ok": True}
     }
-    assert decode_tool_result({
-        "content": [{"type": "text", "text": '{"data":{"value":1}}'}],
-        "isError": False,
-    }) == {"data": {"value": 1}}
+    assert decode_tool_result(
+        {
+            "content": [{"type": "text", "text": '{"data":{"value":1}}'}],
+            "isError": False,
+        }
+    ) == {"data": {"value": 1}}
     assert decode_tool_result({"already": "decoded"}) == {"already": "decoded"}
     with pytest.raises(ToolResultError):
         decode_tool_result({"isError": True, "content": [{"type": "text", "text": "secret"}]})
@@ -497,9 +477,7 @@ def test_client_calls_only_read_or_review_tools_once_and_never_exposes_place():
 
         schema = client.read_tool_input_schema("get_accounts")
         schema["properties"] = {"tampered": {"type": "string"}}
-        assert "tampered" not in client.read_tool_input_schema("get_accounts").get(
-            "properties", {}
-        )
+        assert "tampered" not in client.read_tool_input_schema("get_accounts").get("properties", {})
         with pytest.raises(ToolPolicyError):
             client.read_tool_input_schema("review_option_order")
         with pytest.raises(ToolPolicyError):

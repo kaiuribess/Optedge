@@ -139,9 +139,7 @@ def test_option_cost_assumption_must_cover_every_recorded_entry_spread():
     report = analyze_edge_outcomes(frame)
     option = next(row for row in report["asset_rows"] if row["asset"] == "option")
     requirement = next(
-        row
-        for row in option["requirements"]
-        if row["code"] == "cost_covers_entry_spread_coverage"
+        row for row in option["requirements"] if row["code"] == "cost_covers_entry_spread_coverage"
     )
 
     assert requirement["met"] is False

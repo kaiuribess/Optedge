@@ -8,13 +8,18 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backtest import exit_rules
+from backtest import exit_rules  # noqa: E402
 
 
 def test_exit_pressure_blocks_on_research_guard():
     review = exit_rules.compute_exit_pressure(
-        {"ticker": "XYZ", "research_guard_status": "blocked_spread", "stop_price": 8, "entry_price": 10,
-         "age_days": 0.0},
+        {
+            "ticker": "XYZ",
+            "research_guard_status": "blocked_spread",
+            "stop_price": 8,
+            "entry_price": 10,
+            "age_days": 0.0,
+        },
         asset="share",
     )
     assert review["action"] == "close_early"
@@ -24,7 +29,14 @@ def test_exit_pressure_blocks_on_research_guard():
 
 def test_exit_pressure_tightens_on_confidence_collapse():
     review = exit_rules.compute_exit_pressure(
-        {"ticker": "XYZ", "confidence": 80, "stop_price": 8, "entry_price": 10, "current_price": 12, "unrealized_pct": 0.2},
+        {
+            "ticker": "XYZ",
+            "confidence": 80,
+            "stop_price": 8,
+            "entry_price": 10,
+            "current_price": 12,
+            "unrealized_pct": 0.2,
+        },
         {"confidence": 50},
         asset="share",
     )
@@ -33,8 +45,15 @@ def test_exit_pressure_tightens_on_confidence_collapse():
 
 def test_dynamic_exit_grace_prevents_same_scan_soft_close():
     review = exit_rules.compute_exit_pressure(
-        {"ticker": "XYZ", "confidence": 90, "stop_price": 8, "entry_price": 10,
-         "current_price": 10, "unrealized_pct": 0.0, "age_days": 0.0},
+        {
+            "ticker": "XYZ",
+            "confidence": 90,
+            "stop_price": 8,
+            "entry_price": 10,
+            "current_price": 10,
+            "unrealized_pct": 0.0,
+            "age_days": 0.0,
+        },
         {"confidence": 30},
         asset="share",
     )

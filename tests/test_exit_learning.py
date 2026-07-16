@@ -2,7 +2,7 @@
 import json
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backtest import exit_learning
+from backtest import exit_learning  # noqa: E402
 
 
 def test_default_policy_when_sample_too_small():
@@ -25,11 +25,13 @@ def test_default_policy_when_sample_too_small():
 
 
 def test_thresholds_are_clamped_and_step_limited():
-    clamped = exit_learning._clamp_thresholds({
-        "watch_pressure_threshold": 10,
-        "tighten_pressure_threshold": 10,
-        "close_pressure_threshold": 100,
-    })
+    clamped = exit_learning._clamp_thresholds(
+        {
+            "watch_pressure_threshold": 10,
+            "tighten_pressure_threshold": 10,
+            "close_pressure_threshold": 100,
+        }
+    )
     assert 35 <= clamped["watch_pressure_threshold"] <= 55
     assert 55 <= clamped["tighten_pressure_threshold"] <= 75
     assert 70 <= clamped["close_pressure_threshold"] <= 90
@@ -50,32 +52,36 @@ def test_malformed_policy_falls_back_to_defaults():
 
 
 def _learning_frames(*, same_scan: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
-    base = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
     closed = []
     for index in range(120):
         entry = base + timedelta(days=index % 12, minutes=index)
         exit_time = entry if same_scan else entry + timedelta(hours=2)
-        closed.append({
-            "asset": "option",
-            "position_id": f"option-{index}",
-            "entry_is_actionable": True,
-            "trade_status": "Trade",
-            "research_guard_status": "review",
-            "suggested_contracts": 1,
-            "entry_time": entry.isoformat(),
-            "exit_time": exit_time.isoformat(),
-            "exit_reason": "dynamic_exit",
-            "pnl_pct": -0.05,
-        })
+        closed.append(
+            {
+                "asset": "option",
+                "position_id": f"option-{index}",
+                "entry_is_actionable": True,
+                "trade_status": "Trade",
+                "research_guard_status": "review",
+                "suggested_contracts": 1,
+                "entry_time": entry.isoformat(),
+                "exit_time": exit_time.isoformat(),
+                "exit_reason": "dynamic_exit",
+                "pnl_pct": -0.05,
+            }
+        )
     reviews = []
     for index in range(24):
         timestamp = base + timedelta(days=index % 12, hours=4)
-        reviews.append({
-            "asset": "option",
-            "timestamp": timestamp.isoformat(),
-            "action": "hold",
-            "exit_pressure": 20,
-        })
+        reviews.append(
+            {
+                "asset": "option",
+                "timestamp": timestamp.isoformat(),
+                "action": "hold",
+                "exit_pressure": 20,
+            }
+        )
     return pd.DataFrame(closed), pd.DataFrame(reviews)
 
 
@@ -93,21 +99,54 @@ def test_independent_multi_day_outcomes_can_activate_learning():
 
 
 def test_non_executable_rows_are_excluded_from_learning():
-    rows = pd.DataFrame([
-        {"asset": "option", "position_id": "trade", "trade_status": "Trade",
-         "entry_trade_status": "Trade", "suggested_contracts": 1,
-         "research_guard_status": "review", "entry_research_guard_status": "review",
-         "entry_is_actionable": True, "pnl_pct": 0.1},
-        {"asset": "option", "position_id": "watch", "trade_status": "Watch",
-         "suggested_contracts": 1, "research_guard_status": "review", "pnl_pct": 0.1},
-        {"asset": "option", "position_id": "zero", "trade_status": "Trade",
-         "suggested_contracts": 0, "research_guard_status": "review", "pnl_pct": 0.1},
-        {"asset": "option", "position_id": "blocked", "trade_status": "Trade",
-         "suggested_contracts": 1, "research_guard_status": "blocked", "pnl_pct": 0.1},
-        {"asset": "option", "position_id": "explicit", "trade_status": "Trade",
-         "suggested_contracts": 1, "research_guard_status": "review",
-         "entry_is_actionable": False, "pnl_pct": 0.1},
-    ])
+    rows = pd.DataFrame(
+        [
+            {
+                "asset": "option",
+                "position_id": "trade",
+                "trade_status": "Trade",
+                "entry_trade_status": "Trade",
+                "suggested_contracts": 1,
+                "research_guard_status": "review",
+                "entry_research_guard_status": "review",
+                "entry_is_actionable": True,
+                "pnl_pct": 0.1,
+            },
+            {
+                "asset": "option",
+                "position_id": "watch",
+                "trade_status": "Watch",
+                "suggested_contracts": 1,
+                "research_guard_status": "review",
+                "pnl_pct": 0.1,
+            },
+            {
+                "asset": "option",
+                "position_id": "zero",
+                "trade_status": "Trade",
+                "suggested_contracts": 0,
+                "research_guard_status": "review",
+                "pnl_pct": 0.1,
+            },
+            {
+                "asset": "option",
+                "position_id": "blocked",
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "research_guard_status": "blocked",
+                "pnl_pct": 0.1,
+            },
+            {
+                "asset": "option",
+                "position_id": "explicit",
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "research_guard_status": "review",
+                "entry_is_actionable": False,
+                "pnl_pct": 0.1,
+            },
+        ]
+    )
     eligible = exit_learning.eligible_closed_for_learning("option", rows)
     summary = exit_learning.execution_eligibility_summary("option", rows)
     assert eligible["position_id"].tolist() == ["trade"]
@@ -129,12 +168,14 @@ def test_unresolved_or_nonfinite_outcomes_are_excluded_from_learning():
         "exit_time": "2026-01-03T15:00:00+00:00",
         "exit_reason": "expired",
     }
-    rows = pd.DataFrame([
-        {**base, "position_id": "resolved", "pnl_pct": 0.2, "validation_eligible": True},
-        {**base, "position_id": "unresolved", "pnl_pct": None, "validation_eligible": False},
-        {**base, "position_id": "missing-pnl", "pnl_pct": None},
-        {**base, "position_id": "infinite", "pnl_pct": float("inf")},
-    ])
+    rows = pd.DataFrame(
+        [
+            {**base, "position_id": "resolved", "pnl_pct": 0.2, "validation_eligible": True},
+            {**base, "position_id": "unresolved", "pnl_pct": None, "validation_eligible": False},
+            {**base, "position_id": "missing-pnl", "pnl_pct": None},
+            {**base, "position_id": "infinite", "pnl_pct": float("inf")},
+        ]
+    )
 
     eligible = exit_learning.eligible_closed_for_learning("option", rows)
 
@@ -164,7 +205,7 @@ def test_stale_policy_falls_back_to_defaults():
         old_file = exit_learning.POLICY_FILE
         exit_learning.POLICY_FILE = Path(td) / "exit_policy.json"
         stale = exit_learning._deepcopy_default()
-        stale["generated_at"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        stale["generated_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
         stale["policy_version"] = "stale-learned"
         stale["assets"]["option"]["learned_active"] = True
         stale["assets"]["option"]["close_pressure_threshold"] = 70

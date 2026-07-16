@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 
 class _FakeResponse:
@@ -74,7 +74,7 @@ def test_nasdaq_history_parses_public_json_without_network():
             '{"data":{"symbol":"AAPL","totalRecords":2,"tradesTable":{"rows":['
             '{"date":"06/11/2026","close":"$12.50","volume":"1,500","open":"$11.00","high":"$13.00","low":"$10.00"},'
             '{"date":"06/10/2026","close":"$10.50","volume":"1,000","open":"$10.00","high":"$11.00","low":"$9.00"}'
-            ']}}}'
+            "]}}}"
         )
 
     try:
@@ -103,13 +103,16 @@ def test_get_history_uses_nasdaq_after_yahoo_failures():
     stored = {}
 
     idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
-    stooq_df = pd.DataFrame({
-        "Open": [10.0, 11.0],
-        "High": [11.0, 13.0],
-        "Low": [9.0, 10.0],
-        "Close": [10.5, 12.5],
-        "Volume": [1000, 1500],
-    }, index=idx)
+    stooq_df = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0],
+            "High": [11.0, 13.0],
+            "Low": [9.0, 10.0],
+            "Close": [10.5, 12.5],
+            "Volume": [1000, 1500],
+        },
+        index=idx,
+    )
 
     class EmptyTicker:
         def history(self, period="1y", interval="1d"):
@@ -152,13 +155,16 @@ def test_get_history_uses_stooq_after_other_free_sources_fail():
     stored = {}
 
     idx = pd.to_datetime(["2026-06-10", "2026-06-11"], utc=True)
-    stooq_df = pd.DataFrame({
-        "Open": [10.0, 11.0],
-        "High": [11.0, 13.0],
-        "Low": [9.0, 10.0],
-        "Close": [10.5, 12.5],
-        "Volume": [1000, 1500],
-    }, index=idx)
+    stooq_df = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0],
+            "High": [11.0, 13.0],
+            "Low": [9.0, 10.0],
+            "Close": [10.5, 12.5],
+            "Volume": [1000, 1500],
+        },
+        index=idx,
+    )
 
     class EmptyTicker:
         def history(self, period="1y", interval="1d"):

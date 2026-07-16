@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from reports import validation_report
+from reports import validation_report  # noqa: E402
 
 
 def _write_json(path: Path, rows):
@@ -104,10 +104,14 @@ def test_current_model_does_not_hide_active_signal_logs():
         validation_report.DATA_DIR = Path(td) / "data"
         validation_report.LOGS_DIR = Path(td) / "logs"
         try:
-            validation_report.load_signal_logs = lambda: pd.DataFrame([{
-                "ticker": "AAA",
-                "entry_time": "2026-05-18T14:42:18+00:00",
-            }])
+            validation_report.load_signal_logs = lambda: pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAA",
+                        "entry_time": "2026-05-18T14:42:18+00:00",
+                    }
+                ]
+            )
             summary = validation_report.build_summary(
                 scope="current_model",
                 since="2099-01-01T00:00:00+00:00",
@@ -144,12 +148,14 @@ def test_current_model_uses_latest_archive_reset_before_model_mtime():
             os.utime(model_file, (new_time, new_time))
             _write_json(
                 validation_report.DATA_DIR / "closed_positions.json",
-                [{
-                    "ticker": "AAA",
-                    "entry_time": "2026-05-18T14:42:18+00:00",
-                    "exit_time": "2026-05-22T20:27:24+00:00",
-                    "pnl_pct": 0.25,
-                }],
+                [
+                    {
+                        "ticker": "AAA",
+                        "entry_time": "2026-05-18T14:42:18+00:00",
+                        "exit_time": "2026-05-22T20:27:24+00:00",
+                        "pnl_pct": 0.25,
+                    }
+                ],
             )
             summary = validation_report.build_summary(scope="current_model")
             assert summary["closed_positions"] == 1
@@ -179,12 +185,14 @@ def test_model_file_mtime_does_not_erase_unarchived_closed_results():
             model_file.write_text("{}", encoding="utf-8")
             _write_json(
                 validation_report.DATA_DIR / "closed_positions.json",
-                [{
-                    "ticker": "AAA",
-                    "entry_time": "2026-05-18T14:42:18+00:00",
-                    "exit_time": "2026-05-22T20:27:24+00:00",
-                    "pnl_pct": 0.25,
-                }],
+                [
+                    {
+                        "ticker": "AAA",
+                        "entry_time": "2026-05-18T14:42:18+00:00",
+                        "exit_time": "2026-05-22T20:27:24+00:00",
+                        "pnl_pct": 0.25,
+                    }
+                ],
             )
 
             summary = validation_report.build_summary(scope="current_model")
@@ -194,7 +202,9 @@ def test_model_file_mtime_does_not_erase_unarchived_closed_results():
             assert summary["current_model_cutoff"] is None
             assert summary["current_experiment_cutoff"] is None
             assert summary["validation_scope_basis"] == "all_unarchived_history"
-            assert any("all unarchived local outcomes" in warning for warning in summary["warnings"])
+            assert any(
+                "all unarchived local outcomes" in warning for warning in summary["warnings"]
+            )
         finally:
             validation_report.ROOT = old_root
             validation_report.DATA_DIR = old_data
@@ -211,7 +221,9 @@ def test_total_signals_preserves_existing_count_when_parquet_unreadable():
         try:
             validation_report.DATA_DIR.mkdir(parents=True)
             validation_report.LOGS_DIR.mkdir(parents=True)
-            (validation_report.LOGS_DIR / "signals_20260101_000000.parquet").write_bytes(b"not parquet")
+            (validation_report.LOGS_DIR / "signals_20260101_000000.parquet").write_bytes(
+                b"not parquet"
+            )
             (validation_report.DATA_DIR / "validation_summary.json").write_text(
                 json.dumps({"total_signals": 123}),
                 encoding="utf-8",
@@ -229,11 +241,13 @@ def test_max_drawdown_includes_starting_equity():
 
 
 def test_validation_drawdown_uses_normalized_signal_allocation():
-    closed = pd.DataFrame({
-        "pnl_pct": [-1.0, 1.0],
-        "pnl_pct_after_slippage": [-1.0, 1.0],
-        "kelly_pct": [0.0, 0.0],
-    })
+    closed = pd.DataFrame(
+        {
+            "pnl_pct": [-1.0, 1.0],
+            "pnl_pct_after_slippage": [-1.0, 1.0],
+            "kelly_pct": [0.0, 0.0],
+        }
+    )
     stats = validation_report._stats(closed, "pnl_pct")
     equity_returns = validation_report._equity_return_series(closed, "pnl_pct")
 
@@ -244,15 +258,17 @@ def test_validation_drawdown_uses_normalized_signal_allocation():
 
 
 def test_validation_drawdown_fills_partial_direct_returns_row_by_row():
-    closed = pd.DataFrame({
-        "pnl_pct": [-0.10, -0.20, 0.05],
-        "equity_return": [-0.001, None, None],
-        "entry_time": [
-            "2026-01-01T15:00:00+00:00",
-            "2026-01-02T15:00:00+00:00",
-            "2026-01-03T15:00:00+00:00",
-        ],
-    })
+    closed = pd.DataFrame(
+        {
+            "pnl_pct": [-0.10, -0.20, 0.05],
+            "equity_return": [-0.001, None, None],
+            "entry_time": [
+                "2026-01-01T15:00:00+00:00",
+                "2026-01-02T15:00:00+00:00",
+                "2026-01-03T15:00:00+00:00",
+            ],
+        }
+    )
 
     contributions = validation_report._equity_return_series(closed, "pnl_pct")
     stats = validation_report._stats(closed, "pnl_pct")
@@ -263,14 +279,16 @@ def test_validation_drawdown_fills_partial_direct_returns_row_by_row():
 
 
 def test_validation_drawdown_nets_concurrent_session_contributions():
-    closed = pd.DataFrame({
-        "pnl_pct": [-1.0, -1.0, 1.0],
-        "exit_time": [
-            "2026-01-02T15:00:00+00:00",
-            "2026-01-02T20:00:00+00:00",
-            "2026-01-03T20:00:00+00:00",
-        ],
-    })
+    closed = pd.DataFrame(
+        {
+            "pnl_pct": [-1.0, -1.0, 1.0],
+            "exit_time": [
+                "2026-01-02T15:00:00+00:00",
+                "2026-01-02T20:00:00+00:00",
+                "2026-01-03T20:00:00+00:00",
+            ],
+        }
+    )
 
     curve_returns = validation_report._equity_curve_return_series(closed, "pnl_pct")
     stats = validation_report._stats(closed, "pnl_pct")
@@ -288,12 +306,14 @@ def test_summary_exposes_equity_curve_assumption():
         try:
             _write_json(
                 validation_report.DATA_DIR / "closed_positions.json",
-                [{
-                    "ticker": "AAA",
-                    "entry_time": "2026-01-01T00:00:00+00:00",
-                    "exit_time": "2026-01-02T00:00:00+00:00",
-                    "pnl_pct": -1.0,
-                }],
+                [
+                    {
+                        "ticker": "AAA",
+                        "entry_time": "2026-01-01T00:00:00+00:00",
+                        "exit_time": "2026-01-02T00:00:00+00:00",
+                        "pnl_pct": -1.0,
+                    }
+                ],
             )
             summary = validation_report.build_summary(scope="all_time")
             assert summary["equity_curve"]["mode"] == "normalized_signal_allocation"
@@ -345,8 +365,12 @@ def test_validation_keeps_churn_in_performance_but_excludes_it_from_learning():
             assert summary["swing_excluded_closed_positions"] == 1
             assert summary["swing_eligible_after_slippage"]["n"] == 1
             assert summary["swing_eligible_after_slippage"]["win_rate"] == 1.0
-            assert any("same-scan dynamic option exit" in warning for warning in summary["warnings"])
-            assert any("Executable swing sample too small" in warning for warning in summary["warnings"])
+            assert any(
+                "same-scan dynamic option exit" in warning for warning in summary["warnings"]
+            )
+            assert any(
+                "Executable swing sample too small" in warning for warning in summary["warnings"]
+            )
             html = validation_report.render_html(summary)
             assert "Learnable" in html
             assert "Non-executable" in html
@@ -415,10 +439,23 @@ def test_validation_headline_excludes_unresolved_expiry_outcomes_from_sample_cou
                 "suggested_contracts": 1,
                 "research_guard_status": "review",
             }
-            _write_json(validation_report.DATA_DIR / "closed_positions.json", [
-                {**base, "position_id": "resolved", "pnl_pct": 0.25, "validation_eligible": True},
-                {**base, "position_id": "unresolved", "pnl_pct": None, "validation_eligible": False},
-            ])
+            _write_json(
+                validation_report.DATA_DIR / "closed_positions.json",
+                [
+                    {
+                        **base,
+                        "position_id": "resolved",
+                        "pnl_pct": 0.25,
+                        "validation_eligible": True,
+                    },
+                    {
+                        **base,
+                        "position_id": "unresolved",
+                        "pnl_pct": None,
+                        "validation_eligible": False,
+                    },
+                ],
+            )
 
             summary = validation_report.build_summary(scope="all_time")
 
@@ -443,39 +480,43 @@ def test_numeric_validation_ineligible_rows_never_enter_performance_analytics():
         try:
             rows = []
             for index, pnl in enumerate((0.05, 0.10, 0.15, 0.20, 0.25)):
-                rows.append({
+                rows.append(
+                    {
+                        "asset": "option",
+                        "position_id": f"eligible-{index}",
+                        "ticker": "AAA",
+                        "side": "call",
+                        "entry_time": f"2026-01-{10 + index:02d}T15:00:00+00:00",
+                        "exit_time": f"2026-01-{11 + index:02d}T15:00:00+00:00",
+                        "exit_reason": "dynamic_exit" if index == 0 else "hard_target",
+                        "pnl_pct": pnl,
+                        "pnl_dollars": pnl * 100,
+                        "dte_at_entry": 10,
+                        "spread_pct": 0.04,
+                        "confidence": 75,
+                        "z_alpha": float(index),
+                        "validation_eligible": True,
+                    }
+                )
+            rows.append(
+                {
                     "asset": "option",
-                    "position_id": f"eligible-{index}",
-                    "ticker": "AAA",
-                    "side": "call",
-                    "entry_time": f"2026-01-{10 + index:02d}T15:00:00+00:00",
-                    "exit_time": f"2026-01-{11 + index:02d}T15:00:00+00:00",
-                    "exit_reason": "dynamic_exit" if index == 0 else "hard_target",
-                    "pnl_pct": pnl,
-                    "pnl_dollars": pnl * 100,
-                    "dte_at_entry": 10,
-                    "spread_pct": 0.04,
-                    "confidence": 75,
-                    "z_alpha": float(index),
-                    "validation_eligible": True,
-                })
-            rows.append({
-                "asset": "option",
-                "position_id": "numeric-but-ineligible",
-                "ticker": "BAD",
-                "side": "put",
-                "entry_time": "2000-01-01T15:00:00+00:00",
-                "exit_time": "2099-01-01T15:00:00+00:00",
-                "exit_reason": "hard_stop",
-                "pnl_pct": -99.0,
-                "pnl_dollars": -9900.0,
-                "dte_at_entry": 400,
-                "spread_pct": 0.90,
-                "confidence": 1,
-                "z_alpha": 999.0,
-                "validation_eligible": False,
-                "validation_exclusion_reason": "proxy_outcome",
-            })
+                    "position_id": "numeric-but-ineligible",
+                    "ticker": "BAD",
+                    "side": "put",
+                    "entry_time": "2000-01-01T15:00:00+00:00",
+                    "exit_time": "2099-01-01T15:00:00+00:00",
+                    "exit_reason": "hard_stop",
+                    "pnl_pct": -99.0,
+                    "pnl_dollars": -9900.0,
+                    "dte_at_entry": 400,
+                    "spread_pct": 0.90,
+                    "confidence": 1,
+                    "z_alpha": 999.0,
+                    "validation_eligible": False,
+                    "validation_exclusion_reason": "proxy_outcome",
+                }
+            )
             _write_json(validation_report.DATA_DIR / "closed_positions.json", rows)
 
             def fake_period_return(symbol, start, end):
@@ -531,24 +572,28 @@ def test_factor_ic_uses_independent_swing_sample_and_labels_short_history():
         try:
             rows = []
             for index in range(6):
-                rows.append({
-                    "position_id": f"swing-{index}",
-                    "ticker": "AAA",
-                    "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
-                    "exit_time": f"2026-01-0{1 + index % 2}T17:00:00+00:00",
-                    "exit_reason": "hard_target",
-                    "pnl_pct": float(index),
-                    "z_alpha": float(index),
-                })
-                rows.append({
-                    "position_id": f"churn-{index}",
-                    "ticker": "BBB",
-                    "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
-                    "exit_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
-                    "exit_reason": "dynamic_exit",
-                    "pnl_pct": float(index * -10),
-                    "z_alpha": float(index),
-                })
+                rows.append(
+                    {
+                        "position_id": f"swing-{index}",
+                        "ticker": "AAA",
+                        "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                        "exit_time": f"2026-01-0{1 + index % 2}T17:00:00+00:00",
+                        "exit_reason": "hard_target",
+                        "pnl_pct": float(index),
+                        "z_alpha": float(index),
+                    }
+                )
+                rows.append(
+                    {
+                        "position_id": f"churn-{index}",
+                        "ticker": "BBB",
+                        "entry_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                        "exit_time": f"2026-01-0{1 + index % 2}T15:00:00+00:00",
+                        "exit_reason": "dynamic_exit",
+                        "pnl_pct": float(index * -10),
+                        "z_alpha": float(index),
+                    }
+                )
             _write_json(validation_report.DATA_DIR / "closed_positions.json", rows)
 
             summary = validation_report.build_summary(scope="all_time")
@@ -573,10 +618,10 @@ def _assert_valid_png(path: Path):
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
     offset = 8
     while offset < len(data):
-        length = struct.unpack(">I", data[offset:offset + 4])[0]
-        kind = data[offset + 4:offset + 8]
-        payload = data[offset + 8:offset + 8 + length]
-        crc_expected = struct.unpack(">I", data[offset + 8 + length:offset + 12 + length])[0]
+        length = struct.unpack(">I", data[offset : offset + 4])[0]
+        kind = data[offset + 4 : offset + 8]
+        payload = data[offset + 8 : offset + 8 + length]
+        crc_expected = struct.unpack(">I", data[offset + 8 + length : offset + 12 + length])[0]
         crc_actual = binascii.crc32(kind + payload) & 0xFFFFFFFF
         assert crc_actual == crc_expected
         offset += 12 + length
@@ -596,32 +641,46 @@ def test_validation_embeds_fixed_horizon_evidence():
             fixed = {
                 "headline_horizon_sessions": 10,
                 "headline": {
-                    "n": 0, "unique_entry_days": 0,
+                    "n": 0,
+                    "unique_entry_days": 0,
                 },
                 "headline_shadow": {
-                    "n": 12, "unique_entry_days": 4, "win_rate": 0.58,
-                    "win_rate_ci_low": 0.31, "win_rate_ci_high": 0.81,
-                    "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
+                    "n": 12,
+                    "unique_entry_days": 4,
+                    "win_rate": 0.58,
+                    "win_rate_ci_low": 0.31,
+                    "win_rate_ci_high": 0.81,
+                    "avg_return": 0.04,
+                    "avg_excess_vs_spy": 0.02,
                     "profit_factor": 1.4,
                 },
-                "by_horizon": [{
-                    "horizon_sessions": 10,
-                    "executable": {"n": 0, "unique_entry_days": 0},
-                    "shadow_current_method": {
-                        "n": 12, "unique_entry_days": 4, "win_rate": 0.58,
-                        "win_rate_ci_low": 0.31, "win_rate_ci_high": 0.81,
-                        "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
-                        "profit_factor": 1.4,
-                    },
-                }],
+                "by_horizon": [
+                    {
+                        "horizon_sessions": 10,
+                        "executable": {"n": 0, "unique_entry_days": 0},
+                        "shadow_current_method": {
+                            "n": 12,
+                            "unique_entry_days": 4,
+                            "win_rate": 0.58,
+                            "win_rate_ci_low": 0.31,
+                            "win_rate_ci_high": 0.81,
+                            "avg_return": 0.04,
+                            "avg_excess_vs_spy": 0.02,
+                            "profit_factor": 1.4,
+                        },
+                    }
+                ],
                 "warnings": ["sample is still small"],
             }
             (validation_report.DATA_DIR / "fixed_horizon_summary.json").write_text(
-                json.dumps(fixed), encoding="utf-8",
+                json.dumps(fixed),
+                encoding="utf-8",
             )
             summary = validation_report.build_summary(scope="all_time")
             assert summary["fixed_horizon"]["headline_shadow"]["n"] == 12
-            assert any("Fixed-horizon: sample is still small" in item for item in summary["warnings"])
+            assert any(
+                "Fixed-horizon: sample is still small" in item for item in summary["warnings"]
+            )
             html = validation_report.render_html(summary)
             assert "Independent Fixed-Session Forward Test" in html
             assert "95% interval" in html
@@ -640,14 +699,16 @@ def test_empty_equity_curve_writes_valid_png():
 def test_closed_equity_curve_writes_real_png_without_matplotlib():
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "equity_curve.png"
-        closed = pd.DataFrame({
-            "exit_time": [
-                "2026-06-01T00:00:00+00:00",
-                "2026-06-02T00:00:00+00:00",
-                "2026-06-03T00:00:00+00:00",
-            ],
-            "pnl_pct_after_slippage": [0.10, -0.05, 0.20],
-        })
+        closed = pd.DataFrame(
+            {
+                "exit_time": [
+                    "2026-06-01T00:00:00+00:00",
+                    "2026-06-02T00:00:00+00:00",
+                    "2026-06-03T00:00:00+00:00",
+                ],
+                "pnl_pct_after_slippage": [0.10, -0.05, 0.20],
+            }
+        )
         validation_report._write_equity_curve(closed, out)
         _assert_valid_png(out)
         assert out.stat().st_size > 1000

@@ -2,8 +2,8 @@
 import json
 import sys
 import tempfile
+from datetime import UTC
 from datetime import datetime as real_datetime
-from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,10 +13,19 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import scripts.research_jobs as jobs_module
-from scripts.research_jobs import (
-    create_job, create_refresh_job, job_dashboard_path, job_log_path, job_lookup_path,
-    list_jobs, read_job, read_job_log, run_job, run_refresh_job, write_job,
+import scripts.research_jobs as jobs_module  # noqa: E402
+from scripts.research_jobs import (  # noqa: E402
+    create_job,
+    create_refresh_job,
+    job_dashboard_path,
+    job_log_path,
+    job_lookup_path,
+    list_jobs,
+    read_job,
+    read_job_log,
+    run_job,
+    run_refresh_job,
+    write_job,
 )
 
 
@@ -45,7 +54,7 @@ def test_create_job_does_not_overwrite_same_second_symbol_jobs():
     class FrozenDateTime:
         @classmethod
         def now(cls, tz=None):
-            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or timezone.utc)
+            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or UTC)
 
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -86,7 +95,7 @@ def test_create_refresh_job_does_not_overwrite_same_second_jobs():
     class FrozenDateTime:
         @classmethod
         def now(cls, tz=None):
-            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or timezone.utc)
+            return real_datetime(2026, 6, 27, 12, 0, 0, tzinfo=tz or UTC)
 
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
@@ -125,45 +134,56 @@ def test_create_job_preserves_option_request_and_reads_log_tail():
 def test_run_job_writes_lookup_summary_for_requested_option():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "AAPL",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-06-18",
-            "mid": 3.2,
-            "confidence": 80,
-            "rank_score": 2.0,
-            "trade_status": "Trade",
-            "premium_dollars": 320.0,
-            "spread_pct": 0.24,
-            "chain_source": "tradier",
-            "quote_quality": "live_or_broker",
-        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "rows": [{
-                "symbol": "AAPL",
-                "contract_query": "AAPL 2026-06-18 C 210",
-                "side": "call",
-                "strike": 210.0,
-                "expiry": "2026-06-18",
-                "dte": 10,
-                "bid": 1.9,
-                "ask": 2.1,
-                "mid": 2.0,
-                "premium_dollars": 200.0,
-                "spread_pct": 0.10,
-                "openInterest": 900,
-                "volume": 120,
-                "readiness_score": 88,
-                "contract_quality_score": 90,
-                "swing_fit_score": 91,
-                "swing_fit_label": "reviewable_swing",
-                "contract_grade": "B",
-                "review_lane": "secondary_review",
-                "chain_source": "cboe_options_chain",
-            }],
-        }), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 3.2,
+                    "confidence": 80,
+                    "rank_score": 2.0,
+                    "trade_status": "Trade",
+                    "premium_dollars": 320.0,
+                    "spread_pct": 0.24,
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "rows": [
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2026-06-18 C 210",
+                            "side": "call",
+                            "strike": 210.0,
+                            "expiry": "2026-06-18",
+                            "dte": 10,
+                            "bid": 1.9,
+                            "ask": 2.1,
+                            "mid": 2.0,
+                            "premium_dollars": 200.0,
+                            "spread_pct": 0.10,
+                            "openInterest": 900,
+                            "volume": 120,
+                            "readiness_score": 88,
+                            "contract_quality_score": 90,
+                            "swing_fit_score": 91,
+                            "swing_fit_label": "reviewable_swing",
+                            "contract_grade": "B",
+                            "review_lane": "secondary_review",
+                            "chain_source": "cboe_options_chain",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
 
         old_run = jobs_module.subprocess.run
@@ -173,11 +193,13 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         def safe_lookup(query, data_dir_arg, **kwargs):
             captured_lookup_kwargs.update(kwargs)
             safe_kwargs = dict(kwargs)
-            safe_kwargs.update({
-                "include_price": False,
-                "include_market_structure": False,
-                "include_cboe_activity": False,
-            })
+            safe_kwargs.update(
+                {
+                    "include_price": False,
+                    "include_market_structure": False,
+                    "include_cboe_activity": False,
+                }
+            )
             return old_lookup(query, data_dir_arg, **safe_kwargs)
 
         jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
@@ -215,7 +237,9 @@ def test_run_job_writes_lookup_summary_for_requested_option():
         assert "lookup_swing_verdict_decision" in stored
         assert Path(stored["lookup_html_path"]).exists()
         assert Path(stored["lookup_json_path"]).exists()
-        assert job_lookup_path(job["job_id"], data_dir) == Path(stored["lookup_html_path"]).resolve()
+        assert (
+            job_lookup_path(job["job_id"], data_dir) == Path(stored["lookup_html_path"]).resolve()
+        )
         log = read_job_log(job["job_id"], data_dir, max_lines=10)
         assert any("Requested contract" in line for line in log["lines"])
 
@@ -223,16 +247,20 @@ def test_run_job_writes_lookup_summary_for_requested_option():
 def test_run_job_marks_missing_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "MSFT",
-            "side": "call",
-            "strike": 450.0,
-            "expiry": "2026-06-18",
-            "mid": 2.1,
-            "confidence": 75,
-            "rank_score": 1.0,
-            "trade_status": "Trade",
-        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "MSFT",
+                    "side": "call",
+                    "strike": 450.0,
+                    "expiry": "2026-06-18",
+                    "mid": 2.1,
+                    "confidence": 75,
+                    "rank_score": 1.0,
+                    "trade_status": "Trade",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
         job = create_job("AAPL 20260618 C 200", data_dir, launch=False)
 
         old_run = jobs_module.subprocess.run
@@ -240,11 +268,13 @@ def test_run_job_marks_missing_requested_option_contract():
 
         def safe_lookup(query, data_dir_arg, **kwargs):
             safe_kwargs = dict(kwargs)
-            safe_kwargs.update({
-                "include_price": False,
-                "include_market_structure": False,
-                "include_cboe_activity": False,
-            })
+            safe_kwargs.update(
+                {
+                    "include_price": False,
+                    "include_market_structure": False,
+                    "include_cboe_activity": False,
+                }
+            )
             return old_lookup(query, data_dir_arg, **safe_kwargs)
 
         jobs_module.subprocess.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)

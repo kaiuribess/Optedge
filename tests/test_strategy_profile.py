@@ -44,16 +44,10 @@ def test_swing_execution_profile_preserves_queue_and_cockpit_policy():
     assert SWING_EXECUTION_PROFILE.option_max_dte is None
     assert SWING_EXECUTION_PROFILE.max_option_spread_pct == 0.15
     assert robinhood_queue.DEFAULT_MIN_DTE == SWING_EXECUTION_PROFILE.option_min_dte
-    assert (
-        robinhood_queue.DEFAULT_MAX_SPREAD_PCT
-        == SWING_EXECUTION_PROFILE.max_option_spread_pct
-    )
+    assert robinhood_queue.DEFAULT_MAX_SPREAD_PCT == SWING_EXECUTION_PROFILE.max_option_spread_pct
     assert robinhood_queue.DEFAULT_MAX_ORDERS == SWING_EXECUTION_PROFILE.max_orders
     assert robinhood_queue.DEFAULT_MAX_CANDIDATES == SWING_EXECUTION_PROFILE.max_candidates
-    assert (
-        robinhood_queue.DEFAULT_ACCOUNT_BUDGET
-        == SWING_EXECUTION_PROFILE.default_account_budget
-    )
+    assert robinhood_queue.DEFAULT_ACCOUNT_BUDGET == SWING_EXECUTION_PROFILE.default_account_budget
     assert robinhood_queue.DEFAULT_MIN_CONFIDENCE == SWING_EXECUTION_PROFILE.min_confidence
     assert robinhood_queue.DEFAULT_LIMIT_BUFFER_PCT == SWING_EXECUTION_PROFILE.limit_buffer_pct
     assert (
@@ -65,14 +59,8 @@ def test_swing_execution_profile_preserves_queue_and_cockpit_policy():
         == SWING_EXECUTION_PROFILE.max_premium_per_order
     )
     assert local_cockpit.MIN_SWING_OPTION_DTE == SWING_EXECUTION_PROFILE.option_min_dte
-    assert (
-        local_cockpit.FRESH_SNAPSHOT_MINUTES
-        == SWING_EXECUTION_PROFILE.snapshot_fresh_minutes
-    )
-    assert (
-        local_cockpit.STALE_SNAPSHOT_MINUTES
-        == SWING_EXECUTION_PROFILE.snapshot_stale_minutes
-    )
+    assert local_cockpit.FRESH_SNAPSHOT_MINUTES == SWING_EXECUTION_PROFILE.snapshot_fresh_minutes
+    assert local_cockpit.STALE_SNAPSHOT_MINUTES == SWING_EXECUTION_PROFILE.snapshot_stale_minutes
     assert (
         local_cockpit.AGENTIC_FRESH_MINUTES
         == SWING_EXECUTION_PROFILE.execution_packet_fresh_minutes

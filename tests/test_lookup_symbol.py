@@ -13,9 +13,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import scripts.lookup_symbol as lookup_module
-from scripts.lookup_symbol import lookup_symbol, match_option_request, render_html, save_lookup
-from scripts.symbol_resolver import resolve_symbol
+import scripts.lookup_symbol as lookup_module  # noqa: E402
+from scripts.lookup_symbol import (  # noqa: E402
+    lookup_symbol,
+    match_option_request,
+    render_html,
+    save_lookup,
+)
+from scripts.symbol_resolver import resolve_symbol  # noqa: E402
 
 lookup_module.recent_filings_for_symbol = lambda symbol, limit=8: {
     "symbol": symbol,
@@ -50,13 +55,20 @@ def test_resolver_prefers_local_aliases_for_common_company_names_and_futures():
 def test_lookup_reads_open_option_positions():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "open_positions.json").write_text(json.dumps([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "entry_price": 2.0,
-        }]), encoding="utf-8")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "ticker": "NVDA",
+                        "side": "call",
+                        "strike": 200,
+                        "expiry": "2026-06-18",
+                        "entry_price": 2.0,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         report = lookup_symbol("nvda", data_dir)
         assert report["total_hits"] == 1
         assert report["sections"]["open_options"][0]["ticker"] == "NVDA"
@@ -65,11 +77,18 @@ def test_lookup_reads_open_option_positions():
 def test_lookup_reads_open_futures_positions():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "open_futures_positions.json").write_text(json.dumps([{
-            "symbol": "CL=F",
-            "direction": "long",
-            "entry_price": 70,
-        }]), encoding="utf-8")
+        (data_dir / "open_futures_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "symbol": "CL=F",
+                        "direction": "long",
+                        "entry_price": 70,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         report = lookup_symbol("CL=F", data_dir)
         assert report["total_hits"] == 1
         assert report["sections"]["open_futures"][0]["symbol"] == "CL=F"
@@ -106,6 +125,7 @@ def test_lookup_saves_json_and_html():
 def test_lookup_can_include_free_price_snapshot():
     old_history = lookup_module.data_provider.get_history
     try:
+
         def fake_history(ticker, period="6mo", interval="1d", cache_age=1800):
             assert ticker == "AAPL"
             assert period == "6mo"
@@ -113,13 +133,16 @@ def test_lookup_can_include_free_price_snapshot():
             assert cache_age == 1800
             idx = pd.date_range("2026-01-01", periods=70, freq="D", tz="UTC")
             closes = pd.Series([100 + i for i in range(70)], index=idx, dtype="float64")
-            df = pd.DataFrame({
-                "Open": closes - 0.5,
-                "High": closes + 1.0,
-                "Low": closes - 1.0,
-                "Close": closes,
-                "Volume": 1_000_000,
-            }, index=idx)
+            df = pd.DataFrame(
+                {
+                    "Open": closes - 0.5,
+                    "High": closes + 1.0,
+                    "Low": closes - 1.0,
+                    "Close": closes,
+                    "Volume": 1_000_000,
+                },
+                index=idx,
+            )
             df.attrs["history_source"] = "unit_history"
             df.attrs["history_quality"] = "cached"
             return df
@@ -151,40 +174,58 @@ def test_lookup_can_include_market_structure_risk_snapshot():
     old_circuits = lookup_module.circuit_rows_for_symbols
     old_ftd = lookup_module.sec_ftd_engine.run
     try:
-        lookup_module.halt_rows_for_symbols = lambda symbols, cache_age=60: pd.DataFrame([{
-            "symbol": "RISK",
-            "active_halt": True,
-            "reason_code": "T1",
-            "halt_risk_score": 98,
-            "source": "nasdaq_trader_trade_halts",
-            "source_url": "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
-        }])
-        lookup_module.threshold_rows_for_symbols = lambda symbols, cache_age=21600: pd.DataFrame([{
-            "symbol": "RISK",
-            "is_threshold": True,
-            "settlement_risk_score": 86,
-            "source": "nasdaq_trader_regsho_threshold",
-            "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=regshothreshold",
-        }])
-        lookup_module.circuit_rows_for_symbols = lambda symbols, cache_age=1800: pd.DataFrame([{
-            "symbol": "RISK",
-            "trigger_time": "06/24/2026 10:00:00 AM",
-            "ssr_risk_score": 82,
-            "source": "nasdaq_trader_short_sale_circuit_breaker",
-            "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=shortsalecircuitbreaker",
-        }])
-        lookup_module.sec_ftd_engine.run = lambda symbols, max_files=1: pd.DataFrame([{
-            "ticker": "RISK",
-            "sec_ftd_score": 1.8,
-            "sec_ftd_latest_date": "2026-06-12",
-            "sec_ftd_fails": 750000,
-            "sec_ftd_dollars": 1800000.0,
-            "sec_ftd_active_days": 3,
-            "sec_ftd_source": "sec_fails_to_deliver",
-        }])
+        lookup_module.halt_rows_for_symbols = lambda symbols, cache_age=60: pd.DataFrame(
+            [
+                {
+                    "symbol": "RISK",
+                    "active_halt": True,
+                    "reason_code": "T1",
+                    "halt_risk_score": 98,
+                    "source": "nasdaq_trader_trade_halts",
+                    "source_url": "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
+                }
+            ]
+        )
+        lookup_module.threshold_rows_for_symbols = lambda symbols, cache_age=21600: pd.DataFrame(
+            [
+                {
+                    "symbol": "RISK",
+                    "is_threshold": True,
+                    "settlement_risk_score": 86,
+                    "source": "nasdaq_trader_regsho_threshold",
+                    "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=regshothreshold",
+                }
+            ]
+        )
+        lookup_module.circuit_rows_for_symbols = lambda symbols, cache_age=1800: pd.DataFrame(
+            [
+                {
+                    "symbol": "RISK",
+                    "trigger_time": "06/24/2026 10:00:00 AM",
+                    "ssr_risk_score": 82,
+                    "source": "nasdaq_trader_short_sale_circuit_breaker",
+                    "source_url": "https://www.nasdaqtrader.com/trader.aspx?id=shortsalecircuitbreaker",
+                }
+            ]
+        )
+        lookup_module.sec_ftd_engine.run = lambda symbols, max_files=1: pd.DataFrame(
+            [
+                {
+                    "ticker": "RISK",
+                    "sec_ftd_score": 1.8,
+                    "sec_ftd_latest_date": "2026-06-12",
+                    "sec_ftd_fails": 750000,
+                    "sec_ftd_dollars": 1800000.0,
+                    "sec_ftd_active_days": 3,
+                    "sec_ftd_source": "sec_fails_to_deliver",
+                }
+            ]
+        )
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
-            report = lookup_symbol("RISK", data_dir, include_sec=False, include_market_structure=True)
+            report = lookup_symbol(
+                "RISK", data_dir, include_sec=False, include_market_structure=True
+            )
     finally:
         lookup_module.halt_rows_for_symbols = old_halts
         lookup_module.threshold_rows_for_symbols = old_thresholds
@@ -215,22 +256,33 @@ def test_lookup_can_include_market_structure_risk_snapshot():
 def test_lookup_reports_data_coverage_without_inflating_hits():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "AAPL",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "mid": 3.2,
-            "confidence": 80,
-            "rank_score": 2.0,
-        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
-        (data_dir / "open_positions.json").write_text(json.dumps([{
-            "ticker": "AAPL",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "entry_price": 2.0,
-        }]), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200,
+                    "expiry": "2026-06-18",
+                    "mid": 3.2,
+                    "confidence": 80,
+                    "rank_score": 2.0,
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "ticker": "AAPL",
+                        "side": "call",
+                        "strike": 200,
+                        "expiry": "2026-06-18",
+                        "entry_price": 2.0,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("AAPL", data_dir, include_sec=False)
 
@@ -253,38 +305,50 @@ def test_lookup_reports_data_coverage_without_inflating_hits():
 def test_lookup_uses_current_clean_validation_basis_and_ignores_stale_guard_metrics():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "validation_summary.json").write_text(json.dumps({
-            "generated_at": "2026-07-09T20:00:00+00:00",
-            "validation_scope": "current_model",
-            "closed_positions": 120,
-            "open_positions": 4,
-            "swing_eligible_closed_positions": 120,
-            "swing_eligible_after_slippage": {
-                "n": 120,
-                "win_rate": 0.42,
-                "avg_return": 0.03,
-                "median_return": 0.01,
-                "max_drawdown": -0.25,
-                "profit_factor": 1.3,
-            },
-            "overall": {
-                "win_rate": 0.11,
-                "avg_return": -0.08,
-                "max_drawdown": -0.99,
-            },
-            "warnings": [
-                "All-closure max drawdown is worse than -20%: -99.00%.",
-                "Detected 7 same-scan dynamic option exit(s).",
-            ],
-        }), encoding="utf-8")
-        (data_dir / "research_guard.json").write_text(json.dumps({
-            "generated_at": "2026-06-01T00:00:00+00:00",
-            "status": "blocked",
-            "warnings": [{
-                "code": "drawdown",
-                "message": "Validation max drawdown is -88.0%, worse than the research limit.",
-            }],
-        }), encoding="utf-8")
+        (data_dir / "validation_summary.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-07-09T20:00:00+00:00",
+                    "validation_scope": "current_model",
+                    "closed_positions": 120,
+                    "open_positions": 4,
+                    "swing_eligible_closed_positions": 120,
+                    "swing_eligible_after_slippage": {
+                        "n": 120,
+                        "win_rate": 0.42,
+                        "avg_return": 0.03,
+                        "median_return": 0.01,
+                        "max_drawdown": -0.25,
+                        "profit_factor": 1.3,
+                    },
+                    "overall": {
+                        "win_rate": 0.11,
+                        "avg_return": -0.08,
+                        "max_drawdown": -0.99,
+                    },
+                    "warnings": [
+                        "All-closure max drawdown is worse than -20%: -99.00%.",
+                        "Detected 7 same-scan dynamic option exit(s).",
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (data_dir / "research_guard.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-01T00:00:00+00:00",
+                    "status": "blocked",
+                    "warnings": [
+                        {
+                            "code": "drawdown",
+                            "message": "Validation max drawdown is -88.0%, worse than the research limit.",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("MISS", data_dir, include_sec=False, include_price=False)
         brief = report["brief"]
@@ -302,38 +366,40 @@ def test_lookup_uses_current_clean_validation_basis_and_ignores_stale_guard_metr
 def test_lookup_matches_requested_option_contract():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([
-            {
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 195.0,
-                "expiry": "2026-06-18",
-                "mid": 5.1,
-                "confidence": 50,
-                "rank_score": 1.0,
-            },
-            {
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200.0,
-                "expiry": "2026-06-18",
-                "mid": 3.2,
-                "confidence": 80,
-                "rank_score": 2.0,
-                "trade_status": "Trade",
-                "chain_source": "tradier",
-                "quote_quality": "live_or_broker",
-            },
-            {
-                "ticker": "AAPL",
-                "side": "put",
-                "strike": 200.0,
-                "expiry": "2026-06-18",
-                "mid": 2.0,
-                "confidence": 99,
-                "rank_score": 9.0,
-            },
-        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 195.0,
+                    "expiry": "2026-06-18",
+                    "mid": 5.1,
+                    "confidence": 50,
+                    "rank_score": 1.0,
+                },
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 3.2,
+                    "confidence": 80,
+                    "rank_score": 2.0,
+                    "trade_status": "Trade",
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                },
+                {
+                    "ticker": "AAPL",
+                    "side": "put",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 2.0,
+                    "confidence": 99,
+                    "rank_score": 9.0,
+                },
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
 
         report = lookup_symbol("AAPL 20260618 C 200", data_dir)
         matches = report["sections"]["requested_option_matches"]
@@ -357,33 +423,41 @@ def test_lookup_matches_requested_option_contract():
 def test_lookup_can_attach_public_cboe_activity_for_requested_option():
     old_cboe = lookup_module.cboe_symbol_data_engine.run
     try:
-        lookup_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame([{
-            "ticker": "AAPL",
-            "option_side": "call",
-            "strike": 200.0,
-            "expiry": "2026-06-18",
-            "cboe_activity_volume": 321,
-            "cboe_activity_matched": 300,
-            "cboe_activity_routed": 21,
-            "cboe_activity_bid": 3.10,
-            "cboe_activity_ask": 3.30,
-            "cboe_activity_last": 3.2,
-            "cboe_activity_contract": "AAPL Jun 18 200.0 Call",
-            "cboe_activity_venues": "BZX Options,Cboe Options",
-            "cboe_activity_source": "cboe_symbol_data",
-        }])
+        lookup_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "option_side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "cboe_activity_volume": 321,
+                    "cboe_activity_matched": 300,
+                    "cboe_activity_routed": 21,
+                    "cboe_activity_bid": 3.10,
+                    "cboe_activity_ask": 3.30,
+                    "cboe_activity_last": 3.2,
+                    "cboe_activity_contract": "AAPL Jun 18 200.0 Call",
+                    "cboe_activity_venues": "BZX Options,Cboe Options",
+                    "cboe_activity_source": "cboe_symbol_data",
+                }
+            ]
+        )
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
-            pd.DataFrame([{
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200.0,
-                "expiry": "2026-06-18",
-                "mid": 3.2,
-                "confidence": 80,
-                "rank_score": 2.0,
-                "trade_status": "Trade",
-            }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+            pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAPL",
+                        "side": "call",
+                        "strike": 200.0,
+                        "expiry": "2026-06-18",
+                        "mid": 3.2,
+                        "confidence": 80,
+                        "rank_score": 2.0,
+                        "trade_status": "Trade",
+                    }
+                ]
+            ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
             report = lookup_symbol("AAPL 20260618 C 200", data_dir, include_cboe_activity=True)
     finally:
         lookup_module.cboe_symbol_data_engine.run = old_cboe
@@ -403,17 +477,21 @@ def test_lookup_can_attach_public_cboe_activity_for_requested_option():
 def test_lookup_builds_clean_swing_verdict_for_exact_option_review():
     old_history = lookup_module.data_provider.get_history
     try:
+
         def fake_history(ticker, period="6mo", interval="1d", cache_age=1800):
             assert ticker == "AAPL"
             idx = pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC")
             closes = pd.Series([100 + i * 1.25 for i in range(80)], index=idx, dtype="float64")
-            df = pd.DataFrame({
-                "Open": closes - 0.5,
-                "High": closes + 1.0,
-                "Low": closes - 1.0,
-                "Close": closes,
-                "Volume": 1_000_000,
-            }, index=idx)
+            df = pd.DataFrame(
+                {
+                    "Open": closes - 0.5,
+                    "High": closes + 1.0,
+                    "Low": closes - 1.0,
+                    "Close": closes,
+                    "Volume": 1_000_000,
+                },
+                index=idx,
+            )
             df.attrs["history_source"] = "unit_history"
             df.attrs["history_quality"] = "cached"
             return df
@@ -421,23 +499,27 @@ def test_lookup_builds_clean_swing_verdict_for_exact_option_review():
         lookup_module.data_provider.get_history = fake_history
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
-            pd.DataFrame([{
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200.0,
-                "expiry": "2026-12-18",
-                "mid": 4.0,
-                "confidence": 88,
-                "rank_score": 2.8,
-                "trade_status": "Trade",
-                "suggested_contracts": 1,
-                "stop_price": 2.0,
-                "target_price": 8.0,
-                "spread_pct": 0.08,
-                "net_edge_pct": 0.30,
-                "chain_source": "tradier",
-                "quote_quality": "live_or_broker",
-            }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+            pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAPL",
+                        "side": "call",
+                        "strike": 200.0,
+                        "expiry": "2026-12-18",
+                        "mid": 4.0,
+                        "confidence": 88,
+                        "rank_score": 2.8,
+                        "trade_status": "Trade",
+                        "suggested_contracts": 1,
+                        "stop_price": 2.0,
+                        "target_price": 8.0,
+                        "spread_pct": 0.08,
+                        "net_edge_pct": 0.30,
+                        "chain_source": "tradier",
+                        "quote_quality": "live_or_broker",
+                    }
+                ]
+            ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
             report = lookup_symbol(
                 "AAPL 20261218 C 200",
                 data_dir,
@@ -463,17 +545,19 @@ def test_lookup_builds_clean_swing_verdict_for_exact_option_review():
 def test_lookup_resolves_company_name_option_request_to_ticker():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([
-            {
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200.0,
-                "expiry": "2026-06-18",
-                "mid": 3.2,
-                "confidence": 80,
-                "rank_score": 2.0,
-            },
-        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 3.2,
+                    "confidence": 80,
+                    "rank_score": 2.0,
+                },
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
 
         report = lookup_symbol("Apple 20260618 C 200", data_dir)
         assert report["lookup_symbol"] == "AAPL"
@@ -487,36 +571,43 @@ def test_lookup_resolves_company_name_option_request_to_ticker():
 def test_lookup_matches_requested_option_from_chain_shortlist_without_top_board():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "rows": [{
-                "symbol": "AAPL",
-                "contract_query": "AAPL 2027-01-15 C 220",
-                "side": "call",
-                "strike": 220.0,
-                "expiry": "2027-01-15",
-                "dte": 205,
-                "bid": 4.9,
-                "ask": 5.1,
-                "mid": 5.0,
-                "premium_dollars": 500.0,
-                "spread_pct": 0.04,
-                "openInterest": 1200,
-                "volume": 80,
-                "stop_price_reference": 2.5,
-                "target_price_reference": 10.0,
-                "readiness_score": 92,
-                "readiness_label": "ready",
-                "contract_quality_score": 94,
-                "swing_fit_score": 96,
-                "swing_fit_label": "clean_swing",
-                "contract_grade": "A",
-                "review_lane": "primary_review",
-                "chain_source": "cboe_options_chain",
-                "quote_quality": "free_or_delayed",
-                "review_thesis": "Good depth for a six-month swing candidate.",
-            }],
-        }), encoding="utf-8")
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "rows": [
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 220",
+                            "side": "call",
+                            "strike": 220.0,
+                            "expiry": "2027-01-15",
+                            "dte": 205,
+                            "bid": 4.9,
+                            "ask": 5.1,
+                            "mid": 5.0,
+                            "premium_dollars": 500.0,
+                            "spread_pct": 0.04,
+                            "openInterest": 1200,
+                            "volume": 80,
+                            "stop_price_reference": 2.5,
+                            "target_price_reference": 10.0,
+                            "readiness_score": 92,
+                            "readiness_label": "ready",
+                            "contract_quality_score": 94,
+                            "swing_fit_score": 96,
+                            "swing_fit_label": "clean_swing",
+                            "contract_grade": "A",
+                            "review_lane": "primary_review",
+                            "chain_source": "cboe_options_chain",
+                            "quote_quality": "free_or_delayed",
+                            "review_thesis": "Good depth for a six-month swing candidate.",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("AAPL 20270115 C 220", data_dir)
 
@@ -541,75 +632,80 @@ def test_lookup_matches_requested_option_from_chain_shortlist_without_top_board(
 def test_lookup_surfaces_nearby_option_alternatives_from_chain_shortlist():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "rows": [
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
                 {
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 220",
-                    "side": "call",
-                    "strike": 220.0,
-                    "expiry": "2027-01-15",
-                    "dte": 205,
-                    "bid": 4.9,
-                    "ask": 5.1,
-                    "mid": 5.0,
-                    "premium_dollars": 500.0,
-                    "spread_pct": 0.04,
-                    "openInterest": 1200,
-                    "volume": 80,
-                    "readiness_score": 92,
-                    "contract_quality_score": 94,
-                    "swing_fit_score": 96,
-                    "swing_fit_label": "clean_swing",
-                    "contract_grade": "A",
-                    "review_lane": "primary_review",
-                    "chain_source": "cboe_options_chain",
-                },
-                {
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 230",
-                    "side": "call",
-                    "strike": 230.0,
-                    "expiry": "2027-01-15",
-                    "dte": 205,
-                    "bid": 3.9,
-                    "ask": 4.1,
-                    "mid": 4.0,
-                    "premium_dollars": 400.0,
-                    "spread_pct": 0.05,
-                    "openInterest": 2600,
-                    "volume": 240,
-                    "readiness_score": 96,
-                    "contract_quality_score": 97,
-                    "swing_fit_score": 98,
-                    "swing_fit_label": "clean_swing",
-                    "contract_grade": "A",
-                    "review_lane": "primary_review",
-                    "chain_source": "cboe_options_chain",
-                },
-                {
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 P 220",
-                    "side": "put",
-                    "strike": 220.0,
-                    "expiry": "2027-01-15",
-                    "mid": 8.0,
-                    "readiness_score": 99,
-                    "swing_fit_score": 99,
-                },
-                {
-                    "symbol": "MSFT",
-                    "contract_query": "MSFT 2027-01-15 C 230",
-                    "side": "call",
-                    "strike": 230.0,
-                    "expiry": "2027-01-15",
-                    "mid": 7.0,
-                    "readiness_score": 99,
-                    "swing_fit_score": 99,
-                },
-            ],
-        }), encoding="utf-8")
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "rows": [
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 220",
+                            "side": "call",
+                            "strike": 220.0,
+                            "expiry": "2027-01-15",
+                            "dte": 205,
+                            "bid": 4.9,
+                            "ask": 5.1,
+                            "mid": 5.0,
+                            "premium_dollars": 500.0,
+                            "spread_pct": 0.04,
+                            "openInterest": 1200,
+                            "volume": 80,
+                            "readiness_score": 92,
+                            "contract_quality_score": 94,
+                            "swing_fit_score": 96,
+                            "swing_fit_label": "clean_swing",
+                            "contract_grade": "A",
+                            "review_lane": "primary_review",
+                            "chain_source": "cboe_options_chain",
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 230",
+                            "side": "call",
+                            "strike": 230.0,
+                            "expiry": "2027-01-15",
+                            "dte": 205,
+                            "bid": 3.9,
+                            "ask": 4.1,
+                            "mid": 4.0,
+                            "premium_dollars": 400.0,
+                            "spread_pct": 0.05,
+                            "openInterest": 2600,
+                            "volume": 240,
+                            "readiness_score": 96,
+                            "contract_quality_score": 97,
+                            "swing_fit_score": 98,
+                            "swing_fit_label": "clean_swing",
+                            "contract_grade": "A",
+                            "review_lane": "primary_review",
+                            "chain_source": "cboe_options_chain",
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 P 220",
+                            "side": "put",
+                            "strike": 220.0,
+                            "expiry": "2027-01-15",
+                            "mid": 8.0,
+                            "readiness_score": 99,
+                            "swing_fit_score": 99,
+                        },
+                        {
+                            "symbol": "MSFT",
+                            "contract_query": "MSFT 2027-01-15 C 230",
+                            "side": "call",
+                            "strike": 230.0,
+                            "expiry": "2027-01-15",
+                            "mid": 7.0,
+                            "readiness_score": 99,
+                            "swing_fit_score": 99,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("AAPL 20270115 C 220", data_dir)
 
@@ -631,55 +727,60 @@ def test_lookup_surfaces_nearby_option_alternatives_from_chain_shortlist():
 def test_lookup_compares_requested_option_against_cleaner_alternative():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "rows": [
+        (data_dir / "option_chain_shortlist.json").write_text(
+            json.dumps(
                 {
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 220",
-                    "side": "call",
-                    "strike": 220.0,
-                    "expiry": "2027-01-15",
-                    "dte": 205,
-                    "bid": 7.0,
-                    "ask": 11.0,
-                    "mid": 9.0,
-                    "premium_dollars": 900.0,
-                    "spread_pct": 0.44,
-                    "openInterest": 40,
-                    "volume": 2,
-                    "readiness_score": 55,
-                    "contract_quality_score": 50,
-                    "swing_fit_score": 60,
-                    "swing_fit_label": "speculative_swing",
-                    "contract_grade": "C",
-                    "review_lane": "avoid_unless_needed",
-                    "chain_source": "cboe_options_chain",
-                },
-                {
-                    "symbol": "AAPL",
-                    "contract_query": "AAPL 2027-01-15 C 230",
-                    "side": "call",
-                    "strike": 230.0,
-                    "expiry": "2027-01-15",
-                    "dte": 205,
-                    "bid": 3.9,
-                    "ask": 4.1,
-                    "mid": 4.0,
-                    "premium_dollars": 400.0,
-                    "spread_pct": 0.05,
-                    "openInterest": 2600,
-                    "volume": 240,
-                    "readiness_score": 96,
-                    "contract_quality_score": 97,
-                    "swing_fit_score": 98,
-                    "swing_fit_label": "clean_swing",
-                    "contract_grade": "A",
-                    "review_lane": "primary_review",
-                    "chain_source": "cboe_options_chain",
-                },
-            ],
-        }), encoding="utf-8")
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "rows": [
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 220",
+                            "side": "call",
+                            "strike": 220.0,
+                            "expiry": "2027-01-15",
+                            "dte": 205,
+                            "bid": 7.0,
+                            "ask": 11.0,
+                            "mid": 9.0,
+                            "premium_dollars": 900.0,
+                            "spread_pct": 0.44,
+                            "openInterest": 40,
+                            "volume": 2,
+                            "readiness_score": 55,
+                            "contract_quality_score": 50,
+                            "swing_fit_score": 60,
+                            "swing_fit_label": "speculative_swing",
+                            "contract_grade": "C",
+                            "review_lane": "avoid_unless_needed",
+                            "chain_source": "cboe_options_chain",
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "contract_query": "AAPL 2027-01-15 C 230",
+                            "side": "call",
+                            "strike": 230.0,
+                            "expiry": "2027-01-15",
+                            "dte": 205,
+                            "bid": 3.9,
+                            "ask": 4.1,
+                            "mid": 4.0,
+                            "premium_dollars": 400.0,
+                            "spread_pct": 0.05,
+                            "openInterest": 2600,
+                            "volume": 240,
+                            "readiness_score": 96,
+                            "contract_quality_score": 97,
+                            "swing_fit_score": 98,
+                            "swing_fit_label": "clean_swing",
+                            "contract_grade": "A",
+                            "review_lane": "primary_review",
+                            "chain_source": "cboe_options_chain",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("AAPL 20270115 C 220", data_dir)
 
@@ -696,18 +797,23 @@ def test_lookup_compares_requested_option_against_cleaner_alternative():
 def test_option_request_falls_back_to_closest_strike():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([
-            {"ticker": "MSFT", "side": "call", "strike": 410.0, "expiry": "2026-06-18"},
-            {"ticker": "MSFT", "side": "call", "strike": 430.0, "expiry": "2026-06-18"},
-        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame(
+            [
+                {"ticker": "MSFT", "side": "call", "strike": 410.0, "expiry": "2026-06-18"},
+                {"ticker": "MSFT", "side": "call", "strike": 430.0, "expiry": "2026-06-18"},
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
 
-        matches = match_option_request({
-            "asset": "option",
-            "ticker": "MSFT",
-            "side": "call",
-            "strike": 420.0,
-            "expiry": "2026-06-18",
-        }, data_dir)
+        matches = match_option_request(
+            {
+                "asset": "option",
+                "ticker": "MSFT",
+                "side": "call",
+                "strike": 420.0,
+                "expiry": "2026-06-18",
+            },
+            data_dir,
+        )
         assert matches[0]["strike"] == 410.0
         assert matches[0]["strike_diff"] == 10.0
 
@@ -715,10 +821,12 @@ def test_option_request_falls_back_to_closest_strike():
 def test_lookup_brief_warns_when_requested_option_is_closest_only():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([
-            {"ticker": "MSFT", "side": "call", "strike": 410.0, "expiry": "2026-06-18"},
-            {"ticker": "MSFT", "side": "call", "strike": 430.0, "expiry": "2026-06-18"},
-        ]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        pd.DataFrame(
+            [
+                {"ticker": "MSFT", "side": "call", "strike": 410.0, "expiry": "2026-06-18"},
+                {"ticker": "MSFT", "side": "call", "strike": 430.0, "expiry": "2026-06-18"},
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
 
         report = lookup_symbol("MSFT 20260618 C 420", data_dir)
         requested = report["brief"]["requested_option"]
@@ -737,8 +845,7 @@ def test_lookup_brief_warns_when_requested_option_is_closest_only():
         )
         assert report["brief"]["paper_readiness"]["status"] in {"caution", "blocked"}
         assert any(
-            row["label"] == "Requested option match"
-            and row["level"] == "warn"
+            row["label"] == "Requested option match" and row["level"] == "warn"
             for row in report["brief"]["paper_readiness"]["checks"]
         )
         assert any("matched as closest" in warning for warning in report["brief"]["risk_warnings"])
@@ -767,46 +874,62 @@ def test_lookup_missing_option_request_routes_to_chain_scan():
 def test_lookup_builds_research_brief_from_local_factors_and_open_state():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-06-18",
-            "mid": 4.2,
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-            "stop_price": 2.1,
-            "target_price": 8.4,
-            "spread_pct": 0.12,
-            "net_edge_pct": 0.35,
-            "buyer_edge_pct": 0.08,
-            "seller_edge_pct": -0.32,
-            "pricing_direction": "underpriced_after_spread",
-            "suggested_contracts": 1,
-            "chain_source": "tradier",
-            "quote_quality": "live_or_broker",
-            "z_macro": 1.5,
-            "z_insider": -0.8,
-            "top_headline": "NVDA test headline",
-        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
-        (data_dir / "open_positions.json").write_text(json.dumps([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "entry_price": 3.0,
-            "current_mid": 4.5,
-            "unrealized_pct": 0.5,
-            "latest_exit_pressure": 22,
-        }]), encoding="utf-8")
-        (data_dir / "validation_summary.json").write_text(json.dumps({
-            "validation_scope": "current_model",
-            "closed_positions": 10,
-            "open_positions": 1,
-            "overall": {"win_rate": 0.6, "avg_return": 0.12},
-            "warnings": ["sample warning"],
-        }), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 4.2,
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                    "stop_price": 2.1,
+                    "target_price": 8.4,
+                    "spread_pct": 0.12,
+                    "net_edge_pct": 0.35,
+                    "buyer_edge_pct": 0.08,
+                    "seller_edge_pct": -0.32,
+                    "pricing_direction": "underpriced_after_spread",
+                    "suggested_contracts": 1,
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                    "z_macro": 1.5,
+                    "z_insider": -0.8,
+                    "top_headline": "NVDA test headline",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "ticker": "NVDA",
+                        "side": "call",
+                        "strike": 200,
+                        "expiry": "2026-06-18",
+                        "entry_price": 3.0,
+                        "current_mid": 4.5,
+                        "unrealized_pct": 0.5,
+                        "latest_exit_pressure": 22,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (data_dir / "validation_summary.json").write_text(
+            json.dumps(
+                {
+                    "validation_scope": "current_model",
+                    "closed_positions": 10,
+                    "open_positions": 1,
+                    "overall": {"win_rate": 0.6, "avg_return": 0.12},
+                    "warnings": ["sample warning"],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("NVDA", data_dir)
         brief = report["brief"]
@@ -839,16 +962,20 @@ def test_lookup_flags_stale_snapshot_age():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         path = data_dir / "top_options_20260603_120000.parquet"
-        pd.DataFrame([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-06-18",
-            "mid": 4.2,
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-        }]).to_parquet(path)
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "mid": 4.2,
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                }
+            ]
+        ).to_parquet(path)
         old_ts = time.time() - (8 * 60 * 60)
         os.utime(path, (old_ts, old_ts))
 
@@ -870,18 +997,22 @@ def test_lookup_preserves_row_level_stale_snapshot_metadata():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
         path = data_dir / "top_options_20260603_120000.parquet"
-        pd.DataFrame([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-12-18",
-            "mid": 4.2,
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-            "snapshot_age_min": 480,
-            "snapshot_freshness": "stale",
-        }]).to_parquet(path)
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-12-18",
+                    "mid": 4.2,
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                    "snapshot_age_min": 480,
+                    "snapshot_freshness": "stale",
+                }
+            ]
+        ).to_parquet(path)
 
         report = lookup_symbol("NVDA", data_dir)
 
@@ -1014,25 +1145,36 @@ def test_lookup_includes_sec_companyfacts_when_available():
 def test_lookup_action_prioritizes_open_exit_pressure():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-06-18",
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-        }]).to_parquet(data_dir / "top_options_20260603_120000.parquet")
-        (data_dir / "open_positions.json").write_text(json.dumps([{
-            "ticker": "NVDA",
-            "side": "call",
-            "strike": 200,
-            "expiry": "2026-06-18",
-            "entry_price": 3.0,
-            "current_mid": 2.2,
-            "unrealized_pct": -0.27,
-            "latest_exit_pressure": 84,
-        }]), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "NVDA",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-06-18",
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260603_120000.parquet")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "ticker": "NVDA",
+                        "side": "call",
+                        "strike": 200,
+                        "expiry": "2026-06-18",
+                        "entry_price": 3.0,
+                        "current_mid": 2.2,
+                        "unrealized_pct": -0.27,
+                        "latest_exit_pressure": 84,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         action = lookup_symbol("NVDA", data_dir)["brief"]["research_action"]
         assert action["action"] == "review_exit_now"
@@ -1043,58 +1185,76 @@ def test_lookup_action_prioritizes_open_exit_pressure():
 def test_lookup_exact_option_request_flags_existing_contract_exposure():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "AAPL",
-            "side": "call",
-            "strike": 200.0,
-            "expiry": "2026-12-18",
-            "mid": 4.5,
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-            "suggested_contracts": 1,
-            "stop_price": 2.2,
-            "target_price": 9.0,
-            "chain_source": "tradier",
-            "quote_quality": "live_or_broker",
-        }]).to_parquet(data_dir / "top_options_20260624_120000.parquet")
-        (data_dir / "open_positions.json").write_text(json.dumps([
-            {
-                "position_id": "local-aapl-call",
-                "ticker": "AAPL",
-                "side": "call",
-                "strike": 200.0,
-                "expiry": "2026-12-18",
-                "entry_price": 4.0,
-                "current_mid": 4.8,
-                "unrealized_pct": 0.20,
-            },
-            {
-                "position_id": "other-aapl-put",
-                "ticker": "AAPL",
-                "side": "put",
-                "strike": 180.0,
-                "expiry": "2026-12-18",
-            },
-        ]), encoding="utf-8")
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "accounts": [{
-                "account_mask": "****1497",
-                "label": "Default individual margin",
-                "agentic_allowed": True,
-                "option_level": "option_level_2",
-                "option_positions": [{
-                    "chain_symbol": "AAPL",
-                    "option_type": "call",
-                    "strike_price": "200.0000",
-                    "expiration_date": "2026-12-18",
-                    "quantity": "1.0000",
-                    "average_price": 4.0,
-                    "current_price": 4.8,
-                }],
-            }],
-        }), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200.0,
+                    "expiry": "2026-12-18",
+                    "mid": 4.5,
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                    "suggested_contracts": 1,
+                    "stop_price": 2.2,
+                    "target_price": 9.0,
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260624_120000.parquet")
+        (data_dir / "open_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "position_id": "local-aapl-call",
+                        "ticker": "AAPL",
+                        "side": "call",
+                        "strike": 200.0,
+                        "expiry": "2026-12-18",
+                        "entry_price": 4.0,
+                        "current_mid": 4.8,
+                        "unrealized_pct": 0.20,
+                    },
+                    {
+                        "position_id": "other-aapl-put",
+                        "ticker": "AAPL",
+                        "side": "put",
+                        "strike": 180.0,
+                        "expiry": "2026-12-18",
+                    },
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "accounts": [
+                        {
+                            "account_mask": "****1497",
+                            "label": "Default individual margin",
+                            "agentic_allowed": True,
+                            "option_level": "option_level_2",
+                            "option_positions": [
+                                {
+                                    "chain_symbol": "AAPL",
+                                    "option_type": "call",
+                                    "strike_price": "200.0000",
+                                    "expiration_date": "2026-12-18",
+                                    "quantity": "1.0000",
+                                    "average_price": 4.0,
+                                    "current_price": 4.8,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("AAPL 20261218 C 200", data_dir)
         exposure = report["brief"]["contract_exposure"]
@@ -1116,43 +1276,56 @@ def test_lookup_exact_option_request_flags_existing_contract_exposure():
 def test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        pd.DataFrame([{
-            "ticker": "ROBN",
-            "side": "call",
-            "strike": 35.0,
-            "expiry": "2026-12-18",
-            "mid": 11.8,
-            "confidence": 82,
-            "rank_score": 2.5,
-            "trade_status": "Trade",
-            "chain_source": "tradier",
-            "quote_quality": "live_or_broker",
-            "suggested_contracts": 1,
-            "stop_price": 7.0,
-            "target_price": 18.0,
-        }]).to_parquet(data_dir / "top_options_20260624_120000.parquet")
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps({
-            "generated_at": "2026-06-24T19:00:00+00:00",
-            "accounts": [{
-                "account_mask": "****1497",
-                "label": "Default individual margin",
-                "agentic_allowed": False,
-                "option_level": "option_level_2",
-                "option_positions": [{
-                    "chain_symbol": "ROBN",
-                    "symbol": "ROBN",
-                    "option_type": "call",
-                    "strike_price": "35.0000",
-                    "expiration_date": "2026-12-18",
-                    "quantity": "2.0000",
-                    "average_price": 6.45,
-                    "current_price": 11.8,
-                    "bid_price": 10.7,
-                    "ask_price": 12.9,
-                    "quote_updated_at": "2026-06-24T19:00:00Z",
-                }],
-            }],
-        }), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "ROBN",
+                    "side": "call",
+                    "strike": 35.0,
+                    "expiry": "2026-12-18",
+                    "mid": 11.8,
+                    "confidence": 82,
+                    "rank_score": 2.5,
+                    "trade_status": "Trade",
+                    "chain_source": "tradier",
+                    "quote_quality": "live_or_broker",
+                    "suggested_contracts": 1,
+                    "stop_price": 7.0,
+                    "target_price": 18.0,
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260624_120000.parquet")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-06-24T19:00:00+00:00",
+                    "accounts": [
+                        {
+                            "account_mask": "****1497",
+                            "label": "Default individual margin",
+                            "agentic_allowed": False,
+                            "option_level": "option_level_2",
+                            "option_positions": [
+                                {
+                                    "chain_symbol": "ROBN",
+                                    "symbol": "ROBN",
+                                    "option_type": "call",
+                                    "strike_price": "35.0000",
+                                    "expiration_date": "2026-12-18",
+                                    "quantity": "2.0000",
+                                    "average_price": 6.45,
+                                    "current_price": 11.8,
+                                    "bid_price": 10.7,
+                                    "ask_price": 12.9,
+                                    "quote_updated_at": "2026-06-24T19:00:00Z",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol("ROBN", data_dir)
         broker_rows = report["sections"]["broker_positions"]
@@ -1164,7 +1337,9 @@ def test_lookup_includes_broker_snapshot_and_blocks_duplicate_entry():
         assert brief["broker_positions"]["option_count"] == 1
         assert brief["research_action"]["action"] == "review_broker_position"
         assert brief["research_action"]["can_export_paper_candidate"] is False
-        assert any("Broker snapshot has 1 position" in warning for warning in brief["risk_warnings"])
+        assert any(
+            "Broker snapshot has 1 position" in warning for warning in brief["risk_warnings"]
+        )
         html = render_html(report)
         assert "Broker positions" in html
         assert "Broker snapshot" in html
@@ -1190,57 +1365,103 @@ def test_lookup_uses_fresh_broker_quote_as_option_liquidity_and_event_veto():
         expiry = (now.date() + timedelta(days=120)).isoformat()
         earnings = (now.date() + timedelta(days=3)).isoformat()
         query = f"AAPL {expiry} C 220"
-        pd.DataFrame([{
-            "ticker": "AAPL", "side": "call", "strike": 220.0, "expiry": expiry,
-            "mid": 6.0, "confidence": 82, "rank_score": 2.2,
-            "trade_status": "Trade", "is_actionable": True,
-            "suggested_contracts": 1, "stop_price": 3.0, "target_price": 12.0,
-            "chain_source": "cboe", "quote_quality": "free_or_delayed",
-            "buyer_edge_pct": 0.12,
-        }]).to_parquet(data_dir / "top_options_20260710_120000.parquet")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 220.0,
+                    "expiry": expiry,
+                    "mid": 6.0,
+                    "confidence": 82,
+                    "rank_score": 2.2,
+                    "trade_status": "Trade",
+                    "is_actionable": True,
+                    "suggested_contracts": 1,
+                    "stop_price": 3.0,
+                    "target_price": 12.0,
+                    "chain_source": "cboe",
+                    "quote_quality": "free_or_delayed",
+                    "buyer_edge_pct": 0.12,
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260710_120000.parquet")
         request_id = f"option:AAPL|{expiry}|call|220"
-        (data_dir / "robinhood_research_snapshot.json").write_text(json.dumps({
-            "schema": "optedge_robinhood_research_snapshot_v1",
-            "generated_at": now.isoformat(),
-            "records": [{
-                "request_id": request_id,
-                "query": query,
-                "symbol": "AAPL",
-                "option_request": {
-                    "asset": "option", "ticker": "AAPL", "expiry": expiry,
-                    "side": "call", "strike": 220,
-                },
-                "collected_at": now.isoformat(),
-                "equity_quote": {"quote": {
-                    "symbol": "AAPL", "last_trade_price": "210",
-                    "venue_last_trade_time": now.isoformat(),
-                    "bid_price": "209.95", "ask_price": "210.05",
-                }},
-                "fundamentals": {
-                    "symbol": "AAPL", "market_cap": "3200000000000",
-                    "pe_ratio": "31.5", "sector": "Technology",
-                },
-                "earnings": [{
-                    "symbol": "AAPL", "year": now.year, "quarter": 3,
-                    "eps": {"estimate": "1.65", "actual": None},
-                    "report": {"date": earnings, "timing": "pm", "verified": True},
-                }],
-                "option_contracts": [{
-                    "instrument": {
-                        "id": "opt-aapl", "chain_symbol": "AAPL",
-                        "expiration_date": expiry, "strike_price": "220",
-                        "type": "call", "state": "active", "tradability": "tradable",
-                    },
-                    "quote": {"quote": {
-                        "instrument_id": "opt-aapl", "mark_price": "6.00",
-                        "bid_price": "4.00", "ask_price": "8.00",
-                        "volume": 2, "open_interest": 50,
-                        "implied_volatility": "0.40", "delta": "0.50",
-                        "theta": "-0.05", "updated_at": now.isoformat(),
-                    }},
-                }],
-            }],
-        }), encoding="utf-8")
+        (data_dir / "robinhood_research_snapshot.json").write_text(
+            json.dumps(
+                {
+                    "schema": "optedge_robinhood_research_snapshot_v1",
+                    "generated_at": now.isoformat(),
+                    "records": [
+                        {
+                            "request_id": request_id,
+                            "query": query,
+                            "symbol": "AAPL",
+                            "option_request": {
+                                "asset": "option",
+                                "ticker": "AAPL",
+                                "expiry": expiry,
+                                "side": "call",
+                                "strike": 220,
+                            },
+                            "collected_at": now.isoformat(),
+                            "equity_quote": {
+                                "quote": {
+                                    "symbol": "AAPL",
+                                    "last_trade_price": "210",
+                                    "venue_last_trade_time": now.isoformat(),
+                                    "bid_price": "209.95",
+                                    "ask_price": "210.05",
+                                }
+                            },
+                            "fundamentals": {
+                                "symbol": "AAPL",
+                                "market_cap": "3200000000000",
+                                "pe_ratio": "31.5",
+                                "sector": "Technology",
+                            },
+                            "earnings": [
+                                {
+                                    "symbol": "AAPL",
+                                    "year": now.year,
+                                    "quarter": 3,
+                                    "eps": {"estimate": "1.65", "actual": None},
+                                    "report": {"date": earnings, "timing": "pm", "verified": True},
+                                }
+                            ],
+                            "option_contracts": [
+                                {
+                                    "instrument": {
+                                        "id": "opt-aapl",
+                                        "chain_symbol": "AAPL",
+                                        "expiration_date": expiry,
+                                        "strike_price": "220",
+                                        "type": "call",
+                                        "state": "active",
+                                        "tradability": "tradable",
+                                    },
+                                    "quote": {
+                                        "quote": {
+                                            "instrument_id": "opt-aapl",
+                                            "mark_price": "6.00",
+                                            "bid_price": "4.00",
+                                            "ask_price": "8.00",
+                                            "volume": 2,
+                                            "open_interest": 50,
+                                            "implied_volatility": "0.40",
+                                            "delta": "0.50",
+                                            "theta": "-0.05",
+                                            "updated_at": now.isoformat(),
+                                        }
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol(query, data_dir)
         assert report["broker_research_request"]["status"] == "satisfied"
@@ -1250,7 +1471,9 @@ def test_lookup_uses_fresh_broker_quote_as_option_liquidity_and_event_veto():
         assert brief["robinhood_option_quote"]["open_interest"] == 50
         assert any("Earnings are 3 day" in row for row in brief["swing_verdict"]["blockers"])
         assert any("spread is too wide" in row for row in brief["swing_verdict"]["blockers"])
-        assert not any("differs from the broker mark" in row for row in brief["swing_verdict"]["blockers"])
+        assert not any(
+            "differs from the broker mark" in row for row in brief["swing_verdict"]["blockers"]
+        )
         assert brief["swing_verdict"]["decision"] == "blocked"
         assert "Robinhood read-only ticker context" in render_html(report)
 
@@ -1261,43 +1484,80 @@ def test_lookup_blocks_large_local_to_broker_option_price_divergence():
         now = datetime.now(UTC)
         expiry = (now.date() + timedelta(days=120)).isoformat()
         query = f"AAPL {expiry} C 220"
-        pd.DataFrame([{
-            "ticker": "AAPL", "side": "call", "strike": 220.0, "expiry": expiry,
-            "mid": 6.0, "confidence": 82, "rank_score": 2.2,
-            "trade_status": "Trade", "is_actionable": True,
-            "suggested_contracts": 1, "stop_price": 3.0, "target_price": 12.0,
-            "chain_source": "cboe", "quote_quality": "free_or_delayed",
-        }]).to_parquet(data_dir / "top_options_20260710_120000.parquet")
-        (data_dir / "robinhood_research_snapshot.json").write_text(json.dumps({
-            "schema": "optedge_robinhood_research_snapshot_v1",
-            "records": [{
-                "request_id": f"option:AAPL|{expiry}|call|220",
-                "query": query,
-                "symbol": "AAPL",
-                "option_request": {
-                    "asset": "option", "ticker": "AAPL", "expiry": expiry,
-                    "side": "call", "strike": 220,
-                },
-                "collected_at": now.isoformat(),
-                "equity_quote": {"quote": {
-                    "symbol": "AAPL", "last_trade_price": "210",
-                    "venue_last_trade_time": now.isoformat(),
-                }},
-                "option_contracts": [{
-                    "instrument": {
-                        "id": "opt-aapl", "chain_symbol": "AAPL",
-                        "expiration_date": expiry, "strike_price": "220",
-                        "type": "call", "state": "active", "tradability": "tradable",
-                    },
-                    "quote": {"quote": {
-                        "instrument_id": "opt-aapl", "mark_price": "1.00",
-                        "bid_price": "0.95", "ask_price": "1.05",
-                        "volume": 500, "open_interest": 5000,
-                        "updated_at": now.isoformat(),
-                    }},
-                }],
-            }],
-        }), encoding="utf-8")
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 220.0,
+                    "expiry": expiry,
+                    "mid": 6.0,
+                    "confidence": 82,
+                    "rank_score": 2.2,
+                    "trade_status": "Trade",
+                    "is_actionable": True,
+                    "suggested_contracts": 1,
+                    "stop_price": 3.0,
+                    "target_price": 12.0,
+                    "chain_source": "cboe",
+                    "quote_quality": "free_or_delayed",
+                }
+            ]
+        ).to_parquet(data_dir / "top_options_20260710_120000.parquet")
+        (data_dir / "robinhood_research_snapshot.json").write_text(
+            json.dumps(
+                {
+                    "schema": "optedge_robinhood_research_snapshot_v1",
+                    "records": [
+                        {
+                            "request_id": f"option:AAPL|{expiry}|call|220",
+                            "query": query,
+                            "symbol": "AAPL",
+                            "option_request": {
+                                "asset": "option",
+                                "ticker": "AAPL",
+                                "expiry": expiry,
+                                "side": "call",
+                                "strike": 220,
+                            },
+                            "collected_at": now.isoformat(),
+                            "equity_quote": {
+                                "quote": {
+                                    "symbol": "AAPL",
+                                    "last_trade_price": "210",
+                                    "venue_last_trade_time": now.isoformat(),
+                                }
+                            },
+                            "option_contracts": [
+                                {
+                                    "instrument": {
+                                        "id": "opt-aapl",
+                                        "chain_symbol": "AAPL",
+                                        "expiration_date": expiry,
+                                        "strike_price": "220",
+                                        "type": "call",
+                                        "state": "active",
+                                        "tradability": "tradable",
+                                    },
+                                    "quote": {
+                                        "quote": {
+                                            "instrument_id": "opt-aapl",
+                                            "mark_price": "1.00",
+                                            "bid_price": "0.95",
+                                            "ask_price": "1.05",
+                                            "volume": 500,
+                                            "open_interest": 5000,
+                                            "updated_at": now.isoformat(),
+                                        }
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         report = lookup_symbol(query, data_dir)
         blockers = report["brief"]["swing_verdict"]["blockers"]

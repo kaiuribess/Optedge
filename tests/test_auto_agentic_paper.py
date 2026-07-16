@@ -52,33 +52,41 @@ def _order(symbol: str = "AAPL", strike: float = 200.0) -> dict:
     }
 
 
-def _write_queue_cycle(data_dir: Path, *, gate_open: bool = False, orders: list[dict] | None = None):
+def _write_queue_cycle(
+    data_dir: Path, *, gate_open: bool = False, orders: list[dict] | None = None
+):
     orders = orders or [_order()]
     generated_at = datetime.now(UTC).isoformat()
-    _write_json(data_dir / QUEUE_JSON, {
-        "schema": "optedge_robinhood_agentic_options_queue_v1",
-        "status": "ready",
-        "generated_at": generated_at,
-        "max_orders_to_submit": 0,
-        "max_manual_reviews": 2,
-        "execution_enabled": False,
-        "manual_trade_desk_required": True,
-        "orders": orders,
-    })
+    _write_json(
+        data_dir / QUEUE_JSON,
+        {
+            "schema": "optedge_robinhood_agentic_options_queue_v1",
+            "status": "ready",
+            "generated_at": generated_at,
+            "max_orders_to_submit": 0,
+            "max_manual_reviews": 2,
+            "execution_enabled": False,
+            "manual_trade_desk_required": True,
+            "orders": orders,
+        },
+    )
     entry_gate = {
         "status": "open" if gate_open else "blocked",
         "new_entries_allowed_after_live_checks": gate_open,
         "blockers": [] if gate_open else ["validation max drawdown is too high"],
     }
-    _write_json(data_dir / CYCLE_JSON, {
-        "schema": "optedge_robinhood_agentic_cycle_v1",
-        "generated_at": generated_at,
-        "hard_pause": False,
-        "entry_gate": entry_gate,
-        "entry_candidates": [],
-        "manual_review_candidates": orders if gate_open else [],
-        "review_only_entry_candidates": [] if gate_open else orders,
-    })
+    _write_json(
+        data_dir / CYCLE_JSON,
+        {
+            "schema": "optedge_robinhood_agentic_cycle_v1",
+            "generated_at": generated_at,
+            "hard_pause": False,
+            "entry_gate": entry_gate,
+            "entry_candidates": [],
+            "manual_review_candidates": orders if gate_open else [],
+            "review_only_entry_candidates": [] if gate_open else orders,
+        },
+    )
 
 
 def test_default_blocked_gate_opens_no_paper_positions():
@@ -116,14 +124,19 @@ def test_duplicate_contract_is_skipped():
         data_dir = Path(td)
         order = _order()
         _write_queue_cycle(data_dir, gate_open=True, orders=[order])
-        _write_json(data_dir / PAPER_POSITIONS_JSON, [{
-            "status": "open",
-            "symbol": "AAPL",
-            "option_side": "call",
-            "expiry": "2027-01-15",
-            "strike": 200.0,
-            "direction": "long_call",
-        }])
+        _write_json(
+            data_dir / PAPER_POSITIONS_JSON,
+            [
+                {
+                    "status": "open",
+                    "symbol": "AAPL",
+                    "option_side": "call",
+                    "expiry": "2027-01-15",
+                    "strike": 200.0,
+                    "direction": "long_call",
+                }
+            ],
+        )
         result = process_agentic_paper(data_dir=data_dir)
         assert result["opened_paper_count"] == 0
         assert result["candidate_source"] == "manual_review_candidates"

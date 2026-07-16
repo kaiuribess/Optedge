@@ -31,10 +31,15 @@ def test_missing_and_stale_validation_fail_conservatively():
             assert missing["status"] == "unavailable"
             assert missing["multiplier"] == 0.5
 
-            path.write_text(json.dumps({
-                "generated_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
-                "after_slippage": {"n": 100, "max_drawdown": -0.02},
-            }), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    {
+                        "generated_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+                        "after_slippage": {"n": 100, "max_drawdown": -0.02},
+                    }
+                ),
+                encoding="utf-8",
+            )
             stale = drawdown_breaker.compute_breaker_state(window_days=14)
             assert stale["status"] == "unavailable"
             assert stale["multiplier"] == 0.5
@@ -49,10 +54,15 @@ def test_fresh_validation_drives_versioned_thresholds():
         drawdown_breaker.VALIDATION_PATH = path
         try:
             for drawdown, expected in ((-0.05, 1.0), (-0.10, 0.5), (-0.20, 0.25)):
-                path.write_text(json.dumps({
-                    "generated_at": datetime.now(UTC).isoformat(),
-                    "after_slippage": {"n": 250, "max_drawdown": drawdown},
-                }), encoding="utf-8")
+                path.write_text(
+                    json.dumps(
+                        {
+                            "generated_at": datetime.now(UTC).isoformat(),
+                            "after_slippage": {"n": 250, "max_drawdown": drawdown},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 state = drawdown_breaker.compute_breaker_state()
                 assert state["status"] == "ready"
                 assert state["multiplier"] == expected

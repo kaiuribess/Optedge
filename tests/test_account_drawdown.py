@@ -238,7 +238,9 @@ def test_tampered_observation_or_ledger_digest_fails_closed():
         result = _evaluate(unsafe, snapshot)
         assert result["status"] == "blocked"
         assert result["risk_multiplier"] == 0
-        assert any("digest" in value.lower() or "hash" in value.lower() for value in result["blockers"])
+        assert any(
+            "digest" in value.lower() or "hash" in value.lower() for value in result["blockers"]
+        )
 
 
 def test_structurally_sealed_mixed_account_or_nonmonotonic_time_is_rejected():
@@ -362,8 +364,7 @@ def _raw_normalizer_bundle(generated_at: str, total_value: str = "510.00") -> di
     }
 
 
-def test_explicit_normalizer_write_appends_chain_and_deduplicates_but_dry_run_does_not(
-):
+def test_explicit_normalizer_write_appends_chain_and_deduplicates_but_dry_run_does_not():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         raw_path = tmp_path / "raw.json"
@@ -373,19 +374,30 @@ def test_explicit_normalizer_write_appends_chain_and_deduplicates_but_dry_run_do
         raw = _raw_normalizer_bundle("2026-07-13T20:00:00+00:00")
         raw_path.write_text(json.dumps(raw), encoding="utf-8")
 
-        assert normalizer.main([
-            "--input", str(raw_path),
-            "--output", str(dry_output),
-            "--equity-ledger-dir", str(ledger_dir),
-            "--dry-run",
-        ]) == 0
+        assert (
+            normalizer.main(
+                [
+                    "--input",
+                    str(raw_path),
+                    "--output",
+                    str(dry_output),
+                    "--equity-ledger-dir",
+                    str(ledger_dir),
+                    "--dry-run",
+                ]
+            )
+            == 0
+        )
         assert not dry_output.exists()
         assert not ledger_dir.exists()
 
         args = [
-            "--input", str(raw_path),
-            "--output", str(output_path),
-            "--equity-ledger-dir", str(ledger_dir),
+            "--input",
+            str(raw_path),
+            "--output",
+            str(output_path),
+            "--equity-ledger-dir",
+            str(ledger_dir),
         ]
         assert normalizer.main(args) == 0
         ledger_paths = list(ledger_dir.glob("*.json"))
@@ -567,10 +579,15 @@ def test_failed_snapshot_write_cannot_create_equity_ledger(monkeypatch):
 
         monkeypatch.setattr(normalizer, "_write_json", fail_snapshot_write)
         with pytest.raises(OSError, match="simulated"):
-            normalizer.main([
-                "--input", str(raw_path),
-                "--output", str(output_path),
-                "--equity-ledger-dir", str(ledger_dir),
-            ])
+            normalizer.main(
+                [
+                    "--input",
+                    str(raw_path),
+                    "--output",
+                    str(output_path),
+                    "--equity-ledger-dir",
+                    str(ledger_dir),
+                ]
+            )
 
         assert not ledger_dir.exists()

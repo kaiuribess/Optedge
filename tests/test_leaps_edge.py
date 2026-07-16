@@ -10,7 +10,9 @@ from backtest.leaps_edge import analyze_leaps_swing_evidence
 from optedge.strategy_profile import LEAPS_EVIDENCE_LANE
 
 
-def _outcomes(*, rows_per_horizon: int = 620, quality: str = "broker_market_observed") -> pd.DataFrame:
+def _outcomes(
+    *, rows_per_horizon: int = 620, quality: str = "broker_market_observed"
+) -> pd.DataFrame:
     provenance = fixed_horizon.current_evidence_provenance()
     start = datetime(2023, 1, 2, tzinfo=UTC)
     rows = []
@@ -20,29 +22,31 @@ def _outcomes(*, rows_per_horizon: int = 620, quality: str = "broker_market_obse
             raw_return = 0.025 if index % 5 else -0.01
             slippage = 0.005
             after_cost = raw_return - slippage
-            rows.append({
-                **provenance,
-                "methodology_version": fixed_horizon.METHODOLOGY_VERSION,
-                "outcome_id": f"leaps-{horizon}-{index}",
-                "asset": "option",
-                "execution_profile": "leaps_swing",
-                "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
-                "horizon_sessions": horizon,
-                "entry_time": entry.isoformat(),
-                "pnl_pct": raw_return,
-                "slippage_assumption_pct": slippage,
-                "pnl_pct_after_slippage": after_cost,
-                "excess_vs_spy_pct": after_cost - 0.002,
-                "spread_pct": 0.004,
-                "is_scored": True,
-                "is_independent": True,
-                "eligible_for_executable_metrics": True,
-                "eligible_for_shadow_metrics": True,
-                "outcome_quality": quality,
-                "resolution_status": "scored",
-                "resolution_reason": "",
-                "independent_key": f"leaps_swing|option|T{index}|long_call|{entry.date()}",
-            })
+            rows.append(
+                {
+                    **provenance,
+                    "methodology_version": fixed_horizon.METHODOLOGY_VERSION,
+                    "outcome_id": f"leaps-{horizon}-{index}",
+                    "asset": "option",
+                    "execution_profile": "leaps_swing",
+                    "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
+                    "horizon_sessions": horizon,
+                    "entry_time": entry.isoformat(),
+                    "pnl_pct": raw_return,
+                    "slippage_assumption_pct": slippage,
+                    "pnl_pct_after_slippage": after_cost,
+                    "excess_vs_spy_pct": after_cost - 0.002,
+                    "spread_pct": 0.004,
+                    "is_scored": True,
+                    "is_independent": True,
+                    "eligible_for_executable_metrics": True,
+                    "eligible_for_shadow_metrics": True,
+                    "outcome_quality": quality,
+                    "resolution_status": "scored",
+                    "resolution_reason": "",
+                    "independent_key": f"leaps_swing|option|T{index}|long_call|{entry.date()}",
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -84,9 +88,7 @@ def test_complete_profile_specific_evidence_must_pass_every_horizon():
 
 
 def _horizon_requirement(report: dict, horizon: int, code: str) -> dict:
-    verdict = next(
-        row for row in report["horizons"] if row["horizon_sessions"] == horizon
-    )
+    verdict = next(row for row in report["horizons"] if row["horizon_sessions"] == horizon)
     return next(row for row in verdict["requirements"] if row["code"] == code)
 
 
@@ -177,10 +179,18 @@ def test_profile_is_part_of_fixed_horizon_independence_identity():
         "suggested_contracts": 1,
         "strategy_qualified_pre_guard": True,
     }
-    prepared = fixed_horizon.prepare_signals(pd.DataFrame([
-        {**base, "execution_profile": "swing_execution"},
-        {**base, "execution_profile": "leaps_swing", "strategy_evidence_lane": LEAPS_EVIDENCE_LANE},
-    ]))
+    prepared = fixed_horizon.prepare_signals(
+        pd.DataFrame(
+            [
+                {**base, "execution_profile": "swing_execution"},
+                {
+                    **base,
+                    "execution_profile": "leaps_swing",
+                    "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
+                },
+            ]
+        )
+    )
     assert len(prepared) == 2
     assert prepared["signal_id"].nunique() == 2
     assert prepared["independent_key"].nunique() == 2

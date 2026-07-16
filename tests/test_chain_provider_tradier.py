@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import chain_provider
-import data_provider
+import chain_provider  # noqa: E402
+import data_provider  # noqa: E402
 
 
 class _Resp:
@@ -32,36 +32,44 @@ class _Session:
             return _Resp({"expirations": {"date": ["2026-06-18", "2026-07-17"]}})
         if url.endswith("/markets/options/chains"):
             exp = params["expiration"]
-            return _Resp({
-                "options": {
-                    "option": [
-                        {
-                            "symbol": f"AAPL{exp[2:4]}{exp[5:7]}{exp[8:10]}C00280000",
-                            "option_type": "call",
-                            "strike": 280,
-                            "bid": 1.1,
-                            "ask": 1.3,
-                            "last": None,
-                            "volume": 10,
-                            "open_interest": 200,
-                            "underlying_price": 300.0,
-                            "greeks": {"delta": 0.42, "gamma": 0.01, "theta": -0.02, "vega": 0.1, "mid_iv": 0.35},
-                        },
-                        {
-                            "symbol": f"AAPL{exp[2:4]}{exp[5:7]}{exp[8:10]}P00280000",
-                            "option_type": "put",
-                            "strike": 280,
-                            "bid": 0.9,
-                            "ask": 1.0,
-                            "last": 0.95,
-                            "volume": 8,
-                            "open_interest": 150,
-                            "underlying_price": 300.0,
-                            "greeks": {"delta": -0.28, "smv_vol": 0.33},
-                        },
-                    ]
+            return _Resp(
+                {
+                    "options": {
+                        "option": [
+                            {
+                                "symbol": f"AAPL{exp[2:4]}{exp[5:7]}{exp[8:10]}C00280000",
+                                "option_type": "call",
+                                "strike": 280,
+                                "bid": 1.1,
+                                "ask": 1.3,
+                                "last": None,
+                                "volume": 10,
+                                "open_interest": 200,
+                                "underlying_price": 300.0,
+                                "greeks": {
+                                    "delta": 0.42,
+                                    "gamma": 0.01,
+                                    "theta": -0.02,
+                                    "vega": 0.1,
+                                    "mid_iv": 0.35,
+                                },
+                            },
+                            {
+                                "symbol": f"AAPL{exp[2:4]}{exp[5:7]}{exp[8:10]}P00280000",
+                                "option_type": "put",
+                                "strike": 280,
+                                "bid": 0.9,
+                                "ask": 1.0,
+                                "last": 0.95,
+                                "volume": 8,
+                                "open_interest": 150,
+                                "underlying_price": 300.0,
+                                "greeks": {"delta": -0.28, "smv_vol": 0.33},
+                            },
+                        ]
+                    }
                 }
-            })
+            )
         raise AssertionError(f"unexpected url {url}")
 
 
@@ -72,44 +80,54 @@ class _YahooSession:
     def get(self, url, params=None, headers=None, timeout=None):
         self.calls.append((url, params, headers, timeout))
         exp = 1781740800 if not params else int(params["date"])
-        return _Resp({
-            "optionChain": {
-                "result": [{
-                    "quote": {
-                        "regularMarketPrice": 300.0,
-                        "trailingAnnualDividendYield": 0.005,
-                    },
-                    "expirationDates": [1781740800, 1784332800],
-                    "options": [{
-                        "expirationDate": exp,
-                        "calls": [{
-                            "contractSymbol": "AAPL260618C00280000",
-                            "strike": 280,
-                            "bid": 1.1,
-                            "ask": 1.3,
-                            "lastPrice": None,
-                            "volume": 10,
-                            "openInterest": 200,
-                            "impliedVolatility": 0.35,
-                            "inTheMoney": True,
-                            "lastTradeDate": 1779210000,
-                        }],
-                        "puts": [{
-                            "contractSymbol": "AAPL260618P00280000",
-                            "strike": 280,
-                            "bid": 0.9,
-                            "ask": 1.0,
-                            "lastPrice": 0.95,
-                            "volume": 8,
-                            "openInterest": 150,
-                            "impliedVolatility": 0.33,
-                            "inTheMoney": False,
-                        }],
-                    }],
-                }],
-                "error": None,
+        return _Resp(
+            {
+                "optionChain": {
+                    "result": [
+                        {
+                            "quote": {
+                                "regularMarketPrice": 300.0,
+                                "trailingAnnualDividendYield": 0.005,
+                            },
+                            "expirationDates": [1781740800, 1784332800],
+                            "options": [
+                                {
+                                    "expirationDate": exp,
+                                    "calls": [
+                                        {
+                                            "contractSymbol": "AAPL260618C00280000",
+                                            "strike": 280,
+                                            "bid": 1.1,
+                                            "ask": 1.3,
+                                            "lastPrice": None,
+                                            "volume": 10,
+                                            "openInterest": 200,
+                                            "impliedVolatility": 0.35,
+                                            "inTheMoney": True,
+                                            "lastTradeDate": 1779210000,
+                                        }
+                                    ],
+                                    "puts": [
+                                        {
+                                            "contractSymbol": "AAPL260618P00280000",
+                                            "strike": 280,
+                                            "bid": 0.9,
+                                            "ask": 1.0,
+                                            "lastPrice": 0.95,
+                                            "volume": 8,
+                                            "openInterest": 150,
+                                            "impliedVolatility": 0.33,
+                                            "inTheMoney": False,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                    "error": None,
+                }
             }
-        })
+        )
 
 
 class _FailingYahooSession:
@@ -133,16 +151,18 @@ class _FakeYfTicker:
                 "trailingAnnualDividendYield": 0.005,
             },
             "expirationDate": exp,
-            "calls": [{
-                "contractSymbol": f"AAPL260618C00{strike}000",
-                "strike": strike,
-                "bid": 1.1,
-                "ask": 1.3,
-                "lastPrice": None,
-                "volume": 10,
-                "openInterest": 200,
-                "impliedVolatility": 0.35,
-            }],
+            "calls": [
+                {
+                    "contractSymbol": f"AAPL260618C00{strike}000",
+                    "strike": strike,
+                    "bid": 1.1,
+                    "ask": 1.3,
+                    "lastPrice": None,
+                    "volume": 10,
+                    "openInterest": 200,
+                    "impliedVolatility": 0.35,
+                }
+            ],
             "puts": [],
         }
 
@@ -237,15 +257,21 @@ def test_fetch_chain_records_free_provider_diagnostics():
             "spot": 450.0,
             "div_yield": 0.0,
             "expirations": ["2026-09-18"],
-            "chains": {"2026-09-18": pd.DataFrame([{
-                "strike": 450,
-                "side": "call",
-                "bid": 5.0,
-                "ask": 5.2,
-                "lastPrice": 5.1,
-                "volume": 10,
-                "openInterest": 200,
-            }])},
+            "chains": {
+                "2026-09-18": pd.DataFrame(
+                    [
+                        {
+                            "strike": 450,
+                            "side": "call",
+                            "bid": 5.0,
+                            "ask": 5.2,
+                            "lastPrice": 5.1,
+                            "volume": 10,
+                            "openInterest": 200,
+                        }
+                    ]
+                )
+            },
             "source": f"nasdaq_{asset_class}",
             "quote_quality": "free_or_delayed",
             "data_delay": "delayed",
@@ -315,15 +341,21 @@ def test_fetch_chain_uses_yahoo_options_before_yfinance():
         "spot": 300.0,
         "div_yield": 0.0,
         "expirations": ["2026-06-18"],
-        "chains": {"2026-06-18": pd.DataFrame([{
-            "strike": 280,
-            "side": "call",
-            "bid": 1.0,
-            "ask": 1.2,
-            "lastPrice": 1.1,
-            "volume": 5,
-            "openInterest": 100,
-        }])},
+        "chains": {
+            "2026-06-18": pd.DataFrame(
+                [
+                    {
+                        "strike": 280,
+                        "side": "call",
+                        "bid": 1.0,
+                        "ask": 1.2,
+                        "lastPrice": 1.1,
+                        "volume": 5,
+                        "openInterest": 100,
+                    }
+                ]
+            )
+        },
         "source": "yahoo_options",
         "quote_quality": "free_or_delayed",
         "data_delay": "delayed_or_research",

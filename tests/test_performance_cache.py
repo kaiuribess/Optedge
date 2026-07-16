@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 
 def test_ram_cache_serves_values_before_disk_roundtrip():

@@ -6,8 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import trading_halts
-
+from engines import trading_halts  # noqa: E402
 
 SAMPLE_RSS = """<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:ndaq="http://www.nasdaqtrader.com/">

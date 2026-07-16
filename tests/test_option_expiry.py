@@ -1,5 +1,6 @@
 # Purpose: Test option expiry with verified settlement evidence.
 """Deterministic tests for expiration-session option valuation."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backtest.option_expiry import (  # noqa: E402, I001
-    expiry_exit_time, resolve_expiry_valuations, valuation_key,
+    expiry_exit_time,
+    resolve_expiry_valuations,
+    valuation_key,
 )
 
 
@@ -58,7 +61,9 @@ def test_expiry_intrinsic_uses_underlying_close_on_expiration_session():
 
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=fetcher,
+            [position],
+            asof=ASOF,
+            history_fetcher=fetcher,
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -78,7 +83,9 @@ def test_expiry_intrinsic_allows_prior_session_for_market_holiday():
 
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=fetcher,
+            [position],
+            asof=ASOF,
+            history_fetcher=fetcher,
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -98,7 +105,9 @@ def test_expiry_intrinsic_stale_gap_remains_telemetry_but_not_validation():
 
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=fetcher,
+            [position],
+            asof=ASOF,
+            history_fetcher=fetcher,
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -118,19 +127,34 @@ def test_exact_non_interpolated_option_bar_is_fallback_when_underlying_missing()
     position = _position()
     with tempfile.TemporaryDirectory() as td:
         snapshot = Path(td) / "option_history.json"
-        snapshot.write_text(json.dumps({
-            "schema": "optedge_robinhood_option_history_snapshot_v1",
-            "contracts": [{
-                "symbol": "AAPL", "expiry": "2026-06-18", "side": "call",
-                "strike": 200.0, "instrument_id": "option-aapl",
-                "bars": [{
-                    "begins_at": "2026-06-18T00:00:00Z",
-                    "close_price": 1.25, "interpolated": False,
-                }],
-            }],
-        }), encoding="utf-8")
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "schema": "optedge_robinhood_option_history_snapshot_v1",
+                    "contracts": [
+                        {
+                            "symbol": "AAPL",
+                            "expiry": "2026-06-18",
+                            "side": "call",
+                            "strike": 200.0,
+                            "instrument_id": "option-aapl",
+                            "bars": [
+                                {
+                                    "begins_at": "2026-06-18T00:00:00Z",
+                                    "close_price": 1.25,
+                                    "interpolated": False,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
+            [position],
+            asof=ASOF,
+            history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
             option_history_path=snapshot,
         )
     row = values[valuation_key(position)]
@@ -146,18 +170,32 @@ def test_interpolated_option_bar_does_not_create_expiry_pnl():
     position = _position()
     with tempfile.TemporaryDirectory() as td:
         snapshot = Path(td) / "option_history.json"
-        snapshot.write_text(json.dumps({
-            "contracts": [{
-                "symbol": "AAPL", "expiry": "2026-06-18", "side": "call",
-                "strike": 200.0,
-                "bars": [{
-                    "begins_at": "2026-06-18T00:00:00Z",
-                    "close_price": 1.25, "interpolated": True,
-                }],
-            }],
-        }), encoding="utf-8")
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "contracts": [
+                        {
+                            "symbol": "AAPL",
+                            "expiry": "2026-06-18",
+                            "side": "call",
+                            "strike": 200.0,
+                            "bars": [
+                                {
+                                    "begins_at": "2026-06-18T00:00:00Z",
+                                    "close_price": 1.25,
+                                    "interpolated": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
+            [position],
+            asof=ASOF,
+            history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
             option_history_path=snapshot,
         )
     row = values[valuation_key(position)]
@@ -180,7 +218,9 @@ def test_am_settled_index_never_uses_four_pm_close_for_validation():
 
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=fetcher,
+            [position],
+            asof=ASOF,
+            history_fetcher=fetcher,
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -208,7 +248,9 @@ def test_official_index_settlement_value_can_be_validation_eligible():
     )
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
+            [position],
+            asof=ASOF,
+            history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -233,7 +275,9 @@ def test_official_settlement_without_explicit_verified_true_remains_telemetry():
     )
     with tempfile.TemporaryDirectory() as td:
         values = resolve_expiry_valuations(
-            [position], asof=ASOF, history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
+            [position],
+            asof=ASOF,
+            history_fetcher=lambda *_args, **_kwargs: pd.DataFrame(),
             option_history_path=Path(td) / "missing.json",
         )
     row = values[valuation_key(position)]
@@ -275,7 +319,8 @@ def test_adjusted_or_unverified_close_contracts_remain_telemetry_only():
     for position, history, expected_reason in cases:
         with tempfile.TemporaryDirectory() as td:
             values = resolve_expiry_valuations(
-                [position], asof=ASOF,
+                [position],
+                asof=ASOF,
                 history_fetcher=lambda *_args, _history=history, **_kwargs: _history,
                 option_history_path=Path(td) / "missing.json",
             )
@@ -294,7 +339,8 @@ def test_date_only_expiry_exit_time_is_new_york_session_close():
 
 if __name__ == "__main__":
     tests = [
-        value for name, value in sorted(globals().items())
+        value
+        for name, value in sorted(globals().items())
         if name.startswith("test_") and callable(value)
     ]
     for test in tests:

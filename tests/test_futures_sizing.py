@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backtest.futures_sizing import add_sizing_to_futures
+from backtest.futures_sizing import add_sizing_to_futures  # noqa: E402
 
 
 def test_futures_sizing_prefers_micro_when_full_contract_too_large():

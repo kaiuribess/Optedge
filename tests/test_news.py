@@ -1,16 +1,17 @@
 # Purpose: Test resilient news feeds with source context.
 """Direct-run tests for the no-key news RSS engine."""
+
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import news
+from engines import news  # noqa: E402
 
 
 class _FakeResponse:
@@ -58,7 +59,7 @@ def _with_fake_provider(session: _FakeSession, func):
     old_get_session = news.data_provider.get_session
     old_time = news.time.time
     stored = {}
-    fixed_now = datetime(2026, 6, 14, 19, 0, tzinfo=timezone.utc).timestamp()
+    fixed_now = datetime(2026, 6, 14, 19, 0, tzinfo=UTC).timestamp()
     try:
         news.data_provider.cache_get = lambda *args, **kwargs: None
         news.data_provider.cache_put = lambda key, value: stored.update({key: value})

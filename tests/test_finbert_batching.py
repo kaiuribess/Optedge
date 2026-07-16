@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import finbert
+from engines import finbert  # noqa: E402
 
 
 def test_finbert_scores_all_tickers_in_one_batched_call():
@@ -28,11 +28,13 @@ def test_finbert_scores_all_tickers_in_one_batched_call():
         finbert._score_texts = fake_score
         finbert._DEVICE = "cuda"
         os.environ["OPTEDGE_FINBERT_BATCH_SIZE"] = "7"
-        df = pd.DataFrame([
-            {"ticker": "AAPL", "top_headline": "Apple raises guidance"},
-            {"ticker": "AAPL", "top_headline": "Apple demand improves"},
-            {"ticker": "TSLA", "top_headline": "Tesla margins fall"},
-        ])
+        df = pd.DataFrame(
+            [
+                {"ticker": "AAPL", "top_headline": "Apple raises guidance"},
+                {"ticker": "AAPL", "top_headline": "Apple demand improves"},
+                {"ticker": "TSLA", "top_headline": "Tesla margins fall"},
+            ]
+        )
 
         out = finbert.run(df, per_ticker_cap=5)
     finally:

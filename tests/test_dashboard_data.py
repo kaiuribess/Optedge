@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dashboard import build as dashboard_build
+from dashboard import build as dashboard_build  # noqa: E402
 
 
 def _sample_option_row(**extra):
@@ -73,19 +73,29 @@ def test_dashboard_helpers_dedupe_and_label_positions():
 
 def test_option_card_and_table_show_quote_quality():
     live_row = _sample_option_row(
-        chain_source="tradier", quote_quality="live_or_broker",
-        buyer_edge_pct=0.10, pricing_direction="underpriced_after_spread",
+        chain_source="tradier",
+        quote_quality="live_or_broker",
+        buyer_edge_pct=0.10,
+        pricing_direction="underpriced_after_spread",
         trade_gate_reason="passed",
     )
-    fallback_row = _sample_option_row(ticker="MSFT", chain_source="yfinance", quote_quality="free_or_delayed")
-    yahoo_row = _sample_option_row(ticker="NVDA", chain_source="yahoo_options", quote_quality="free_or_delayed")
+    fallback_row = _sample_option_row(
+        ticker="MSFT", chain_source="yfinance", quote_quality="free_or_delayed"
+    )
+    yahoo_row = _sample_option_row(
+        ticker="NVDA", chain_source="yahoo_options", quote_quality="free_or_delayed"
+    )
 
     card_html = dashboard_build._option_card(live_row)
-    table_html = dashboard_build._options_table(dashboard_build.pd.DataFrame([
-        live_row,
-        fallback_row,
-        yahoo_row,
-    ]))
+    table_html = dashboard_build._options_table(
+        dashboard_build.pd.DataFrame(
+            [
+                live_row,
+                fallback_row,
+                yahoo_row,
+            ]
+        )
+    )
 
     assert "Live Tradier" in card_html
     assert "buyer edge +10.0%" in card_html
@@ -98,7 +108,8 @@ def test_option_card_and_table_show_quote_quality():
 
 def test_option_card_hides_position_size_for_non_actionable_pricing():
     row = _sample_option_row(
-        trade_status="Watch", buyer_edge_pct=-0.20,
+        trade_status="Watch",
+        buyer_edge_pct=-0.20,
         pricing_direction="overpriced_after_spread",
         trade_gate_reason="negative_buyer_edge_after_spread",
     )
@@ -212,18 +223,27 @@ def test_dashboard_performance_prefers_validation_over_forward_telemetry():
             "max_drawdown": -0.03,
         },
         "assets": {
-            "option": {"open_positions": 3, "closed_positions": 2, "win_rate": 0.5, "avg_return": 0.1},
+            "option": {
+                "open_positions": 3,
+                "closed_positions": 2,
+                "win_rate": 0.5,
+                "avg_return": 0.1,
+            },
             "share": {"open_positions": 1, "closed_positions": 0},
             "futures": {"open_positions": 0, "closed_positions": 0},
         },
         "fixed_horizon": {
             "headline_horizon_sessions": 10,
             "headline": {
-                "n": 0, "unique_entry_days": 0,
+                "n": 0,
+                "unique_entry_days": 0,
             },
             "headline_shadow": {
-                "n": 8, "unique_entry_days": 3, "win_rate": 0.625,
-                "avg_return": 0.04, "avg_excess_vs_spy": 0.02,
+                "n": 8,
+                "unique_entry_days": 3,
+                "win_rate": 0.625,
+                "avg_return": 0.04,
+                "avg_excess_vs_spy": 0.02,
             },
         },
     }
@@ -234,8 +254,8 @@ def test_dashboard_performance_prefers_validation_over_forward_telemetry():
 
     html = dashboard_build._performance_panel(forward, validation)
     assert "lifecycle validation" in html
-    assert "<span class=\"val\">4</span>" in html
-    assert "<span class=\"val\">2</span>" in html
+    assert '<span class="val">4</span>' in html
+    assert '<span class="val">2</span>' in html
     assert "999" not in html
     assert "Independent 10-session evidence" in html
     assert "n=8 / 3 days" in html
@@ -252,8 +272,20 @@ def test_dashboard_engine_panels_are_merged_into_one_section():
         },
         engine_health={
             "engines": [
-                {"engine": "news", "health_score": 90, "hit_rate": 0.9, "ok_rate": 1.0, "avg_elapsed": 2.0},
-                {"engine": "insider", "health_score": 65, "hit_rate": 0.6, "ok_rate": 0.9, "avg_elapsed": 5.0},
+                {
+                    "engine": "news",
+                    "health_score": 90,
+                    "hit_rate": 0.9,
+                    "ok_rate": 1.0,
+                    "avg_elapsed": 2.0,
+                },
+                {
+                    "engine": "insider",
+                    "health_score": 65,
+                    "hit_rate": 0.6,
+                    "ok_rate": 0.9,
+                    "avg_elapsed": 5.0,
+                },
             ]
         },
         v20_factors={},
@@ -273,28 +305,35 @@ def test_dashboard_section_labels_are_not_mislabeled_as_analyst_only():
     assert "Live Signal Analytics" in analytics_html
     assert "Analyst Live Analytics" not in analytics_html
 
-    performance_html = dashboard_build._performance_panel(None, {
-        "open_positions": 0,
-        "closed_positions": 0,
-        "overall": {},
-        "assets": {},
-    })
+    performance_html = dashboard_build._performance_panel(
+        None,
+        {
+            "open_positions": 0,
+            "closed_positions": 0,
+            "overall": {},
+            "assets": {},
+        },
+    )
     assert "Signal Performance Tracking" in performance_html
     assert "Analyst Performance Tracking" not in performance_html
 
-    analyst_html = dashboard_build._analyst_panel(dashboard_build.pd.DataFrame([
-        {
-            "ticker": "AAPL",
-            "analyst_total": 8,
-            "analyst_score": 1.2,
-            "analyst_momentum": 1,
-            "analyst_strong_buy": 2,
-            "analyst_buy": 4,
-            "analyst_hold": 2,
-            "analyst_sell": 0,
-            "analyst_strong_sell": 0,
-        }
-    ]))
+    analyst_html = dashboard_build._analyst_panel(
+        dashboard_build.pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL",
+                    "analyst_total": 8,
+                    "analyst_score": 1.2,
+                    "analyst_momentum": 1,
+                    "analyst_strong_buy": 2,
+                    "analyst_buy": 4,
+                    "analyst_hold": 2,
+                    "analyst_sell": 0,
+                    "analyst_strong_sell": 0,
+                }
+            ]
+        )
+    )
     assert "Analyst Recommendations" in analyst_html
     assert "Analyst Analyst Recommendations" not in analyst_html
 

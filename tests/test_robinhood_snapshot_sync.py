@@ -201,35 +201,39 @@ def test_direct_sync_resolves_option_instrument_ids_from_live_schema(tmp_path: P
     manager = FakeManager()
     manager.responses["get_option_positions"] = _page(
         "positions",
-        [{
-            "average_price": "1.25",
-            "chain_id": "chain-1",
-            "chain_symbol": "AAPL",
-            "expiration_date": "2027-01-15",
-            "option_id": "option-1",
-            "quantity": "1.00",
-            "pending_buy_quantity": "0.00",
-            "pending_sell_quantity": "0.00",
-            "pending_assignment_quantity": "0.00",
-            "pending_exercise_quantity": "0.00",
-            "pending_expiration_quantity": "0.00",
-            "trade_value_multiplier": "100.00",
-            "type": "long",
-        }],
+        [
+            {
+                "average_price": "1.25",
+                "chain_id": "chain-1",
+                "chain_symbol": "AAPL",
+                "expiration_date": "2027-01-15",
+                "option_id": "option-1",
+                "quantity": "1.00",
+                "pending_buy_quantity": "0.00",
+                "pending_sell_quantity": "0.00",
+                "pending_assignment_quantity": "0.00",
+                "pending_exercise_quantity": "0.00",
+                "pending_expiration_quantity": "0.00",
+                "trade_value_multiplier": "100.00",
+                "type": "long",
+            }
+        ],
     )
     manager.responses["get_option_instruments"] = _page(
         "instruments",
-        [{
-            "id": "option-1",
-            "chain_id": "chain-1",
-            "chain_symbol": "AAPL",
-            "expiration_date": "2027-01-15",
-            "strike_price": "200.00",
-            "type": "call",
-            "state": "active",
-            "tradability": "tradable",
-            "underlying_type": "equity",
-        }],
+        [
+            {
+                "id": "option-1",
+                "chain_id": "chain-1",
+                "chain_symbol": "AAPL",
+                "expiration_date": "2027-01-15",
+                "strike_price": "200.00",
+                "type": "call",
+                "state": "active",
+                "tradability": "tradable",
+                "underlying_type": "equity",
+            }
+        ],
     )
 
     result = sync_robinhood_broker_snapshot(

@@ -1,5 +1,6 @@
 # Purpose: Test predictor evidence freshness and diversity gates.
 """Regression tests for adaptive predictor and runtime-weight trust guards."""
+
 from __future__ import annotations
 
 import json
@@ -21,22 +22,31 @@ from backtest import predictor  # noqa: E402
 def _outcomes(samples: int, days: int) -> pd.DataFrame:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     values = np.linspace(-1.0, 1.0, samples)
-    frame = pd.DataFrame({
-        "asset": "share",
-        "entry_time": [(start + timedelta(days=index % days)).isoformat()
-                       for index in range(samples)],
-        "pnl_pct": values * 0.05,
-        "pnl_pct_after_slippage": values * 0.05 - 0.01,
-    })
+    frame = pd.DataFrame(
+        {
+            "asset": "share",
+            "entry_time": [
+                (start + timedelta(days=index % days)).isoformat() for index in range(samples)
+            ],
+            "pnl_pct": values * 0.05,
+            "pnl_pct_after_slippage": values * 0.05 - 0.01,
+        }
+    )
     for column in predictor.Z_COLS:
         frame[column] = 0.0
     frame["z_mispricing"] = values
     return frame
 
 
-def _write_runtime(path: Path, weights: dict, *, generated_at: datetime,
-                   samples: int = 500, days: int = 320,
-                   latest_outcome_at: datetime | None = None) -> None:
+def _write_runtime(
+    path: Path,
+    weights: dict,
+    *,
+    generated_at: datetime,
+    samples: int = 500,
+    days: int = 320,
+    latest_outcome_at: datetime | None = None,
+) -> None:
     metadata = {
         "schema": predictor.RUNTIME_WEIGHT_CHAMPION_SCHEMA,
         "trust_state": predictor.TRUSTED_CHAMPION,
@@ -69,9 +79,7 @@ def _write_runtime(path: Path, weights: dict, *, generated_at: datetime,
             "cost_stress_2x_mean_by_asset": {"share": 0.001, "option": 0.001},
         },
     }
-    metadata["content_digest_sha256"] = predictor._runtime_content_digest(
-        weights, metadata
-    )
+    metadata["content_digest_sha256"] = predictor._runtime_content_digest(weights, metadata)
     path.write_text(
         f"RUNTIME_WEIGHT_META = {metadata!r}\nSIGNAL_WEIGHTS = {weights!r}\n",
         encoding="utf-8",
@@ -125,12 +133,14 @@ def test_insufficient_history_does_not_persist_runtime_override():
         runtime_path = Path(temp_dir) / "config_runtime.py"
         predictor.RUNTIME_CONFIG_PATH = runtime_path
         try:
-            historical_ic = pd.DataFrame({
-                "horizon_days": [7],
-                "factor": ["value_score"],
-                "ic": [0.9],
-                "n": [9999],
-            })
+            historical_ic = pd.DataFrame(
+                {
+                    "horizon_days": [7],
+                    "factor": ["value_score"],
+                    "ic": [0.9],
+                    "n": [9999],
+                }
+            )
             result = predictor.update_runtime_weights(_outcomes(600, 7), historical_ic)
             assert result is None
             assert not runtime_path.exists()
@@ -143,12 +153,14 @@ def test_predictor_does_not_fit_or_bootstrap_from_weak_history():
         old_path = predictor.COEFS_PATH
         predictor.COEFS_PATH = Path(temp_dir) / "predictor.json"
         try:
-            historical_ic = pd.DataFrame({
-                "horizon_days": [7],
-                "factor": ["value_score"],
-                "spread": [0.9],
-                "n": [9999],
-            })
+            historical_ic = pd.DataFrame(
+                {
+                    "horizon_days": [7],
+                    "factor": ["value_score"],
+                    "spread": [0.9],
+                    "n": [9999],
+                }
+            )
             payload = predictor.fit_return_predictor(_outcomes(600, 7), historical_ic)
             assert payload["meta"]["source"] == "zero_init"
             assert payload["meta"]["reason"] == "insufficient_walk_forward_history"
@@ -274,9 +286,7 @@ def test_model_trust_status_exposes_safe_defaults_without_promoted_artifacts():
 def test_runtime_status_accepts_fresh_diversified_full_coverage_file():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "config_runtime.py"
-        weights = predictor._normalize_and_cap_weights(
-            predictor._configured_signal_weights()
-        )
+        weights = predictor._normalize_and_cap_weights(predictor._configured_signal_weights())
         now = datetime.now(UTC)
         _write_runtime(path, weights, generated_at=now)
         status = predictor.runtime_weight_status(path)
@@ -288,9 +298,7 @@ def test_runtime_status_accepts_fresh_diversified_full_coverage_file():
 def test_runtime_persistence_helper_writes_untrusted_shadow_by_default():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "config_runtime.py"
-        weights = predictor._normalize_and_cap_weights(
-            predictor._configured_signal_weights()
-        )
+        weights = predictor._normalize_and_cap_weights(predictor._configured_signal_weights())
         predictor._persist_runtime_weights(
             weights,
             source="research_test",
@@ -310,9 +318,7 @@ def test_runtime_persistence_helper_writes_untrusted_shadow_by_default():
 def test_runtime_champion_digest_detects_weight_tampering():
     with tempfile.TemporaryDirectory() as temp_dir:
         path = Path(temp_dir) / "config_runtime.py"
-        weights = predictor._normalize_and_cap_weights(
-            predictor._configured_signal_weights()
-        )
+        weights = predictor._normalize_and_cap_weights(predictor._configured_signal_weights())
         _write_runtime(path, weights, generated_at=datetime.now(UTC))
         assignments = predictor._literal_assignments(
             path, {"SIGNAL_WEIGHTS", "RUNTIME_WEIGHT_META"}
@@ -340,7 +346,9 @@ def test_runtime_status_rejects_stale_concentrated_and_incomplete_files():
         stale = root / "stale.py"
         _write_runtime(stale, priors, generated_at=now - timedelta(days=30))
         assert not predictor.runtime_weight_status(stale)["usable"]
-        assert any("days old" in reason for reason in predictor.runtime_weight_status(stale)["reasons"])
+        assert any(
+            "days old" in reason for reason in predictor.runtime_weight_status(stale)["reasons"]
+        )
 
         stale_outcomes = root / "stale_outcomes.py"
         _write_runtime(
@@ -388,8 +396,10 @@ def test_runtime_status_rejects_legacy_and_malformed_files():
         malformed = root / "malformed.py"
         malformed.write_text("SIGNAL_WEIGHTS = {\n", encoding="utf-8")
         assert predictor.load_runtime_weights(malformed) is None
-        assert any("malformed" in reason for reason in
-                   predictor.runtime_weight_status(malformed)["reasons"])
+        assert any(
+            "malformed" in reason
+            for reason in predictor.runtime_weight_status(malformed)["reasons"]
+        )
 
 
 def test_adaptive_outcomes_exclude_same_scan_dynamic_churn():
@@ -413,9 +423,7 @@ def test_adaptive_outcomes_exclude_same_scan_dynamic_churn():
                 "z_mispricing": 1.0,
             },
         ]
-        (data_dir / "closed_positions.json").write_text(
-            json.dumps(rows), encoding="utf-8"
-        )
+        (data_dir / "closed_positions.json").write_text(json.dumps(rows), encoding="utf-8")
         outcomes = predictor.load_adaptive_outcomes(data_dir)
         assert outcomes["position_id"].tolist() == ["swing"]
         assert abs(float(outcomes.iloc[0]["pnl_pct_after_slippage"]) - 0.06) < 1e-9
@@ -434,8 +442,11 @@ def test_learned_weights_preserve_full_factor_set_and_ignore_negative_coefficien
 
 
 if __name__ == "__main__":
-    tests = [value for name, value in sorted(globals().items())
-             if name.startswith("test_") and callable(value)]
+    tests = [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
     for test in tests:
         test()
     print(f"predictor guard tests passed ({len(tests)})")

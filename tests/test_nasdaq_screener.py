@@ -7,8 +7,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from engines import nasdaq_screener
+import data_provider  # noqa: E402
+from engines import nasdaq_screener  # noqa: E402
 
 
 class _Resp:

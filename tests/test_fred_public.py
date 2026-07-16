@@ -6,17 +6,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import fred_public
+from engines import fred_public  # noqa: E402
 
 
 class _FakeResponse:
     status_code = 200
-    text = (
-        "observation_date,DGS10\n"
-        "2026-05-28,4.45\n"
-        "2026-05-29,.\n"
-        "2026-06-01,4.50\n"
-    )
+    text = "observation_date,DGS10\n2026-05-28,4.45\n2026-05-29,.\n2026-06-01,4.50\n"
 
 
 class _FakeSession:
@@ -46,7 +41,9 @@ def test_fred_csv_history_parses_keyless_public_csv(monkeypatch=None):
     monkeypatch = monkeypatch or _MonkeyPatch()
     stored = {}
     monkeypatch.setattr(fred_public.data_provider, "cache_get", lambda *args, **kwargs: None)
-    monkeypatch.setattr(fred_public.data_provider, "cache_put", lambda key, value: stored.update({key: value}))
+    monkeypatch.setattr(
+        fred_public.data_provider, "cache_put", lambda key, value: stored.update({key: value})
+    )
     monkeypatch.setattr(fred_public.data_provider, "get_session", lambda: _FakeSession())
 
     try:

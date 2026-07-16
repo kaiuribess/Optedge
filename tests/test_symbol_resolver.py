@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import scripts.symbol_resolver as resolver
+import scripts.symbol_resolver as resolver  # noqa: E402
 
 
 def resolve_symbol(query):
@@ -57,12 +57,14 @@ def test_resolver_uses_yahoo_for_long_uppercase_company_name():
     old_nasdaq = resolver.nasdaq_symbol_search
     resolver.nasdaq_symbol_search = lambda query, limit=8, timeout=8.0, fetch_if_stale=True: []
     old = resolver.yahoo_search
-    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
-        "symbol": "NVDA",
-        "name": "NVIDIA Corporation",
-        "exchange": "NMS",
-        "type": "EQUITY",
-    }]
+    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [
+        {
+            "symbol": "NVDA",
+            "name": "NVIDIA Corporation",
+            "exchange": "NMS",
+            "type": "EQUITY",
+        }
+    ]
     try:
         res = resolve_symbol("NVIDIA")
         assert res["symbol"] == "NVDA"
@@ -79,18 +81,22 @@ def test_resolver_uses_sec_company_tickers_before_yahoo():
     old_sec = resolver.sec_company_search
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
-    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [{
-        "symbol": "SNOW",
-        "name": "Snowflake Inc.",
-        "exchange": None,
-        "type": "EQUITY",
-        "score": 0.97,
-    }]
-    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
-        "symbol": "WRONG",
-        "name": "Wrong Result Inc.",
-        "type": "EQUITY",
-    }]
+    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [
+        {
+            "symbol": "SNOW",
+            "name": "Snowflake Inc.",
+            "exchange": None,
+            "type": "EQUITY",
+            "score": 0.97,
+        }
+    ]
+    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [
+        {
+            "symbol": "WRONG",
+            "name": "Wrong Result Inc.",
+            "type": "EQUITY",
+        }
+    ]
     try:
         res = resolve_symbol("Snowflake")
         assert res["symbol"] == "SNOW"
@@ -109,18 +115,22 @@ def test_resolver_uses_nasdaq_directory_before_yahoo():
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
     resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: []
-    resolver.nasdaq_symbol_search = lambda query, limit=8, timeout=8.0, fetch_if_stale=True: [{
-        "symbol": "QQQ",
-        "name": "Invesco QQQ Trust",
-        "exchange": "NASDAQ Global Market",
-        "type": "ETF",
-        "score": 0.94,
-    }]
-    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [{
-        "symbol": "WRONG",
-        "name": "Wrong Result Inc.",
-        "type": "EQUITY",
-    }]
+    resolver.nasdaq_symbol_search = lambda query, limit=8, timeout=8.0, fetch_if_stale=True: [
+        {
+            "symbol": "QQQ",
+            "name": "Invesco QQQ Trust",
+            "exchange": "NASDAQ Global Market",
+            "type": "ETF",
+            "score": 0.94,
+        }
+    ]
+    resolver.yahoo_search = lambda query, limit=8, timeout=6.0: [
+        {
+            "symbol": "WRONG",
+            "name": "Wrong Result Inc.",
+            "type": "EQUITY",
+        }
+    ]
     try:
         res = resolve_symbol("Invesco QQQ Trust")
         assert res["symbol"] == "QQQ"
@@ -138,12 +148,14 @@ def test_resolver_uses_sec_for_company_name_option_request():
     old_sec = resolver.sec_company_search
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
-    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [{
-        "symbol": "SNOW",
-        "name": "Snowflake Inc.",
-        "type": "EQUITY",
-        "score": 0.97,
-    }]
+    resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: [
+        {
+            "symbol": "SNOW",
+            "name": "Snowflake Inc.",
+            "type": "EQUITY",
+            "score": 0.97,
+        }
+    ]
     resolver.yahoo_search = lambda query, limit=8, timeout=6.0: []
     try:
         res = resolve_symbol("Snowflake 20260618 C 200")
@@ -167,12 +179,14 @@ def test_resolver_uses_nasdaq_for_company_name_option_request():
     old_yahoo = resolver.yahoo_search
     resolver.COMMON_ALIASES = {}
     resolver.sec_company_search = lambda query, limit=8, timeout=6.0, fetch_if_stale=True: []
-    resolver.nasdaq_symbol_search = lambda query, limit=8, timeout=8.0, fetch_if_stale=True: [{
-        "symbol": "QQQ",
-        "name": "Invesco QQQ Trust",
-        "type": "ETF",
-        "score": 0.94,
-    }]
+    resolver.nasdaq_symbol_search = lambda query, limit=8, timeout=8.0, fetch_if_stale=True: [
+        {
+            "symbol": "QQQ",
+            "name": "Invesco QQQ Trust",
+            "type": "ETF",
+            "score": 0.94,
+        }
+    ]
     resolver.yahoo_search = lambda query, limit=8, timeout=6.0: []
     try:
         res = resolve_symbol("Invesco QQQ Trust 20261218 C 500")
@@ -193,12 +207,17 @@ def test_resolver_uses_nasdaq_for_company_name_option_request():
 def test_sec_company_search_scores_cached_rows():
     with tempfile.TemporaryDirectory() as td:
         cache = Path(td) / "sec_company_tickers.json"
-        cache.write_text(json.dumps({
-            "rows": [
-                {"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147},
-                {"symbol": "SNAP", "name": "Snap Inc.", "cik": 1564408},
-            ],
-        }), encoding="utf-8")
+        cache.write_text(
+            json.dumps(
+                {
+                    "rows": [
+                        {"symbol": "SNOW", "name": "Snowflake Inc.", "cik": 1640147},
+                        {"symbol": "SNAP", "name": "Snap Inc.", "cik": 1564408},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         old_cache = resolver.SEC_TICKER_CACHE
         old_fetch = resolver.fetch_sec_company_tickers
         resolver.SEC_TICKER_CACHE = cache
@@ -219,12 +238,17 @@ def test_sec_company_cache_meta_reports_missing_and_rows():
         assert missing["status"] == "missing"
         assert missing["exists"] is False
 
-        cache.write_text(json.dumps({
-            "rows": [
-                {"symbol": "SNOW", "name": "Snowflake Inc."},
-                {"symbol": "AAPL", "name": "Apple Inc."},
-            ],
-        }), encoding="utf-8")
+        cache.write_text(
+            json.dumps(
+                {
+                    "rows": [
+                        {"symbol": "SNOW", "name": "Snowflake Inc."},
+                        {"symbol": "AAPL", "name": "Apple Inc."},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         meta = resolver.sec_company_cache_meta(cache)
         assert meta["status"] == "fresh"
         assert meta["exists"] is True

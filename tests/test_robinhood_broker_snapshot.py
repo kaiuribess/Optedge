@@ -120,10 +120,10 @@ def _split_permission_mcp_bundle():
             "data": {
                 "total_value": "0",
                 "cash": "0",
-                    "buying_power": {
-                        "buying_power": "0.0000",
-                        "unleveraged_buying_power": "0.0000",
-                        "display_currency": "USD",
+                "buying_power": {
+                    "buying_power": "0.0000",
+                    "unleveraged_buying_power": "0.0000",
+                    "display_currency": "USD",
                 },
             },
         },
@@ -139,168 +139,193 @@ def _mcp_v2_bundle():
         "generated_at": datetime.now(UTC).isoformat(),
         "get_accounts": {
             "data": {
-                "accounts": [{
-                    "account_number": account_number,
-                    "rhs_account_number": "RHS99992222",
-                    "brokerage_account_type": "individual",
-                    "type": "cash",
-                    "nickname": "Agentic",
-                    "is_default": True,
-                    "state": "active",
-                    "deactivated": False,
-                    "permanently_deactivated": False,
-                    "agentic_allowed": True,
-                    "option_level": "option_level_2",
-                }],
+                "accounts": [
+                    {
+                        "account_number": account_number,
+                        "rhs_account_number": "RHS99992222",
+                        "brokerage_account_type": "individual",
+                        "type": "cash",
+                        "nickname": "Agentic",
+                        "is_default": True,
+                        "state": "active",
+                        "deactivated": False,
+                        "permanently_deactivated": False,
+                        "agentic_allowed": True,
+                        "option_level": "option_level_2",
+                    }
+                ],
             },
             "guide": "Decoded get_accounts result.",
         },
-        "account_snapshots": [{
-            "account_number": account_number,
-            "get_portfolio": {
-                "data": {
-                    "buying_power": {
-                        "buying_power": "800.00",
-                        "unleveraged_buying_power": "650.00",
-                        "display_currency": "USD",
-                    },
-                    "cash": "700.00",
-                    "currency": "USD",
-                    "equity_value": "1000.00",
-                    "options_value": "250.00",
-                    "crypto_value": "0.00",
-                    "event_contracts_value": "0.00",
-                    "fixed_income_value": "0.00",
-                    "futures_value": "0.00",
-                    "mutual_funds_value": "0.00",
-                    "pending_deposits": "0.00",
-                    "total_value": "1250.00",
-                },
-                "guide": "Decoded get_portfolio result.",
-            },
-            "get_equity_positions": [{
-                "data": {"positions": [], "next": None},
-                "guide": "Decoded get_equity_positions result.",
-            }],
-            "get_option_positions": {
-                "data": {
-                    "positions": [{
-                        "average_price": "1.25",
-                        "chain_id": "chain-uuid-1",
-                        "chain_symbol": "AAPL",
-                        "expiration_date": "2027-01-15",
-                        "intraday_average_open_price": "0.00",
-                        "intraday_quantity": "0.00",
-                        "opened_at": "2026-07-10T15:30:00+00:00",
-                        "option_id": option_id,
-                        "pending_assignment_quantity": "0.00",
-                        "pending_buy_quantity": "0.00",
-                        "pending_exercise_quantity": "0.00",
-                        "pending_expiration_quantity": "0.00",
-                        "pending_sell_quantity": "0.00",
-                        "quantity": "1.00",
-                        "trade_value_multiplier": "100.00",
-                        "type": "long",
-                    }],
-                    "next": None,
-                },
-                "guide": "Decoded get_option_positions result.",
-            },
-            # A list permits multiple exact MCP pages while preserving each response shape.
-            "get_option_instruments": [{
-                "data": {
-                    "instruments": [{
-                        "chain_id": "chain-uuid-1",
-                        "chain_symbol": "AAPL",
-                        "expiration_date": "2027-01-15",
-                        "id": option_id,
-                        "min_ticks": {
-                            "above_tick": "0.05",
-                            "below_tick": "0.01",
-                            "cutoff_price": "3.00",
+        "account_snapshots": [
+            {
+                "account_number": account_number,
+                "get_portfolio": {
+                    "data": {
+                        "buying_power": {
+                            "buying_power": "800.00",
+                            "unleveraged_buying_power": "650.00",
+                            "display_currency": "USD",
                         },
-                        "sellout_datetime": "2027-01-15T20:30:00+00:00",
-                        "state": "active",
-                        "strike_price": "200.00",
-                        "tradability": "tradable",
-                        "type": "call",
-                        "underlying_type": "equity",
-                    }],
-                    "next": None,
+                        "cash": "700.00",
+                        "currency": "USD",
+                        "equity_value": "1000.00",
+                        "options_value": "250.00",
+                        "crypto_value": "0.00",
+                        "event_contracts_value": "0.00",
+                        "fixed_income_value": "0.00",
+                        "futures_value": "0.00",
+                        "mutual_funds_value": "0.00",
+                        "pending_deposits": "0.00",
+                        "total_value": "1250.00",
+                    },
+                    "guide": "Decoded get_portfolio result.",
                 },
-                "guide": "Decoded get_option_instruments result.",
-            }],
-            "get_equity_orders": {
-                "data": {"orders": [], "next": None},
-                "guide": "Decoded get_equity_orders result.",
-            },
-            "get_option_orders": {
-                "data": {
-                    "orders": [{
-                        "id": "option-order-1",
-                        "chain_id": "chain-uuid-1",
-                        "chain_symbol": "AAPL",
-                        "created_at": "2026-07-12T15:30:00+00:00",
-                        "direction": "debit",
-                        "legs": [{
-                            "expiration_date": "2027-01-15",
-                            "id": "leg-1",
-                            "option_id": option_id,
-                            "option_type": "call",
-                            "position_effect": "open",
-                            "ratio_quantity": 1,
-                            "side": "buy",
-                            "strike_price": "200.00",
-                        }],
-                        "market_hours": "regular_hours",
-                        "pending_quantity": "1.00",
-                        "placed_agent": "user",
-                        "premium": "100.00",
-                        "price": "1.00",
-                        "processed_premium": "0.00",
-                        "processed_quantity": "0.00",
-                        "quantity": "1.00",
-                        "state": "queued",
-                        "time_in_force": "gfd",
-                        "trade_value_multiplier": "100.00",
-                        "trigger": "immediate",
-                        "type": "limit",
-                    }],
-                    "next": None,
+                "get_equity_positions": [
+                    {
+                        "data": {"positions": [], "next": None},
+                        "guide": "Decoded get_equity_positions result.",
+                    }
+                ],
+                "get_option_positions": {
+                    "data": {
+                        "positions": [
+                            {
+                                "average_price": "1.25",
+                                "chain_id": "chain-uuid-1",
+                                "chain_symbol": "AAPL",
+                                "expiration_date": "2027-01-15",
+                                "intraday_average_open_price": "0.00",
+                                "intraday_quantity": "0.00",
+                                "opened_at": "2026-07-10T15:30:00+00:00",
+                                "option_id": option_id,
+                                "pending_assignment_quantity": "0.00",
+                                "pending_buy_quantity": "0.00",
+                                "pending_exercise_quantity": "0.00",
+                                "pending_expiration_quantity": "0.00",
+                                "pending_sell_quantity": "0.00",
+                                "quantity": "1.00",
+                                "trade_value_multiplier": "100.00",
+                                "type": "long",
+                            }
+                        ],
+                        "next": None,
+                    },
+                    "guide": "Decoded get_option_positions result.",
                 },
-                "guide": "Decoded get_option_orders result.",
-            },
-        }],
+                # A list permits multiple exact MCP pages while preserving each response shape.
+                "get_option_instruments": [
+                    {
+                        "data": {
+                            "instruments": [
+                                {
+                                    "chain_id": "chain-uuid-1",
+                                    "chain_symbol": "AAPL",
+                                    "expiration_date": "2027-01-15",
+                                    "id": option_id,
+                                    "min_ticks": {
+                                        "above_tick": "0.05",
+                                        "below_tick": "0.01",
+                                        "cutoff_price": "3.00",
+                                    },
+                                    "sellout_datetime": "2027-01-15T20:30:00+00:00",
+                                    "state": "active",
+                                    "strike_price": "200.00",
+                                    "tradability": "tradable",
+                                    "type": "call",
+                                    "underlying_type": "equity",
+                                }
+                            ],
+                            "next": None,
+                        },
+                        "guide": "Decoded get_option_instruments result.",
+                    }
+                ],
+                "get_equity_orders": {
+                    "data": {"orders": [], "next": None},
+                    "guide": "Decoded get_equity_orders result.",
+                },
+                "get_option_orders": {
+                    "data": {
+                        "orders": [
+                            {
+                                "id": "option-order-1",
+                                "chain_id": "chain-uuid-1",
+                                "chain_symbol": "AAPL",
+                                "created_at": "2026-07-12T15:30:00+00:00",
+                                "direction": "debit",
+                                "legs": [
+                                    {
+                                        "expiration_date": "2027-01-15",
+                                        "id": "leg-1",
+                                        "option_id": option_id,
+                                        "option_type": "call",
+                                        "position_effect": "open",
+                                        "ratio_quantity": 1,
+                                        "side": "buy",
+                                        "strike_price": "200.00",
+                                    }
+                                ],
+                                "market_hours": "regular_hours",
+                                "pending_quantity": "1.00",
+                                "placed_agent": "user",
+                                "premium": "100.00",
+                                "price": "1.00",
+                                "processed_premium": "0.00",
+                                "processed_quantity": "0.00",
+                                "quantity": "1.00",
+                                "state": "queued",
+                                "time_in_force": "gfd",
+                                "trade_value_multiplier": "100.00",
+                                "trigger": "immediate",
+                                "type": "limit",
+                            }
+                        ],
+                        "next": None,
+                    },
+                    "guide": "Decoded get_option_orders result.",
+                },
+            }
+        ],
     }
 
 
 def _write_matching_local_position(data_dir: Path) -> None:
     (data_dir / "open_positions.json").write_text(
-        json.dumps([
-            {
-                "ticker": "ROBN",
-                "side": "call",
-                "strike": 35,
-                "expiry": "2026-12-18",
-                "quantity": 1,
-                "trade_status": "open",
-                "tracking_scope": "broker_linked",
-            }
-        ]),
+        json.dumps(
+            [
+                {
+                    "ticker": "ROBN",
+                    "side": "call",
+                    "strike": 35,
+                    "expiry": "2026-12-18",
+                    "quantity": 1,
+                    "trade_status": "open",
+                    "tracking_scope": "broker_linked",
+                }
+            ]
+        ),
         encoding="utf-8",
     )
 
 
 def _write_v2_matching_local_position(data_dir: Path) -> None:
-    (data_dir / "open_positions.json").write_text(json.dumps([{
-        "ticker": "AAPL",
-        "side": "call",
-        "strike": 200,
-        "expiry": "2027-01-15",
-        "quantity": 1,
-        "trade_status": "open",
-        "tracking_scope": "broker_linked",
-    }]), encoding="utf-8")
+    (data_dir / "open_positions.json").write_text(
+        json.dumps(
+            [
+                {
+                    "ticker": "AAPL",
+                    "side": "call",
+                    "strike": 200,
+                    "expiry": "2027-01-15",
+                    "quantity": 1,
+                    "trade_status": "open",
+                    "tracking_scope": "broker_linked",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_normalizes_mcp_bundle_to_cockpit_snapshot():
@@ -404,9 +429,7 @@ def test_v2_raw_account_key_cannot_persist_an_account_number():
     assert leaked_number not in json.dumps(snapshot, sort_keys=True)
 
     spoofed = _mcp_v2_bundle()
-    spoofed["get_accounts"]["data"]["accounts"][0]["account_key"] = (
-        "acct_ffffffffffffffff"
-    )
+    spoofed["get_accounts"]["data"]["accounts"][0]["account_key"] = "acct_ffffffffffffffff"
     without_explicit = _mcp_v2_bundle()
     expected = normalize_broker_snapshot(without_explicit)["accounts"][0]["account_key"]
     actual = normalize_broker_snapshot(spoofed)["accounts"][0]["account_key"]
@@ -460,8 +483,7 @@ def test_in_memory_v2_persistence_writes_only_redacted_snapshot_and_ledger():
             assert rhs_account_number not in encoded
 
 
-def test_in_memory_v2_persistence_fails_before_ledger_when_atomic_write_fails(
-):
+def test_in_memory_v2_persistence_fails_before_ledger_when_atomic_write_fails():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         output_path = root / "robinhood_broker_snapshot.json"
@@ -510,9 +532,7 @@ def test_in_memory_persistence_rejects_non_v2_or_unredactable_account_data():
 
         raw = _mcp_v2_bundle()
         account_number = raw["get_accounts"]["data"]["accounts"][0]["account_number"]
-        raw["get_accounts"]["data"]["accounts"][0]["nickname"] = (
-            f"prefix{account_number}suffix"
-        )
+        raw["get_accounts"]["data"]["accounts"][0]["nickname"] = f"prefix{account_number}suffix"
         with pytest.raises(ValueError, match="supplied raw account identifier"):
             persist_broker_snapshot_bundle(
                 raw,
@@ -536,8 +556,7 @@ def test_v2_invalid_option_quantity_blocks_instead_of_becoming_zero_exposure():
     assert snapshot["option_positions"][0]["signed_quantity"] is None
     assert snapshot["option_positions"][0]["position_validation_errors"]
     assert any(
-        "option_positions row 1 is unsafe: invalid quantity field(s): quantity"
-        in value
+        "option_positions row 1 is unsafe: invalid quantity field(s): quantity" in value
         for value in snapshot["normalization_blockers"]
     )
     exposure = summarize_broker_account_capital_at_risk(
@@ -563,24 +582,23 @@ def test_v2_contradictory_option_quantity_aliases_block_normalization():
 
 def test_v2_invalid_equity_quantity_and_option_pending_fields_block_normalization():
     invalid_equity = _mcp_v2_bundle()
-    invalid_equity["account_snapshots"][0]["get_equity_positions"][0]["data"][
-        "positions"
-    ] = [{
-        "symbol": "AAPL",
-        "quantity": "unknown",
-        "current_price": "200.00",
-    }]
+    invalid_equity["account_snapshots"][0]["get_equity_positions"][0]["data"]["positions"] = [
+        {
+            "symbol": "AAPL",
+            "quantity": "unknown",
+            "current_price": "200.00",
+        }
+    ]
     equity_snapshot = normalize_broker_snapshot(invalid_equity)
     assert any(
-        "equity_positions row 1 is unsafe: invalid quantity field(s): quantity"
-        in value
+        "equity_positions row 1 is unsafe: invalid quantity field(s): quantity" in value
         for value in equity_snapshot["normalization_blockers"]
     )
 
     invalid_pending = _mcp_v2_bundle()
-    option_position = invalid_pending["account_snapshots"][0]["get_option_positions"][
-        "data"
-    ]["positions"][0]
+    option_position = invalid_pending["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
     option_position["pending_assignment_quantity"] = "unknown"
     pending_snapshot = normalize_broker_snapshot(invalid_pending)
     assert any(
@@ -591,9 +609,9 @@ def test_v2_invalid_equity_quantity_and_option_pending_fields_block_normalizatio
 
 def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
     invalid_mark = _mcp_v2_bundle()
-    option_position = invalid_mark["account_snapshots"][0]["get_option_positions"][
-        "data"
-    ]["positions"][0]
+    option_position = invalid_mark["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
     option_position["mark_price"] = "unknown"
     mark_snapshot = normalize_broker_snapshot(invalid_mark)
     assert any(
@@ -602,9 +620,9 @@ def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
     )
 
     invalid_multiplier = _mcp_v2_bundle()
-    option_position = invalid_multiplier["account_snapshots"][0][
-        "get_option_positions"
-    ]["data"]["positions"][0]
+    option_position = invalid_multiplier["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
     option_position["trade_value_multiplier"] = "unknown"
     multiplier_snapshot = normalize_broker_snapshot(invalid_multiplier)
     assert any(
@@ -613,14 +631,14 @@ def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
     )
 
     invalid_equity_price = _mcp_v2_bundle()
-    invalid_equity_price["account_snapshots"][0]["get_equity_positions"][0][
-        "data"
-    ]["positions"] = [{
-        "symbol": "AAPL",
-        "quantity": "1",
-        "current_price": "unknown",
-        "market_value": "200.00",
-    }]
+    invalid_equity_price["account_snapshots"][0]["get_equity_positions"][0]["data"]["positions"] = [
+        {
+            "symbol": "AAPL",
+            "quantity": "1",
+            "current_price": "unknown",
+            "market_value": "200.00",
+        }
+    ]
     equity_price_snapshot = normalize_broker_snapshot(invalid_equity_price)
     assert any(
         "invalid current price field(s): current_price" in value
@@ -628,14 +646,14 @@ def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
     )
 
     invalid_equity_value = _mcp_v2_bundle()
-    invalid_equity_value["account_snapshots"][0]["get_equity_positions"][0][
-        "data"
-    ]["positions"] = [{
-        "symbol": "AAPL",
-        "quantity": "1",
-        "current_price": "200.00",
-        "market_value": "unknown",
-    }]
+    invalid_equity_value["account_snapshots"][0]["get_equity_positions"][0]["data"]["positions"] = [
+        {
+            "symbol": "AAPL",
+            "quantity": "1",
+            "current_price": "200.00",
+            "market_value": "unknown",
+        }
+    ]
     equity_value_snapshot = normalize_broker_snapshot(invalid_equity_value)
     assert any(
         "invalid market value field(s): market_value" in value
@@ -645,9 +663,7 @@ def test_v2_invalid_critical_position_prices_values_and_multiplier_block():
 
 def test_v2_valid_price_and_multiplier_alternatives_remain_compatible():
     raw = _mcp_v2_bundle()
-    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"][
-        "positions"
-    ][0]
+    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"]["positions"][0]
     option_position["current_price"] = "1.20"
     option_position["mark_price"] = "1.25"
     option_position["trade_value_multiplier"] = None
@@ -662,9 +678,7 @@ def test_v2_valid_price_and_multiplier_alternatives_remain_compatible():
 
 def test_v2_contradictory_multiplier_aliases_block_normalization():
     raw = _mcp_v2_bundle()
-    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"][
-        "positions"
-    ][0]
+    option_position = raw["account_snapshots"][0]["get_option_positions"]["data"]["positions"][0]
     option_position["multiplier"] = "50"
 
     snapshot = normalize_broker_snapshot(raw)
@@ -677,14 +691,14 @@ def test_v2_contradictory_multiplier_aliases_block_normalization():
 
 def test_v2_unknown_or_contradictory_position_type_aliases_block():
     invalid_equity_type = _mcp_v2_bundle()
-    invalid_equity_type["account_snapshots"][0]["get_equity_positions"][0][
-        "data"
-    ]["positions"] = [{
-        "symbol": "AAPL",
-        "quantity": "1",
-        "position_type": "unknown",
-        "current_price": "200.00",
-    }]
+    invalid_equity_type["account_snapshots"][0]["get_equity_positions"][0]["data"]["positions"] = [
+        {
+            "symbol": "AAPL",
+            "quantity": "1",
+            "position_type": "unknown",
+            "current_price": "200.00",
+        }
+    ]
     equity_snapshot = normalize_broker_snapshot(invalid_equity_type)
     assert any(
         "invalid position-type field(s): position_type" in value
@@ -692,9 +706,9 @@ def test_v2_unknown_or_contradictory_position_type_aliases_block():
     )
 
     contradictory_option_type = _mcp_v2_bundle()
-    option_position = contradictory_option_type["account_snapshots"][0][
-        "get_option_positions"
-    ]["data"]["positions"][0]
+    option_position = contradictory_option_type["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
     option_position["position_type"] = "long"
     option_position["type"] = "short"
     option_snapshot = normalize_broker_snapshot(contradictory_option_type)
@@ -706,9 +720,9 @@ def test_v2_unknown_or_contradictory_position_type_aliases_block():
 
 def test_v2_option_signed_quantity_must_reconcile_with_explicit_direction():
     negative_long = _mcp_v2_bundle()
-    option_position = negative_long["account_snapshots"][0]["get_option_positions"][
-        "data"
-    ]["positions"][0]
+    option_position = negative_long["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
     option_position["signed_quantity"] = "-1"
     option_position["type"] = "long"
     negative_long_snapshot = normalize_broker_snapshot(negative_long)
@@ -719,9 +733,9 @@ def test_v2_option_signed_quantity_must_reconcile_with_explicit_direction():
     assert negative_long_snapshot["option_positions"][0]["quantity"] is None
 
     negative_unsigned_long = _mcp_v2_bundle()
-    option_position = negative_unsigned_long["account_snapshots"][0][
-        "get_option_positions"
-    ]["data"]["positions"][0]
+    option_position = negative_unsigned_long["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
     option_position["quantity"] = "-1"
     option_position["type"] = "long"
     negative_unsigned_snapshot = normalize_broker_snapshot(negative_unsigned_long)
@@ -731,9 +745,9 @@ def test_v2_option_signed_quantity_must_reconcile_with_explicit_direction():
     )
 
     positive_short = _mcp_v2_bundle()
-    option_position = positive_short["account_snapshots"][0]["get_option_positions"][
-        "data"
-    ]["positions"][0]
+    option_position = positive_short["account_snapshots"][0]["get_option_positions"]["data"][
+        "positions"
+    ][0]
     option_position["signed_quantity"] = "1"
     option_position["type"] = "short"
     positive_short_snapshot = normalize_broker_snapshot(positive_short)
@@ -743,9 +757,9 @@ def test_v2_option_signed_quantity_must_reconcile_with_explicit_direction():
     )
 
     legitimate_unsigned_short = _mcp_v2_bundle()
-    option_position = legitimate_unsigned_short["account_snapshots"][0][
-        "get_option_positions"
-    ]["data"]["positions"][0]
+    option_position = legitimate_unsigned_short["account_snapshots"][0]["get_option_positions"][
+        "data"
+    ]["positions"][0]
     option_position["type"] = "short"
     unsigned_short_snapshot = normalize_broker_snapshot(legitimate_unsigned_short)
     assert unsigned_short_snapshot["normalization_blockers"] == []
@@ -775,19 +789,21 @@ def test_v2_duplicate_or_blank_account_identities_block_normalization():
 
 def test_v2_multi_account_unscoped_reads_fail_closed_instead_of_guessing_account():
     raw = _mcp_v2_bundle()
-    raw["get_accounts"]["data"]["accounts"].append({
-        "account_number": "OPT33334444",
-        "rhs_account_number": "RHS99994444",
-        "brokerage_account_type": "individual",
-        "type": "margin",
-        "nickname": "Options",
-        "is_default": False,
-        "state": "active",
-        "deactivated": False,
-        "permanently_deactivated": False,
-        "agentic_allowed": False,
-        "option_level": "option_level_2",
-    })
+    raw["get_accounts"]["data"]["accounts"].append(
+        {
+            "account_number": "OPT33334444",
+            "rhs_account_number": "RHS99994444",
+            "brokerage_account_type": "individual",
+            "type": "margin",
+            "nickname": "Options",
+            "is_default": False,
+            "state": "active",
+            "deactivated": False,
+            "permanently_deactivated": False,
+            "agentic_allowed": False,
+            "option_level": "option_level_2",
+        }
+    )
     scoped = raw.pop("account_snapshots")[0]
     raw["get_portfolio"] = scoped["get_portfolio"]
     raw["get_option_positions"] = scoped["get_option_positions"]
@@ -797,9 +813,18 @@ def test_v2_multi_account_unscoped_reads_fail_closed_instead_of_guessing_account
     snapshot = normalize_broker_snapshot(raw)
 
     assert snapshot["counts"]["accounts"] == 3
-    assert any("requires non-empty account_snapshots" in value for value in snapshot["normalization_blockers"])
-    assert any("portfolio rows are not account-scoped" in value for value in snapshot["normalization_blockers"])
-    assert any("option_positions rows are not account-scoped" in value for value in snapshot["normalization_blockers"])
+    assert any(
+        "requires non-empty account_snapshots" in value
+        for value in snapshot["normalization_blockers"]
+    )
+    assert any(
+        "portfolio rows are not account-scoped" in value
+        for value in snapshot["normalization_blockers"]
+    )
+    assert any(
+        "option_positions rows are not account-scoped" in value
+        for value in snapshot["normalization_blockers"]
+    )
     unscoped = next(row for row in snapshot["accounts"] if row["account_mask"] == "...oped")
     assert unscoped["state"] == ""
     assert unscoped["agentic_allowed"] is False
@@ -810,7 +835,8 @@ def test_v2_multi_account_unscoped_reads_fail_closed_instead_of_guessing_account
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         report = build_broker_reconciliation(data_dir)
@@ -831,12 +857,15 @@ def test_v2_open_option_without_instrument_metadata_is_a_blocking_mismatch():
     assert position["expiration_date"] == "2027-01-15"
     assert position["option_type"] == ""
     assert position["strike_price"] is None
-    assert any("lack exact instrument metadata" in value for value in snapshot["normalization_blockers"])
+    assert any(
+        "lack exact instrument metadata" in value for value in snapshot["normalization_blockers"]
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         report = build_broker_reconciliation(data_dir)
@@ -860,7 +889,8 @@ def test_v2_missing_required_scoped_read_blocks_reconciliation_readiness():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_v2_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -891,7 +921,8 @@ def test_v2_nonnull_pagination_cursor_blocks_reconciliation_readiness():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_v2_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -955,8 +986,7 @@ def test_v2_one_page_paginated_read_requires_explicit_terminal_next():
     snapshot = normalize_broker_snapshot(raw)
 
     assert any(
-        "get_option_positions capture is incomplete: page 1 is missing explicit data.next"
-        in value
+        "get_option_positions capture is incomplete: page 1 is missing explicit data.next" in value
         for value in snapshot["normalization_blockers"]
     )
 
@@ -978,8 +1008,7 @@ def test_v2_final_paginated_page_requires_explicit_terminal_next():
     snapshot = normalize_broker_snapshot(raw)
 
     assert any(
-        "get_option_orders capture is incomplete: page 2 is missing explicit data.next"
-        in value
+        "get_option_orders capture is incomplete: page 2 is missing explicit data.next" in value
         for value in snapshot["normalization_blockers"]
     )
 
@@ -1037,8 +1066,7 @@ def test_v2_rejects_account_scoped_reads_placed_at_top_level():
 
     assert snapshot["counts"]["option_positions"] == 0
     assert any(
-        "V2 account-scoped read section(s) must not appear at the top level"
-        in value
+        "V2 account-scoped read section(s) must not appear at the top level" in value
         and "get_option_positions" in value
         for value in snapshot["normalization_blockers"]
     )
@@ -1046,7 +1074,8 @@ def test_v2_rejects_account_scoped_reads_placed_at_top_level():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         report = build_broker_reconciliation(data_dir)
@@ -1064,7 +1093,8 @@ def test_reconciliation_detects_aggregate_quantity_mismatch():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -1085,7 +1115,8 @@ def test_reconciliation_detects_long_short_type_mismatch():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -1151,7 +1182,8 @@ def test_same_label_accounts_keep_distinct_stable_keys_and_never_dedupe():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_v2_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -1159,7 +1191,9 @@ def test_same_label_accounts_keep_distinct_stable_keys_and_never_dedupe():
     assert report["broker_option_count"] == 2
     assert report["matched_count"] == 0
     assert report["account_scope_mismatch_count"] == 2
-    assert {row["account_key"] for row in report["rows"] if row["source"] == "broker"} == account_keys
+    assert {
+        row["account_key"] for row in report["rows"] if row["source"] == "broker"
+    } == account_keys
 
 
 def test_v2_readiness_requires_authoritative_total_and_both_buying_power_fields():
@@ -1177,7 +1211,8 @@ def test_v2_readiness_requires_authoritative_total_and_both_buying_power_fields(
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             (data_dir / "robinhood_broker_snapshot.json").write_text(
-                json.dumps(snapshot), encoding="utf-8",
+                json.dumps(snapshot),
+                encoding="utf-8",
             )
             _write_v2_matching_local_position(data_dir)
             report = build_broker_reconciliation(data_dir)
@@ -1229,7 +1264,8 @@ def test_legacy_snapshot_remains_visible_but_cannot_authorize_agentic_review():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
@@ -1251,7 +1287,9 @@ def test_missing_source_timestamp_is_not_replaced_by_normalization_time():
 
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         _write_matching_local_position(data_dir)
 
         report = build_broker_reconciliation(data_dir)
@@ -1267,7 +1305,9 @@ def test_stale_source_timestamp_keeps_reconciliation_out_of_synced_state():
 
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         _write_matching_local_position(data_dir)
 
         report = build_broker_reconciliation(data_dir)
@@ -1338,7 +1378,9 @@ def test_option_order_normalizes_execution_side_and_exact_contract_identity():
 
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
 
@@ -1349,32 +1391,34 @@ def test_option_order_normalizes_execution_side_and_exact_contract_identity():
 
 def test_nonterminal_multi_leg_order_is_unresolved_instead_of_dropping_later_leg():
     raw = _raw_bundle()
-    raw["option_orders"]["results"] = [{
-        "account_number": "FAKE123456",
-        "id": "working-spread-1",
-        "chain_symbol": "AAPL",
-        "state": "queued",
-        "quantity": "1",
-        "price": "0.50",
-        "legs": [
-            {
-                "side": "sell",
-                "position_effect": "open",
-                "option_type": "call",
-                "expiration_date": "2027-01-15",
-                "strike_price": "210",
-                "option_id": "spread-short-leg",
-            },
-            {
-                "side": "buy",
-                "position_effect": "open",
-                "option_type": "call",
-                "expiration_date": "2027-01-15",
-                "strike_price": "200",
-                "option_id": "planned-long-call-second-leg",
-            },
-        ],
-    }]
+    raw["option_orders"]["results"] = [
+        {
+            "account_number": "FAKE123456",
+            "id": "working-spread-1",
+            "chain_symbol": "AAPL",
+            "state": "queued",
+            "quantity": "1",
+            "price": "0.50",
+            "legs": [
+                {
+                    "side": "sell",
+                    "position_effect": "open",
+                    "option_type": "call",
+                    "expiration_date": "2027-01-15",
+                    "strike_price": "210",
+                    "option_id": "spread-short-leg",
+                },
+                {
+                    "side": "buy",
+                    "position_effect": "open",
+                    "option_type": "call",
+                    "expiration_date": "2027-01-15",
+                    "strike_price": "200",
+                    "option_id": "planned-long-call-second-leg",
+                },
+            ],
+        }
+    ]
 
     snapshot = normalize_broker_snapshot(raw, generated_at=datetime.now(UTC).isoformat())
     order = snapshot["option_orders"][0]
@@ -1389,7 +1433,8 @@ def test_nonterminal_multi_leg_order_is_unresolved_instead_of_dropping_later_leg
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         report = build_broker_reconciliation(data_dir)
@@ -1402,24 +1447,26 @@ def test_nonterminal_multi_leg_order_is_unresolved_instead_of_dropping_later_leg
 
 def test_nonterminal_order_with_valid_leg_plus_malformed_leg_is_unresolved():
     raw = _raw_bundle()
-    raw["option_orders"]["results"] = [{
-        "account_number": "FAKE123456",
-        "id": "malformed-working-order",
-        "chain_symbol": "AAPL",
-        "state": "queued",
-        "quantity": "1",
-        "legs": [
-            {
-                "side": "buy",
-                "position_effect": "open",
-                "option_type": "call",
-                "expiration_date": "2027-01-15",
-                "strike_price": "200",
-                "option_id": "apparently-valid-leg",
-            },
-            None,
-        ],
-    }]
+    raw["option_orders"]["results"] = [
+        {
+            "account_number": "FAKE123456",
+            "id": "malformed-working-order",
+            "chain_symbol": "AAPL",
+            "state": "queued",
+            "quantity": "1",
+            "legs": [
+                {
+                    "side": "buy",
+                    "position_effect": "open",
+                    "option_type": "call",
+                    "expiration_date": "2027-01-15",
+                    "strike_price": "200",
+                    "option_id": "apparently-valid-leg",
+                },
+                None,
+            ],
+        }
+    ]
 
     snapshot = normalize_broker_snapshot(raw, generated_at=datetime.now(UTC).isoformat())
     order = snapshot["option_orders"][0]
@@ -1433,7 +1480,8 @@ def test_nonterminal_order_with_valid_leg_plus_malformed_leg_is_unresolved():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         report = build_broker_reconciliation(data_dir)
@@ -1458,36 +1506,44 @@ def test_nonterminal_option_order_without_contract_identity_fails_closed():
 
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
 
     assert report["working_option_order_count"] == 1
     assert report["unresolved_working_option_order_count"] == 1
     assert report["status"] == "mismatch"
-    assert any("cannot be matched to an exact contract" in warning for warning in report["warnings"])
+    assert any(
+        "cannot be matched to an exact contract" in warning for warning in report["warnings"]
+    )
 
 
 def test_normalized_snapshot_feeds_broker_reconciliation():
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
-        snapshot = normalize_broker_snapshot(_raw_bundle(), generated_at="2026-06-24T12:00:00+00:00")
+        snapshot = normalize_broker_snapshot(
+            _raw_bundle(), generated_at="2026-06-24T12:00:00+00:00"
+        )
         (data_dir / "robinhood_broker_snapshot.json").write_text(
             json.dumps(snapshot),
             encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text(
-            json.dumps([
-                {
-                    "ticker": "ROBN",
-                    "side": "call",
-                    "strike": 35,
-                    "expiry": "2026-12-18",
-                    "quantity": 1,
-                    "trade_status": "open",
-                    "tracking_scope": "broker_linked",
-                }
-            ]),
+            json.dumps(
+                [
+                    {
+                        "ticker": "ROBN",
+                        "side": "call",
+                        "strike": 35,
+                        "expiry": "2026-12-18",
+                        "quantity": 1,
+                        "trade_status": "open",
+                        "tracking_scope": "broker_linked",
+                    }
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -1515,14 +1571,21 @@ def test_paper_only_overlap_does_not_count_as_live_broker_sync():
             encoding="utf-8",
         )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
-        (data_dir / "agentic_paper_positions.json").write_text(json.dumps([{
-            "status": "open",
-            "symbol": "ROBN",
-            "option_side": "call",
-            "strike": 35,
-            "expiry": "2026-12-18",
-            "quantity": 1,
-        }]), encoding="utf-8")
+        (data_dir / "agentic_paper_positions.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "status": "open",
+                        "symbol": "ROBN",
+                        "option_side": "call",
+                        "strike": 35,
+                        "expiry": "2026-12-18",
+                        "quantity": 1,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
 
         report = build_broker_reconciliation(data_dir)
 
@@ -1540,7 +1603,9 @@ def test_reconciliation_flags_split_agentic_and_options_permissions():
             _split_permission_mcp_bundle(),
             generated_at="2026-06-24T12:00:00+00:00",
         )
-        (data_dir / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+        (data_dir / "robinhood_broker_snapshot.json").write_text(
+            json.dumps(snapshot), encoding="utf-8"
+        )
         (data_dir / "open_positions.json").write_text("[]", encoding="utf-8")
         (data_dir / "agentic_paper_positions.json").write_text("[]", encoding="utf-8")
 
@@ -1556,7 +1621,9 @@ def test_reconciliation_flags_split_agentic_and_options_permissions():
         assert report["option_ready_account_count"] == 1
         assert len(report["account_readiness_rows"]) == 2
         assert report["execution_capture_ready"] is False
-        assert any("optedge_robinhood_mcp_read_bundle_v2" in warning for warning in report["warnings"])
+        assert any(
+            "optedge_robinhood_mcp_read_bundle_v2" in warning for warning in report["warnings"]
+        )
 
 
 def test_reconciliation_rejects_truthy_string_agentic_permission():
@@ -1622,7 +1689,8 @@ def test_reconciliation_does_not_treat_inactive_agentic_options_account_as_ready
     with tempfile.TemporaryDirectory() as tmp:
         data_dir = Path(tmp)
         (data_dir / "robinhood_broker_snapshot.json").write_text(
-            json.dumps(snapshot), encoding="utf-8",
+            json.dumps(snapshot),
+            encoding="utf-8",
         )
         _write_matching_local_position(data_dir)
         report = build_broker_reconciliation(data_dir)
