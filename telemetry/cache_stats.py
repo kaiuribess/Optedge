@@ -4,17 +4,18 @@
 Monkey-patches data_provider.cache_get + cache_put to track hit/miss counts
 per cache key prefix. Exposed via dashboard panel.
 """
+
 from __future__ import annotations
+
 import logging
 import time
 from collections import defaultdict
-from typing import Dict
 
 log = logging.getLogger("optedge.cache_stats")
 
-_HITS: Dict[str, int] = defaultdict(int)
-_MISSES: Dict[str, int] = defaultdict(int)
-_LAST_HIT_TS: Dict[str, float] = {}
+_HITS: dict[str, int] = defaultdict(int)
+_MISSES: dict[str, int] = defaultdict(int)
+_LAST_HIT_TS: dict[str, float] = {}
 
 
 def _prefix_of(key: str) -> str:
@@ -61,7 +62,7 @@ def install_hooks():
     return True
 
 
-def summary() -> Dict:
+def summary() -> dict:
     """Aggregate hit/miss counts per prefix."""
     out = {}
     all_keys = set(_HITS) | set(_MISSES)
@@ -80,7 +81,7 @@ def summary() -> Dict:
     return out
 
 
-def freshness_summary() -> Dict:
+def freshness_summary() -> dict:
     """Return age (seconds since last hit) per prefix.
 
     Useful as a 'data freshness' indicator on the dashboard.

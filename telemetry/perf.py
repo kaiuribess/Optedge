@@ -9,13 +9,14 @@ Usage in run.py:
         result = mispricing.run(universe)
         t.set_rows(len(result))
 """
+
 from __future__ import annotations
+
 import logging
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, Optional
 
 import pandas as pd
 
@@ -61,7 +62,7 @@ def _append_log(t: EngineTimer):
     try:
         PERF_LOG.parent.mkdir(parents=True, exist_ok=True)
         row = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "engine": t.name,
             "elapsed_sec": round(t.elapsed, 3),
             "rows": t.rows,
@@ -83,7 +84,7 @@ def _append_log(t: EngineTimer):
         log.debug("perf log append fail: %s", e)
 
 
-def summary(engine: Optional[str] = None, last_n: int = 30) -> Dict:
+def summary(engine: str | None = None, last_n: int = 30) -> dict:
     """Return p50/p95/p99 latency, success rate over last N runs."""
     if not PERF_LOG.exists():
         return {}
@@ -117,7 +118,7 @@ def summary(engine: Optional[str] = None, last_n: int = 30) -> Dict:
         return {}
 
 
-def latest_run_summary() -> Dict:
+def latest_run_summary() -> dict:
     """Return per-engine times from the most recent run only."""
     if not PERF_LOG.exists():
         return {}

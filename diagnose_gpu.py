@@ -6,6 +6,7 @@ Usage:
 Prints whether PyTorch sees a GPU, its compiled CUDA runtime, the installed
 NVIDIA driver state, and platform-neutral remediation guidance.
 """
+
 import platform
 import subprocess
 import sys
@@ -31,8 +32,10 @@ def main() -> int:
 
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
-            print(f"  device {i}: {torch.cuda.get_device_name(i)}  "
-                  f"(compute {torch.cuda.get_device_capability(i)})")
+            print(
+                f"  device {i}: {torch.cuda.get_device_name(i)}  "
+                f"(compute {torch.cuda.get_device_capability(i)})"
+            )
         print("\n[OK] GPU should work. FinBERT will pick this up automatically.")
         return 0
 
@@ -59,8 +62,7 @@ def main() -> int:
         print("PyTorch install selector to replace torch with a wheel compatible with")
         print("this machine's current NVIDIA driver.")
     else:
-        print(f"DIAGNOSIS: torch was built against CUDA {cv} but the runtime "
-              "isn't reachable.")
+        print(f"DIAGNOSIS: torch was built against CUDA {cv} but the runtime isn't reachable.")
         print("Most common cause: NVIDIA driver too old.")
         print("FIX OPTIONS:")
         print(f"  1) Update your NVIDIA driver to support CUDA {cv} or newer.")

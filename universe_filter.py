@@ -13,11 +13,12 @@ Strategy:
 
 When no cache exists (first run), passes through full universe.
 """
+
 from __future__ import annotations
+
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional, Set
 
 import pandas as pd
 
@@ -25,13 +26,14 @@ log = logging.getLogger("optedge.uf")
 ROOT = Path(__file__).resolve().parent
 
 
-def _load_recent_market_caps(max_age_hours: int = 48) -> Optional[pd.DataFrame]:
+def _load_recent_market_caps(max_age_hours: int = 48) -> pd.DataFrame | None:
     """Find the most recent fundamentals_*.parquet and return ticker, market_cap."""
     data_dir = ROOT / "data"
     if not data_dir.exists():
         return None
-    files = sorted(data_dir.glob("fundamentals_*.parquet"),
-                   key=lambda f: f.stat().st_mtime, reverse=True)
+    files = sorted(
+        data_dir.glob("fundamentals_*.parquet"), key=lambda f: f.stat().st_mtime, reverse=True
+    )
     if not files:
         return None
     f = files[0]
@@ -48,13 +50,13 @@ def _load_recent_market_caps(max_age_hours: int = 48) -> Optional[pd.DataFrame]:
         return None
 
 
-def _load_prior_signal_tickers(days: int = 7) -> Set[str]:
+def _load_prior_signal_tickers(days: int = 7) -> set[str]:
     """Tickers that have shown up as picks in the past N days — always include."""
     logs_dir = ROOT / "logs"
     if not logs_dir.exists():
         return set()
     cutoff = datetime.now() - timedelta(days=days)
-    tickers: Set[str] = set()
+    tickers: set[str] = set()
     for f in logs_dir.glob("signals_*.parquet"):
         if datetime.fromtimestamp(f.stat().st_mtime) < cutoff:
             continue
@@ -74,9 +76,12 @@ def _load_prior_signal_tickers(days: int = 7) -> Set[str]:
     return tickers
 
 
-def filter_for_heavy_engines(full_universe: List[str], top_n: int = 300,
-                              include_trending: List[str] = None,
-                              include_priors: bool = True) -> List[str]:
+def filter_for_heavy_engines(
+    full_universe: list[str],
+    top_n: int = 300,
+    include_trending: list[str] = None,
+    include_priors: bool = True,
+) -> list[str]:
     """Return a subset of the universe optimised for slow per-ticker engines.
 
     Slot allocation:
@@ -86,15 +91,16 @@ def filter_for_heavy_engines(full_universe: List[str], top_n: int = 300,
     """
     if len(full_universe) <= top_n:
         return full_universe
-    keep: Set[str] = set()
+    keep: set[str] = set()
     if include_trending:
         keep.update(include_trending)
     if include_priors:
         keep.update(_load_prior_signal_tickers(days=7))
     market_caps = _load_recent_market_caps()
     if market_caps is None or market_caps.empty:
-        log.info("universe-filter: no cached market caps — using full universe (%d)",
-                 len(full_universe))
+        log.info(
+            "universe-filter: no cached market caps — using full universe (%d)", len(full_universe)
+        )
         return full_universe
     # Subset to current universe
     market_caps = market_caps[market_caps["ticker"].isin(full_universe)]
@@ -104,8 +110,11 @@ def filter_for_heavy_engines(full_universe: List[str], top_n: int = 300,
     keep.update(market_caps["ticker"].tolist())
     # Preserve original order for downstream consistency
     out = [t for t in full_universe if t in keep]
-    log.info("universe-filter: %d -> %d (incl %d trending, %d priors)",
-             len(full_universe), len(out),
-             len(include_trending or []),
-             len(_load_prior_signal_tickers(days=7)) if include_priors else 0)
+    log.info(
+        "universe-filter: %d -> %d (incl %d trending, %d priors)",
+        len(full_universe),
+        len(out),
+        len(include_trending or []),
+        len(_load_prior_signal_tickers(days=7)) if include_priors else 0,
+    )
     return out

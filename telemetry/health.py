@@ -8,15 +8,17 @@ parquet engine available). Rolling window of 500 rows.
 Tracked per iter: timestamp, runtime, RSS memory, cache size, error string.
 Pre-iter check forces GC + cache prune when RSS is too high.
 """
+
 from __future__ import annotations
+
 import gc
 import json
 import logging
 import os
 import platform
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 import psutil
@@ -29,7 +31,7 @@ HEALTH_JSONL = ROOT / "telemetry" / "health.jsonl"
 MAX_ROWS = 500
 
 
-def _mem_rss_mb() -> Optional[float]:
+def _mem_rss_mb() -> float | None:
     """Return this process's resident memory in MiB, or ``None`` on OS error."""
     try:
         return float(psutil.Process(os.getpid()).memory_info().rss) / (1024 * 1024)
@@ -56,7 +58,7 @@ def prune_cache(max_mb: float = 250.0) -> int:
     cache_dir = ROOT / "data" / "_cache"
     if not cache_dir.exists():
         return 0
-    files: List[Path] = [p for p in cache_dir.glob("**/*") if p.is_file()]
+    files: list[Path] = [p for p in cache_dir.glob("**/*") if p.is_file()]
     total_mb = sum(p.stat().st_size for p in files) / (1024 * 1024)
     if total_mb < max_mb:
         return 0
@@ -69,8 +71,7 @@ def prune_cache(max_mb: float = 250.0) -> int:
             removed += 1
         except Exception:
             continue
-    log.info("health: pruned %d cache files (was %.0fMB, target %.0fMB)",
-             removed, total_mb, max_mb)
+    log.info("health: pruned %d cache files (was %.0fMB, target %.0fMB)", removed, total_mb, max_mb)
     return removed
 
 
@@ -86,11 +87,11 @@ def _trim_health_file() -> None:
         log.debug("health trim fail: %s", e)
 
 
-def record(record_data: Dict[str, Any]) -> None:
+def record(record_data: dict[str, Any]) -> None:
     """Append one row to telemetry/health.parquet (or .jsonl fallback)."""
     HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     row = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "py_version": platform.python_version(),
         "platform": platform.platform(),
         "cpu_count": os.cpu_count(),
@@ -129,7 +130,7 @@ def assert_can_continue(min_free_mem_mb: float = 200.0) -> bool:
     return True
 
 
-def summary() -> Dict[str, Any]:
+def summary() -> dict[str, Any]:
     """Read health (.parquet or .jsonl) and return last-N-iter summary."""
     df = None
     if HEALTH_FILE.exists():
@@ -139,7 +140,9 @@ def summary() -> Dict[str, Any]:
             df = None
     if (df is None or df.empty) and HEALTH_JSONL.exists():
         try:
-            rows = [json.loads(line) for line in HEALTH_JSONL.read_text().splitlines() if line.strip()]
+            rows = [
+                json.loads(line) for line in HEALTH_JSONL.read_text().splitlines() if line.strip()
+            ]
             df = pd.DataFrame(rows[-MAX_ROWS:])
         except Exception:
             df = None
@@ -154,9 +157,11 @@ def summary() -> Dict[str, Any]:
         "mem_rss_mb": last.get("mem_rss_mb"),
         "cache_mb": last.get("cache_mb"),
         "mean_iter_seconds_5": float(last5["iter_seconds"].mean())
-                                if "iter_seconds" in last5.columns else None,
-        "engine_failures_5": (int(last5["failure_count"].sum())
-                              if "failure_count" in last5.columns else 0),
+        if "iter_seconds" in last5.columns
+        else None,
+        "engine_failures_5": (
+            int(last5["failure_count"].sum()) if "failure_count" in last5.columns else 0
+        ),
     }
 
 

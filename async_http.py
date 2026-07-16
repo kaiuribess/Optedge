@@ -9,11 +9,12 @@ Usage:
     results = gather_get(["https://api.foo/a", "https://api.foo/b"], timeout=10)
     # results = [{"url": "...", "ok": True, "status": 200, "text": "..."}, ...]
 """
+
 from __future__ import annotations
+
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
 
 log = logging.getLogger("optedge.async_http")
 
@@ -21,6 +22,7 @@ log = logging.getLogger("optedge.async_http")
 def _aiohttp_available() -> bool:
     try:
         import aiohttp  # noqa
+
         return True
     except ImportError:
         return False
@@ -29,38 +31,49 @@ def _aiohttp_available() -> bool:
 def _httpx_available() -> bool:
     try:
         import httpx  # noqa
+
         return True
     except ImportError:
         return False
 
 
-async def _aio_fetch(session, url: str, timeout: int, headers: Optional[Dict] = None):
+async def _aio_fetch(session, url: str, timeout: int, headers: dict | None = None):
     import aiohttp
+
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout),
-                                headers=headers or {}) as resp:
+        async with session.get(
+            url, timeout=aiohttp.ClientTimeout(total=timeout), headers=headers or {}
+        ) as resp:
             text = await resp.text()
             return {"url": url, "ok": True, "status": resp.status, "text": text}
     except Exception as e:
         return {"url": url, "ok": False, "status": 0, "error": str(e)[:200], "text": ""}
 
 
-async def _aio_gather(urls: List[str], timeout: int, headers: Optional[Dict]):
+async def _aio_gather(urls: list[str], timeout: int, headers: dict | None):
     import aiohttp
+
     connector = aiohttp.TCPConnector(limit=20, force_close=False, enable_cleanup_closed=True)
     async with aiohttp.ClientSession(connector=connector) as sess:
         tasks = [_aio_fetch(sess, u, timeout, headers) for u in urls]
         return await asyncio.gather(*tasks, return_exceptions=False)
 
 
-def _httpx_gather(urls: List[str], timeout: int, headers: Optional[Dict]):
+def _httpx_gather(urls: list[str], timeout: int, headers: dict | None):
     import httpx
+
     out = []
     transport = httpx.HTTPTransport(retries=1, http2=True)
-    with httpx.Client(transport=transport, timeout=timeout, http2=True,
-                       headers=headers or {}, limits=httpx.Limits(max_connections=20)) as client:
+    with httpx.Client(
+        transport=transport,
+        timeout=timeout,
+        http2=True,
+        headers=headers or {},
+        limits=httpx.Limits(max_connections=20),
+    ) as client:
         # httpx Client is sync but with HTTP/2 multiplexing — still fast
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         with ThreadPoolExecutor(max_workers=16) as ex:
             futs = {ex.submit(client.get, u): u for u in urls}
             for fut in as_completed(futs):
@@ -69,32 +82,37 @@ def _httpx_gather(urls: List[str], timeout: int, headers: Optional[Dict]):
                     r = fut.result()
                     out.append({"url": u, "ok": True, "status": r.status_code, "text": r.text})
                 except Exception as e:
-                    out.append({"url": u, "ok": False, "status": 0,
-                                "error": str(e)[:200], "text": ""})
+                    out.append(
+                        {"url": u, "ok": False, "status": 0, "error": str(e)[:200], "text": ""}
+                    )
     return out
 
 
-def _fallback_gather(urls: List[str], timeout: int, headers: Optional[Dict]):
+def _fallback_gather(urls: list[str], timeout: int, headers: dict | None):
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     import data_provider
+
     sess = data_provider.get_session()
     out = []
     with ThreadPoolExecutor(max_workers=16) as ex:
-        futs = {ex.submit(sess.get, u, timeout=timeout, **({"headers": headers} if headers else {})): u for u in urls}
+        futs = {
+            ex.submit(sess.get, u, timeout=timeout, **({"headers": headers} if headers else {})): u
+            for u in urls
+        }
         for fut in as_completed(futs):
             u = futs[fut]
             try:
                 r = fut.result()
                 out.append({"url": u, "ok": True, "status": r.status_code, "text": r.text})
             except Exception as e:
-                out.append({"url": u, "ok": False, "status": 0,
-                            "error": str(e)[:200], "text": ""})
+                out.append({"url": u, "ok": False, "status": 0, "error": str(e)[:200], "text": ""})
     return out
 
 
-def gather_get(urls: List[str], timeout: int = 15,
-               headers: Optional[Dict] = None,
-               mode: str = "auto") -> List[Dict]:
+def gather_get(
+    urls: list[str], timeout: int = 15, headers: dict | None = None, mode: str = "auto"
+) -> list[dict]:
     """Fetch N URLs concurrently. Prefer aiohttp -> httpx -> ThreadPool fallback.
 
     Returns list of dicts: {url, ok, status, text} (and possibly 'error').

@@ -7,13 +7,15 @@ Tests each data source independently and reports a green/yellow/red status,
 with a clear remediation note if anything fails. Saves a `.optedge_status.json`
 so `run.py` can auto-fall-back to working sources.
 """
+
 from __future__ import annotations
+
 import json
 import os
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
 
 from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
 
@@ -54,8 +56,10 @@ def check_python() -> bool:
     if (3, 11) <= v < (3, 14):
         ok(f"Python {v.major}.{v.minor}.{v.micro}")
         return True
-    fail(f"Python {v.major}.{v.minor} - need >= 3.11 and < 3.14",
-         "Install Python 3.12 (recommended) and recreate the virtual environment")
+    fail(
+        f"Python {v.major}.{v.minor} - need >= 3.11 and < 3.14",
+        "Install Python 3.12 (recommended) and recreate the virtual environment",
+    )
     return False
 
 
@@ -103,15 +107,18 @@ def check_yfinance() -> tuple[bool, str]:
         # Try with curl_cffi session if available (more reliable)
         try:
             from curl_cffi import requests as creq
+
             session = creq.Session(impersonate="chrome120")
             tk = yf.Ticker("AAPL", session=session)
         except ImportError:
             tk = yf.Ticker("AAPL")
         h = tk.history(period="5d")
         if h.empty:
-            fail("AAPL history returned empty",
-                 "Yahoo may be rate-limiting your IP. Wait 5 min and retry, or "
-                 "use demo mode while the free provider stack recovers.")
+            fail(
+                "AAPL history returned empty",
+                "Yahoo may be rate-limiting your IP. Wait 5 min and retry, or "
+                "use demo mode while the free provider stack recovers.",
+            )
             return False, "empty"
         last = float(h["Close"].iloc[-1])
         ok(f"AAPL last close: ${last:.2f}")
@@ -135,12 +142,13 @@ def check_yfinance() -> tuple[bool, str]:
     except Exception as e:
         msg = str(e)[:120]
         if "rate" in msg.lower() or "429" in msg:
-            fail(f"Yahoo rate-limited this IP: {msg}",
-                 "Common from datacenter/VPN IPs. Try a residential connection, "
-                 "wait 30 min, or use demo mode. See README for the optional Tradier source.")
+            fail(
+                f"Yahoo rate-limited this IP: {msg}",
+                "Common from datacenter/VPN IPs. Try a residential connection, "
+                "wait 30 min, or use demo mode. See README for the optional Tradier source.",
+            )
         else:
-            fail(f"yfinance error: {msg}",
-                 "Check internet connection and try again.")
+            fail(f"yfinance error: {msg}", "Check internet connection and try again.")
         return False, "blocked"
 
 
@@ -148,6 +156,7 @@ def check_reddit() -> tuple[bool, str]:
     banner("Reddit - sentiment data (no auth required)")
     try:
         import requests
+
         r = requests.get(
             "https://www.reddit.com/r/wallstreetbets/new.json?limit=5",
             headers=outbound_headers(accept="application/json"),
@@ -159,21 +168,26 @@ def check_reddit() -> tuple[bool, str]:
             ok(f"r/wallstreetbets returned {n} posts")
             return True, "ok"
         elif r.status_code == 429:
-            fail("Reddit rate-limited (429)",
-                 "Wait 5 min and retry. Reddit's free JSON has aggressive rate limits.")
+            fail(
+                "Reddit rate-limited (429)",
+                "Wait 5 min and retry. Reddit's free JSON has aggressive rate limits.",
+            )
             return False, "rate_limited"
         elif r.status_code == 403:
-            fail("Reddit blocked this IP (403)",
-                 "Common from datacenter IPs. Sentiment will be skipped automatically; "
-                 "system still runs without it. Use --skip-sentiment to silence the warning.")
+            fail(
+                "Reddit blocked this IP (403)",
+                "Common from datacenter IPs. Sentiment will be skipped automatically; "
+                "system still runs without it. Use --skip-sentiment to silence the warning.",
+            )
             return False, "blocked"
         else:
-            fail(f"Reddit returned HTTP {r.status_code}",
-                 "System still runs; sentiment will be skipped.")
+            fail(
+                f"Reddit returned HTTP {r.status_code}",
+                "System still runs; sentiment will be skipped.",
+            )
             return False, f"http_{r.status_code}"
     except Exception as e:
-        fail(f"Reddit error: {str(e)[:100]}",
-             "System still runs; sentiment will be skipped.")
+        fail(f"Reddit error: {str(e)[:100]}", "System still runs; sentiment will be skipped.")
         return False, "error"
 
 
@@ -181,6 +195,7 @@ def check_sec() -> tuple[bool, str]:
     banner("SEC EDGAR - insider Form 4 data (no auth required)")
     try:
         import requests
+
         headers = sec_headers(accept="application/json")
         r = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
@@ -202,8 +217,10 @@ def check_sec() -> tuple[bool, str]:
                 return True, "ok"
             warn(f"submissions endpoint returned {r2.status_code} - insider engine may be impaired")
             return True, "partial"
-        fail(f"EDGAR ticker map returned HTTP {r.status_code}",
-             "SEC sometimes throttles. Wait a minute and retry.")
+        fail(
+            f"EDGAR ticker map returned HTTP {r.status_code}",
+            "SEC sometimes throttles. Wait a minute and retry.",
+        )
         return False, f"http_{r.status_code}"
     except SecContactRequiredError as e:
         fail(str(e), "Configure your contact, then rerun this check before using SEC engines.")
@@ -217,8 +234,10 @@ def check_macro() -> tuple[bool, str]:
     banner("Macro - VIX / yields (uses yfinance)")
     try:
         import yfinance as yf
+
         try:
             from curl_cffi import requests as creq
+
             session = creq.Session(impersonate="chrome120")
             vix_tk = yf.Ticker("^VIX", session=session)
         except ImportError:
@@ -246,8 +265,7 @@ def maybe_setup_fred() -> str:
         f"shell profile or OS secret store before launching Optedge.{RESET}"
     )
     print(
-        f"    {DIM}Never paste a key into a shared command, log, screenshot, "
-        f"or Codex task.{RESET}"
+        f"    {DIM}Never paste a key into a shared command, log, screenshot, or Codex task.{RESET}"
     )
     return ""
 
@@ -270,12 +288,12 @@ def main():
     fred = maybe_setup_fred()
 
     status = {
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checked_at": datetime.now(UTC).isoformat(),
         "yfinance": {"ok": yf_ok, "state": yf_state},
-        "reddit":   {"ok": reddit_ok, "state": reddit_state},
-        "sec":      {"ok": sec_ok, "state": sec_state},
-        "macro":    {"ok": macro_ok, "state": macro_state},
-        "fred":     {"ok": bool(fred), "state": "ok" if fred else "no_key"},
+        "reddit": {"ok": reddit_ok, "state": reddit_state},
+        "sec": {"ok": sec_ok, "state": sec_state},
+        "macro": {"ok": macro_ok, "state": macro_state},
+        "fred": {"ok": bool(fred), "state": "ok" if fred else "no_key"},
     }
     STATUS_FILE.write_text(json.dumps(status, indent=2))
 
@@ -286,14 +304,20 @@ def main():
         warn("Live mode partially working - options chain may be impaired.")
         print(f"    {DIM}Run: python3 run.py - system will degrade gracefully.{RESET}")
     else:
-        fail("Live mode unavailable from this network/IP.",
-             "Run `python3 run.py --demo` to use synthetic data while providers recover. "
-             "See README for the optional Tradier option-chain source.")
+        fail(
+            "Live mode unavailable from this network/IP.",
+            "Run `python3 run.py --demo` to use synthetic data while providers recover. "
+            "See README for the optional Tradier option-chain source.",
+        )
 
     if not reddit_ok:
-        print(f"    {DIM}Sentiment: will be skipped automatically. Use --skip-sentiment to silence.{RESET}")
+        print(
+            f"    {DIM}Sentiment: will be skipped automatically. Use --skip-sentiment to silence.{RESET}"
+        )
     if not sec_ok:
-        print(f"    {DIM}Insider: will be empty. Other available engines can still produce signals.{RESET}")
+        print(
+            f"    {DIM}Insider: will be empty. Other available engines can still produce signals.{RESET}"
+        )
 
     print(f"\n{DIM}Status saved to: {STATUS_FILE}{RESET}\n")
     return 0

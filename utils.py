@@ -1,18 +1,22 @@
 """Provide shared retry, option-math, statistics, and numeric helpers."""
-import math
-import time
+
 import functools
 import logging
-from typing import Callable, Any, Optional
+import math
+import time
+from collections.abc import Callable
+from typing import Any
+
 import pandas as pd
-from scipy.stats import norm
 from scipy.optimize import brentq
+from scipy.stats import norm
 
 log = logging.getLogger("optedge")
 
 
 def retry(times: int = 3, delay: float = 1.0, backoff: float = 2.0):
     """Simple retry decorator with exponential backoff."""
+
     def deco(fn: Callable) -> Callable:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -28,7 +32,9 @@ def retry(times: int = 3, delay: float = 1.0, backoff: float = 2.0):
                     wait *= backoff
             log.warning("%s failed after %d retries: %s", fn.__name__, times, last)
             return None
+
         return wrapper
+
     return deco
 
 
@@ -42,8 +48,9 @@ def safe(fn: Callable, default: Any = None) -> Any:
 
 
 # -------- Black-Scholes -----------------------------------------------
-def bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0,
-             call: bool = True) -> float:
+def bs_price(
+    S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0, call: bool = True
+) -> float:
     """Black-Scholes price with continuous dividend yield q.
 
     S=spot, K=strike, T=years to expiry, r=risk-free, sigma=vol, q=div yield.
@@ -51,15 +58,16 @@ def bs_price(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.
     if T <= 0 or sigma <= 0:
         intrinsic = max(0.0, (S - K) if call else (K - S))
         return intrinsic
-    d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
     if call:
         return S * math.exp(-q * T) * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
     return K * math.exp(-r * T) * norm.cdf(-d2) - S * math.exp(-q * T) * norm.cdf(-d1)
 
 
-def bs_implied_vol(price: float, S: float, K: float, T: float, r: float, q: float = 0.0,
-                   call: bool = True) -> Optional[float]:
+def bs_implied_vol(
+    price: float, S: float, K: float, T: float, r: float, q: float = 0.0, call: bool = True
+) -> float | None:
     """Solve for implied vol via Brent's method. Returns None if no solution."""
     if price <= 0 or T <= 0:
         return None
@@ -76,11 +84,12 @@ def bs_implied_vol(price: float, S: float, K: float, T: float, r: float, q: floa
         return None
 
 
-def bs_delta(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0,
-             call: bool = True) -> float:
+def bs_delta(
+    S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0, call: bool = True
+) -> float:
     if T <= 0 or sigma <= 0:
         return 0.0
-    d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     return math.exp(-q * T) * (norm.cdf(d1) if call else norm.cdf(d1) - 1)
 
 

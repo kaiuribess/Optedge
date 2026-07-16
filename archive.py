@@ -3,14 +3,15 @@
 Moves generated data and logs into uniquely timestamped directories, with a
 dry-run preview and explicit control over whether learned state is preserved.
 """
+
 from __future__ import annotations
 
 import argparse
 import shutil
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Tuple
 
 ROOT = Path(__file__).resolve().parent
 
@@ -88,7 +89,7 @@ def _unique_archive_root(root: Path) -> Path:
     raise RuntimeError("Could not create a unique archive folder")
 
 
-def _iter_matches(root: Path, keep_learned: bool = False) -> List[Path]:
+def _iter_matches(root: Path, keep_learned: bool = False) -> list[Path]:
     matches = []
     seen = set()
     for pattern in ARCHIVE_PATTERNS:
@@ -107,8 +108,9 @@ def _iter_matches(root: Path, keep_learned: bool = False) -> List[Path]:
     return sorted(matches, key=lambda p: str(p.relative_to(root)))
 
 
-def run_archive(root: Path = ROOT, dry_run: bool = False,
-                keep_learned: bool = False) -> Tuple[Path, List[Path]]:
+def run_archive(
+    root: Path = ROOT, dry_run: bool = False, keep_learned: bool = False
+) -> tuple[Path, list[Path]]:
     root = Path(root).resolve()
     archive_root = _unique_archive_root(root)
     matches = _iter_matches(root, keep_learned=keep_learned)
@@ -122,8 +124,9 @@ def run_archive(root: Path = ROOT, dry_run: bool = False,
     return archive_root, matches
 
 
-def _print_summary(archive_root: Path, moved: Iterable[Path], root: Path,
-                   dry_run: bool, keep_learned: bool) -> None:
+def _print_summary(
+    archive_root: Path, moved: Iterable[Path], root: Path, dry_run: bool, keep_learned: bool
+) -> None:
     moved = list(moved)
     counts = Counter(str(p.relative_to(root).parts[0]) for p in moved)
     verb = "Would archive" if dry_run else "Archived"
@@ -137,9 +140,14 @@ def _print_summary(archive_root: Path, moved: Iterable[Path], root: Path,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Archive generated Optedge artifacts safely")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would move without moving files")
-    parser.add_argument("--keep-learned", action="store_true",
-                        help="Preserve learned/adaptive files while archiving run history")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would move without moving files"
+    )
+    parser.add_argument(
+        "--keep-learned",
+        action="store_true",
+        help="Preserve learned/adaptive files while archiving run history",
+    )
     args = parser.parse_args()
     archive_root, moved = run_archive(ROOT, dry_run=args.dry_run, keep_learned=args.keep_learned)
     _print_summary(archive_root, moved, ROOT, args.dry_run, args.keep_learned)

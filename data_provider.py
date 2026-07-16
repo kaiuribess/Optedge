@@ -8,16 +8,18 @@ Free no-key history fallbacks are layered behind Yahoo/yfinance so the app can
 keep repricing and backtesting when Yahoo throttles. These fallbacks are not
 treated as live quotes.
 """
+
 from __future__ import annotations
+
+import hashlib
+import io
+import json
 import logging
 import os
 import time
-import json
-import hashlib
-import io
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Any
 
 import pandas as pd
 
@@ -26,13 +28,16 @@ log = logging.getLogger("optedge.provider")
 CACHE_DIR = Path(__file__).resolve().parent / "data" / "_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 RAM_CACHE_ENABLED = os.environ.get("OPTEDGE_RAM_CACHE", "1").strip().lower() not in {
-    "0", "false", "no", "off",
+    "0",
+    "false",
+    "no",
+    "off",
 }
 try:
     RAM_CACHE_MAX_ITEMS = max(100, int(os.environ.get("OPTEDGE_RAM_CACHE_MAX_ITEMS", "5000")))
 except ValueError:
     RAM_CACHE_MAX_ITEMS = 5000
-_RAM_CACHE: Dict[str, tuple[float, Any]] = {}
+_RAM_CACHE: dict[str, tuple[float, Any]] = {}
 
 
 # -------- Disk cache (light) -----------------------------------------
@@ -41,7 +46,7 @@ def _cache_path(key: str) -> Path:
     return CACHE_DIR / f"{h}.json"
 
 
-def cache_get(key: str, max_age_sec: int = 900) -> Optional[Any]:
+def cache_get(key: str, max_age_sec: int = 900) -> Any | None:
     if RAM_CACHE_ENABLED:
         entry = _RAM_CACHE.get(key)
         if entry is not None:
@@ -82,7 +87,7 @@ def _cache_put_ram(key: str, value: Any) -> None:
             _RAM_CACHE.pop(old_key, None)
 
 
-def cache_stats() -> Dict[str, Any]:
+def cache_stats() -> dict[str, Any]:
     return {
         "ram_cache_enabled": RAM_CACHE_ENABLED,
         "ram_cache_items": len(_RAM_CACHE),
@@ -91,7 +96,9 @@ def cache_stats() -> Dict[str, Any]:
     }
 
 
-def configure_ram_cache(enabled: bool | None = None, max_items: int | None = None) -> Dict[str, Any]:
+def configure_ram_cache(
+    enabled: bool | None = None, max_items: int | None = None
+) -> dict[str, Any]:
     global RAM_CACHE_ENABLED, RAM_CACHE_MAX_ITEMS
     if enabled is not None:
         RAM_CACHE_ENABLED = bool(enabled)
@@ -100,7 +107,9 @@ def configure_ram_cache(enabled: bool | None = None, max_items: int | None = Non
     if max_items is not None:
         RAM_CACHE_MAX_ITEMS = max(100, int(max_items))
         if len(_RAM_CACHE) > RAM_CACHE_MAX_ITEMS:
-            for key in sorted(_RAM_CACHE, key=lambda k: _RAM_CACHE[k][0])[: len(_RAM_CACHE) - RAM_CACHE_MAX_ITEMS]:
+            for key in sorted(_RAM_CACHE, key=lambda k: _RAM_CACHE[k][0])[
+                : len(_RAM_CACHE) - RAM_CACHE_MAX_ITEMS
+            ]:
                 _RAM_CACHE.pop(key, None)
     return cache_stats()
 
@@ -119,7 +128,9 @@ def _tag_history(
     return df
 
 
-def _history_cache_records(df: pd.DataFrame, source: str, quality: str = "free_or_delayed") -> list[dict[str, Any]]:
+def _history_cache_records(
+    df: pd.DataFrame, source: str, quality: str = "free_or_delayed"
+) -> list[dict[str, Any]]:
     out = df.reset_index()
     if "Date" in out.columns:
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
@@ -139,10 +150,18 @@ def _history_from_cache(records: Any) -> pd.DataFrame:
     quality = None
     price_basis = None
     if "_history_source" in df.columns:
-        source = str(df["_history_source"].dropna().iloc[0]) if not df["_history_source"].dropna().empty else None
+        source = (
+            str(df["_history_source"].dropna().iloc[0])
+            if not df["_history_source"].dropna().empty
+            else None
+        )
         df = df.drop(columns=["_history_source"])
     if "_history_quality" in df.columns:
-        quality = str(df["_history_quality"].dropna().iloc[0]) if not df["_history_quality"].dropna().empty else None
+        quality = (
+            str(df["_history_quality"].dropna().iloc[0])
+            if not df["_history_quality"].dropna().empty
+            else None
+        )
         df = df.drop(columns=["_history_quality"])
     if "_history_price_basis" in df.columns:
         price_basis = (
@@ -174,10 +193,12 @@ def get_session():
         return _SESSION
     try:
         from curl_cffi import requests as creq
+
         _SESSION = creq.Session(impersonate="chrome120", timeout=30)
         log.debug("using curl_cffi session (chrome120 impersonation)")
     except ImportError:
         import requests
+
         _SESSION = requests.Session()
         _SESSION.headers["User-Agent"] = (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/605.1.15 "
@@ -191,6 +212,7 @@ def get_session():
 def yf_ticker(ticker: str):
     """Return a yfinance Ticker bound to our hardened session."""
     import yfinance as yf
+
     sess = get_session()
     try:
         return yf.Ticker(ticker, session=sess)
@@ -200,8 +222,9 @@ def yf_ticker(ticker: str):
 
 
 # -------- Public unified API ------------------------------------------
-def get_history(ticker: str, period: str = "1y", interval: str = "1d",
-                cache_age: int = 3600) -> pd.DataFrame:
+def get_history(
+    ticker: str, period: str = "1y", interval: str = "1d", cache_age: int = 3600
+) -> pd.DataFrame:
     """Get price history with caching. Returns empty DataFrame on failure.
 
     v20.3: tries Yahoo v8 chart API directly first (free, no key, no crumb
@@ -257,7 +280,10 @@ def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     """Direct Yahoo v8 chart API call. No crumb required for /v8/finance/chart.
     Uses stdlib urllib (not curl_cffi) since the chrome impersonation triggers
     Yahoo's per-fingerprint rate limit."""
-    import urllib.request, urllib.parse, json as _json
+    import json as _json
+    import urllib.parse
+    import urllib.request
+
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
     params = {"range": period, "interval": interval}
     req = urllib.request.Request(
@@ -277,35 +303,55 @@ def _yahoo_v8_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
         res = result[0]
         ts = res.get("timestamp") or []
         quote = ((res.get("indicators") or {}).get("quote") or [{}])[0]
-        opens  = quote.get("open")  or []
-        highs  = quote.get("high")  or []
-        lows   = quote.get("low")   or []
+        opens = quote.get("open") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
         closes = quote.get("close") or []
-        vols   = quote.get("volume") or []
+        vols = quote.get("volume") or []
         if not ts or not closes:
             return pd.DataFrame()
-        df = pd.DataFrame({
-            "Date":   [datetime.fromtimestamp(t, tz=timezone.utc) for t in ts],
-            "Open":   opens,
-            "High":   highs,
-            "Low":    lows,
-            "Close":  closes,
-            "Volume": vols,
-        })
+        df = pd.DataFrame(
+            {
+                "Date": [datetime.fromtimestamp(t, tz=UTC) for t in ts],
+                "Open": opens,
+                "High": highs,
+                "Low": lows,
+                "Close": closes,
+                "Volume": vols,
+            }
+        )
         df = df.set_index("Date")
         df = df.dropna(subset=["Close"])
-        return _tag_history(
-            df, "yahoo_chart", "free_or_delayed", "unadjusted_close"
-        )
+        return _tag_history(df, "yahoo_chart", "free_or_delayed", "unadjusted_close")
     except Exception as e:
         log.debug("yahoo v8 parse %s: %s", ticker, e)
         return pd.DataFrame()
 
 
 _NASDAQ_ETF_HINTS = {
-    "SPY", "QQQ", "IWM", "DIA", "VXX", "UVXY", "TLT", "IEF", "HYG", "LQD",
-    "XLF", "XLK", "XLE", "XLV", "XLY", "XLI", "XLP", "XLB", "XLU", "XLRE",
-    "IBIT", "GBTC", "ETHA",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "VXX",
+    "UVXY",
+    "TLT",
+    "IEF",
+    "HYG",
+    "LQD",
+    "XLF",
+    "XLK",
+    "XLE",
+    "XLV",
+    "XLY",
+    "XLI",
+    "XLP",
+    "XLB",
+    "XLU",
+    "XLRE",
+    "IBIT",
+    "GBTC",
+    "ETHA",
 }
 
 _NASDAQ_INDEX_MAP = {
@@ -356,7 +402,7 @@ def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     import urllib.parse
     import urllib.request
 
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     start_ts = _period_start(period)
     if start_ts is None:
         start_date = today - timedelta(days=3650)
@@ -386,11 +432,7 @@ def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
         except Exception as e:
             log.debug("nasdaq history %s/%s: %s", ticker, assetclass, e)
             continue
-        rows = (
-            ((payload or {}).get("data") or {})
-            .get("tradesTable", {})
-            .get("rows", [])
-        )
+        rows = ((payload or {}).get("data") or {}).get("tradesTable", {}).get("rows", [])
         if not rows:
             continue
         parsed = []
@@ -401,14 +443,16 @@ def _nasdaq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
                 dt = pd.NaT
             if pd.isna(dt):
                 continue
-            parsed.append({
-                "Date": dt,
-                "Open": _nasdaq_clean_number(row.get("open")),
-                "High": _nasdaq_clean_number(row.get("high")),
-                "Low": _nasdaq_clean_number(row.get("low")),
-                "Close": _nasdaq_clean_number(row.get("close")),
-                "Volume": _nasdaq_clean_number(row.get("volume")),
-            })
+            parsed.append(
+                {
+                    "Date": dt,
+                    "Open": _nasdaq_clean_number(row.get("open")),
+                    "High": _nasdaq_clean_number(row.get("high")),
+                    "Low": _nasdaq_clean_number(row.get("low")),
+                    "Close": _nasdaq_clean_number(row.get("close")),
+                    "Volume": _nasdaq_clean_number(row.get("volume")),
+                }
+            )
         df = pd.DataFrame(parsed)
         if df.empty:
             continue
@@ -553,7 +597,7 @@ def _stooq_history(ticker: str, period: str, interval: str) -> pd.DataFrame:
     return _tag_history(df[cols], "stooq_csv", "delayed")
 
 
-def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
+def get_options_chain(ticker: str, cache_age: int = 600) -> dict[str, Any]:
     """Get full option chain across all expirations — v20.2 multi-source.
 
     v20.2: this function now delegates to chain_provider.fetch_chain() which
@@ -570,12 +614,12 @@ def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
     """
     try:
         from chain_provider import fetch_chain as _multi
+
         blob = _multi(ticker, cache_age=cache_age)
         if blob:
             return blob
     except Exception as e:
-        log.debug("chain_provider unavailable for %s: %s — using yfinance legacy",
-                  ticker, e)
+        log.debug("chain_provider unavailable for %s: %s — using yfinance legacy", ticker, e)
 
     # Legacy yfinance path — preserved as the final safety net
     key = f"chain:{ticker}"
@@ -599,8 +643,10 @@ def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
         for exp in expirations:
             try:
                 opt = tk.option_chain(exp)
-                df_calls = opt.calls.copy(); df_calls["side"] = "call"
-                df_puts = opt.puts.copy(); df_puts["side"] = "put"
+                df_calls = opt.calls.copy()
+                df_calls["side"] = "call"
+                df_puts = opt.puts.copy()
+                df_puts["side"] = "put"
                 chains[exp] = pd.concat([df_calls, df_puts], ignore_index=True)
             except Exception:
                 continue
@@ -620,7 +666,7 @@ def get_options_chain(ticker: str, cache_age: int = 600) -> Dict[str, Any]:
         return {}
 
 
-def get_fundamentals(ticker: str, cache_age: int = 86400) -> Dict[str, Any]:
+def get_fundamentals(ticker: str, cache_age: int = 86400) -> dict[str, Any]:
     key = f"fundamentals:{ticker}"
     cached = cache_get(key, cache_age)
     if cached is not None:
@@ -650,7 +696,7 @@ def get_fundamentals(ticker: str, cache_age: int = 86400) -> Dict[str, Any]:
         return {}
 
 
-def get_short_info(ticker: str, cache_age: int = 86400) -> Dict[str, Any]:
+def get_short_info(ticker: str, cache_age: int = 86400) -> dict[str, Any]:
     """v20.2: fetch short-interest fields from yfinance Ticker.info.
 
     These fields were intentionally stripped from get_fundamentals' cache so
@@ -664,12 +710,12 @@ def get_short_info(ticker: str, cache_age: int = 86400) -> Dict[str, Any]:
         tk = yf_ticker(ticker)
         info = getattr(tk, "info", {}) or {}
         out = {
-            "shortPercentOfFloat":   info.get("shortPercentOfFloat"),
-            "shortRatio":            info.get("shortRatio"),
-            "sharesShort":           info.get("sharesShort"),
+            "shortPercentOfFloat": info.get("shortPercentOfFloat"),
+            "shortRatio": info.get("shortRatio"),
+            "sharesShort": info.get("sharesShort"),
             "sharesShortPriorMonth": info.get("sharesShortPriorMonth"),
-            "dateShortInterest":     info.get("dateShortInterest"),
-            "floatShares":           info.get("floatShares"),
+            "dateShortInterest": info.get("dateShortInterest"),
+            "floatShares": info.get("floatShares"),
         }
         # Only cache when at least one field came back populated — avoids
         # poisoning the cache when yfinance silently 401s the info call
@@ -682,7 +728,7 @@ def get_short_info(ticker: str, cache_age: int = 86400) -> Dict[str, Any]:
 
 
 # -------- Health -----------------------------------------------------
-def status() -> Dict[str, Any]:
+def status() -> dict[str, Any]:
     """Read .optedge_status.json (written by setup_check.py)."""
     fp = Path(__file__).resolve().parent / ".optedge_status.json"
     if not fp.exists():
