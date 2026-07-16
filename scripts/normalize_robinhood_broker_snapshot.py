@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +69,13 @@ ROW_HINT_KEYS = {
     "order_id",
     "state",
 }
+RAW_ACCOUNT_NUMBER_KEYS = frozenset({
+    "account_number",
+    "rhs_account_number",
+    "brokerage_account_number",
+    "account",
+})
+ACCOUNT_NUMBER_REDACTION = "[redacted-account]"
 
 
 def _now() -> str:
@@ -288,6 +296,92 @@ def _clean(value: Any) -> Any:
     if isinstance(value, list):
         return [_clean(v) for v in value]
     return value
+
+
+def _supplied_account_numbers(value: Any) -> tuple[str, ...]:
+    """Collect explicit raw account identifiers without guessing from other numbers."""
+    found: set[str] = set()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                if str(key).strip().lower() in RAW_ACCOUNT_NUMBER_KEYS:
+                    if isinstance(item, (str, int)) and not isinstance(item, bool):
+                        candidate = _text(item)
+                        if candidate:
+                            found.add(candidate)
+                visit(item)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    visit(value)
+    return tuple(sorted(found, key=lambda item: (-len(item), item)))
+
+
+def _redact_account_number_text(text: str, account_numbers: tuple[str, ...]) -> str:
+    """Redact exact account tokens while leaving unrelated numeric substrings intact."""
+    redacted = text
+    for account_number in account_numbers:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(account_number)}(?![A-Za-z0-9])"
+        )
+        redacted = pattern.sub(ACCOUNT_NUMBER_REDACTION, redacted)
+    return redacted
+
+
+def _redact_supplied_account_numbers(
+    value: Any,
+    account_numbers: tuple[str, ...],
+) -> Any:
+    """Recursively redact raw account identifiers from public string keys and values."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            clean_key = _redact_account_number_text(str(key), account_numbers)
+            if clean_key in redacted:
+                raise ValueError(
+                    "account-number redaction would create duplicate public snapshot keys"
+                )
+            redacted[clean_key] = _redact_supplied_account_numbers(item, account_numbers)
+        return redacted
+    if isinstance(value, list):
+        return [
+            _redact_supplied_account_numbers(item, account_numbers)
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _redact_account_number_text(value, account_numbers)
+    return value
+
+
+def _assert_account_numbers_absent(
+    value: Any,
+    account_numbers: tuple[str, ...],
+) -> None:
+    """Fail closed if any full raw account identifier remains in public data."""
+    leaks: set[str] = set()
+
+    def inspect(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, item in node.items():
+                inspect(str(key))
+                inspect(item)
+        elif isinstance(node, list):
+            for item in node:
+                inspect(item)
+        elif isinstance(node, str):
+            leaks.update(
+                account_number
+                for account_number in account_numbers
+                if account_number in node
+            )
+
+    inspect(value)
+    if leaks:
+        raise ValueError(
+            "normalized broker snapshot still contains a supplied raw account identifier"
+        )
 
 
 def _read_json(path: Path) -> Any:
@@ -1537,6 +1631,53 @@ def normalize_broker_snapshot(
             "This file is not broker confirmation and cannot place, cancel, or replace orders.",
             f"For multiple accounts, use {RAW_BUNDLE_SCHEMA} account_snapshots wrappers so every read remains account-scoped.",
         ],
+    }
+
+
+def persist_broker_snapshot_bundle(
+    raw_bundle: dict[str, Any],
+    *,
+    output_path: Path = DEFAULT_OUTPUT,
+    ledger_dir: Path | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """Persist one in-memory V2 read bundle without ever writing its raw form.
+
+    The normalized public snapshot is recursively scrubbed and verified before
+    an atomic replace.  Pseudonymous account-equity ledgers are updated only
+    after that replace succeeds.  This helper performs no broker connection or
+    order action and deliberately accepts only the account-scoped V2 bundle.
+    """
+    if not isinstance(raw_bundle, dict) or _text(raw_bundle.get("schema")) != RAW_BUNDLE_SCHEMA:
+        raise ValueError(f"raw_bundle must use schema {RAW_BUNDLE_SCHEMA}")
+
+    account_numbers = _supplied_account_numbers(raw_bundle)
+    snapshot = normalize_broker_snapshot(
+        raw_bundle,
+        generated_at=generated_at,
+    )
+    public_snapshot = _redact_supplied_account_numbers(snapshot, account_numbers)
+    _assert_account_numbers_absent(public_snapshot, account_numbers)
+
+    destination = Path(output_path)
+    resolved_ledger_dir = (
+        Path(ledger_dir)
+        if ledger_dir is not None
+        else default_account_equity_ledger_dir(destination.parent)
+    )
+    _write_json_atomic(destination, public_snapshot)
+    ledger_update = append_account_equity_ledgers(
+        public_snapshot,
+        resolved_ledger_dir,
+    )
+    return {
+        "schema": "optedge_robinhood_broker_snapshot_persistence_v1",
+        "output": str(destination),
+        "equity_ledger_dir": str(resolved_ledger_dir),
+        "snapshot": public_snapshot,
+        "equity_ledger_update": ledger_update,
+        "raw_bundle_written": False,
+        "does_not_place_orders": True,
     }
 
 

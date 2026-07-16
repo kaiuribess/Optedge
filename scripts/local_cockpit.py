@@ -2,8 +2,10 @@
 """Free local Optedge cockpit server.
 
 This is a lightweight browser UI for existing Optedge artifacts. It does not
-place trades, does not store broker credentials, and does not require paid
-dashboard services.
+place trades or require paid dashboard services.  An explicit official
+Robinhood OAuth connection can store revocable tokens in the operating-system
+credential vault; passwords, MFA codes, cookies, and raw tokens never belong in
+the cockpit.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import sys
 import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
+from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -50,7 +53,24 @@ from engines.nasdaq_screener import small_cap_movers
 from engines.regsho_threshold import threshold_rows_for_symbols
 from engines.short_sale_circuit import circuit_rows_for_symbols
 from engines.trading_halts import halt_rows_for_symbols
+from optedge.leaps_swing import score_leaps_swing_candidate
+from optedge.robinhood_connection import (
+    RobinhoodConnectionError,
+    RobinhoodConnectionManager,
+)
+from optedge.robinhood_finalist import (
+    RobinhoodFinalistCheckError,
+    apply_finalist_check_to_sources,
+    check_best_option_finalist,
+    load_finalist_check_status,
+)
+from optedge.robinhood_snapshot_sync import (
+    RobinhoodSnapshotSyncError,
+    sync_robinhood_broker_snapshot,
+)
 from optedge.strategy_profile import (
+    LEAPS_EVIDENCE_LANE,
+    LEAPS_SWING_PROFILE,
     SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
@@ -176,6 +196,7 @@ ARTIFACTS = {
     "agentic-paper-orders": ("agentic_paper_orders.jsonl", "application/x-ndjson; charset=utf-8"),
     "robinhood-live-order-tickets": ("robinhood_live_order_tickets.json", "application/json; charset=utf-8"),
     "robinhood-broker-snapshot": ("robinhood_broker_snapshot.json", "application/json; charset=utf-8"),
+    "robinhood-finalist-check": ("robinhood_finalist_check.json", "application/json; charset=utf-8"),
     "robinhood-research-coverage": ("robinhood_research_coverage.json", "application/json; charset=utf-8"),
     "robinhood-research-requests": ("robinhood_research_requests.json", "application/json; charset=utf-8"),
     "robinhood-research-prompt": ("robinhood_research_prompt.md", "text/markdown; charset=utf-8"),
@@ -247,14 +268,32 @@ CHAIN_PRESETS = {
         "min_open_interest": 25,
     },
     "leaps": {
-        "label": "Long dated",
-        "description": "180-900 DTE contracts for slower swing/LEAPS-style review.",
+        "label": "LEAPS swing",
+        "description": (
+            "True 365-900 DTE LEAPS contracts, reviewed after 3/5/10 sessions "
+            "and held no longer than 20 sessions under the manual policy."
+        ),
+        "side": "all",
+        "min_dte": LEAPS_SWING_PROFILE.option_min_dte,
+        "max_dte": LEAPS_SWING_PROFILE.option_max_dte,
+        "max_spread_pct": LEAPS_SWING_PROFILE.max_spread_pct,
+        "max_premium": 0.0,
+        "min_open_interest": LEAPS_SWING_PROFILE.min_open_interest,
+        "execution_profile": LEAPS_SWING_PROFILE.name,
+    },
+    "long_dated": {
+        "label": "Broad long-dated research",
+        "description": (
+            "Broad 180-900 DTE research window retained for comparison; it is "
+            "not the true-LEAPS execution profile."
+        ),
         "side": "all",
         "min_dte": 180,
         "max_dte": 900,
         "max_spread_pct": 0.25,
         "max_premium": 750.0,
         "min_open_interest": 10,
+        "execution_profile": SWING_EXECUTION_PROFILE.name,
     },
     "liquid": {
         "label": "Liquid",
@@ -314,6 +353,25 @@ CHAIN_CONTEXT_FIELDS = {
     "dte_bucket",
     "scan_preset",
     "scan_symbol",
+    "execution_profile",
+    "strategy_evidence_lane",
+    "profile_policy_version",
+    "leaps_swing_status",
+    "leaps_execution_ready",
+    "leaps_quality_score",
+    "leaps_hard_blockers",
+    "leaps_data_blockers",
+    "leaps_score_breakdown",
+    "quote_age_seconds",
+    "review_sessions",
+    "planned_hold_sessions",
+    "default_hold_sessions",
+    "max_hold_sessions",
+    "stop_loss_fraction",
+    "target_gain_fraction",
+    "breakeven_review_trigger_fraction",
+    "manual_management_only",
+    "contract_dte_is_not_hold_time",
 }
 
 CHAIN_SHORTLIST_COLUMNS = [
@@ -336,6 +394,8 @@ CHAIN_SHORTLIST_COLUMNS = [
     "volume",
     "impliedVolatility",
     "delta",
+    "confidence",
+    "after_cost_edge_pct",
     "moneyness_pct",
     "breakeven_price",
     "breakeven_move_pct",
@@ -373,6 +433,25 @@ CHAIN_SHORTLIST_COLUMNS = [
     "risk_flags",
     "grade_reasons",
     "review_thesis",
+    "execution_profile",
+    "strategy_evidence_lane",
+    "profile_policy_version",
+    "leaps_swing_status",
+    "leaps_execution_ready",
+    "leaps_quality_score",
+    "leaps_hard_blockers",
+    "leaps_data_blockers",
+    "leaps_score_breakdown",
+    "quote_age_seconds",
+    "review_sessions",
+    "planned_hold_sessions",
+    "default_hold_sessions",
+    "max_hold_sessions",
+    "stop_loss_fraction",
+    "target_gain_fraction",
+    "breakeven_review_trigger_fraction",
+    "manual_management_only",
+    "contract_dte_is_not_hold_time",
 ]
 
 POSITION_FILES = {
@@ -2145,7 +2224,12 @@ def _option_spread_pct(row: pd.Series, mid: float) -> float | None:
     return (ask - bid) / mid
 
 
-def _option_chain_trade_refs(row: dict[str, Any], spot: float, max_premium: float) -> dict[str, Any]:
+def _option_chain_trade_refs(
+    row: dict[str, Any],
+    spot: float,
+    max_premium: float,
+    execution_profile: str = SWING_EXECUTION_PROFILE.name,
+) -> dict[str, Any]:
     """Build conservative one-contract review references for chain candidates."""
     side = str(row.get("side") or "").strip().lower()
     strike = _float_value(row.get("strike"), default=math.nan)
@@ -2180,8 +2264,12 @@ def _option_chain_trade_refs(row: dict[str, Any], spot: float, max_premium: floa
             out["budget_fit"] = "over_budget"
 
     if math.isfinite(mid) and mid > 0:
-        stop = max(0.01, mid * 0.50)
-        target = mid * 2.00
+        if execution_profile == LEAPS_SWING_PROFILE.name:
+            stop = max(0.01, mid * (1.0 - LEAPS_SWING_PROFILE.stop_loss_fraction))
+            target = mid * (1.0 + LEAPS_SWING_PROFILE.target_gain_fraction)
+        else:
+            stop = max(0.01, mid * 0.50)
+            target = mid * 2.00
         risk = max(0.0, (mid - stop) * 100.0)
         reward = max(0.0, (target - mid) * 100.0)
         out["stop_price_reference"] = round(stop, 2)
@@ -2606,11 +2694,61 @@ def _option_chain_factor_breakdown(row: dict[str, Any], max_premium: float) -> l
 
 def _chain_preset_config(preset: str) -> tuple[str, dict[str, Any]]:
     preset_norm = str(preset or "custom").strip().lower().replace("-", "_")
-    if preset_norm in {"long", "long_dated", "leap"}:
+    if preset_norm in {"long", "broad_long_dated"}:
+        preset_norm = "long_dated"
+    elif preset_norm in {"leap", "true_leaps"}:
         preset_norm = "leaps"
     if preset_norm not in CHAIN_PRESETS:
         preset_norm = "custom"
     return preset_norm, CHAIN_PRESETS[preset_norm]
+
+
+def _leaps_swing_scan_fields(
+    row: dict[str, Any],
+    *,
+    quote_age_seconds: float | None,
+    account_budget: float | None,
+) -> dict[str, Any]:
+    """Flatten the pure LEAPS assessment into stable scan/review fields."""
+    assessment = score_leaps_swing_candidate(
+        row,
+        quote_age_seconds=quote_age_seconds,
+        account_budget=account_budget,
+    )
+    holding = assessment.get("holding_policy") or {}
+    management = assessment.get("management_references") or {}
+    return {
+        "execution_profile": LEAPS_SWING_PROFILE.name,
+        "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
+        "profile_policy_version": assessment.get("policy_version"),
+        "leaps_swing_status": assessment.get("status"),
+        "leaps_execution_ready": bool(assessment.get("execution_ready")),
+        "leaps_quality_score": assessment.get("quality_score"),
+        "leaps_hard_blockers": list(assessment.get("hard_blockers") or []),
+        "leaps_data_blockers": list(assessment.get("data_blockers") or []),
+        "leaps_score_breakdown": dict(assessment.get("score_breakdown") or {}),
+        "quote_age_seconds": quote_age_seconds,
+        "review_sessions": list(holding.get("review_sessions") or []),
+        "planned_hold_sessions": holding.get("planned_hold_sessions"),
+        "default_hold_sessions": LEAPS_SWING_PROFILE.default_hold_sessions,
+        "max_hold_sessions": holding.get("max_hold_sessions"),
+        "contract_dte_is_not_hold_time": bool(
+            holding.get("contract_dte_is_not_hold_time")
+        ),
+        "stop_loss_fraction": management.get("stop_loss_fraction"),
+        "target_gain_fraction": management.get("target_gain_fraction"),
+        "breakeven_review_trigger_fraction": management.get(
+            "breakeven_review_trigger_fraction"
+        ),
+        "manual_management_only": bool(management.get("manual_management_only")),
+    }
+
+
+def _row_profile_execution_ready(row: dict[str, Any]) -> bool:
+    """Keep profile-specific research rows out of review/execution lanes."""
+    if str(row.get("execution_profile") or "") != LEAPS_SWING_PROFILE.name:
+        return True
+    return bool(row.get("leaps_execution_ready"))
 
 
 def _chain_contract_label(row: dict[str, Any] | None) -> str | None:
@@ -2666,6 +2804,11 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
             "clean_swing_count": 0,
             "reviewable_swing_count": 0,
             "best_swing_fit": None,
+            "profile_status_counts": {},
+            "leaps_execution_ready_count": 0,
+            "leaps_research_only_count": 0,
+            "leaps_blocked_count": 0,
+            "best_leaps_quality": None,
         }
     spreads = sorted(
         _float_value(row.get("spread_pct"), default=math.nan)
@@ -2699,11 +2842,23 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
     best_long_dated = next((row for row in rows if _float_value(row.get("dte"), default=0.0) >= 180), None)
     grade_counts: dict[str, int] = {}
     swing_fit_counts: dict[str, int] = {}
+    profile_status_counts: dict[str, int] = {}
     for row in rows:
         grade = str(row.get("contract_grade") or "ungraded")
         grade_counts[grade] = grade_counts.get(grade, 0) + 1
         fit = str(row.get("swing_fit_label") or "unscored")
         swing_fit_counts[fit] = swing_fit_counts.get(fit, 0) + 1
+        profile_status = str(row.get("leaps_swing_status") or "").strip()
+        if profile_status:
+            profile_status_counts[profile_status] = profile_status_counts.get(profile_status, 0) + 1
+    leaps_rows = [
+        row for row in rows
+        if str(row.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name
+    ]
+    best_leaps = max(
+        leaps_rows,
+        key=lambda row: _float_value(row.get("leaps_quality_score"), default=-1.0),
+    ) if leaps_rows else None
     return {
         "best_call": _chain_contract_label(best_call),
         "best_put": _chain_contract_label(best_put),
@@ -2733,6 +2888,11 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
             rows,
             key=lambda row: _float_value(row.get("swing_fit_score"), default=-1.0),
         )),
+        "profile_status_counts": profile_status_counts,
+        "leaps_execution_ready_count": profile_status_counts.get("execution_ready", 0),
+        "leaps_research_only_count": profile_status_counts.get("research_only", 0),
+        "leaps_blocked_count": profile_status_counts.get("blocked", 0),
+        "best_leaps_quality": _chain_contract_label(best_leaps),
     }
 
 
@@ -2816,7 +2976,13 @@ def _option_chain_trade_plan(
     premium = _float_value(primary.get("premium_dollars"), default=math.nan)
     contracts_for_budget = int(_float_value(primary.get("contracts_for_budget"), default=0.0))
     quantity = 1 if contracts_for_budget >= 1 and math.isfinite(mid) and mid > 0 else 0
-    action = "review_contract" if status in {"primary_review", "secondary_review"} and quantity > 0 else "watch_only"
+    action = (
+        "review_contract"
+        if status in {"primary_review", "secondary_review"}
+        and quantity > 0
+        and _row_profile_execution_ready(primary)
+        else "watch_only"
+    )
     contract = str(primary.get("contract_query") or "").strip()
     side_label = "call" if side.startswith("call") else "put" if side.startswith("put") else "option"
     entry_text = f"{mid:.2f}" if math.isfinite(mid) else "unknown"
@@ -2950,10 +3116,12 @@ def _option_chain_decision_pack(
         row for row in rows
         if str(row.get("contract_grade") or "").upper() in {"A", "B"}
         and str(row.get("review_lane") or "") != "wait"
+        and _row_profile_execution_ready(row)
     ]
     reviewable = [
         row for row in rows
         if str(row.get("readiness_label") or "") in {"ready", "review"}
+        and _row_profile_execution_ready(row)
     ]
     primary = (saveable or reviewable or rows)[0]
     alternatives: list[dict[str, Any]] = []
@@ -3006,9 +3174,24 @@ def _option_chain_decision_pack(
     row_flags = primary.get("risk_flags")
     if isinstance(row_flags, list):
         risk_notes.extend(str(flag) for flag in row_flags[:3] if flag)
+    if str(primary.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name:
+        profile_blockers = list(primary.get("leaps_hard_blockers") or [])
+        profile_blockers.extend(primary.get("leaps_data_blockers") or [])
+        risk_notes.extend(f"LEAPS gate: {item}" for item in profile_blockers[:4])
     risk_notes = list(dict.fromkeys(risk_notes))[:6]
 
-    if saveable and grade == "A":
+    profile_status = str(primary.get("leaps_swing_status") or "")
+    if (
+        str(primary.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name
+        and not _row_profile_execution_ready(primary)
+    ):
+        status = "research_only" if profile_status == "research_only" else "blocked"
+        label = "LEAPS research only" if status == "research_only" else "LEAPS blocked"
+        next_step = (
+            "Keep this as research. A fresh broker-live quote plus complete delta, "
+            "confidence, and positive after-cost edge must pass before manual review."
+        )
+    elif saveable and grade == "A":
         status = "primary_review"
         label = "Best contract"
         next_step = "Save this contract, then refresh quotes before any paper/manual review."
@@ -3117,6 +3300,11 @@ def build_option_chain_scan(
         max_spread_pct = float(preset_cfg.get("max_spread_pct", max_spread_pct))
         max_premium = float(preset_cfg.get("max_premium", max_premium))
         min_open_interest = int(preset_cfg.get("min_open_interest", min_open_interest))
+    execution_profile = (
+        LEAPS_SWING_PROFILE.name
+        if preset_norm == "leaps"
+        else str(preset_cfg.get("execution_profile") or SWING_EXECUTION_PROFILE.name)
+    )
 
     side_norm = str(side or "all").strip().lower()
     if side_norm in {"c", "calls"}:
@@ -3231,16 +3419,62 @@ def build_option_chain_scan(
                 "impliedVolatility": _clean_value(raw.get("impliedVolatility")),
                 "delta": _clean_value(raw.get("delta")),
                 "moneyness_pct": _clean_value(moneyness),
+                "confidence": _clean_value(raw.get("confidence")),
+                "after_cost_edge_pct": _clean_value(
+                    raw.get("after_cost_edge_pct")
+                    if raw.get("after_cost_edge_pct") is not None
+                    else raw.get("net_edge_pct")
+                ),
+                "execution_profile": execution_profile,
+                "strategy_evidence_lane": (
+                    LEAPS_EVIDENCE_LANE
+                    if execution_profile == LEAPS_SWING_PROFILE.name
+                    else ""
+                ),
             }
             row["contract_query"] = (
                 f"{ticker} {expiry} {'C' if contract_side == 'call' else 'P'} {strike:g}"
                 if math.isfinite(strike) else ""
             )
-            row.update(_option_chain_trade_refs(row, spot, max_premium))
+            row.update(
+                _option_chain_trade_refs(
+                    row,
+                    spot,
+                    max_premium,
+                    execution_profile=execution_profile,
+                )
+            )
             row.update(_option_chain_swing_fit(row, max_premium))
             row["contract_quality_score"] = round(_option_chain_score(row), 3)
             row.update(_option_contract_readiness(row, str(quote_quality)))
             row.update(_option_contract_grade(row, max_premium))
+            if execution_profile == LEAPS_SWING_PROFILE.name:
+                quote_age_minutes = _iso_age_minutes(source_quote_at)
+                quote_age_seconds = (
+                    quote_age_minutes * 60.0
+                    if quote_age_minutes is not None
+                    else None
+                )
+                row.update(_leaps_swing_scan_fields(
+                    row,
+                    quote_age_seconds=quote_age_seconds,
+                    account_budget=max_premium if max_premium > 0 else None,
+                ))
+                if not row["leaps_execution_ready"]:
+                    row["review_lane"] = (
+                        "leaps_research_only"
+                        if row["leaps_swing_status"] == "research_only"
+                        else "leaps_blocked"
+                    )
+                    row["readiness_label"] = "wait"
+                    profile_flags = [
+                        f"LEAPS {row['leaps_swing_status'].replace('_', ' ')}"
+                    ]
+                    profile_flags.extend(row.get("leaps_hard_blockers") or [])
+                    profile_flags.extend(row.get("leaps_data_blockers") or [])
+                    row["risk_flags"] = list(dict.fromkeys(
+                        list(row.get("risk_flags") or []) + profile_flags
+                    ))[:10]
             row["chain_factor_breakdown"] = _option_chain_factor_breakdown(row, max_premium)
             row["chain_factor_summary"] = _swing_factor_summary(row["chain_factor_breakdown"])
             rows.append(row)
@@ -3248,6 +3482,11 @@ def build_option_chain_scan(
     rows = sorted(
         rows,
         key=lambda r: (
+            {"execution_ready": 2, "research_only": 1, "blocked": 0}.get(
+                str(r.get("leaps_swing_status") or ""),
+                2,
+            ),
+            _float_value(r.get("leaps_quality_score"), default=-1.0),
             _float_value(r.get("swing_fit_score"), default=-999.0),
             _float_value(r.get("contract_quality_score"), default=-999.0),
             -abs(_float_value(r.get("moneyness_pct"), default=99.0)),
@@ -3289,6 +3528,17 @@ def build_option_chain_scan(
         "preset": preset_norm,
         "preset_label": preset_cfg.get("label"),
         "preset_description": preset_cfg.get("description"),
+        "execution_profile": execution_profile,
+        "strategy_evidence_lane": (
+            LEAPS_EVIDENCE_LANE
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else ""
+        ),
+        "profile_policy_version": (
+            LEAPS_SWING_PROFILE.policy_version
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else SWING_EXECUTION_PROFILE.strategy_version
+        ),
         "scan_summary": summary,
         "decision": decision,
         "expiry_summary": expiry_summary,
@@ -3306,7 +3556,15 @@ def build_option_chain_scan(
             "Option-chain scan uses Optedge's existing provider stack.",
             "Free/keyless sources may be delayed, incomplete, or blocked for some tickers.",
             "This view inspects contracts only; it does not place trades.",
-        ],
+        ] + (
+            [
+                "LEAPS means 365-900 contract DTE; it does not mean a one-year hold.",
+                "The manual LEAPS swing policy reviews at 3/5/10 sessions and caps the hold at 20 sessions.",
+                "Free/delayed quotes remain research-only and cannot enter an execution lane.",
+            ]
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else []
+        ),
     }
 
 
@@ -10178,6 +10436,60 @@ def build_swing_climate(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     return _swing_climate_from_pulses(market, breadth, sector, macro)
 
 
+def _local_first_load_climate(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Return a fresh saved climate or a conservative no-network first-load gate."""
+    data_dir = Path(data_dir)
+    packet = _read_json(data_dir / "swing_packet.json")
+    packet = packet if isinstance(packet, dict) else {}
+    saved = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
+    age_minutes = _iso_age_minutes(packet.get("generated_at"))
+    if saved and age_minutes is not None and age_minutes <= FRESH_SNAPSHOT_MINUTES:
+        climate = dict(saved)
+        climate["context_source"] = "fresh_saved_swing_packet"
+        climate["context_age_minutes"] = round(age_minutes, 2)
+        climate["live_fetch_performed"] = False
+        climate.setdefault("playbook", _swing_playbook(str(climate.get("climate_label") or "")))
+        return climate
+
+    label = "context_unavailable"
+    policy_label = "defensive_wait"
+    playbook = _swing_playbook(policy_label)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "climate_label": label,
+        "climate_score": 0,
+        "posture": (
+            "Live market climate was not fetched during first load. Defensive gates stay active; "
+            "refresh Swing Climate in Deep research when current context is needed."
+        ),
+        "playbook": playbook,
+        "trade_gates": [
+            {"gate": "Context source", "value": "local artifacts only"},
+            {"gate": "Minimum readiness", "value": f"{playbook['min_readiness_score']}/100"},
+            {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
+            {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
+            {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
+        ],
+        "asset_bias": _swing_asset_bias(policy_label, {}),
+        "positives": [],
+        "warnings": [
+            "Live market, breadth, sector, and macro context was intentionally not fetched on first load."
+        ],
+        "focus": [{
+            "label": "Refresh when needed",
+            "detail": "Use Deep research to request a current Swing Climate snapshot before relying on regime context.",
+        }],
+        "coverage": {"market": "not fetched", "breadth": "not fetched", "sector": "not fetched", "macro": "not fetched"},
+        "context_source": "local_first_load_defensive_fallback",
+        "context_age_minutes": None,
+        "live_fetch_performed": False,
+        "notes": [
+            "The Trade Desk first screen stays local and fail-closed instead of waiting on free provider calls.",
+            "This fallback cannot supply positive climate evidence or relax a strategy, validation, or risk gate.",
+        ],
+    }
+
+
 def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_score: int) -> dict[str, Any]:
     asset = str(row.get("asset") or "").strip().lower()
     blockers: list[str] = []
@@ -10257,11 +10569,13 @@ def build_climate_gated_setups(
     per_asset: int = 4,
     limit: int = 12,
     include_held: bool = True,
+    *,
+    climate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate the latest local setup shortlist against the current swing climate playbook."""
     per_asset = max(1, min(int(per_asset or 4), 10))
     limit = max(1, min(int(limit or 12), 40))
-    climate = build_swing_climate(data_dir)
+    climate = dict(climate) if isinstance(climate, dict) else build_swing_climate(data_dir)
     playbook = climate.get("playbook") if isinstance(climate.get("playbook"), dict) else _swing_playbook("")
     climate_score = int(_float_value(climate.get("climate_score"), default=50.0))
     setup_report = build_best_setups(data_dir, per_asset=per_asset, limit=40)
@@ -12561,7 +12875,12 @@ def _today_route_for_queue_action(action: Any) -> str:
     return "research"
 
 
-def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, Any]:
+def build_today_review(
+    data_dir: Path = DATA_DIR,
+    limit: int = 12,
+    *,
+    include_live_context: bool = True,
+) -> dict[str, Any]:
     """Compose the first-screen review queue from setups, saved contracts, and open risk."""
     limit = max(1, min(int(limit or 12), 40))
     items: list[dict[str, Any]] = []
@@ -12571,7 +12890,14 @@ def build_today_review(data_dir: Path = DATA_DIR, limit: int = 12) -> dict[str, 
     climate_posture = None
 
     try:
-        gated = build_climate_gated_setups(data_dir, per_asset=4, limit=12, include_held=True)
+        climate = None if include_live_context else _local_first_load_climate(data_dir)
+        gated = build_climate_gated_setups(
+            data_dir,
+            per_asset=4,
+            limit=12,
+            include_held=True,
+            climate=climate,
+        )
         climate_label = gated.get("climate_label")
         climate_score = gated.get("climate_score")
         climate_posture = gated.get("posture")
@@ -12961,7 +13287,11 @@ def build_command_center(
         if isinstance(health.get("validation_guardrail"), dict)
         else {}
     )
-    today = build_today_review(data_dir, limit=8)
+    today = build_today_review(
+        data_dir,
+        limit=8,
+        include_live_context=include_live_discovery,
+    )
     risk = build_risk_summary(data_dir)
     sources = build_free_data_sources(data_dir)
     performance = build_performance_summary(data_dir)
@@ -13143,8 +13473,24 @@ def _local_snapshot_id(data_dir: Path) -> str:
 def build_edge_lab_report(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Build the cost- and correlation-aware edge evidence payload."""
     from backtest.edge_lab import build_edge_lab
+    from backtest.leaps_edge import analyze_leaps_swing_evidence
 
-    return build_edge_lab(Path(data_dir))
+    data_dir = Path(data_dir)
+    report = build_edge_lab(data_dir)
+    outcomes_path = data_dir / "fixed_horizon_outcomes.parquet"
+    try:
+        outcomes = pd.read_parquet(outcomes_path) if outcomes_path.exists() else pd.DataFrame()
+    except Exception:
+        outcomes = pd.DataFrame()
+    report["leaps_swing"] = analyze_leaps_swing_evidence(
+        outcomes,
+        source_attestation=(
+            report.get("source_attestation")
+            if isinstance(report.get("source_attestation"), dict)
+            else None
+        ),
+    )
+    return report
 
 
 def build_model_trust_report() -> dict[str, Any]:
@@ -13278,6 +13624,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     broker = build_agentic_autopilot_status(data_dir)
     model_trust = build_model_trust_report()
     account_drawdown = build_account_drawdown_overview(data_dir)
+    robinhood_finalist_check = load_finalist_check_status(data_dir)
     best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
     comparison = build_candidate_comparison(
         best_setups,
@@ -13297,6 +13644,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "model_trust": model_trust,
         "account_drawdown": account_drawdown,
         "robinhood": broker,
+        "robinhood_finalist_check": robinhood_finalist_check,
         "candidate_comparison": comparison,
         "notes": [
             "This view prepares research and risk context; it does not submit broker orders.",
@@ -13419,6 +13767,27 @@ def _option_candidate_review_attestation(
     candidate = cycle_row if isinstance(cycle_row, dict) else (
         queue_row if isinstance(queue_row, dict) else {}
     )
+    plan_execution_profile = str(
+        plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name
+    ).strip().lower()
+    candidate_execution_profile = str(
+        candidate.get("execution_profile") or SWING_EXECUTION_PROFILE.name
+    ).strip().lower()
+    is_leaps_swing = plan_execution_profile == LEAPS_SWING_PROFILE.name
+    if candidate and candidate_execution_profile != plan_execution_profile:
+        blockers.append("Candidate and planner execution profiles do not match exactly.")
+    if is_leaps_swing and candidate:
+        if candidate.get("strategy_evidence_lane") != LEAPS_EVIDENCE_LANE:
+            blockers.append("The LEAPS candidate is not bound to its dedicated evidence lane.")
+        if candidate.get("profile_policy_version") != LEAPS_SWING_PROFILE.policy_version:
+            blockers.append("The LEAPS candidate policy version does not match the active profile.")
+        if (
+            candidate.get("leaps_swing_status") != "execution_ready"
+            or candidate.get("leaps_execution_ready") is not True
+        ):
+            blockers.append("The LEAPS candidate is research-only or blocked, not execution-ready.")
+        if candidate.get("leaps_hard_blockers") != [] or candidate.get("leaps_data_blockers") != []:
+            blockers.append("The LEAPS candidate still contains policy or live-data blockers.")
     candidate_row_digest = (
         _canonical_json_sha256(candidate) if candidate_rows_match else None
     )
@@ -13481,14 +13850,31 @@ def _option_candidate_review_attestation(
             blockers.append("Candidate and planner underlying_type do not match exactly.")
         if is_known_index_option_symbol(candidate_symbol):
             blockers.append("The current candidate uses an unsupported index option root.")
+        candidate_min_dte = (
+            LEAPS_SWING_PROFILE.option_min_dte
+            if is_leaps_swing
+            else MIN_SWING_OPTION_DTE
+        )
+        candidate_max_dte = (
+            LEAPS_SWING_PROFILE.option_max_dte if is_leaps_swing else None
+        )
         if (
             candidate_dte is None
-            or candidate_dte < MIN_SWING_OPTION_DTE
+            or candidate_dte < candidate_min_dte
+            or (
+                candidate_max_dte is not None
+                and candidate_dte > candidate_max_dte
+            )
             or candidate_dte != expected_candidate_dte
         ):
+            dte_rule = (
+                f"be between {candidate_min_dte} and {candidate_max_dte}"
+                if candidate_max_dte is not None
+                else f"be at least {candidate_min_dte}"
+            )
             blockers.append(
                 "The current option candidate DTE must exactly reconcile its expiry "
-                f"and cycle date and be at least {MIN_SWING_OPTION_DTE}."
+                f"and cycle date and {dte_rule}."
             )
 
     candidate_limit = _float_value(
@@ -13531,15 +13917,24 @@ def _option_candidate_review_attestation(
     source_ask = _float_value(candidate.get("source_ask") or candidate.get("ask"), default=math.nan)
     configured_spread_cap = _float_value(
         candidate.get("max_allowed_spread_pct"),
-        default=SWING_EXECUTION_PROFILE.max_option_spread_pct,
+        default=(
+            LEAPS_SWING_PROFILE.max_spread_pct
+            if is_leaps_swing
+            else SWING_EXECUTION_PROFILE.max_option_spread_pct
+        ),
+    )
+    profile_spread_cap = (
+        LEAPS_SWING_PROFILE.max_spread_pct
+        if is_leaps_swing
+        else SWING_EXECUTION_PROFILE.max_option_spread_pct
     )
     if not math.isfinite(configured_spread_cap) or configured_spread_cap <= 0:
         blockers.append("The current option candidate spread cap is missing or invalid.")
-        candidate_spread_cap = SWING_EXECUTION_PROFILE.max_option_spread_pct
+        candidate_spread_cap = profile_spread_cap
     else:
         candidate_spread_cap = min(
             configured_spread_cap,
-            SWING_EXECUTION_PROFILE.max_option_spread_pct,
+            profile_spread_cap,
         )
     if (
         math.isfinite(source_bid)
@@ -13557,6 +13952,15 @@ def _option_candidate_review_attestation(
         elif source_quote_age > AGENTIC_FRESH_MINUTES:
             blockers.append(
                 f"The candidate source quote is older than {AGENTIC_FRESH_MINUTES:g} minutes."
+            )
+        if (
+            is_leaps_swing
+            and source_quote_age is not None
+            and source_quote_age * 60.0 > LEAPS_SWING_PROFILE.max_quote_age_seconds
+        ):
+            blockers.append(
+                "The LEAPS candidate source quote is older than the 120-second "
+                "profile limit."
             )
         for reason in manual_review_quote_provenance_reasons(candidate):
             blockers.append(f"The candidate {reason}.")
@@ -13591,6 +13995,15 @@ def _option_candidate_review_attestation(
         "strike": _clean_value(candidate_strike if math.isfinite(candidate_strike) else None),
         "expiry": candidate_expiry or None,
         "dte": candidate_dte,
+        **({
+            "execution_profile": candidate_execution_profile,
+            "strategy_evidence_lane": candidate.get("strategy_evidence_lane"),
+            "profile_policy_version": candidate.get("profile_policy_version"),
+            "leaps_swing_status": candidate.get("leaps_swing_status"),
+            "leaps_execution_ready": candidate.get("leaps_execution_ready"),
+            "leaps_hard_blockers": candidate.get("leaps_hard_blockers"),
+            "leaps_data_blockers": candidate.get("leaps_data_blockers"),
+        } if is_leaps_swing else {}),
         "candidate_fingerprint": candidate_fingerprint,
         "candidate_row_digest_sha256": candidate_row_digest,
         "source_cycle_schema": cycle_schema or None,
@@ -13943,17 +14356,31 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             default=str,
         ).encode("utf-8")
     ).hexdigest()
+    execution_profile = str(
+        plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name
+    ).strip().lower()
+    is_leaps_swing = asset == "option" and execution_profile == LEAPS_SWING_PROFILE.name
     edge_status = str(edge.get("status") or "unavailable").strip().lower()
     edge_rows = edge.get("asset_rows") if isinstance(edge.get("asset_rows"), list) else []
     edge_asset = "share" if asset == "share" else asset
-    edge_asset_row = next(
-        (
-            row for row in edge_rows
-            if isinstance(row, dict)
-            and str(row.get("asset") or "").strip().lower() == edge_asset
-        ),
-        None,
-    )
+    if is_leaps_swing:
+        edge_asset_row = (
+            edge.get("leaps_swing")
+            if isinstance(edge.get("leaps_swing"), dict)
+            else None
+        )
+        edge_status = str(
+            edge_asset_row.get("status") if isinstance(edge_asset_row, dict) else "unavailable"
+        ).strip().lower()
+    else:
+        edge_asset_row = next(
+            (
+                row for row in edge_rows
+                if isinstance(row, dict)
+                and str(row.get("asset") or "").strip().lower() == edge_asset
+            ),
+            None,
+        )
     edge_asset_eligible = bool(
         isinstance(edge_asset_row, dict)
         and edge_asset_row.get("live_capital_eligible") is True
@@ -13964,8 +14391,9 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             if isinstance(edge_asset_row, dict)
             else None
         )
+        lane_label = "LEAPS swing" if is_leaps_swing else edge_asset.title()
         blockers.append(
-            f"{edge_asset.title()} Edge Lab lane is not validated for live-capital review: "
+            f"{lane_label} Edge Lab lane is not validated for live-capital review: "
             f"{edge_asset_blocker or edge.get('primary_blocker') or 'current-method executable evidence is unavailable.'}"
         )
 
@@ -14027,7 +14455,9 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         "quote_tool": "get_option_quotes" if asset == "option" else "get_equity_quotes",
         "max_live_quote_age_seconds": LIVE_QUOTE_MAX_AGE_SECONDS,
         "max_spread_fraction": (
-            SWING_EXECUTION_PROFILE.max_option_spread_pct
+            LEAPS_SWING_PROFILE.max_spread_pct
+            if is_leaps_swing
+            else SWING_EXECUTION_PROFILE.max_option_spread_pct
             if asset == "option"
             else EQUITY_REVIEW_MAX_SPREAD_PCT
         ),
@@ -14083,6 +14513,13 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         queue_raw = _read_json(data_dir / "robinhood_agentic_queue.json")
         cycle = cycle_raw if isinstance(cycle_raw, dict) else {}
         queue = queue_raw if isinstance(queue_raw, dict) else {}
+        finalist_check = load_finalist_check_status(data_dir)
+        cycle, queue, finalist_binding = apply_finalist_check_to_sources(
+            plan,
+            cycle,
+            queue,
+            finalist_check,
+        )
         (
             option_candidate_constraints,
             option_candidate_blockers,
@@ -14093,6 +14530,18 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         blockers.extend(option_candidate_blockers)
         warnings.extend(option_candidate_warnings)
         quote_constraints.update(option_quote_constraints)
+        quote_constraints.update({
+            "direct_finalist_check_applied": finalist_binding.get("applied") is True,
+            "direct_finalist_check_schema": finalist_binding.get("schema"),
+            "direct_finalist_check_generated_at": finalist_binding.get("generated_at"),
+            "direct_finalist_check_digest_sha256": finalist_binding.get(
+                "artifact_digest_sha256"
+            ),
+            "direct_finalist_check_option_id": finalist_binding.get("option_id"),
+            "direct_finalist_check_quote_updated_at": finalist_binding.get(
+                "quote_updated_at"
+            ),
+        })
         eligible_rows = [
             row for row in account_rows
             if isinstance(row, dict)
@@ -14380,12 +14829,26 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             ),
             "asset_lane_live_capital_eligible": edge_asset_eligible,
             "evidence_lane": (
-                edge_asset_row.get("evidence_lane")
+                LEAPS_EVIDENCE_LANE
+                if is_leaps_swing
+                else edge_asset_row.get("evidence_lane")
                 if isinstance(edge_asset_row, dict)
                 else None
             ),
-            "headline_horizon_sessions": edge.get("headline_horizon_sessions"),
+            "headline_horizon_sessions": (
+                LEAPS_SWING_PROFILE.default_hold_sessions
+                if is_leaps_swing
+                else edge.get("headline_horizon_sessions")
+            ),
             "require_current_method_executable": True,
+            **({
+                "execution_profile": LEAPS_SWING_PROFILE.name,
+                "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+                "required_horizons_sessions": list(
+                    LEAPS_SWING_PROFILE.evidence_horizons_sessions
+                ),
+                "require_broker_market_observed": True,
+            } if is_leaps_swing else {}),
         },
         "account": {
             "assumed_equity_dollars": _clean_value(assumed_equity if math.isfinite(assumed_equity) else None),
@@ -14704,6 +15167,9 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
 
     asset = str(payload.get("asset") or "share").strip().lower()
     direction = str(payload.get("direction") or "long").strip().lower()
+    execution_profile = str(
+        payload.get("execution_profile") or SWING_EXECUTION_PROFILE.name
+    ).strip().lower()
     requested_underlying_type = str(payload.get("underlying_type") or "").strip().lower()
     entry = number(payload.get("entry_price"))
     requested_multiplier = number(payload.get("contract_multiplier"))
@@ -14812,11 +15278,29 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         except (TypeError, ValueError):
             option_dte = None
         plan["option_dte"] = option_dte
-        if option_dte is not None and option_dte < MIN_SWING_OPTION_DTE:
+        dte_floor = (
+            LEAPS_SWING_PROFILE.option_min_dte
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else MIN_SWING_OPTION_DTE
+        )
+        dte_ceiling = (
+            LEAPS_SWING_PROFILE.option_max_dte
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else None
+        )
+        if option_dte is not None and (
+            option_dte < dte_floor
+            or (dte_ceiling is not None and option_dte > dte_ceiling)
+        ):
+            dte_message = (
+                f"between {dte_floor} and {dte_ceiling} DTE"
+                if dte_ceiling is not None
+                else f"at least {dte_floor} DTE"
+            )
             plan.setdefault("validation", {}).setdefault("errors", []).append({
                 "code": "below_swing_dte_floor",
                 "field": "expiry",
-                "message": f"Swing option review requires at least {MIN_SWING_OPTION_DTE} DTE; this contract has {option_dte}.",
+                "message": f"The {execution_profile} review requires {dte_message}; this contract has {option_dte}.",
             })
             plan["status"] = "invalid"
             plan["is_actionable"] = False
@@ -14862,6 +15346,89 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         plan["is_actionable"] = False
         plan["validation"]["ok"] = False
 
+    if execution_profile not in {
+        SWING_EXECUTION_PROFILE.name,
+        LEAPS_SWING_PROFILE.name,
+    }:
+        plan.setdefault("validation", {}).setdefault("errors", []).append({
+            "code": "unsupported_execution_profile",
+            "field": "execution_profile",
+            "message": "Choose the ordinary swing or the explicit LEAPS swing profile.",
+        })
+        plan["status"] = "invalid"
+        plan["is_actionable"] = False
+        plan["validation"]["ok"] = False
+    if asset != "option" and execution_profile != SWING_EXECUTION_PROFILE.name:
+        plan.setdefault("validation", {}).setdefault("errors", []).append({
+            "code": "execution_profile_asset_mismatch",
+            "field": "execution_profile",
+            "message": "The LEAPS swing profile applies only to long equity options.",
+        })
+        plan["status"] = "invalid"
+        plan["is_actionable"] = False
+        plan["validation"]["ok"] = False
+
+    plan["execution_profile"] = execution_profile
+    if asset == "option" and execution_profile == LEAPS_SWING_PROFILE.name:
+        planned_hold_value = number(payload.get("planned_hold_sessions"))
+        planned_hold = (
+            int(planned_hold_value)
+            if planned_hold_value is not None
+            and planned_hold_value.is_integer()
+            else LEAPS_SWING_PROFILE.default_hold_sessions
+        )
+        plan["profile_policy_version"] = LEAPS_SWING_PROFILE.policy_version
+        plan["strategy_evidence_lane"] = LEAPS_EVIDENCE_LANE
+        plan["holding_policy"] = {
+            "planned_hold_sessions": planned_hold,
+            "review_sessions": list(LEAPS_SWING_PROFILE.review_sessions),
+            "max_hold_sessions": LEAPS_SWING_PROFILE.max_hold_sessions,
+            "contract_dte_is_not_hold_time": True,
+        }
+        plan["management_references"] = {
+            "stop_loss_fraction": LEAPS_SWING_PROFILE.stop_loss_fraction,
+            "target_gain_fraction": LEAPS_SWING_PROFILE.target_gain_fraction,
+            "breakeven_review_trigger_fraction": (
+                LEAPS_SWING_PROFILE.breakeven_review_trigger_fraction
+            ),
+            "manual_management_only": True,
+        }
+        if planned_hold <= 0 or planned_hold > LEAPS_SWING_PROFILE.max_hold_sessions:
+            plan.setdefault("validation", {}).setdefault("errors", []).append({
+                "code": "invalid_leaps_hold_sessions",
+                "field": "planned_hold_sessions",
+                "message": (
+                    "LEAPS swing plans must use a whole planned hold from 1 to "
+                    f"{LEAPS_SWING_PROFILE.max_hold_sessions} sessions."
+                ),
+            })
+            plan["status"] = "invalid"
+            plan["is_actionable"] = False
+            plan["validation"]["ok"] = False
+        expected_stop = round((entry or 0.0) * (1.0 - LEAPS_SWING_PROFILE.stop_loss_fraction), 2)
+        expected_target = round((entry or 0.0) * (1.0 + LEAPS_SWING_PROFILE.target_gain_fraction), 2)
+        supplied_stop = number(payload.get("stop_price"))
+        supplied_target = number(payload.get("target_price"))
+        if (
+            entry is None
+            or entry <= 0
+            or supplied_stop is None
+            or supplied_target is None
+            or abs(supplied_stop - expected_stop) > 0.011
+            or abs(supplied_target - expected_target) > 0.011
+        ):
+            plan.setdefault("validation", {}).setdefault("errors", []).append({
+                "code": "leaps_management_geometry_mismatch",
+                "field": "stop_price",
+                "message": (
+                    "LEAPS entry planning must retain the canonical -25% loss and "
+                    "+35% target references from the selected candidate."
+                ),
+            })
+            plan["status"] = "invalid"
+            plan["is_actionable"] = False
+            plan["validation"]["ok"] = False
+
     plan["account_assumptions"] = {
         "account_equity_dollars": limits.get("account_equity"),
         "risk_fraction": limits.get("risk_fraction"),
@@ -14892,6 +15459,12 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "snapshot_id": packet.get("snapshot_id"),
         "strategy_version": SWING_EXECUTION_PROFILE.strategy_version,
+        "execution_profile": execution_profile,
+        "profile_policy_version": (
+            LEAPS_SWING_PROFILE.policy_version
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else SWING_EXECUTION_PROFILE.strategy_version
+        ),
         "ok": calculation_ok and packet.get("status") == "manual_review_required",
         "calculation_ok": calculation_ok,
         "account_limits": limits,
@@ -17463,8 +18036,23 @@ tr.clickable-row:hover { background:#18201d; }
         <div id="trade-desk-focus" style="margin-top:12px"></div>
       </article>
       <article class="desk-card">
-        <h3>Robinhood handoff</h3>
-        <p>Same-session broker review first, then exact confirmation. The local cockpit never stores credentials or places an order.</p>
+        <h3>Robinhood connection and handoff</h3>
+        <p>Connect through Robinhood&apos;s official OAuth page, keep revocable tokens in the operating-system vault, then prepare one explicit broker-review packet. Passwords, MFA codes, cookies, and raw tokens never enter Optedge.</p>
+        <div id="rh-connection" class="plan-callout warn" style="margin-top:12px" aria-live="polite">
+          <h3>Connection status loading</h3>
+          <p>No order can be placed from this connection panel.</p>
+        </div>
+        <div class="planner-actions">
+          <button class="btn primary" type="button" id="rh-connect">Connect Robinhood</button>
+          <a class="btn" id="rh-authorize" href="/auth/robinhood/authorize" target="_blank" rel="noopener noreferrer" hidden>Open Robinhood approval</a>
+          <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
+          <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
+          <button class="btn primary" type="button" id="rh-check-finalist" disabled>Live-check best option</button>
+          <button class="btn" type="button" id="rh-disconnect">Disconnect</button>
+        </div>
+        <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
+        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The live finalist check keeps Optedge&apos;s normal ranking, resolves only its first option candidate, and reads that exact Robinhood chain, contract, and quote. Both actions are bounded and user-triggered. Live placement is not exposed; there is no polling, schedule, automatic retry, or Codex loop.</div>
+        <div id="rh-finalist-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="trade-desk-robinhood" style="margin-top:12px"></div>
       </article>
     </div>
@@ -17502,7 +18090,7 @@ tr.clickable-row:hover { background:#18201d; }
     </div>
     <div class="status" id="plan-status-text" role="status" aria-live="polite"></div>
     <div id="plan-results" class="plan-result" aria-live="polite">
-      <div class="privacy-note">Broker account numbers, credentials, tokens, and cookies never belong in this form. The copied request tells the connected Robinhood task to review live account and quote data before asking you to confirm.</div>
+      <div class="privacy-note">Broker account numbers, credentials, tokens, and cookies never belong in this form. The copied request asks for one live-data broker preview and then stops; it contains no order-submission step.</div>
     </div>
   </section>
   <section class="panel" data-view="overview">
@@ -17724,7 +18312,7 @@ tr.clickable-row:hover { background:#18201d; }
   </section>
   <section class="panel" data-view="paper">
     <h2 style="margin:0 0 8px;font-size:18px">Robinhood review queue</h2>
-    <div class="muted">Agentic options queue for a 90d+ Codex/Robinhood review. Use the long-dated preset when you want 6m+ contracts. This creates review files only; it does not place trades or start an automation.</div>
+    <div class="muted">Agentic options queue for a 90d+ Codex/Robinhood review. True LEAPS use 365-900 DTE contracts as shorter 3-20 session swing instruments. This creates review files only; it does not place trades or start an automation.</div>
     <div class="scan-controls">
       <input id="rh-budget" type="number" min="1" step="25" value="500" aria-label="Robinhood budget">
       <input id="rh-max-candidates" type="number" min="1" max="20" step="1" value="5" aria-label="Max candidates">
@@ -17736,7 +18324,8 @@ tr.clickable-row:hover { background:#18201d; }
       <select id="rh-chain-preset" aria-label="Chain refresh preset">
         <option value="auto">Auto chain preset</option>
         <option value="swing">3m+ swing</option>
-        <option value="leaps">6m+ long dated</option>
+        <option value="leaps">True LEAPS swing (365d+)</option>
+        <option value="long_dated">Broad long-dated research (180d+)</option>
         <option value="liquid">Liquid 90d+</option>
       </select>
       <button class="btn" type="button" id="rh-preview">Preview queue</button>
@@ -17821,7 +18410,8 @@ tr.clickable-row:hover { background:#18201d; }
       <input id="chain-preset" type="hidden" value="custom">
       <button class="btn chain-preset active" type="button" data-preset="custom">Custom</button>
       <button class="btn chain-preset" type="button" data-preset="swing">3m+ swing preset</button>
-      <button class="btn chain-preset" type="button" data-preset="leaps">Long-dated preset</button>
+      <button class="btn chain-preset" type="button" data-preset="leaps">LEAPS swing preset</button>
+      <button class="btn chain-preset" type="button" data-preset="long_dated">Broad 6m+ research</button>
       <button class="btn chain-preset" type="button" data-preset="liquid">Liquid preset</button>
     </div>
     <div class="scan-controls">
@@ -18302,6 +18892,190 @@ function tradeDeskRobinhood(broker) {
     ${candidateHtml}
   </div>`;
 }
+function robinhoodConnectionHtml(data) {
+  const client = (data && data.client) || {};
+  const oauth = client.oauth || {};
+  const vault = client.credential_storage || {};
+  const catalog = client.tool_catalog || {};
+  const state = String((data && data.connection_state) || 'unavailable').toLowerCase();
+  const ready = ['connected', 'connected_limited'].includes(state);
+  const tone = ready ? (state === 'connected' ? 'good' : 'warn') : (state === 'error' ? 'bad' : 'warn');
+  const authReady = Boolean(data && data.authorization_url_ready);
+  const errorCode = (data && (data.last_error_code || data.status_probe_error_code)) || null;
+  const detail = ready
+    ? 'Robinhood OAuth is connected. Direct tools remain allowlisted and placement remains unavailable.'
+    : (authReady
+      ? 'Robinhood approval is ready. Open it once, approve there, then return and refresh status.'
+      : (state === 'connecting' || state === 'authorization_required'
+        ? 'One connection attempt is active. Refresh status once to reveal the approval button when ready.'
+        : 'Start one explicit OAuth connection when you are ready. No broker action occurs on connect.'));
+  const error = errorCode ? `<div class="privacy-note" style="margin-top:10px">Safe error code: ${cell(labelText(errorCode))}</div>` : '';
+  return `<div class="plan-callout ${tone}">
+    <h3>${cell(labelText(state))}</h3>
+    <p>${cell(detail)}</p>
+    <div class="brief-grid" style="margin-top:10px">
+      <div class="brief-tile"><span>OAuth</span><strong>${cell(labelText(oauth.status || 'idle'))}</strong></div>
+      <div class="brief-tile"><span>OS credential vault</span><strong>${vault.backend_ready === true ? 'ready' : 'unavailable'}</strong></div>
+      <div class="brief-tile"><span>Revocable token</span><strong>${vault.token_present === true ? 'present' : 'not stored'}</strong></div>
+      <div class="brief-tile"><span>Read tools</span><strong>${cell((catalog.read_tools || []).length)}</strong></div>
+      <div class="brief-tile"><span>Review tools</span><strong>${catalog.ready_for_direct_review === true ? 'detected' : 'not detected'}</strong></div>
+      <div class="brief-tile"><span>Direct preview UI</span><strong>not exposed</strong></div>
+      <div class="brief-tile"><span>Live placement</span><strong>not exposed</strong></div>
+    </div>
+    ${error}
+  </div>`;
+}
+let latestRobinhoodFinalistCheck = null;
+function robinhoodFinalistHtml(data) {
+  const report = data || {};
+  const status = String(report.status || 'missing').toLowerCase();
+  if (status === 'missing') {
+    return '<div class="privacy-note">No live Robinhood finalist check has been run. Optedge will keep using its normal local research and will not substitute a different contract.</div>';
+  }
+  const candidate = report.candidate || {};
+  const quote = report.quote || {};
+  const contract = report.contract || {};
+  const marketPassed = report.market_check_passed === true && status !== 'expired';
+  const localReady = report.ready_for_manual_review === true;
+  const tone = marketPassed ? (localReady ? 'good' : 'warn') : 'bad';
+  const heading = marketPassed
+    ? (localReady ? 'Exact live finalist passed' : 'Live market check passed; Optedge still blocks review')
+    : (status === 'expired' ? 'Live finalist check expired' : 'Live finalist check blocked');
+  const detail = marketPassed
+    ? (localReady
+      ? 'The exact Robinhood contract and quote passed the live market gate. A separate account/risk plan and broker preview are still required.'
+      : 'The exact market quote passed, but the normal Optedge validation, account, or entry gate is not cleared.')
+    : ((report.blockers || [])[0] || 'Run a fresh normal Optedge queue, reconnect Robinhood, and check again once.');
+  const blockers = (report.blockers || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Blocking reasons</h4><ul class="plan-list">${report.blockers.slice(0, 6).map(value => `<li>${cell(value)}</li>`).join('')}</ul></div>`
+    : '';
+  const warnings = (report.warnings || []).length
+    ? `<div class="brief-list" style="margin-top:10px"><h4>Price movement</h4><ul class="plan-list">${report.warnings.slice(0, 4).map(value => `<li>${cell(value)}</li>`).join('')}</ul></div>`
+    : '';
+  const planner = report.planner_candidate || {};
+  const canLoad = marketPassed && planner.plan_ready === true;
+  return `<div class="plan-callout ${tone}">
+    <h3>${cell(heading)}</h3>
+    <p>${cell(detail)}</p>
+    <div class="brief-grid" style="margin-top:10px">
+      <div class="brief-tile"><span>Exact finalist</span><strong>${cell(candidate.label || '-')}</strong></div>
+      <div class="brief-tile"><span>Contract match</span><strong>${contract.option_id ? 'unique' : 'unresolved'}</strong></div>
+      <div class="brief-tile"><span>Bid / ask</span><strong>${compactMoney(quote.bid_price, 2)} / ${compactMoney(quote.ask_price, 2)}</strong></div>
+      <div class="brief-tile"><span>Mark</span><strong>${compactMoney(quote.mark_price, 2)}</strong></div>
+      <div class="brief-tile"><span>Spread / cap</span><strong>${pct(quote.spread_fraction)} / ${pct(quote.spread_cap)}</strong></div>
+      <div class="brief-tile"><span>Ask / frozen cap</span><strong>${compactMoney(quote.ask_price, 2)} / ${compactMoney(quote.limit_cap, 2)}</strong></div>
+      <div class="brief-tile"><span>Quote age</span><strong>${quote.age_seconds === null || quote.age_seconds === undefined ? '-' : `${Number(quote.age_seconds).toFixed(1)} sec`}</strong></div>
+      <div class="brief-tile"><span>Open interest / volume</span><strong>${cell(quote.open_interest)} / ${cell(quote.volume)}</strong></div>
+      <div class="brief-tile"><span>Delta / IV</span><strong>${quote.delta === null || quote.delta === undefined ? '-' : Number(quote.delta).toFixed(3)} / ${pct(quote.implied_volatility)}</strong></div>
+      <div class="brief-tile"><span>Local Optedge gate</span><strong>${localReady ? 'cleared' : 'blocked'}</strong></div>
+      <div class="brief-tile"><span>Broker reads</span><strong>${cell(report.read_stage_count || 0)} bounded stage(s)</strong></div>
+      <div class="brief-tile"><span>Order action</span><strong>none</strong></div>
+    </div>
+    ${blockers}${warnings}
+    <div class="planner-actions">
+      ${canLoad ? '<button class="btn primary" type="button" id="rh-load-checked-finalist">Load checked quote into planner</button>' : ''}
+    </div>
+    <div class="privacy-note">This check reads market data only. It does not preview, place, cancel, retry, or schedule an order. The quote expires after 120 seconds.</div>
+  </div>`;
+}
+function renderRobinhoodFinalist(data) {
+  latestRobinhoodFinalistCheck = data || null;
+  if (!$('rh-finalist-results')) return;
+  $('rh-finalist-results').innerHTML = robinhoodFinalistHtml(data || {});
+  const load = $('rh-load-checked-finalist');
+  if (load) load.addEventListener('click', () => {
+    const candidate = latestRobinhoodFinalistCheck && latestRobinhoodFinalistCheck.planner_candidate;
+    loadCandidateIntoPlanner(candidate, 'the exact live Robinhood finalist check');
+  });
+}
+function renderRobinhoodConnection(data) {
+  if (!$('rh-connection')) return;
+  $('rh-connection').outerHTML = `<div id="rh-connection" aria-live="polite">${robinhoodConnectionHtml(data || {})}</div>`;
+  const auth = $('rh-authorize');
+  if (auth) auth.hidden = !(data && data.authorization_url_ready === true);
+  const state = String((data && data.connection_state) || '').toLowerCase();
+  if ($('rh-connect')) $('rh-connect').disabled = ['connecting', 'authorization_required', 'connected', 'connected_limited'].includes(state);
+  if ($('rh-sync-snapshot')) $('rh-sync-snapshot').disabled = !['connected', 'connected_limited'].includes(state);
+  if ($('rh-check-finalist')) {
+    const reads = (((data || {}).client || {}).tool_catalog || {}).read_tools || [];
+    const optionReadsReady = ['get_option_chains', 'get_option_instruments', 'get_option_quotes'].every(name => reads.includes(name));
+    $('rh-check-finalist').disabled = !['connected', 'connected_limited'].includes(state) || !optionReadsReady;
+  }
+  if ($('rh-disconnect')) $('rh-disconnect').disabled = state === 'shutdown';
+}
+async function loadRobinhoodConnection() {
+  if (!$('rh-connection')) return null;
+  const res = await fetch('/api/robinhood-connection');
+  const data = await res.json();
+  renderRobinhoodConnection(data);
+  return data;
+}
+async function startRobinhoodConnection() {
+  const button = $('rh-connect');
+  if (button) button.disabled = true;
+  let latest = {};
+  try {
+    const res = await fetch('/api/robinhood-connect', {method:'POST', body:'{}'});
+    latest = await res.json();
+    renderRobinhoodConnection(latest);
+  } finally {
+    try { latest = await loadRobinhoodConnection() || latest; } catch (_) {}
+    if (button && !['connecting', 'authorization_required', 'connected', 'connected_limited'].includes(String(latest.connection_state || '').toLowerCase())) button.disabled = false;
+  }
+}
+async function disconnectRobinhoodConnection() {
+  if (!window.confirm('Disconnect Robinhood and remove the saved OAuth grant from the operating-system vault?')) return;
+  const res = await fetch('/api/robinhood-disconnect', {method:'POST', body:'{}'});
+  const data = await res.json();
+  renderRobinhoodConnection(data);
+}
+async function syncRobinhoodSnapshot() {
+  if (!window.confirm('Read the connected Robinhood accounts once and replace the local redacted broker snapshot? No order action will be called.')) return;
+  const button = $('rh-sync-snapshot');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Reading complete account scopes once...';
+  try {
+    const res = await fetch('/api/robinhood-sync-snapshot', {method:'POST', body:'{}'});
+    const data = await res.json();
+    if (!res.ok || data.ok !== true) {
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `Snapshot blocked: ${labelText(data.error_code || 'safe read failure')}. No partial snapshot was written.`;
+      return;
+    }
+    const counts = data.counts || {};
+    const readiness = data.snapshot_ready === true ? 'ready for local reconciliation' : `saved with ${Number(data.normalization_blocker_count || 0)} blocker(s)`;
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `One-shot snapshot complete: ${Number(data.account_count || 0)} account(s), ${Number(counts.equity_positions || 0)} share position(s), ${Number(counts.option_positions || 0)} option position(s); ${readiness}.`;
+    await loadTradeDesk(true);
+  } finally {
+    await loadRobinhoodConnection().catch(() => null);
+  }
+}
+async function runRobinhoodFinalistCheck() {
+  const button = $('rh-check-finalist');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Resolving the exact top option and reading one fresh Robinhood quote...';
+  try {
+    const res = await fetch('/api/robinhood-check-finalist', {method:'POST', body:'{}'});
+    const data = await res.json();
+    if (!res.ok || data.ok === false || data.error_code) {
+      renderRobinhoodFinalist({
+        status: 'blocked',
+        market_check_passed: false,
+        blockers: [`Safe check error: ${labelText(data.error_code || 'finalist check failed')}.`],
+        does_not_place_orders: true
+      });
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Live finalist check stopped safely. Nothing was previewed or sent.';
+      return;
+    }
+    renderRobinhoodFinalist(data);
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = data.market_check_passed === true
+      ? (data.ready_for_manual_review === true
+        ? 'Exact live market check passed. Review the checked quote and calculate the risk plan; nothing was sent.'
+        : 'Exact live market check passed, but normal Optedge gates still block broker review; nothing was sent.')
+      : 'The live finalist check found a blocking market condition. Optedge kept the candidate in research status.';
+  } finally {
+    await loadRobinhoodConnection().catch(() => null);
+  }
+}
 async function loadTradeDesk(force=false) {
   if (!$('trade-desk-status-text')) return;
   $('trade-desk-status-text').textContent = 'Building one decision snapshot...';
@@ -18316,6 +19090,7 @@ async function loadTradeDesk(force=false) {
   const edge = data.edge || {};
   const model = data.model_trust || {};
   const drawdown = data.account_drawdown || {};
+  const finalist = data.robinhood_finalist_check || {};
   const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
   latestComparisonCandidates = new Map(
@@ -18349,6 +19124,7 @@ async function loadTradeDesk(force=false) {
   $('trade-desk-candidate-foot').textContent = `Displayed ${Number(comparison.displayed_candidate_count || 0)} exact candidate(s) plus no trade. Planner loading is local sizing only; broker actions and automation remain off.`;
   $('trade-desk-focus').innerHTML = tradeDeskFocus(command, comparison);
   $('trade-desk-robinhood').innerHTML = tradeDeskRobinhood(broker);
+  renderRobinhoodFinalist(finalist);
   $('trade-desk-status-text').textContent = `Snapshot ${cell(data.snapshot_id || 'local')} | strategy ${cell(data.strategy_version || 'current')} | ${cell(data.generated_at || '')}`;
   document.querySelectorAll('.desk-focus-action').forEach(btn => btn.addEventListener('click', () => routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '')));
   document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => loadCandidateIntoPlanner(latestTradeDeskCandidate)));
@@ -18387,6 +19163,10 @@ function tradePlanPayload() {
     expiry: $('plan-expiry').value || null,
     contract_multiplier: plannerNumber('plan-multiplier') || 100,
     underlying_type: 'equity',
+    execution_profile: (latestPlannerCandidate && latestPlannerCandidate.execution_profile) || 'swing_execution',
+    strategy_evidence_lane: latestPlannerCandidate && latestPlannerCandidate.strategy_evidence_lane,
+    profile_policy_version: latestPlannerCandidate && latestPlannerCandidate.profile_policy_version,
+    planned_hold_sessions: latestPlannerCandidate && (latestPlannerCandidate.planned_hold_sessions || latestPlannerCandidate.default_hold_sessions),
     candidate_fingerprint: latestPlannerCandidate && latestPlannerCandidate.candidate_fingerprint,
     candidate_source_file: latestPlannerCandidate && latestPlannerCandidate.source_file,
     candidate_source_generated_at: latestPlannerCandidate && latestPlannerCandidate.source_generated_at
@@ -18470,7 +19250,7 @@ function tradePlanResultHtml(report) {
   <div class="brief-cols">
     <div class="brief-list"><h4>Validation</h4>${planIssuesHtml(plan.validation)}</div>
     <div class="brief-list"><h4>Live review gate</h4>${reviewGateIssuesHtml(gate)}</div>
-    <div class="brief-list"><h4>Manual control</h4><ul class="plan-list"><li>Entry order only; stop and target are not placed.</li><li>Review in Robinhood first.</li><li>Confirm the exact reviewed order once.</li><li>After confirmation, re-check account state, packet expiry, and the exact quote/instrument/chain.</li><li>One packet-scoped ref ID; no loop, recurring task, or automatic retry.</li><li>Submission is not a fill.</li></ul></div>
+    <div class="brief-list"><h4>Manual control</h4><ul class="plan-list"><li>Preview only; entry, stop, and target orders are not submitted.</li><li>Request one Robinhood broker preview.</li><li>Review every alert, fee, disclosure, and estimated cost.</li><li>Stop after the preview; this release exposes no order-submission action.</li><li>No loop, recurring task, batch, or automatic retry.</li><li>A preview is not an order or a fill.</li></ul></div>
   </div>
   <div class="privacy-note">Packet ${cell(packet.packet_id || '-')} expires ${cell(packet.expires_at || 'before use if freshness is unknown')}. Digest ${cell(String(packet.content_digest_sha256 || '-').slice(0, 16))}… detects modification but is not broker authorization. A downloaded copy is inspection-only, contains no credentials or account number, and still requires fresh live review plus exact confirmation.</div>`;
 }
@@ -21290,7 +22070,8 @@ function applyChainPreset(preset) {
   const configs = {
     custom: null,
     swing: { side: 'all', minDte: 90, maxDte: 180, maxSpread: 20, maxPremium: 500, minOi: 25 },
-    leaps: { side: 'all', minDte: 180, maxDte: 900, maxSpread: 25, maxPremium: 750, minOi: 10 },
+    leaps: { side: 'all', minDte: 365, maxDte: 900, maxSpread: 10, maxPremium: 0, minOi: 250 },
+    long_dated: { side: 'all', minDte: 180, maxDte: 900, maxSpread: 25, maxPremium: 750, minOi: 10 },
     liquid: { side: 'all', minDte: 90, maxDte: 365, maxSpread: 12, maxPremium: 0, minOi: 100 }
   };
   const name = configs[preset] === undefined ? 'custom' : preset;
@@ -21315,6 +22096,8 @@ function optionChainSummary(data) {
   const fields = [
     ['Symbol', data.symbol || '-'],
     ['Preset', data.preset_label || data.preset || '-'],
+    ['Execution profile', data.execution_profile || '-'],
+    ['Evidence lane', data.strategy_evidence_lane || '-'],
     ['Source', data.source || '-'],
     ['Quality', data.quote_quality || '-'],
     ['Delay', data.data_delay || '-'],
@@ -21338,6 +22121,11 @@ function optionChainSummary(data) {
     ['Primary review', scan.primary_review_count || 0],
     ['3m+ swing', scan.swing_count || 0],
     ['Long dated', scan.long_dated_count || 0],
+    ['LEAPS status', countMapText(scan.profile_status_counts || {}) || '-'],
+    ['LEAPS contract-ready', scan.leaps_execution_ready_count || 0],
+    ['LEAPS research-only', scan.leaps_research_only_count || 0],
+    ['LEAPS blocked', scan.leaps_blocked_count || 0],
+    ['Best LEAPS quality', scan.best_leaps_quality || '-'],
     ['Ready', scan.ready_count || 0],
     ['Review', scan.review_count || 0],
     ['Wait', scan.wait_count || 0],
@@ -21363,6 +22151,22 @@ function optionContractContext(row) {
     data_delay: row.data_delay || row.batch_data_delay || '',
     scan_symbol: row.symbol || row.ticker || row.ticker_or_symbol || '',
     scan_preset: $('chain-preset') ? $('chain-preset').value : '',
+    execution_profile: row.execution_profile || '',
+    strategy_evidence_lane: row.strategy_evidence_lane || '',
+    profile_policy_version: row.profile_policy_version || '',
+    leaps_swing_status: row.leaps_swing_status || '',
+    leaps_execution_ready: Boolean(row.leaps_execution_ready),
+    leaps_quality_score: row.leaps_quality_score,
+    leaps_hard_blockers: Array.isArray(row.leaps_hard_blockers) ? row.leaps_hard_blockers.slice(0, 8) : [],
+    leaps_data_blockers: Array.isArray(row.leaps_data_blockers) ? row.leaps_data_blockers.slice(0, 8) : [],
+    review_sessions: Array.isArray(row.review_sessions) ? row.review_sessions.slice(0, 8) : [],
+    planned_hold_sessions: row.planned_hold_sessions,
+    default_hold_sessions: row.default_hold_sessions,
+    max_hold_sessions: row.max_hold_sessions,
+    stop_loss_fraction: row.stop_loss_fraction,
+    target_gain_fraction: row.target_gain_fraction,
+    breakeven_review_trigger_fraction: row.breakeven_review_trigger_fraction,
+    manual_management_only: Boolean(row.manual_management_only),
     contract_grade: row.contract_grade || '',
     review_lane: row.review_lane || '',
     review_thesis: row.review_thesis || '',
@@ -21440,6 +22244,18 @@ function optionContractCard(row) {
   const premium = row.premium_dollars ?? row.actual_dollars;
   const stopRef = row.stop_price_reference ?? row.stop_price;
   const targetRef = row.target_price_reference ?? row.target_price;
+  const leapsBlockers = [
+    ...(Array.isArray(row.leaps_hard_blockers) ? row.leaps_hard_blockers : []),
+    ...(Array.isArray(row.leaps_data_blockers) ? row.leaps_data_blockers : [])
+  ].join(', ');
+  const leapsMeta = row.execution_profile === 'leaps_swing'
+    ? `<div class="row"><span>LEAPS gate</span><b>${cell(labelText(row.leaps_swing_status))} / ${cell(row.leaps_quality_score)}</b></div>
+       <div class="row"><span>Evidence / policy</span><b>${cell(row.strategy_evidence_lane || '-')} / ${cell(row.profile_policy_version || '-')}</b></div>
+       <div class="row"><span>Reviews / max hold</span><b>${cell((row.review_sessions || []).join('/'))} / ${cell(row.max_hold_sessions)} sessions</b></div>
+       <div class="row"><span>Contract vs hold</span><b>${cell(row.dte)} DTE contract; ${cell(row.planned_hold_sessions)}-session plan</b></div>
+       <div class="row"><span>Manual policy</span><b>stop -${pct(row.stop_loss_fraction)} / target +${pct(row.target_gain_fraction)} / break-even review +${pct(row.breakeven_review_trigger_fraction)}</b></div>
+       <div class="row"><span>LEAPS blockers</span><b>${cell(leapsBlockers || 'contract gate clear; separate evidence/review still required')}</b></div>`
+    : '';
   return `<article class="setup-card">
     <header>
       <div><h3>${cell(title)}</h3><small>${cell(row.expiry)} | ${cell(row.dte)} DTE | ${cell(row.dte_bucket)}</small></div>
@@ -21458,6 +22274,7 @@ function optionContractCard(row) {
     <div class="row"><span>Risk / reward ref</span><b>${moneyShort(row.risk_dollars_reference)} / ${moneyShort(row.reward_dollars_reference)} (${ratio(row.reward_risk_reference)})</b></div>
     <div class="row"><span>Quality score</span><b>${cell(row.contract_quality_score)}</b></div>
     <div class="row"><span>Swing fit</span><b>${cell(labelText(row.swing_fit_label))} / ${cell(row.swing_fit_score)}</b></div>
+    ${leapsMeta}
     ${factorRows}
     <div class="row"><span>Swing why</span><b>${cell(swingReasons || '-')}</b></div>
     <div class="row"><span>Swing warnings</span><b>${cell(swingWarnings || 'clear')}</b></div>
@@ -21527,6 +22344,8 @@ function optionChainDecisionHtml(data) {
         <div class="decision-metric"><span>Open interest</span><strong>${cell(primary.openInterest)}</strong></div>
         <div class="decision-metric"><span>Quality</span><strong>${cell(primary.contract_quality_score)}</strong></div>
         <div class="decision-metric"><span>Swing fit</span><strong>${cell(labelText(primary.swing_fit_label))} / ${cell(primary.swing_fit_score)}</strong></div>
+        ${primary.execution_profile === 'leaps_swing' ? `<div class="decision-metric"><span>LEAPS gate</span><strong>${cell(labelText(primary.leaps_swing_status))} / ${cell(primary.leaps_quality_score)}</strong></div>` : ''}
+        ${primary.execution_profile === 'leaps_swing' ? `<div class="decision-metric"><span>Review / max hold</span><strong>${cell((primary.review_sessions || []).join('/'))} / ${cell(primary.max_hold_sessions)} sessions</strong></div>` : ''}
       </div>
       ${factorRows}
       <button class="btn contract-watchlist-btn" type="button" data-query="${escAttr(query)}" data-context="${escAttr(JSON.stringify(context))}">Save primary contract</button>
@@ -22251,7 +23070,7 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadLookupHistory(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadRobinhoodConnection(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadLookupHistory(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
@@ -22272,6 +23091,11 @@ $('paper-preview').addEventListener('click', () => loadPaperCandidates(false));
 $('paper-export').addEventListener('click', () => loadPaperCandidates(true));
 $('rh-preview').addEventListener('click', () => loadRobinhoodQueue(false));
 $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
+$('rh-connect').addEventListener('click', startRobinhoodConnection);
+$('rh-connection-refresh').addEventListener('click', loadRobinhoodConnection);
+$('rh-sync-snapshot').addEventListener('click', syncRobinhoodSnapshot);
+$('rh-check-finalist').addEventListener('click', runRobinhoodFinalistCheck);
+$('rh-disconnect').addEventListener('click', disconnectRobinhoodConnection);
 $('autopilot-refresh').addEventListener('click', loadAgenticAutopilotStatus);
 $('autopilot-packet-refresh').addEventListener('click', () => routeAutopilotAction('refresh_autopilot_packet'));
 $('broker-normalize').addEventListener('click', normalizeBrokerSnapshot);
@@ -22322,6 +23146,7 @@ $('watchlist-query').addEventListener('input', () => scheduleSuggestions('watchl
 togglePlannerAsset();
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
+loadRobinhoodConnection().catch(err => console.error(err));
 loadView('desk').catch(err => { $('trade-desk-status-text').textContent = 'Trade Desk failed'; console.error(err); });
 setInterval(() => {
   const running = document.querySelector('.job[data-status="running"], .job[data-status="queued"]');
@@ -22390,14 +23215,51 @@ def _build_and_save_lookup_report(symbol: str, data_dir: Path) -> dict[str, Any]
     return report
 
 
+def _robinhood_connection_unavailable_status() -> dict[str, Any]:
+    """Return a stable, non-secret status when the local connector is absent."""
+    return {
+        "schema": "optedge_robinhood_connection_manager_v1",
+        "connection_state": "error",
+        "connect_pending": False,
+        "authorization_url_ready": False,
+        "last_error_code": "client_unavailable",
+        "status_probe_error_code": None,
+        "loop_thread_alive": False,
+        "loop_thread_count": 0,
+        "shutdown": False,
+        "automatic_retry_enabled": False,
+        "background_polling_enabled": False,
+        "generic_tool_call_exposed": False,
+        "placement_api_exposed": False,
+        "account_data_persisted": False,
+        "client": {},
+    }
+
+
+def _robinhood_oauth_page(*, accepted: bool, detail: str) -> bytes:
+    """Build a static callback page that never echoes OAuth query material."""
+    title = "Robinhood authorization received" if accepted else "Robinhood authorization not accepted"
+    tone = "#20c997" if accepted else "#ffb84d"
+    safe_detail = html_escape(str(detail or ""))
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>{title}</title>
+<style>body{{margin:0;background:#090b0b;color:#eef4f1;font:16px/1.5 system-ui,sans-serif}}main{{max-width:680px;margin:10vh auto;padding:30px;border:1px solid #26302d;border-radius:18px;background:#111514}}h1{{color:{tone};font-size:26px}}a{{display:inline-block;margin-top:18px;padding:10px 14px;border-radius:9px;background:#20c997;color:#07100d;text-decoration:none;font-weight:700}}p{{color:#bac7c1}}</style>
+</head><body><main><h1>{title}</h1><p>{safe_detail}</p><p>No order was reviewed, submitted, or placed.</p><a href="/">Return to Optedge</a></main>
+<script>history.replaceState({{}}, '', '/oauth/robinhood/callback');</script></body></html>""".encode("utf-8")
+
+
 class CockpitHandler(BaseHTTPRequestHandler):
     data_dir = DATA_DIR
+    robinhood_connection_manager: RobinhoodConnectionManager | None = None
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -22419,6 +23281,82 @@ class CockpitHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send(200, render_cockpit_html().encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/auth/robinhood/authorize":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send(
+                    503,
+                    _robinhood_oauth_page(
+                        accepted=False,
+                        detail="The local Robinhood connector is unavailable. Return to Optedge and review status.",
+                    ),
+                    "text/html; charset=utf-8",
+                )
+                return
+            try:
+                location = manager.authorization_url_for_browser()
+                if "\r" in location or "\n" in location:
+                    raise RobinhoodConnectionError("authorization_url_invalid")
+            except Exception:
+                self._send(
+                    409,
+                    _robinhood_oauth_page(
+                        accepted=False,
+                        detail="Robinhood approval is not ready. Return to Optedge, refresh connection status once, and try again.",
+                    ),
+                    "text/html; charset=utf-8",
+                )
+                return
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if parsed.path == "/oauth/robinhood/callback":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send(
+                    503,
+                    _robinhood_oauth_page(
+                        accepted=False,
+                        detail="The local Robinhood connector is unavailable. Start a new connection from Optedge.",
+                    ),
+                    "text/html; charset=utf-8",
+                )
+                return
+            callback_url = manager.callback_uri
+            if parsed.query:
+                callback_url = f"{callback_url}?{parsed.query}"
+            try:
+                manager.submit_oauth_callback(callback_url)
+            except Exception:
+                self._send(
+                    400,
+                    _robinhood_oauth_page(
+                        accepted=False,
+                        detail="The callback was invalid, expired, denied, or already used. Start a new connection from Optedge.",
+                    ),
+                    "text/html; charset=utf-8",
+                )
+                return
+            self._send(
+                200,
+                _robinhood_oauth_page(
+                    accepted=True,
+                    detail="Return to Optedge and refresh connection status once. The OAuth exchange will finish in the existing bounded connection attempt.",
+                ),
+                "text/html; charset=utf-8",
+            )
+            return
+        if parsed.path == "/api/robinhood-connection":
+            manager = self.robinhood_connection_manager
+            self._send_json(
+                manager.status() if manager is not None else _robinhood_connection_unavailable_status()
+            )
             return
         if parsed.path == "/api/summary":
             self._send_json(build_summary(self.data_dir))
@@ -22816,6 +23754,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/write-position-hygiene-plan", "/api/apply-position-hygiene",
             "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
             "/api/warm-sec-cache", "/api/warm-symbol-caches", "/api/run-refresh-scan",
+            "/api/robinhood-connect", "/api/robinhood-disconnect",
+            "/api/robinhood-sync-snapshot",
+            "/api/robinhood-check-finalist",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
@@ -22832,6 +23773,125 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception:
             body = {}
+        if parsed.path == "/api/robinhood-connect":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(_robinhood_connection_unavailable_status(), status=503)
+                return
+            result = manager.start_connect()
+            status = 503 if result.get("connection_state") == "error" else 200
+            self._send_json(result, status=status)
+            return
+        if parsed.path == "/api/robinhood-sync-snapshot":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "client_unavailable",
+                        "raw_bundle_written": False,
+                        "does_not_place_orders": True,
+                    },
+                    status=503,
+                )
+                return
+            try:
+                result = sync_robinhood_broker_snapshot(
+                    manager,
+                    data_dir=self.data_dir,
+                )
+            except (RobinhoodConnectionError, RobinhoodSnapshotSyncError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "raw_bundle_written": False,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "snapshot_sync_failed",
+                        "raw_bundle_written": False,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-check-finalist":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "client_unavailable",
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=503,
+                )
+                return
+            try:
+                result = check_best_option_finalist(
+                    manager,
+                    data_dir=self.data_dir,
+                    write=True,
+                )
+            except (RobinhoodConnectionError, RobinhoodFinalistCheckError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "does_not_place_orders": True,
+                        "does_not_preview_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "finalist_check_failed",
+                        "does_not_place_orders": True,
+                        "does_not_preview_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-disconnect":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(_robinhood_connection_unavailable_status(), status=503)
+                return
+            try:
+                result = manager.disconnect()
+            except RobinhoodConnectionError as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "connection_state": "error",
+                        "authorization_url_ready": False,
+                        "error_code": exc.code,
+                        "placement_api_exposed": False,
+                    },
+                    status=409,
+                )
+                return
+            self._send_json(result)
+            return
         if parsed.path == "/api/lookup":
             symbol = str(body.get("symbol") or body.get("query") or "").strip()
             if not symbol:
@@ -22986,9 +24046,16 @@ def run_server(host: str = "127.0.0.1", port: int = 8765,
                data_dir: Path = DATA_DIR, open_browser: bool = True) -> None:
     if str(host or "").strip().lower() not in {"127.0.0.1", "localhost"}:
         raise ValueError("The cockpit is local-only; bind to 127.0.0.1 or localhost.")
-    handler = type("OptedgeCockpitHandler", (CockpitHandler,), {"data_dir": data_dir})
+    handler = type(
+        "OptedgeCockpitHandler",
+        (CockpitHandler,),
+        {"data_dir": data_dir, "robinhood_connection_manager": None},
+    )
     server = ThreadingHTTPServer((host, port), handler)
-    url = f"http://{host}:{port}"
+    bound_port = int(server.server_address[1])
+    url = f"http://{host}:{bound_port}"
+    manager = RobinhoodConnectionManager(f"{url}/oauth/robinhood/callback")
+    handler.robinhood_connection_manager = manager
     print(f"Optedge cockpit: {url}")
     print("Press Ctrl+C to stop.")
     if open_browser:
@@ -23002,6 +24069,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8765,
         print("\nCockpit stopped.")
     finally:
         server.server_close()
+        manager.shutdown()
 
 
 def main(argv: list[str] | None = None) -> int:

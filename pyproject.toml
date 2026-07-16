@@ -6,7 +6,7 @@ description = "Local-first, evidence-driven swing-trading research workstation."
 requires-python = ">=3.11,<3.14"
 readme = "README.md"
 dynamic = ["version"]
-license = {file = "LICENSE"}
+license = "MIT"
 authors = [
   {name = "kaiuribess"},
 ]
@@ -21,7 +21,6 @@ keywords = [
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Financial and Insurance Industry",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
@@ -34,8 +33,11 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "curl_cffi>=0.6",
   "httpx[http2]>=0.27.0",
+  "jsonschema>=4.20",
+  "keyring>=25.7,<26",
   "lxml>=4.9",
   "matplotlib>=3.8",
+  "mcp>=1.28,<2",
   "numpy>=1.24",
   "pandas>=2.0",
   "pdfplumber>=0.10",
