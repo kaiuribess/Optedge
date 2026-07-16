@@ -139,6 +139,12 @@ An asset is `validated` only when every applicable requirement passes at the hea
 
 The 200-outcome and 30-entry-day rules still apply, but they are only baseline floors. The ten-session time-coverage row states the stricter implication of the effective-block rule at the default headline horizon; raw row count cannot substitute for the required time span. The manual-review gate applies only to the planned asset. A validated share lane cannot authorize an option, and a validated option lane cannot authorize a futures order.
 
+### Profile-isolated LEAPS evidence
+
+`leaps_swing` is a separate execution profile, not a DTE alias for the general option row. A qualifying outcome must be stamped with both `execution_profile=leaps_swing` and `strategy_evidence_lane=option_leaps_swing`; generic option evidence is never borrowed. The gate evaluates 5-, 10-, and 20-session horizons because the contract may have 365-900 DTE while the thesis is reviewed after 3, 5, and 10 sessions and capped at a 20-session planned hold.
+
+Every required LEAPS horizon must independently satisfy the current provenance and outcome-set digest, 100% mature resolution, 100% required-field and entry-spread coverage, at least 200 outcomes across at least 30 entry days and 30 effective horizon blocks, positive after-cost average and moving-block lower bound, profit factor of at least 1.15, positive SPY excess, positive doubled-cost result, and positive first/recent halves. The selected cohort must be 100% `broker_market_observed`; one modeled proxy, pending row, excluded row, wrong profile, or missing required horizon blocks LEAPS manual review.
+
 ## Status Semantics
 
 ### Validated
@@ -173,7 +179,7 @@ The evidence files exist, but freshness, provenance, digest, required-field cove
 
 Free historical option data is incomplete. Optedge distinguishes:
 
-- `broker_market_observed`: an exact, non-interpolated target-date Robinhood option trade bar supplied through the read-only connector cache.
+- `broker_market_observed`: an exact, non-interpolated target-date Robinhood option trade bar supplied through a user-triggered direct read or the manual read-only connector cache.
 - `modeled_option_proxy`: a constant-entry-IV model mark used when no exact bar is available.
 
 All option performance gates use the `broker_market_observed` cohort alone. Modeled proxies remain visible in the research-only aggregate, but their returns, profit factor, stability, and sample size cannot improve live eligibility. The broker-observed cohort must also represent at least 50% of the selected current option cohort, and its rows must pass the complete entry-spread and cost-coverage checks above.

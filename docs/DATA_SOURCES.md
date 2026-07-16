@@ -12,7 +12,7 @@ Optedge favors free or locally configured research inputs. An integration listed
 | Provider-derived proxy | A public series used as context for a concept it does not measure exactly. | Context only; do not relabel it as the target quantity. |
 | Modeled fallback | A value estimated from observed inputs when direct history is unavailable. | Keep it separate from observed outcomes and verified fills. |
 | Synthetic/demo | Locally generated data used to exercise the interface. | Never use it as market evidence or a performance claim. |
-| Broker-cache observation | A timestamped read captured through a connected Robinhood/Codex session. | Read-only point-in-time evidence; not a fill, authorization, or continuously live feed. |
+| Broker observation | A timestamped user-triggered read from the direct official Robinhood MCP client or a manual connector cache. | Read-only point-in-time evidence; not a fill, authorization, or continuously live feed. |
 
 ## Provider Matrix
 
@@ -21,8 +21,8 @@ Optedge favors free or locally configured research inputs. An integration listed
 | Equity and ETF history | Yahoo chart data and `yfinance`, with public Nasdaq historical JSON and Stooq CSV fallbacks | Sources can differ on adjustments, timestamps, missing sessions, symbols, and corporate actions. A fallback response is not automatically equivalent to the primary series. |
 | Futures and cross-asset history | Public market-history paths, including continuous or proxy series where configured | Continuous contracts and ETF proxies can diverge from a tradable contract month and its actual roll/slippage. |
 | Option chains | Optional Tradier token, then free Cboe delayed data, Nasdaq, bounded Yahoo options JSON, and `yfinance` fallbacks | Coverage, Greeks, open interest, multiplier metadata, and quote timestamps vary. Free chains may be delayed or internally inconsistent and are not execution quotes. |
-| Robinhood market research | Optional authenticated connector outside the local Python process, using bounded request/cache files for equities, exact options, and history | The upstream timestamp controls freshness. Exact option trade bars are market observations, not bid/ask fills and not proof Optedge traded. The research cache deliberately excludes accounts and orders. |
-| Robinhood account state | Separate account-scoped read bundle normalized into a pseudonymous broker snapshot | Used only for readiness, reconciliation, and total-open exposure checks. It can become stale immediately and never authorizes an order by itself. |
+| Robinhood market research | Optional allowlisted direct official MCP reads or bounded manual request/cache files for equities, exact options, and history | The upstream timestamp controls freshness. The user-triggered finalist gate resolves only the unchanged first Optedge option candidate through bounded chain/instrument pages and a live quote, then expires that result after 120 seconds. Exact quotes and trade bars are market observations, not fills, authorizations, or proof Optedge traded. The research cache and finalist artifact deliberately exclude accounts and orders. |
+| Robinhood account state | One explicit direct complete account read or a manually supplied account-scoped bundle, normalized into a pseudonymous broker snapshot | Direct sync keeps raw account identifiers in memory, proves bounded pagination, and persists only redacted state. The snapshot can become stale immediately and never authorizes an order. |
 | Corporate filings and fundamentals | SEC EDGAR submissions, companyfacts, Form 4, Form 144, recent filings, and related public filing records | SEC requests require a real operator email in `OPTEDGE_CONTACT` (or a real email embedded in legacy `SEC_USER_AGENT`) and fail before the request when none is configured. Filing data can be amended, delayed, issuer-specific, or difficult to map. A filing-derived score is research context, not a legal conclusion. |
 | Macro, rates, and credit | Keyless FRED graph CSV series and official Treasury yield-curve fallback where configured | Series can be revised, published on different schedules, and transformed into proxies. Missing observations should remain unavailable rather than forward-filled without a label. |
 | Commodities and positioning | Public CFTC Commitments of Traders, EIA energy, and USDA WASDE paths | Reports are periodic and delayed; they are not intraday positioning or executable prices. |
@@ -40,6 +40,7 @@ Optedge favors free or locally configured research inputs. An integration listed
 - A fallback should retain source/provenance fields when the downstream schema supports them.
 - An engine failure should return empty, neutral, unavailable, or blocked output; it must not silently become bullish or bearish evidence.
 - A modeled option outcome must remain labeled separately from a broker-market-observed bar, and neither is a verified Optedge fill.
+- A Robinhood finalist quote may replace a delayed research quote only while its exact candidate, cycle digest, queue digest, contract identity, and expiry all remain valid; it never changes ranking or clears a blocked local strategy gate.
 - Demo output must remain visibly synthetic and cannot clear Edge Lab or a broker-review gate.
 
 Run `python setup_check.py` to inspect basic local readiness. Passing that check means the configured path responded during the check; it does not guarantee future availability or data quality.

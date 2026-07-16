@@ -114,13 +114,13 @@ Source:
 
 Why it helps:
 - Adds no-key public contract activity from Cboe, BZX Options, C2 Options, and EDGX Options.
-- Gives the Robinhood/Codex review packet a quick "public activity seen / not seen" sanity check before any option is considered.
+- Gives the Trade Desk review packet a quick "public activity seen / not seen" sanity check before any option is considered.
 - Aggregates exact-contract volume, matched/routed activity, and top-of-book context where available.
 - Keeps the check conservative: no activity match is not an automatic rejection, and a match is not approval to trade.
 
 Notes:
 - This is Cboe venue activity, not consolidated OPRA and not a live execution quote.
-- Robinhood must still verify the exact contract, current bid/ask, liquidity, buying power, and news before any order.
+- A user-triggered Robinhood preview must still verify the exact contract, current bid/ask, liquidity, buying power, and news. Optedge itself does not place the order.
 
 ### Nasdaq public stock screener
 

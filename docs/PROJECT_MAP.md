@@ -73,11 +73,12 @@ that refactor has already happened.
 | `backtest/edge_lab.py` | Produces fail-closed asset evidence with provenance, spread-cost, stability, and live-review gates. |
 | `backtest/exit_learning.py` | Learns conservative exit-policy adjustments from eligible lifecycle evidence. |
 | `backtest/exit_rules.py` | Applies shared dynamic exit-review logic to options, shares, and futures. |
-| `backtest/fixed_horizon.py` | Settles leakage-resistant fixed-session outcomes with model provenance and spread-aware option costs. |
+| `backtest/fixed_horizon.py` | Settles leakage-resistant, profile-isolated fixed-session outcomes with model provenance and spread-aware option costs. |
 | `backtest/forward.py` | Reprices logged signals as mixed-age current-mark monitoring telemetry. |
 | `backtest/futures_positions.py` | Tracks simulated futures positions through their research lifecycle. |
 | `backtest/futures_sizing.py` | Sizes futures risk with contract multipliers and micro-contract preference. |
 | `backtest/historical.py` | Runs a quarantined look-ahead factor diagnostic that cannot prove edge. |
+| `backtest/leaps_edge.py` | Evaluates the dedicated LEAPS swing evidence lane across its required 5-, 10-, and 20-session horizons. |
 | `backtest/model_accuracy.py` | Reports quarantined current-mid pricing-model diagnostics without promoting weights. |
 | `backtest/option_expiry.py` | Values and records option-expiry outcomes with auditable assumptions. |
 | `backtest/option_history.py` | Manages the read-only Robinhood option-history cache and request queue. |
@@ -86,7 +87,7 @@ that refactor has already happened.
 | `backtest/predictor.py` | Quarantines research fits and loads only digest-valid, purged-OOS predictor and weight champions. |
 | `backtest/share_positions.py` | Tracks simulated share positions through their research lifecycle. |
 | `backtest/sizing.py` | Calculates cost-aware expected value, Kelly sizing, and concentration limits. |
-| `backtest/track.py` | Writes per-asset signal logs with timestamps and evidence provenance. |
+| `backtest/track.py` | Writes per-asset signal logs with timestamps, execution profiles, holding intent, and evidence provenance. |
 
 ## `dashboard/`
 
@@ -113,11 +114,12 @@ that refactor has already happened.
 | `docs/EDGE_LAB.md` | Defines Edge Lab evidence lanes, calculations, thresholds, and limitations. |
 | `docs/FACTOR_LIBRARY.md` | Catalogs each research factor and the information it contributes. |
 | `docs/FREE_DATA_ROADMAP.md` | Tracks planned improvements to the no-subscription market-data stack. |
+| `docs/LEAPS_SWING.md` | Defines the profile-isolated LEAPS contract, liquidity, evidence, holding, risk, and broker-review policy. |
 | `docs/LIMITATIONS.md` | States statistical, data, execution, and operational limitations. |
 | `docs/PROJECT_MAP.md` | Provides this canonical one-line purpose description for every repository path. |
 | `docs/README.md` | Indexes the durable architecture, evidence, risk, data, and operating guides. |
 | `docs/RISK_MODEL.md` | Defines sizing, exposure, drawdown, and manual-review guardrails. |
-| `docs/THIRD_PARTY_FORWARD_TESTING.md` | Defines reproducible external paper tracking and read-only Robinhood capture formats. |
+| `docs/THIRD_PARTY_FORWARD_TESTING.md` | Defines external paper tracking, direct Robinhood sync, manual capture fallback, broker-preview limits, and verification workflows. |
 | `docs/VALIDATION.md` | Defines eligible evidence, exclusions, sample rules, and validation artifacts. |
 
 ## `engines/`
@@ -220,13 +222,18 @@ that refactor has already happened.
 | `optedge/default_weights/shares_long.json` | Ships immutable fallback weights for long-share research. |
 | `optedge/engine_registry.py` | Preserves informational engine-name metadata without claiming dispatch authority. |
 | `optedge/http_identity.py` | Builds honest versioned HTTP identities and SEC-specific contact headers. |
+| `optedge/leaps_swing.py` | Scores long-option candidates against the canonical LEAPS swing contract, liquidity, quote, edge, and budget gates. |
 | `optedge/modes/__init__.py` | Marks the small command-mode wrapper package. |
 | `optedge/modes/backtest.py` | Routes the historical diagnostic command mode. |
 | `optedge/modes/forward.py` | Routes the current forward-telemetry command mode. |
 | `optedge/modes/loop.py` | Runs repeated local research scans at an operator-selected interval. |
 | `optedge/modes/scan.py` | Runs one local research scan. |
 | `optedge/orchestrator.py` | Coordinates engines, fusion, risk controls, tracking, reports, and outputs. |
-| `optedge/strategy_profile.py` | Defines canonical discovery and manual swing-review policy. |
+| `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle without polling, retries, or placement. |
+| `optedge/robinhood_finalist.py` | Resolves the unchanged top option candidate against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
+| `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, and no placement method. |
+| `optedge/robinhood_snapshot_sync.py` | Performs one explicit complete account read, proves bounded pagination, and persists only a redacted broker snapshot and pseudonymous risk ledger. |
+| `optedge/strategy_profile.py` | Defines canonical discovery, ordinary swing-execution, and profile-isolated LEAPS swing policies. |
 
 ## `reports/`
 
@@ -246,7 +253,7 @@ that refactor has already happened.
 | `risk/account_drawdown.py` | Validates policy-v2 Robinhood equity chains, 18-hour/two-New-York-date baselines, freshness, and fail-closed loss-based risk multipliers. |
 | `risk/portfolio.py` | Calculates fail-closed same-account exposure and post-trade allocation headroom. |
 | `risk/research_guard.py` | Blocks recommendations when evidence, drawdown, spread, freshness, or health is unsafe. |
-| `risk/trade_plan.py` | Enforces sizing, drawdown, exact candidate, broker-state, and standard-contract constraints while constructing short-lived Robinhood review packets. |
+| `risk/trade_plan.py` | Enforces profile-specific sizing, evidence, candidate, broker-state, and contract constraints while constructing short-lived Robinhood review packets. |
 
 ## `scripts/`
 
@@ -255,10 +262,10 @@ that refactor has already happened.
 | `scripts/README.md` | Explains user-facing cockpit utilities and safe research handoffs. |
 | `scripts/auto_agentic_paper.py` | Moves eligible queue ideas into a local paper book only, never a broker account. |
 | `scripts/export_external_paper_track.py` | Exports a bounded research subset for third-party paper tracking. |
-| `scripts/export_robinhood_agentic_queue.py` | Builds an option research shortlist without creating or placing broker orders. |
-| `scripts/local_cockpit.py` | Serves the loopback Trade Desk, exact option/share candidate comparison, firewalls, local planner, and fail-closed manual-review UI. |
+| `scripts/export_robinhood_agentic_queue.py` | Builds explicitly profile-isolated ordinary-swing or LEAPS option research queues without placing broker orders. |
+| `scripts/local_cockpit.py` | Serves the loopback Trade Desk, profile-aware option/share candidate comparison, local planner, evidence firewalls, and fail-closed Robinhood review UI. |
 | `scripts/lookup_symbol.py` | Builds a focused, source-backed research report for one ticker. |
-| `scripts/normalize_robinhood_broker_snapshot.py` | Normalizes read-only Robinhood state and atomically maintains durable pseudonymous equity ledgers plus rollback-detection backups. |
+| `scripts/normalize_robinhood_broker_snapshot.py` | Redacts and atomically persists normalized read-only Robinhood state plus durable pseudonymous equity ledgers and rollback-detection backups. |
 | `scripts/refresh_robinhood_option_history.py` | Refreshes the read-only option-history bridge from explicit local inputs. |
 | `scripts/research_jobs.py` | Runs and records bounded focused research jobs for the local cockpit. |
 | `scripts/robinhood_research_bridge.py` | Reads cached Robinhood research context without credentials or broker writes. |
@@ -303,8 +310,10 @@ that refactor has already happened.
 | `tests/test_futures_positions.py` | Protects simulated futures lifecycle accounting. |
 | `tests/test_futures_sizing.py` | Protects multiplier-aware futures sizing. |
 | `tests/test_http_identity.py` | Protects provider identity privacy and honest SEC contact enforcement. |
+| `tests/test_leaps_edge.py` | Protects strict LEAPS profile isolation and all required fixed-horizon evidence gates. |
+| `tests/test_leaps_swing.py` | Protects LEAPS candidate contract, liquidity, quote, edge, budget, and status scoring. |
 | `tests/test_learning_weights.py` | Protects default and learned per-bucket weight behavior. |
-| `tests/test_local_cockpit.py` | Protects Trade Desk APIs, UI payloads, exact share/option candidate attestations, planner, reconciliation, and broker boundaries. |
+| `tests/test_local_cockpit.py` | Protects Trade Desk APIs, profile-aware UI payloads, exact share/option attestations, planner, reconciliation, and broker boundaries. |
 | `tests/test_lookup_symbol.py` | Protects focused ticker-research reports and provider degradation. |
 | `tests/test_nasdaq_screener.py` | Protects Nasdaq screener parsing and symbol normalization. |
 | `tests/test_news.py` | Protects RSS news collection, caching, and sentiment output. |
@@ -320,18 +329,22 @@ that refactor has already happened.
 | `tests/test_regsho_threshold.py` | Protects Reg SHO threshold-list parsing and caching. |
 | `tests/test_research_guard.py` | Protects evidence, spread, drawdown, freshness, and engine-health blockers. |
 | `tests/test_research_jobs.py` | Protects bounded background research-job state. |
-| `tests/test_robinhood_agentic_queue.py` | Protects exact option research-queue identity and eligibility. |
-| `tests/test_robinhood_broker_snapshot.py` | Protects account-scoped broker snapshot normalization and fail-closed parsing. |
+| `tests/test_robinhood_agentic_queue.py` | Protects explicit ordinary-swing and LEAPS queue identity, geometry, evidence metadata, and eligibility. |
+| `tests/test_robinhood_broker_snapshot.py` | Protects account-scoped broker snapshot redaction, atomic persistence, ledger integrity, and fail-closed parsing. |
+| `tests/test_robinhood_connection.py` | Protects the bounded single-loop Robinhood connection lifecycle, sanitized status, OAuth callback, and tool-call boundaries. |
+| `tests/test_robinhood_finalist.py` | Protects exact top-candidate identity, bounded contract resolution, live quote gates, source-digest binding, and the no-order boundary. |
+| `tests/test_robinhood_mcp.py` | Protects official-endpoint OAuth, keyring-only credential storage, schema checks, redaction, and read-versus-review MCP policies. |
 | `tests/test_robinhood_research_bridge.py` | Protects read-only Robinhood research-cache behavior. |
+| `tests/test_robinhood_snapshot_sync.py` | Protects explicit complete account reads, cursor proofs, option-instrument joins, and redacted-only direct snapshot persistence. |
 | `tests/test_sec_companyfacts.py` | Protects SEC company-facts parsing and honest request use. |
 | `tests/test_sec_ftd.py` | Protects SEC fails-to-deliver parsing and caching. |
 | `tests/test_setup_check.py` | Protects environment and provider-readiness diagnostics. |
 | `tests/test_share_positions.py` | Protects simulated share position lifecycle accounting. |
 | `tests/test_short_interest.py` | Protects short-interest source parsing and scoring. |
 | `tests/test_short_sale_circuit.py` | Protects short-sale circuit-breaker parsing and caching. |
-| `tests/test_strategy_profile.py` | Protects canonical strategy policy and asset rules. |
+| `tests/test_strategy_profile.py` | Protects canonical discovery, ordinary swing, and LEAPS swing policy constants and asset rules. |
 | `tests/test_symbol_resolver.py` | Protects company, ticker, and option-contract resolution. |
-| `tests/test_trade_plan.py` | Protects sizing, exact-candidate/evidence attestations, portfolio gates, standard-contract checks, state rechecks, and review packets. |
+| `tests/test_trade_plan.py` | Protects profile-specific sizing, evidence and candidate attestations, portfolio gates, state rechecks, and review packets. |
 | `tests/test_trading_halts.py` | Protects trade-halt feed parsing and caching. |
 | `tests/test_treasury_yield_curve.py` | Protects Treasury curve retrieval and factor calculations. |
 | `tests/test_validation_report.py` | Protects validation metrics, artifacts, and no-data reporting. |
