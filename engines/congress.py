@@ -20,28 +20,30 @@ Pipeline:
 
 Senator trades are weighted 1.5× rep trades (more committee access).
 """
+
 from __future__ import annotations
+
 import io
 import logging
 import math
 import re
+import sys
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 from xml.etree import ElementTree as ET
 
-import requests
 import pandas as pd
+import requests
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import USER_AGENT
+import data_provider  # noqa: E402
+from config import USER_AGENT  # noqa: E402
 
 log = logging.getLogger("optedge.congress")
 
@@ -66,7 +68,7 @@ REP_WEIGHT = 1.0
 
 
 # -------- House Clerk index ------------------------------------------
-def _fetch_house_fd_index(year: int) -> List[Dict[str, str]]:
+def _fetch_house_fd_index(year: int) -> list[dict[str, str]]:
     """Pull and cache the {year}FD.zip filer index. Returns list of dicts."""
     cache_key = f"congress:house_fd:{year}"
     cached = data_provider.cache_get(cache_key, max_age_sec=24 * 3600)
@@ -89,8 +91,7 @@ def _fetch_house_fd_index(year: int) -> List[Dict[str, str]]:
         root = ET.fromstring(xml_data)
         out = []
         for m in root.findall("Member"):
-            entry = {child.tag: (child.text or "").strip()
-                     for child in m}
+            entry = {child.tag: (child.text or "").strip() for child in m}
             out.append(entry)
         data_provider.cache_put(cache_key, out)
         log.info("House FD %d: %d total filings", year, len(out))
@@ -100,7 +101,7 @@ def _fetch_house_fd_index(year: int) -> List[Dict[str, str]]:
         return []
 
 
-def _filter_ptrs(filings: List[Dict[str, str]], cutoff: datetime) -> List[Dict[str, str]]:
+def _filter_ptrs(filings: list[dict[str, str]], cutoff: datetime) -> list[dict[str, str]]:
     """Keep only Periodic Transaction Reports (P) with FilingDate >= cutoff."""
     out = []
     for f in filings:
@@ -108,7 +109,7 @@ def _filter_ptrs(filings: List[Dict[str, str]], cutoff: datetime) -> List[Dict[s
             continue
         date_str = f.get("FilingDate", "")
         try:
-            fdate = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=timezone.utc)
+            fdate = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=UTC)
         except Exception:
             continue
         if fdate < cutoff:
@@ -122,11 +123,11 @@ def _filter_ptrs(filings: List[Dict[str, str]], cutoff: datetime) -> List[Dict[s
 # Regex for transaction lines. Matches asset descriptions ending with [TYPE]
 # followed by transaction code (P/S, possibly with "(partial)") + dates + dollar range.
 _TX_PATTERN = re.compile(
-    r"(?P<asset>[\w\s.\-&,'\(\)/]{8,200}?)"        # asset description
-    r"\[\s*(?P<atype>[A-Z]{2,4})\s*\]"             # asset class code [ST] etc
-    r"\s*(?P<tx>[PSE](?:\s*\(partial\))?)"          # transaction code P/S/E
-    r"\s+(?P<date1>\d{1,2}/\d{1,2}/\d{4})"          # transaction date
-    r"\s+(?P<date2>\d{1,2}/\d{1,2}/\d{4})"          # notification date
+    r"(?P<asset>[\w\s.\-&,'\(\)/]{8,200}?)"  # asset description
+    r"\[\s*(?P<atype>[A-Z]{2,4})\s*\]"  # asset class code [ST] etc
+    r"\s*(?P<tx>[PSE](?:\s*\(partial\))?)"  # transaction code P/S/E
+    r"\s+(?P<date1>\d{1,2}/\d{1,2}/\d{4})"  # transaction date
+    r"\s+(?P<date2>\d{1,2}/\d{1,2}/\d{4})"  # notification date
     r"\s+\$\s?(?P<amt_lo>[\d,]+)\s*-?\s*"
     r"(?:\$\s?(?P<amt_hi>[\d,]+))?",
     re.MULTILINE,
@@ -146,7 +147,7 @@ def _parse_amount_midpoint(lo: str, hi: str) -> float:
         return 0.0
 
 
-def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> List[Dict[str, Any]]:
+def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> list[dict[str, Any]]:
     """Extract trades from a PTR PDF. Returns list of trade dicts."""
     try:
         import pdfplumber
@@ -178,7 +179,7 @@ def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> List[Dict[str, Any]]:
                 if ticker in {"USD", "ETF", "ST", "OP"} or len(ticker) > 5:
                     continue
 
-                tx_code = m.group("tx").strip().split()[0]   # "P (partial)" → "P"
+                tx_code = m.group("tx").strip().split()[0]  # "P (partial)" → "P"
                 is_buy = tx_code in {"P"} or "P (partial)" in m.group("tx")
                 is_sell = tx_code in {"S"} or "S (partial)" in m.group("tx")
                 if not (is_buy or is_sell):
@@ -186,7 +187,7 @@ def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> List[Dict[str, Any]]:
 
                 date_str = m.group("date1")
                 try:
-                    tx_date = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=timezone.utc)
+                    tx_date = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=UTC)
                 except Exception:
                     continue
 
@@ -194,14 +195,16 @@ def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> List[Dict[str, Any]]:
                 if amt <= 0:
                     continue
 
-                rows.append({
-                    "ticker": ticker,
-                    "asset_type": atype,
-                    "is_buy": is_buy,
-                    "amount": amt,
-                    "date": tx_date,
-                    "filer": filer_name,
-                })
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "asset_type": atype,
+                        "is_buy": is_buy,
+                        "amount": amt,
+                        "date": tx_date,
+                        "filer": filer_name,
+                    }
+                )
     except Exception as e:
         log.debug("PDF parse error: %s", e)
         return []
@@ -209,7 +212,7 @@ def _parse_ptr_pdf(pdf_bytes: bytes, filer_name: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _fetch_and_parse_ptr(filing: Dict[str, str]) -> List[Dict[str, Any]]:
+def _fetch_and_parse_ptr(filing: dict[str, str]) -> list[dict[str, Any]]:
     """Download one PTR PDF and parse trades. Cached 7 days."""
     doc_id = filing.get("DocID", "")
     year = filing.get("Year", "2026")
@@ -234,15 +237,27 @@ def _fetch_and_parse_ptr(filing: Dict[str, str]) -> List[Dict[str, Any]]:
         if r.status_code != 200:
             data_provider.cache_put(cache_key, [])
             return []
-        filer_name = " ".join(s for s in [
-            filing.get("Prefix", ""), filing.get("First", ""),
-            filing.get("Last", ""), filing.get("Suffix", "")
-        ] if s).strip()
+        filer_name = " ".join(
+            s
+            for s in [
+                filing.get("Prefix", ""),
+                filing.get("First", ""),
+                filing.get("Last", ""),
+                filing.get("Suffix", ""),
+            ]
+            if s
+        ).strip()
         rows = _parse_ptr_pdf(r.content, filer_name)
         # Cache as JSON-friendly
-        cached_form = [{**row, "date": row["date"].isoformat()
-                                  if isinstance(row.get("date"), datetime)
-                                  else row.get("date")} for row in rows]
+        cached_form = [
+            {
+                **row,
+                "date": row["date"].isoformat()
+                if isinstance(row.get("date"), datetime)
+                else row.get("date"),
+            }
+            for row in rows
+        ]
         data_provider.cache_put(cache_key, cached_form)
         return rows
     except Exception as e:
@@ -251,7 +266,7 @@ def _fetch_and_parse_ptr(filing: Dict[str, str]) -> List[Dict[str, Any]]:
 
 
 # -------- Senate eFD scraping ----------------------------------------
-def _build_senate_session() -> Optional[requests.Session]:
+def _build_senate_session() -> requests.Session | None:
     """One-time auth dance: GET home → POST prohibition_agreement → ready."""
     # We don't cache the session itself because its cookies are not cleanly picklable.
     sess = requests.Session()
@@ -266,11 +281,13 @@ def _build_senate_session() -> Optional[requests.Session]:
             log.debug("Senate: couldn't find csrfmiddlewaretoken in home page")
             return None
         form_csrf = m.group(1)
-        r2 = sess.post(SENATE_HOME_URL,
-                       data={"csrfmiddlewaretoken": form_csrf,
-                             "prohibition_agreement": "1"},
-                       headers={"Referer": SENATE_HOME_URL},
-                       timeout=15, allow_redirects=True)
+        r2 = sess.post(
+            SENATE_HOME_URL,
+            data={"csrfmiddlewaretoken": form_csrf, "prohibition_agreement": "1"},
+            headers={"Referer": SENATE_HOME_URL},
+            timeout=15,
+            allow_redirects=True,
+        )
         if r2.status_code != 200:
             log.debug("Senate ToS POST failed: %d", r2.status_code)
             return None
@@ -280,8 +297,9 @@ def _build_senate_session() -> Optional[requests.Session]:
         return None
 
 
-def _fetch_senate_ptrs(sess: requests.Session, cutoff: datetime,
-                       max_records: int = 500) -> List[Dict[str, Any]]:
+def _fetch_senate_ptrs(
+    sess: requests.Session, cutoff: datetime, max_records: int = 500
+) -> list[dict[str, Any]]:
     """Search Senate eFD for Periodic Transaction Reports since cutoff."""
     # Paginate — 100 at a time
     out = []
@@ -292,27 +310,31 @@ def _fetch_senate_ptrs(sess: requests.Session, cutoff: datetime,
     while start < max_records:
         csrf = sess.cookies.get("csrftoken", "")
         try:
-            r = sess.post(SENATE_SEARCH_URL,
-                          data={
-                              "csrfmiddlewaretoken": csrf,
-                              "report_types": "[11]",   # 11 = Periodic Transaction
-                              "filer_types": "[]",
-                              "submitted_start_date": cutoff_str,
-                              "submitted_end_date": "",
-                              "candidate_ddl": "",
-                              "senator_first_name": "",
-                              "senator_last_name": "",
-                              "office_id": "",
-                              "first_name": "",
-                              "last_name": "",
-                              "draw": str(start // page_size + 1),
-                              "start": str(start),
-                              "length": str(page_size),
-                          },
-                          headers={"X-CSRFToken": csrf,
-                                   "Referer": "https://efdsearch.senate.gov/search/",
-                                   "X-Requested-With": "XMLHttpRequest"},
-                          timeout=20)
+            r = sess.post(
+                SENATE_SEARCH_URL,
+                data={
+                    "csrfmiddlewaretoken": csrf,
+                    "report_types": "[11]",  # 11 = Periodic Transaction
+                    "filer_types": "[]",
+                    "submitted_start_date": cutoff_str,
+                    "submitted_end_date": "",
+                    "candidate_ddl": "",
+                    "senator_first_name": "",
+                    "senator_last_name": "",
+                    "office_id": "",
+                    "first_name": "",
+                    "last_name": "",
+                    "draw": str(start // page_size + 1),
+                    "start": str(start),
+                    "length": str(page_size),
+                },
+                headers={
+                    "X-CSRFToken": csrf,
+                    "Referer": "https://efdsearch.senate.gov/search/",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                timeout=20,
+            )
             if r.status_code != 200:
                 log.debug("Senate search returned %d", r.status_code)
                 break
@@ -324,7 +346,8 @@ def _fetch_senate_ptrs(sess: requests.Session, cutoff: datetime,
                 # Row: [first, last, name_link, report_link_html, filed_date]
                 if len(row) < 5:
                     continue
-                first = row[0]; last = row[1]
+                first = row[0]
+                last = row[1]
                 # Extract URL from HTML <a href="...">
                 href_m = re.search(r'href="([^"]+)"', row[3])
                 if not href_m:
@@ -332,19 +355,22 @@ def _fetch_senate_ptrs(sess: requests.Session, cutoff: datetime,
                 report_url = SENATE_REPORT_BASE + href_m.group(1)
                 date_str = row[4]
                 try:
-                    fdate = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=timezone.utc)
+                    fdate = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=UTC)
                 except Exception:
                     continue
                 # Extract report title (shows period covered)
-                title_m = re.search(r'>([^<]+)</a>', row[3])
+                title_m = re.search(r">([^<]+)</a>", row[3])
                 title = title_m.group(1).strip() if title_m else ""
-                out.append({
-                    "filer": f"{first} {last}".strip(),
-                    "filer_first": first, "filer_last": last,
-                    "report_url": report_url,
-                    "filed_date": fdate,
-                    "title": title,
-                })
+                out.append(
+                    {
+                        "filer": f"{first} {last}".strip(),
+                        "filer_first": first,
+                        "filer_last": last,
+                        "report_url": report_url,
+                        "filed_date": fdate,
+                        "title": title,
+                    }
+                )
             total = data.get("recordsTotal", 0)
             if start + page_size >= total:
                 break
@@ -355,7 +381,7 @@ def _fetch_senate_ptrs(sess: requests.Session, cutoff: datetime,
     return out
 
 
-def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
+def _parse_senate_html(html_text: str, filer_name: str) -> list[dict[str, Any]]:
     """Parse a Senate PTR HTML report. Returns list of trade dicts."""
     try:
         from bs4 import BeautifulSoup
@@ -389,7 +415,9 @@ def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
                 continue
 
             # Get ticker: prefer the explicit Ticker column, fall back to asset name parens
-            ticker = ticker_raw.upper().strip() if ticker_raw and ticker_raw not in ("--", "—") else ""
+            ticker = (
+                ticker_raw.upper().strip() if ticker_raw and ticker_raw not in ("--", "—") else ""
+            )
             if not ticker or len(ticker) > 5 or not ticker.replace(".", "").isalpha():
                 # Try parens in asset name
                 m = re.search(r"\(([A-Z]{1,5})\)", asset_name)
@@ -399,7 +427,7 @@ def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
                     continue
 
             try:
-                tx_date = datetime.strptime(tx_date_str, "%m/%d/%Y").replace(tzinfo=timezone.utc)
+                tx_date = datetime.strptime(tx_date_str, "%m/%d/%Y").replace(tzinfo=UTC)
             except Exception:
                 continue
 
@@ -409,9 +437,7 @@ def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
                 continue
 
             # Parse amount: "$1,001 - $15,000" → midpoint
-            amt_match = re.search(
-                r"\$\s?([\d,]+)\s*-?\s*\$?\s?([\d,]+)?", amount
-            )
+            amt_match = re.search(r"\$\s?([\d,]+)\s*-?\s*\$?\s?([\d,]+)?", amount)
             if not amt_match:
                 continue
             try:
@@ -421,22 +447,29 @@ def _parse_senate_html(html_text: str, filer_name: str) -> List[Dict[str, Any]]:
             except (ValueError, AttributeError):
                 continue
 
-            rows.append({
-                "ticker": ticker,
-                "asset_type": "ST" if "stock" in asset_type_low else "OP" if "option" in asset_type_low else "ETF",
-                "is_buy": is_buy,
-                "amount": amt,
-                "date": tx_date,
-                "filer": filer_name,
-            })
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "asset_type": "ST"
+                    if "stock" in asset_type_low
+                    else "OP"
+                    if "option" in asset_type_low
+                    else "ETF",
+                    "is_buy": is_buy,
+                    "amount": amt,
+                    "date": tx_date,
+                    "filer": filer_name,
+                }
+            )
     except Exception as e:
         log.debug("Senate HTML parse error: %s", e)
         return []
     return rows
 
 
-def _fetch_and_parse_senate_filing(sess: requests.Session,
-                                   filing: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _fetch_and_parse_senate_filing(
+    sess: requests.Session, filing: dict[str, Any]
+) -> list[dict[str, Any]]:
     """Fetch one Senate PTR HTML and parse it. Caches 7 days."""
     cache_key = f"congress:senate_ptr:{filing['report_url']}"
     cached = data_provider.cache_get(cache_key, max_age_sec=7 * 86400)
@@ -454,9 +487,15 @@ def _fetch_and_parse_senate_filing(sess: requests.Session,
             data_provider.cache_put(cache_key, [])
             return []
         rows = _parse_senate_html(r.text, filing["filer"])
-        cached_form = [{**row, "date": row["date"].isoformat()
-                                  if isinstance(row.get("date"), datetime)
-                                  else row.get("date")} for row in rows]
+        cached_form = [
+            {
+                **row,
+                "date": row["date"].isoformat()
+                if isinstance(row.get("date"), datetime)
+                else row.get("date"),
+            }
+            for row in rows
+        ]
         data_provider.cache_put(cache_key, cached_form)
         return rows
     except Exception as e:
@@ -465,19 +504,23 @@ def _fetch_and_parse_senate_filing(sess: requests.Session,
 
 
 # -------- Public API --------------------------------------------------
-def run(universe: List[str], lookback_days: int = LOOKBACK_DAYS,
-        max_workers: int = 6, max_filings: int = 200,
-        include_senate: bool = True) -> pd.DataFrame:
+def run(
+    universe: list[str],
+    lookback_days: int = LOOKBACK_DAYS,
+    max_workers: int = 6,
+    max_filings: int = 200,
+    include_senate: bool = True,
+) -> pd.DataFrame:
     """Build per-ticker Congressional trade signals from House Clerk PTRs.
 
     Direct, free, unlimited. Caches PDFs for 7 days (they're immutable once filed)
     and the FD index for 24 hours.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
     universe_set = set(t.upper() for t in universe)
 
     # Pull FD indexes — current year + previous if cutoff straddles year boundary
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     years = [today.year]
     if cutoff.year < today.year:
         years.append(cutoff.year)
@@ -487,18 +530,17 @@ def run(universe: List[str], lookback_days: int = LOOKBACK_DAYS,
         all_filings.extend(_fetch_house_fd_index(y))
 
     ptrs = _filter_ptrs(all_filings, cutoff)
-    log.info("Found %d Periodic Transaction Reports in last %d days",
-             len(ptrs), lookback_days)
+    log.info("Found %d Periodic Transaction Reports in last %d days", len(ptrs), lookback_days)
 
     # Cap at max_filings (most recent first) to keep latency bounded
-    ptrs = sorted(ptrs, key=lambda f: f.get("_filing_date") or datetime.min.replace(tzinfo=timezone.utc),
-                  reverse=True)[:max_filings]
+    ptrs = sorted(
+        ptrs, key=lambda f: f.get("_filing_date") or datetime.min.replace(tzinfo=UTC), reverse=True
+    )[:max_filings]
 
     # Parallel parse
     all_trades = []
     completed = 0
-    log.info("parsing %d PTR PDFs (parallel, %d workers, cache 7d)",
-             len(ptrs), max_workers)
+    log.info("parsing %d PTR PDFs (parallel, %d workers, cache 7d)", len(ptrs), max_workers)
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_fetch_and_parse_ptr, f): f for f in ptrs}
         for fut in as_completed(futures):
@@ -522,14 +564,17 @@ def run(universe: List[str], lookback_days: int = LOOKBACK_DAYS,
         sess = _build_senate_session()
         if sess is not None:
             sen_filings = _fetch_senate_ptrs(sess, cutoff)
-            sen_filings = sorted(sen_filings, key=lambda f: f["filed_date"], reverse=True)[:max_filings]
+            sen_filings = sorted(sen_filings, key=lambda f: f["filed_date"], reverse=True)[
+                :max_filings
+            ]
             log.info("Found %d Senate Periodic Transaction Reports", len(sen_filings))
             sen_trades = []
             completed = 0
             with ThreadPoolExecutor(max_workers=4) as ex:
                 # Senate uses session — limit concurrency to avoid overwhelming the server
-                futures = {ex.submit(_fetch_and_parse_senate_filing, sess, f): f
-                           for f in sen_filings}
+                futures = {
+                    ex.submit(_fetch_and_parse_senate_filing, sess, f): f for f in sen_filings
+                }
                 for fut in as_completed(futures):
                     try:
                         rows = fut.result()
@@ -548,20 +593,28 @@ def run(universe: List[str], lookback_days: int = LOOKBACK_DAYS,
     log.info("parsed %d total Congressional trades (House + Senate)", len(all_trades))
 
     # Aggregate per ticker (universe-filtered, with Senate weight boost)
-    by_ticker: Dict[str, Dict[str, Any]] = {}
+    by_ticker: dict[str, dict[str, Any]] = {}
     for t in all_trades:
         ticker = t["ticker"]
         if ticker not in universe_set:
             continue
         if t["date"] < cutoff:
             continue
-        d = by_ticker.setdefault(ticker, {
-            "buys_n": 0, "sells_n": 0,
-            "buys_dollar": 0.0, "sells_dollar": 0.0,
-            "buys_dollar_w": 0.0, "sells_dollar_w": 0.0,
-            "filers": set(), "senators": set(),
-            "top_buy_amount": 0.0, "top_buy_member": "",
-        })
+        d = by_ticker.setdefault(
+            ticker,
+            {
+                "buys_n": 0,
+                "sells_n": 0,
+                "buys_dollar": 0.0,
+                "sells_dollar": 0.0,
+                "buys_dollar_w": 0.0,
+                "sells_dollar_w": 0.0,
+                "filers": set(),
+                "senators": set(),
+                "top_buy_amount": 0.0,
+                "top_buy_member": "",
+            },
+        )
         weight = SENATOR_WEIGHT if t.get("chamber") == "senate" else REP_WEIGHT
         if t["is_buy"]:
             d["buys_n"] += 1
@@ -586,18 +639,20 @@ def run(universe: List[str], lookback_days: int = LOOKBACK_DAYS,
         n_sens = len(d["senators"])
         n_reps = n_filers - n_sens
         if n_filers > 1:
-            score *= (1 + 0.15 * (n_filers - 1))
-        rows.append({
-            "ticker": ticker,
-            "congress_score": round(score, 3),
-            "congress_buys_n": d["buys_n"],
-            "congress_sells_n": d["sells_n"],
-            "congress_buys_dollar": round(d["buys_dollar"], 0),
-            "congress_sells_dollar": round(d["sells_dollar"], 0),
-            "congress_n_reps": n_reps,
-            "congress_n_sens": n_sens,
-            "congress_top_buyer": d["top_buy_member"][:60],
-        })
+            score *= 1 + 0.15 * (n_filers - 1)
+        rows.append(
+            {
+                "ticker": ticker,
+                "congress_score": round(score, 3),
+                "congress_buys_n": d["buys_n"],
+                "congress_sells_n": d["sells_n"],
+                "congress_buys_dollar": round(d["buys_dollar"], 0),
+                "congress_sells_dollar": round(d["sells_dollar"], 0),
+                "congress_n_reps": n_reps,
+                "congress_n_sens": n_sens,
+                "congress_top_buyer": d["top_buy_member"][:60],
+            }
+        )
 
     log.info("congress: %d tickers with parsed activity", len(rows))
     return pd.DataFrame(rows)

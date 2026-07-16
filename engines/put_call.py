@@ -13,7 +13,9 @@ Interpretation (note: contrarian at extremes):
 We score it as a CONTRARIAN signal: extreme P/C → bullish bias (fade the crowd).
 This is well-documented behavior; retail piles into puts at bottoms, calls at tops.
 """
+
 from __future__ import annotations
+
 import logging
 import math
 
@@ -37,7 +39,7 @@ def _score(pc_vol: float, pc_oi: float) -> float:
     if pc_oi is not None and not pd.isna(pc_oi):
         oi_deviation = pc_oi - 1.0
         if (deviation > 0 and oi_deviation > 0) or (deviation < 0 and oi_deviation < 0):
-            score *= 1.2          # confirmation amplifies
+            score *= 1.2  # confirmation amplifies
     return round(max(-1.5, min(1.5, score)), 3)
 
 
@@ -59,16 +61,21 @@ def derive_from_contracts(contracts: pd.DataFrame) -> pd.DataFrame:
             continue
         pc_vol = round(p_vol / max(c_vol, 1), 3)
         pc_oi = round(p_oi / max(c_oi, 1), 3) if c_oi >= 100 else None
-        rows.append({
-            "ticker": ticker,
-            "pc_vol_ratio": pc_vol,
-            "pc_oi_ratio": pc_oi,
-            "pc_score": _score(pc_vol, pc_oi),
-            "pc_call_vol": int(c_vol),
-            "pc_put_vol": int(p_vol),
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "pc_vol_ratio": pc_vol,
+                "pc_oi_ratio": pc_oi,
+                "pc_score": _score(pc_vol, pc_oi),
+                "pc_call_vol": int(c_vol),
+                "pc_put_vol": int(p_vol),
+            }
+        )
     df = pd.DataFrame(rows)
     if not df.empty:
-        log.info("put_call: %d tickers with measurable P/C, median pc_vol=%.2f",
-                 len(df), df["pc_vol_ratio"].median())
+        log.info(
+            "put_call: %d tickers with measurable P/C, median pc_vol=%.2f",
+            len(df),
+            df["pc_vol_ratio"].median(),
+        )
     return df

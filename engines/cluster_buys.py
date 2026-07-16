@@ -13,13 +13,15 @@ Output: ticker -> cluster_buys_score in [0, 1].
   4 insiders / 14d = 0.7
   5+ insiders / 14d = 1.0
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -60,14 +62,18 @@ def derive_from_insider(insider_df: pd.DataFrame) -> pd.DataFrame:
         buys_val = float(r.get("buys_value") or 0)
         if buys_val > 1_000_000:
             score = min(1.0, score + 0.2)
-        rows.append({
-            "ticker": tk,
-            "cluster_buys_score": score,
-            "cluster_n_buyers": n,
-            "cluster_buys_dollar": buys_val,
-        })
+        rows.append(
+            {
+                "ticker": tk,
+                "cluster_buys_score": score,
+                "cluster_n_buyers": n,
+                "cluster_buys_dollar": buys_val,
+            }
+        )
     if not rows:
         return pd.DataFrame()
-    out = pd.DataFrame(rows).sort_values("cluster_buys_score", ascending=False).reset_index(drop=True)
+    out = (
+        pd.DataFrame(rows).sort_values("cluster_buys_score", ascending=False).reset_index(drop=True)
+    )
     log.info("cluster_buys: %d tickers with 3+ insider buys (last 90d)", len(out))
     return out

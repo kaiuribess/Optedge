@@ -16,21 +16,22 @@ Falls back to Nitter mirrors if Apewisdom is down.
 References:
 - https://apewisdom.io/api/  (free, no key)
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.twitter")
 
@@ -50,7 +51,7 @@ NITTER_MIRRORS = [
 NITTER_TIMEOUT = 6
 
 
-def _fetch_apewisdom_page(page: int) -> List[Dict]:
+def _fetch_apewisdom_page(page: int) -> list[dict]:
     """One page of Apewisdom all-stocks ranking."""
     url = f"{APEWISDOM_BASE}/page/{page}"
     key = f"apewisdom:{page}"
@@ -71,7 +72,7 @@ def _fetch_apewisdom_page(page: int) -> List[Dict]:
         return []
 
 
-def _build_from_apewisdom(universe_set: set) -> List[Dict]:
+def _build_from_apewisdom(universe_set: set) -> list[dict]:
     """Aggregate Apewisdom pages and return per-ticker signal rows."""
     all_results = []
     for p in range(1, APEWISDOM_MAX_PAGES + 1):
@@ -109,17 +110,19 @@ def _build_from_apewisdom(universe_set: set) -> List[Dict]:
         rank_score = max(-0.3, min(0.3, rank_delta))
         # Combine
         score = max(-1.0, min(1.0, growth + rank_score))
-        rows.append({
-            "ticker": tk,
-            "twitter_score": score,
-            "twitter_n": mentions,
-            "twitter_avg_sent": sent if sent is not None else 0.0,
-            "twitter_mentions_24h_ago": prior,
-            "twitter_rank": rank,
-            "twitter_upvotes": upvotes,
-            "twitter_excerpt": "",  # apewisdom doesn't return tweet text
-            "twitter_source": "apewisdom",
-        })
+        rows.append(
+            {
+                "ticker": tk,
+                "twitter_score": score,
+                "twitter_n": mentions,
+                "twitter_avg_sent": sent if sent is not None else 0.0,
+                "twitter_mentions_24h_ago": prior,
+                "twitter_rank": rank,
+                "twitter_upvotes": upvotes,
+                "twitter_excerpt": "",  # apewisdom doesn't return tweet text
+                "twitter_source": "apewisdom",
+            }
+        )
     return rows
 
 
@@ -127,24 +130,25 @@ def _build_from_apewisdom(universe_set: set) -> List[Dict]:
 def _vader_score(text: str) -> float:
     try:
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
         sia = SentimentIntensityAnalyzer()
         return sia.polarity_scores(text)["compound"]
     except Exception:
         return 0.0
 
 
-def _nitter_fetch(instance: str, ticker: str) -> Optional[List[Dict]]:
+def _nitter_fetch(instance: str, ticker: str) -> list[dict] | None:
     url = f"{instance}/search/rss?f=tweets&q=%24{ticker.upper()}"
     sess = data_provider.get_session()
     try:
         r = sess.get(url, timeout=NITTER_TIMEOUT)
         if r.status_code != 200:
             return None
-        items = re.findall(r'<item>(.*?)</item>', r.text, re.DOTALL)
+        items = re.findall(r"<item>(.*?)</item>", r.text, re.DOTALL)
         out = []
         for item in items[:20]:
-            t = re.search(r'<title>(.*?)</title>', item, re.DOTALL)
-            text = re.sub(r'<[^>]+>', '', t.group(1)) if t else ""
+            t = re.search(r"<title>(.*?)</title>", item, re.DOTALL)
+            text = re.sub(r"<[^>]+>", "", t.group(1)) if t else ""
             text = text.replace("&amp;", "&").replace("&quot;", '"').strip()
             if text:
                 out.append({"text": text})
@@ -153,7 +157,7 @@ def _nitter_fetch(instance: str, ticker: str) -> Optional[List[Dict]]:
         return None
 
 
-def _nitter_fallback(universe_heavy: List[str]) -> List[Dict]:
+def _nitter_fallback(universe_heavy: list[str]) -> list[dict]:
     """Slow per-ticker Nitter scrape as last resort."""
     rows = []
     targets = universe_heavy[:30]
@@ -178,18 +182,20 @@ def _nitter_fallback(universe_heavy: List[str]) -> List[Dict]:
             if not scores:
                 continue
             avg = sum(scores) / len(scores)
-            rows.append({
-                "ticker": tk,
-                "twitter_score": max(-1.0, min(1.0, avg)),
-                "twitter_n": len(tweets),
-                "twitter_avg_sent": avg,
-                "twitter_excerpt": tweets[0]["text"][:140],
-                "twitter_source": "nitter",
-            })
+            rows.append(
+                {
+                    "ticker": tk,
+                    "twitter_score": max(-1.0, min(1.0, avg)),
+                    "twitter_n": len(tweets),
+                    "twitter_avg_sent": avg,
+                    "twitter_excerpt": tweets[0]["text"][:140],
+                    "twitter_source": "nitter",
+                }
+            )
     return rows
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     universe_set = {t.upper() for t in universe}

@@ -18,42 +18,44 @@ Signal:
 
 Free, no auth (SEC EDGAR public).
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import SecContactRequiredError, sec_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import SecContactRequiredError, sec_headers  # noqa: E402
 
 log = logging.getLogger("optedge.13f")
 
 SMART_FUNDS = [
-    {"cik": "1067983", "name": "Berkshire Hathaway",            "weight": 1.5},
-    {"cik": "1336528", "name": "Appaloosa (Tepper)",            "weight": 1.4},
-    {"cik": "1649339", "name": "Scion Asset Mgmt (Burry)",      "weight": 1.3},
-    {"cik": "1336184", "name": "Pershing Square (Ackman)",      "weight": 1.4},
-    {"cik": "1037389", "name": "Renaissance Technologies",      "weight": 1.3},
-    {"cik": "1350694", "name": "Bridgewater Associates",        "weight": 1.2},
-    {"cik": "1423053", "name": "Citadel Advisors",              "weight": 1.2},
-    {"cik": "1179392", "name": "Two Sigma Investments",         "weight": 1.2},
-    {"cik": "1358259", "name": "Coatue Management",             "weight": 1.2},
-    {"cik": "1112520", "name": "Soros Fund Management",         "weight": 1.2},
-    {"cik": "1167483", "name": "Tiger Global Management",       "weight": 1.2},
-    {"cik": "1709323", "name": "Light Street Capital",          "weight": 1.0},
+    {"cik": "1067983", "name": "Berkshire Hathaway", "weight": 1.5},
+    {"cik": "1336528", "name": "Appaloosa (Tepper)", "weight": 1.4},
+    {"cik": "1649339", "name": "Scion Asset Mgmt (Burry)", "weight": 1.3},
+    {"cik": "1336184", "name": "Pershing Square (Ackman)", "weight": 1.4},
+    {"cik": "1037389", "name": "Renaissance Technologies", "weight": 1.3},
+    {"cik": "1350694", "name": "Bridgewater Associates", "weight": 1.2},
+    {"cik": "1423053", "name": "Citadel Advisors", "weight": 1.2},
+    {"cik": "1179392", "name": "Two Sigma Investments", "weight": 1.2},
+    {"cik": "1358259", "name": "Coatue Management", "weight": 1.2},
+    {"cik": "1112520", "name": "Soros Fund Management", "weight": 1.2},
+    {"cik": "1167483", "name": "Tiger Global Management", "weight": 1.2},
+    {"cik": "1709323", "name": "Light Street Capital", "weight": 1.0},
 ]
 
-def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
+
+def _list_13f_filings(cik: str, count: int = 4) -> list[dict]:
     """List recent 13F-HR filings for a CIK via data.sec.gov submissions JSON."""
     cik_padded = cik.lstrip("0").zfill(10)
     url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
@@ -63,6 +65,7 @@ def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
         return cached
     try:
         import requests
+
         # data.sec.gov is the right host for submissions — Host header must match
         h = sec_headers(accept="application/json", host="data.sec.gov")
         r = requests.get(url, headers=h, timeout=20)
@@ -81,11 +84,13 @@ def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
                 continue
             if i >= len(accessions):
                 continue
-            results.append({
-                "accession": accessions[i],
-                "filing_date": dates[i] if i < len(dates) else "",
-                "primary_doc": primary_docs[i] if i < len(primary_docs) else "",
-            })
+            results.append(
+                {
+                    "accession": accessions[i],
+                    "filing_date": dates[i] if i < len(dates) else "",
+                    "primary_doc": primary_docs[i] if i < len(primary_docs) else "",
+                }
+            )
             if len(results) >= count:
                 break
         data_provider.cache_put(key, results)
@@ -98,7 +103,7 @@ def _list_13f_filings(cik: str, count: int = 4) -> List[Dict]:
         return []
 
 
-def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
+def _parse_13f_xml(accession: str, cik: str) -> list[dict]:
     """Fetch and parse the information table XML for a single 13F-HR filing."""
     if not accession:
         return []
@@ -110,12 +115,12 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
         return cached
 
     import requests
+
     base = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}/"
     try:
         # The filing index lists every file in the submission
         headers = sec_headers(host="www.sec.gov")
-        idx = requests.get(base + "index.json", headers=headers,
-                            timeout=20)
+        idx = requests.get(base + "index.json", headers=headers, timeout=20)
         if idx.status_code != 200:
             return []
         items = idx.json().get("directory", {}).get("item", [])
@@ -124,13 +129,13 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
             n = it.get("name", "").lower()
             # Look for informationtable XML
             if "infotable" in n and n.endswith(".xml"):
-                info_file = it["name"]; break
+                info_file = it["name"]
+                break
             if n.endswith(".xml") and "primary" not in n and "form" not in n:
                 info_file = it["name"]
         if not info_file:
             return []
-        r = requests.get(base + info_file, headers=headers,
-                          timeout=30)
+        r = requests.get(base + info_file, headers=headers, timeout=30)
         if r.status_code != 200:
             return []
         text = r.content
@@ -154,12 +159,14 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
                     shr = int(shares.text) if shares is not None and shares.text else 0
                 except Exception:
                     shr = 0
-                rows.append({
-                    "issuer": (issuer.text or "").strip(),
-                    "cusip": (cusip.text or "").strip() if cusip is not None else "",
-                    "value": val,
-                    "shares": shr,
-                })
+                rows.append(
+                    {
+                        "issuer": (issuer.text or "").strip(),
+                        "cusip": (cusip.text or "").strip() if cusip is not None else "",
+                        "value": val,
+                        "shares": shr,
+                    }
+                )
         data_provider.cache_put(key, rows)
         return rows
     except SecContactRequiredError as e:
@@ -170,24 +177,52 @@ def _parse_13f_xml(accession: str, cik: str) -> List[Dict]:
         return []
 
 
-def _name_to_ticker(name: str, universe_set: set) -> Optional[str]:
+def _name_to_ticker(name: str, universe_set: set) -> str | None:
     if not name:
         return None
     n = name.upper().replace("&", "&AMP;")
     HAND = {
-        "ALPHABET": "GOOGL", "META PLATFORMS": "META", "BERKSHIRE HATHAWAY": "BRK.B",
-        "PROCTER & GAMBLE": "PG", "JPMORGAN CHASE": "JPM", "MICROSOFT CORP": "MSFT",
-        "APPLE INC": "AAPL", "AMAZON COM": "AMZN", "NVIDIA": "NVDA", "TESLA": "TSLA",
-        "BANK OF AMERICA": "BAC", "OCCIDENTAL PETROLEUM": "OXY", "CHEVRON": "CVX",
-        "EXXON MOBIL": "XOM", "COCA-COLA": "KO", "COCA COLA": "KO", "WALMART": "WMT",
-        "AMERICAN EXPRESS": "AXP", "UNITED PARCEL": "UPS", "GENERAL DYNAMICS": "GD",
-        "GENERAL MOTORS": "GM", "WELLS FARGO": "WFC", "VISA INC": "V",
-        "MASTERCARD": "MA", "PAYPAL": "PYPL", "GOLDMAN SACHS": "GS",
-        "MORGAN STANLEY": "MS", "BROADCOM": "AVGO", "ORACLE": "ORCL",
-        "ELI LILLY": "LLY", "JOHNSON & JOHNSON": "JNJ", "PFIZER": "PFE",
-        "MERCK & CO": "MRK", "ABBVIE": "ABBV", "BRISTOL-MYERS": "BMY",
-        "HOME DEPOT": "HD", "COSTCO": "COST", "TARGET CORP": "TGT",
-        "MCDONALD": "MCD", "STARBUCKS": "SBUX", "NIKE INC": "NKE",
+        "ALPHABET": "GOOGL",
+        "META PLATFORMS": "META",
+        "BERKSHIRE HATHAWAY": "BRK.B",
+        "PROCTER & GAMBLE": "PG",
+        "JPMORGAN CHASE": "JPM",
+        "MICROSOFT CORP": "MSFT",
+        "APPLE INC": "AAPL",
+        "AMAZON COM": "AMZN",
+        "NVIDIA": "NVDA",
+        "TESLA": "TSLA",
+        "BANK OF AMERICA": "BAC",
+        "OCCIDENTAL PETROLEUM": "OXY",
+        "CHEVRON": "CVX",
+        "EXXON MOBIL": "XOM",
+        "COCA-COLA": "KO",
+        "COCA COLA": "KO",
+        "WALMART": "WMT",
+        "AMERICAN EXPRESS": "AXP",
+        "UNITED PARCEL": "UPS",
+        "GENERAL DYNAMICS": "GD",
+        "GENERAL MOTORS": "GM",
+        "WELLS FARGO": "WFC",
+        "VISA INC": "V",
+        "MASTERCARD": "MA",
+        "PAYPAL": "PYPL",
+        "GOLDMAN SACHS": "GS",
+        "MORGAN STANLEY": "MS",
+        "BROADCOM": "AVGO",
+        "ORACLE": "ORCL",
+        "ELI LILLY": "LLY",
+        "JOHNSON & JOHNSON": "JNJ",
+        "PFIZER": "PFE",
+        "MERCK & CO": "MRK",
+        "ABBVIE": "ABBV",
+        "BRISTOL-MYERS": "BMY",
+        "HOME DEPOT": "HD",
+        "COSTCO": "COST",
+        "TARGET CORP": "TGT",
+        "MCDONALD": "MCD",
+        "STARBUCKS": "SBUX",
+        "NIKE INC": "NKE",
     }
     for k, v in HAND.items():
         if k in n:
@@ -196,7 +231,7 @@ def _name_to_ticker(name: str, universe_set: set) -> Optional[str]:
     return first if first in universe_set else None
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     try:
@@ -205,7 +240,7 @@ def run(universe: List[str]) -> pd.DataFrame:
         log.warning("13F SEC source disabled: %s", e)
         return pd.DataFrame()
     universe_set = {t.upper() for t in universe}
-    ticker_deltas: Dict[str, Dict] = {}
+    ticker_deltas: dict[str, dict] = {}
     funds_processed = 0
     for f in SMART_FUNDS:
         filings = _list_13f_filings(f["cik"], count=2)
@@ -230,9 +265,9 @@ def run(universe: List[str]) -> pd.DataFrame:
             prv_sh = prv["shares"] if prv else 0
             if lat_sh == prv_sh:
                 continue
-            entry = ticker_deltas.setdefault(tk, {
-                "n_new": 0, "n_growing": 0, "n_cutting": 0, "n_exiting": 0,
-                "fund_names": []})
+            entry = ticker_deltas.setdefault(
+                tk, {"n_new": 0, "n_growing": 0, "n_cutting": 0, "n_exiting": 0, "fund_names": []}
+            )
             if prv_sh == 0 and lat_sh > 0:
                 entry["n_new"] += 1
             elif prv_sh > 0 and lat_sh == 0:
@@ -251,21 +286,45 @@ def run(universe: List[str]) -> pd.DataFrame:
         bull = d["n_new"] * 1.0 + d["n_growing"] * 0.5
         bear = d["n_exiting"] * -1.0 + d["n_cutting"] * -0.5
         score = max(-1.0, min(1.0, (bull + bear) / 2))
-        rows.append({
-            "ticker": tk,
-            "thirteen_f_score": score,
-            "tf_n_new": d["n_new"],
-            "tf_n_growing": d["n_growing"],
-            "tf_n_cutting": d["n_cutting"],
-            "tf_n_exiting": d["n_exiting"],
-            "tf_funds": ", ".join(d["fund_names"][:4]),
-        })
+        rows.append(
+            {
+                "ticker": tk,
+                "thirteen_f_score": score,
+                "tf_n_new": d["n_new"],
+                "tf_n_growing": d["n_growing"],
+                "tf_n_cutting": d["n_cutting"],
+                "tf_n_exiting": d["n_exiting"],
+                "tf_funds": ", ".join(d["fund_names"][:4]),
+            }
+        )
     out = pd.DataFrame(rows).sort_values("thirteen_f_score", ascending=False).reset_index(drop=True)
-    log.info("13F: %d/%d funds parsed, %d tickers with deltas",
-             funds_processed, len(SMART_FUNDS), len(out))
+    log.info(
+        "13F: %d/%d funds parsed, %d tickers with deltas",
+        funds_processed,
+        len(SMART_FUNDS),
+        len(out),
+    )
     return out
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print(run(["AAPL","MSFT","NVDA","BAC","OXY","KO","AMZN","TSLA","META","NKE","PG","V","MA"]))
+    print(
+        run(
+            [
+                "AAPL",
+                "MSFT",
+                "NVDA",
+                "BAC",
+                "OXY",
+                "KO",
+                "AMZN",
+                "TSLA",
+                "META",
+                "NKE",
+                "PG",
+                "V",
+                "MA",
+            ]
+        )
+    )

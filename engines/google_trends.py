@@ -12,35 +12,36 @@ Retail attention is a real (if noisy) short-horizon signal — particularly
 for meme/momentum names. Either source produces the same kind of "recent
 spike vs longer baseline" momentum score, so fusion weights can stay put.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import outbound_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import outbound_headers  # noqa: E402
 
 log = logging.getLogger("optedge.gtrends")
 
-MAX_TICKERS_PER_RUN = 60   # rate-limit safety (pytrends path)
-BATCH_SIZE = 5             # pytrends limit per request
+MAX_TICKERS_PER_RUN = 60  # rate-limit safety (pytrends path)
+BATCH_SIZE = 5  # pytrends limit per request
 WIKI_MAX_WORKERS = 6
 
 
 # ---------------------------------------------------------------------------
 # PRIMARY: pytrends (unchanged from v20.1)
 # ---------------------------------------------------------------------------
-def _build_payload(pytrends, terms: List[str]) -> pd.DataFrame:
+def _build_payload(pytrends, terms: list[str]) -> pd.DataFrame:
     try:
         pytrends.build_payload(terms, cat=0, timeframe="today 3-m", geo="US", gprop="")
         df = pytrends.interest_over_time()
@@ -62,19 +63,26 @@ def _score_pytrends_series(series: pd.Series) -> float:
     if baseline <= 0:
         return 0.0
     ratio = recent / baseline
-    if ratio >= 3.0: return 1.0
-    if ratio >= 2.0: return 0.7
-    if ratio >= 1.5: return 0.4
-    if ratio >= 1.2: return 0.2
-    if ratio < 0.5:  return -0.3
+    if ratio >= 3.0:
+        return 1.0
+    if ratio >= 2.0:
+        return 0.7
+    if ratio >= 1.5:
+        return 0.4
+    if ratio >= 1.2:
+        return 0.2
+    if ratio < 0.5:
+        return -0.3
     return 0.0
 
 
-def _run_pytrends(tickers: List[str]) -> Dict[str, float]:
+def _run_pytrends(tickers: list[str]) -> dict[str, float]:
     try:
         from pytrends.request import TrendReq
     except ImportError:
-        log.info("gtrends: pytrends not installed (pip install pytrends) — using Wikipedia fallback")
+        log.info(
+            "gtrends: pytrends not installed (pip install pytrends) — using Wikipedia fallback"
+        )
         return {}
     try:
         pytrends = TrendReq(hl="en-US", tz=300, timeout=(10, 25))
@@ -82,9 +90,9 @@ def _run_pytrends(tickers: List[str]) -> Dict[str, float]:
         log.info("gtrends: TrendReq init fail (%s) — using Wikipedia fallback", e)
         return {}
 
-    results: Dict[str, float] = {}
+    results: dict[str, float] = {}
     for i in range(0, len(tickers), BATCH_SIZE):
-        batch = tickers[i:i + BATCH_SIZE]
+        batch = tickers[i : i + BATCH_SIZE]
         cache_key = f"gtrends:{','.join(batch)}"
         cached = data_provider.cache_get(cache_key, max_age_sec=6 * 3600)
         if cached is not None:
@@ -108,25 +116,38 @@ def _run_pytrends(tickers: List[str]) -> Dict[str, float]:
 # ---------------------------------------------------------------------------
 # FALLBACK: Wikipedia pageviews REST API
 # ---------------------------------------------------------------------------
-def _ticker_to_article(ticker: str) -> Optional[str]:
+def _ticker_to_article(ticker: str) -> str | None:
     """Resolve ticker -> Wikipedia article slug. Uses yfinance longName when
     available, else falls back to '<ticker>_(company)'-style guess."""
     key = f"wiki_article:{ticker}"
     cached = data_provider.cache_get(key, max_age_sec=30 * 86400)
     if cached:
         return cached
-    article: Optional[str] = None
+    article: str | None = None
     try:
         tk = data_provider.yf_ticker(ticker)
         info = getattr(tk, "info", {}) or {}
         name = info.get("longName") or info.get("shortName")
         if name:
             # Strip common suffixes that don't appear in WP titles
-            for sfx in (", Inc.", ", Inc", " Inc.", " Inc", " Corp.", " Corp",
-                        " Corporation", ", Ltd.", " Ltd.", " Ltd", " plc",
-                        " Holdings", " Group", " Company"):
+            for sfx in (
+                ", Inc.",
+                ", Inc",
+                " Inc.",
+                " Inc",
+                " Corp.",
+                " Corp",
+                " Corporation",
+                ", Ltd.",
+                " Ltd.",
+                " Ltd",
+                " plc",
+                " Holdings",
+                " Group",
+                " Company",
+            ):
                 if name.endswith(sfx):
-                    name = name[:-len(sfx)]
+                    name = name[: -len(sfx)]
                     break
             article = name.strip().replace(" ", "_")
     except Exception:
@@ -137,7 +158,7 @@ def _ticker_to_article(ticker: str) -> Optional[str]:
     return article
 
 
-def _wiki_pageviews(article: str, days: int = 30) -> Optional[List[int]]:
+def _wiki_pageviews(article: str, days: int = 30) -> list[int] | None:
     """Return list of daily pageviews for the article, most-recent last."""
     cache_key = f"wiki_pv:{article}:{days}"
     cached = data_provider.cache_get(cache_key, max_age_sec=6 * 3600)
@@ -166,7 +187,7 @@ def _wiki_pageviews(article: str, days: int = 30) -> Optional[List[int]]:
         return None
 
 
-def _score_wiki_views(views: List[int]) -> float:
+def _score_wiki_views(views: list[int]) -> float:
     """Score: trailing-7-day mean vs full-window mean. Same shape as pytrends."""
     if not views or len(views) < 10:
         return 0.0
@@ -175,16 +196,22 @@ def _score_wiki_views(views: List[int]) -> float:
     if baseline <= 0:
         return 0.0
     ratio = recent / baseline
-    if ratio >= 3.0: return 1.0
-    if ratio >= 2.0: return 0.7
-    if ratio >= 1.5: return 0.4
-    if ratio >= 1.2: return 0.2
-    if ratio < 0.5:  return -0.3
+    if ratio >= 3.0:
+        return 1.0
+    if ratio >= 2.0:
+        return 0.7
+    if ratio >= 1.5:
+        return 0.4
+    if ratio >= 1.2:
+        return 0.2
+    if ratio < 0.5:
+        return -0.3
     return 0.0
 
 
-def _run_wiki(tickers: List[str]) -> Dict[str, float]:
-    results: Dict[str, float] = {}
+def _run_wiki(tickers: list[str]) -> dict[str, float]:
+    results: dict[str, float] = {}
+
     def _one(tk: str):
         article = _ticker_to_article(tk)
         if not article:
@@ -197,6 +224,7 @@ def _run_wiki(tickers: List[str]) -> Dict[str, float]:
             if not views:
                 return tk, 0.0
         return tk, _score_wiki_views(views)
+
     with ThreadPoolExecutor(max_workers=WIKI_MAX_WORKERS) as ex:
         futs = [ex.submit(_one, tk) for tk in tickers]
         for fut in as_completed(futs):
@@ -212,7 +240,7 @@ def _run_wiki(tickers: List[str]) -> Dict[str, float]:
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     tickers = list(dict.fromkeys(universe))[:MAX_TICKERS_PER_RUN]
@@ -234,12 +262,13 @@ def run(universe: List[str]) -> pd.DataFrame:
     if not results:
         log.info("gtrends: no results from pytrends or Wikipedia")
         return pd.DataFrame()
-    rows = [{"ticker": tk, "gtrends_score": score, "gtrends_term": tk,
-             "gtrends_source": source}
-            for tk, score in results.items() if abs(score) > 1e-3]
+    rows = [
+        {"ticker": tk, "gtrends_score": score, "gtrends_term": tk, "gtrends_source": source}
+        for tk, score in results.items()
+        if abs(score) > 1e-3
+    ]
     out = pd.DataFrame(rows)
-    log.info("gtrends(%s): %d tickers with search/attention momentum",
-             source, len(out))
+    log.info("gtrends(%s): %d tickers with search/attention momentum", source, len(out))
     return out
 
 

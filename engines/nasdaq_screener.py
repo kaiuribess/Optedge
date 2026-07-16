@@ -4,6 +4,7 @@
 Free/no-key source used for small-cap discovery. This is delayed research data,
 not an execution quote feed.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,7 +12,7 @@ import logging
 import math
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -61,12 +62,14 @@ def fetch_stock_screener(cache_age: int = 1800) -> pd.DataFrame:
             df.attrs["source"] = "nasdaq_screener"
         return df
 
-    params = urllib.parse.urlencode({
-        "tableonly": "true",
-        "limit": "10000",
-        "offset": "0",
-        "download": "true",
-    })
+    params = urllib.parse.urlencode(
+        {
+            "tableonly": "true",
+            "limit": "10000",
+            "offset": "0",
+            "download": "true",
+        }
+    )
     req = urllib.request.Request(
         f"{NASDAQ_SCREENER_URL}?{params}",
         headers=NASDAQ_SCREENER_HEADERS,
@@ -86,22 +89,24 @@ def fetch_stock_screener(cache_age: int = 1800) -> pd.DataFrame:
         symbol = str(row.get("symbol") or "").strip().upper()
         if not symbol or symbol.startswith("^") or "/" in symbol:
             continue
-        parsed.append({
-            "symbol": symbol,
-            "name": str(row.get("name") or "").strip(),
-            "last_price": _num(row.get("lastsale")),
-            "net_change": _num(row.get("netchange")),
-            "pct_change": _num(row.get("pctchange")),
-            "volume": _num(row.get("volume")),
-            "market_cap": _num(row.get("marketCap")),
-            "country": str(row.get("country") or "").strip(),
-            "sector": str(row.get("sector") or "").strip(),
-            "industry": str(row.get("industry") or "").strip(),
-            "url": str(row.get("url") or "").strip(),
-            "source": "nasdaq_screener",
-            "quote_quality": "free_or_delayed",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        })
+        parsed.append(
+            {
+                "symbol": symbol,
+                "name": str(row.get("name") or "").strip(),
+                "last_price": _num(row.get("lastsale")),
+                "net_change": _num(row.get("netchange")),
+                "pct_change": _num(row.get("pctchange")),
+                "volume": _num(row.get("volume")),
+                "market_cap": _num(row.get("marketCap")),
+                "country": str(row.get("country") or "").strip(),
+                "sector": str(row.get("sector") or "").strip(),
+                "industry": str(row.get("industry") or "").strip(),
+                "url": str(row.get("url") or "").strip(),
+                "source": "nasdaq_screener",
+                "quote_quality": "free_or_delayed",
+                "generated_at": datetime.now(UTC).isoformat(),
+            }
+        )
     df = pd.DataFrame(parsed)
     if not df.empty:
         df.attrs["source"] = "nasdaq_screener"
@@ -178,4 +183,6 @@ def small_cap_movers(
 
 if __name__ == "__main__":
     movers = small_cap_movers(max_rows=20)
-    print(movers[["symbol", "last_price", "pct_change", "volume", "market_cap", "nasdaq_mover_score"]])
+    print(
+        movers[["symbol", "last_price", "pct_change", "volume", "market_cap", "nasdaq_mover_score"]]
+    )

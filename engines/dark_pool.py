@@ -17,22 +17,23 @@ high short-vol-ratio is bearish, low is bullish.
 
 Free, no auth, no API key.
 """
+
 from __future__ import annotations
+
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import List
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import requests
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import USER_AGENT
+import data_provider  # noqa: E402
+from config import USER_AGENT  # noqa: E402
 
 log = logging.getLogger("optedge.dark_pool")
 FINRA_BASE = "https://cdn.finra.org/equity/regsho/daily"
@@ -58,6 +59,7 @@ def _fetch_daily_short_volume(date_str: str) -> pd.DataFrame:
             return pd.DataFrame()
         # Pipe-delimited, header row first
         from io import StringIO
+
         df = pd.read_csv(StringIO(r.text), sep="|")
         if df.empty:
             return pd.DataFrame()
@@ -69,14 +71,14 @@ def _fetch_daily_short_volume(date_str: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def run(universe: List[str], lookback_days: int = 5) -> pd.DataFrame:
+def run(universe: list[str], lookback_days: int = 5) -> pd.DataFrame:
     """Pull last few days of FINRA short-vol, average per ticker.
 
     Returns DataFrame: ticker, short_vol_ratio, short_vol, total_vol, dark_pool_score.
     Score is signed (negative = lots of shorting = bearish).
     """
     universe_set = set(t.upper() for t in universe)
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     frames = []
     # Try last `lookback_days` business days (FINRA skips weekends)
     for back in range(1, lookback_days + 3):  # extra for weekends
@@ -110,10 +112,14 @@ def run(universe: List[str], lookback_days: int = 5) -> pd.DataFrame:
     if sub.empty:
         return pd.DataFrame()
     if "shortvolume" in sub.columns and "totalvolume" in sub.columns:
-        agg = sub.groupby("symbol").agg(
-            short_vol=("shortvolume", "sum"),
-            total_vol=("totalvolume", "sum"),
-        ).reset_index()
+        agg = (
+            sub.groupby("symbol")
+            .agg(
+                short_vol=("shortvolume", "sum"),
+                total_vol=("totalvolume", "sum"),
+            )
+            .reset_index()
+        )
     else:
         log.warning("FINRA columns unexpected: %s", list(sub.columns)[:10])
         return pd.DataFrame()

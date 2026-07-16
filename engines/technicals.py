@@ -19,27 +19,29 @@ The full per-indicator values are exposed for display on cards as context
 chips/tooltips, so you can see RSI/MACD/52w% without trusting them as
 the primary rank input.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.technicals")
 
 
 # -------- Indicator math (pure pandas, no TA lib) --------------------
-def _rsi(close: pd.Series, period: int = 14) -> Optional[float]:
+def _rsi(close: pd.Series, period: int = 14) -> float | None:
     if len(close) < period + 1:
         return None
     delta = close.diff()
@@ -50,7 +52,7 @@ def _rsi(close: pd.Series, period: int = 14) -> Optional[float]:
     return float(rsi.iloc[-1])
 
 
-def _macd(close: pd.Series) -> Dict[str, Optional[float]]:
+def _macd(close: pd.Series) -> dict[str, float | None]:
     if len(close) < 27:
         return {"macd": None, "signal": None, "hist": None}
     ema12 = close.ewm(span=12, adjust=False).mean()
@@ -65,7 +67,7 @@ def _macd(close: pd.Series) -> Dict[str, Optional[float]]:
     }
 
 
-def _bollinger(close: pd.Series, period: int = 20, k: float = 2.0) -> Dict[str, Optional[float]]:
+def _bollinger(close: pd.Series, period: int = 20, k: float = 2.0) -> dict[str, float | None]:
     if len(close) < period:
         return {"bb_percent_b": None, "bb_bandwidth": None}
     sma = close.rolling(period).mean()
@@ -84,7 +86,7 @@ def _bollinger(close: pd.Series, period: int = 20, k: float = 2.0) -> Dict[str, 
     }
 
 
-def _moving_averages(close: pd.Series) -> Dict[str, Optional[float]]:
+def _moving_averages(close: pd.Series) -> dict[str, float | None]:
     if len(close) < 50:
         return {"ma50": None, "ma200": None, "ma_cross": None}
     ma50 = close.rolling(50).mean().iloc[-1]
@@ -96,7 +98,7 @@ def _moving_averages(close: pd.Series) -> Dict[str, Optional[float]]:
     return {"ma50": float(ma50), "ma200": float(ma200) if ma200 else None, "ma_cross": cross}
 
 
-def _distance_52w(close: pd.Series) -> Dict[str, Optional[float]]:
+def _distance_52w(close: pd.Series) -> dict[str, float | None]:
     if len(close) < 5:
         return {"dist_52w_high": None, "dist_52w_low": None}
     window = close.iloc[-252:] if len(close) > 252 else close
@@ -104,25 +106,28 @@ def _distance_52w(close: pd.Series) -> Dict[str, Optional[float]]:
     lo = window.min()
     cur = close.iloc[-1]
     return {
-        "dist_52w_high": float((cur - hi) / hi) if hi > 0 else None,    # negative = below high
-        "dist_52w_low": float((cur - lo) / lo) if lo > 0 else None,     # positive = above low
+        "dist_52w_high": float((cur - hi) / hi) if hi > 0 else None,  # negative = below high
+        "dist_52w_low": float((cur - lo) / lo) if lo > 0 else None,  # positive = above low
     }
 
 
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> Optional[float]:
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float | None:
     if len(close) < period + 1:
         return None
     prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     atr = tr.rolling(period).mean().iloc[-1]
     return float(atr) if not pd.isna(atr) else None
 
 
-def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> Optional[float]:
+def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> float | None:
     """Simplified ADX. Returns 0-100; higher = stronger trend regardless of direction."""
     if len(close) < period * 2 + 1:
         return None
@@ -131,11 +136,14 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=high.index)
     minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=low.index)
     prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     atr = tr.rolling(period).mean()
     plus_di = 100 * plus_dm.rolling(period).mean() / atr.replace(0, 1e-9)
     minus_di = 100 * minus_dm.rolling(period).mean() / atr.replace(0, 1e-9)
@@ -144,8 +152,9 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return float(adx) if not pd.isna(adx) else None
 
 
-def _stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
-                period: int = 14, smooth: int = 3) -> Dict[str, Optional[float]]:
+def _stochastic(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14, smooth: int = 3
+) -> dict[str, float | None]:
     if len(close) < period + smooth:
         return {"stoch_k": None, "stoch_d": None}
     ll = low.rolling(period).min()
@@ -156,7 +165,7 @@ def _stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
     return {"stoch_k": float(k.iloc[-1]), "stoch_d": float(d.iloc[-1])}
 
 
-def _obv_slope(close: pd.Series, volume: pd.Series, window: int = 20) -> Optional[float]:
+def _obv_slope(close: pd.Series, volume: pd.Series, window: int = 20) -> float | None:
     """Slope of On-Balance Volume over the last `window` days, normalized."""
     if len(close) < window + 1 or volume is None:
         return None
@@ -172,7 +181,7 @@ def _obv_slope(close: pd.Series, volume: pd.Series, window: int = 20) -> Optiona
     return float(slope / magnitude)
 
 
-def _compose_tech_score(ind: Dict[str, Any]) -> float:
+def _compose_tech_score(ind: dict[str, Any]) -> float:
     """Combine indicators into a single directional score in roughly [-1, +1].
 
     Designed so each component contributes a small piece; no single indicator
@@ -192,14 +201,14 @@ def _compose_tech_score(ind: Dict[str, Any]) -> float:
     # MACD histogram: positive bullish, negative bearish
     hist = ind.get("macd_hist")
     if hist is not None:
-        score += max(-0.2, min(0.2, hist / 5))   # scale; clipped
+        score += max(-0.2, min(0.2, hist / 5))  # scale; clipped
     # Bollinger %B
     pb = ind.get("bb_percent_b")
     if pb is not None:
         if pb < 0.05:
-            score += 0.25     # below lower band = oversold bounce candidate
+            score += 0.25  # below lower band = oversold bounce candidate
         elif pb > 0.95:
-            score -= 0.25     # above upper band = reversal candidate
+            score -= 0.25  # above upper band = reversal candidate
     # MA cross
     cross = ind.get("ma_cross")
     if cross == 1:
@@ -209,10 +218,10 @@ def _compose_tech_score(ind: Dict[str, Any]) -> float:
     # Distance from 52w high: too far above 52w-low is overextended
     dlow = ind.get("dist_52w_low")
     if dlow is not None and dlow > 1.0:
-        score -= 0.1     # 2x off the low → mean reversion risk
+        score -= 0.1  # 2x off the low → mean reversion risk
     dhigh = ind.get("dist_52w_high")
     if dhigh is not None and dhigh < -0.30:
-        score += 0.1     # 30%+ off the high → potential value setup
+        score += 0.1  # 30%+ off the high → potential value setup
     # ADX trend strength: amplifies the direction
     adx = ind.get("adx")
     if adx is not None and adx > 25 and cross is not None:
@@ -232,7 +241,7 @@ def _compose_tech_score(ind: Dict[str, Any]) -> float:
     return max(-1.0, min(1.0, score))
 
 
-def _process_ticker(ticker: str) -> Optional[Dict[str, Any]]:
+def _process_ticker(ticker: str) -> dict[str, Any] | None:
     h = data_provider.get_history(ticker, period="1y")
     if h is None or h.empty or len(h) < 30:
         return None
@@ -260,12 +269,20 @@ def _process_ticker(ticker: str) -> Optional[Dict[str, Any]]:
         "source_price_session": pd.Timestamp(close.index[-1]).date().isoformat(),
         "source_price_basis": "history_last_bar_close",
         "rsi": rsi,
-        "macd": macd["macd"], "macd_signal": macd["signal"], "macd_hist": macd["hist"],
-        "bb_percent_b": bb["bb_percent_b"], "bb_bandwidth": bb["bb_bandwidth"],
-        "ma50": ma["ma50"], "ma200": ma["ma200"], "ma_cross": ma["ma_cross"],
-        "dist_52w_high": d52["dist_52w_high"], "dist_52w_low": d52["dist_52w_low"],
-        "atr": atr, "adx": adx,
-        "stoch_k": stoch["stoch_k"], "stoch_d": stoch["stoch_d"],
+        "macd": macd["macd"],
+        "macd_signal": macd["signal"],
+        "macd_hist": macd["hist"],
+        "bb_percent_b": bb["bb_percent_b"],
+        "bb_bandwidth": bb["bb_bandwidth"],
+        "ma50": ma["ma50"],
+        "ma200": ma["ma200"],
+        "ma_cross": ma["ma_cross"],
+        "dist_52w_high": d52["dist_52w_high"],
+        "dist_52w_low": d52["dist_52w_low"],
+        "atr": atr,
+        "adx": adx,
+        "stoch_k": stoch["stoch_k"],
+        "stoch_d": stoch["stoch_d"],
         "obv_slope": obv_slope,
     }
     indicators["tech_score"] = round(_compose_tech_score(indicators), 3)
@@ -273,7 +290,7 @@ def _process_ticker(ticker: str) -> Optional[Dict[str, Any]]:
     return indicators
 
 
-def run(universe: List[str], max_workers: int = 8) -> pd.DataFrame:
+def run(universe: list[str], max_workers: int = 8) -> pd.DataFrame:
     """Compute technical indicators for each ticker."""
     universe = list(dict.fromkeys(universe))
     log.info("technicals: %d tickers (parallel, %d workers)", len(universe), max_workers)
@@ -295,6 +312,5 @@ def run(universe: List[str], max_workers: int = 8) -> pd.DataFrame:
     if not df.empty:
         bullish = (df["tech_score"] > 0.3).sum()
         bearish = (df["tech_score"] < -0.3).sum()
-        log.info("technicals done: %d tickers, %d bullish, %d bearish",
-                 len(df), bullish, bearish)
+        log.info("technicals done: %d tickers, %d bullish, %d bearish", len(df), bullish, bearish)
     return df

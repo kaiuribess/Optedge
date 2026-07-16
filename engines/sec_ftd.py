@@ -8,12 +8,14 @@ FTD rows are delayed settlement context, not proof of naked shorting and not a
 standalone trade signal. Optedge uses this as a small non-option factor for
 small-cap/share and futures ETF-proxy review.
 """
+
 from __future__ import annotations
 
 import io
 import logging
 import math
 import re
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -21,14 +23,12 @@ from urllib.parse import urljoin
 
 import pandas as pd
 
-import sys
-
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import SecContactRequiredError, sec_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import SecContactRequiredError, sec_headers  # noqa: E402
 
 log = logging.getLogger("optedge.sec_ftd")
 
@@ -130,9 +130,9 @@ def _fetch_zip_frame(url: str, max_age_sec: int = 7 * 24 * 3600) -> pd.DataFrame
     df = _parse_ftd_text(text)
     if not df.empty:
         df["sec_ftd_file"] = url.rsplit("/", 1)[-1]
-        records = df.assign(
-            settlement_date=df["settlement_date"].dt.strftime("%Y-%m-%d")
-        ).to_dict("records")
+        records = df.assign(settlement_date=df["settlement_date"].dt.strftime("%Y-%m-%d")).to_dict(
+            "records"
+        )
         data_provider.cache_put(cache_key, records)
     return df
 

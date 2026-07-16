@@ -5,25 +5,28 @@ Pulls hot/new submissions across configured subreddits, extracts ticker
 mentions, scores sentiment via VADER + an options-savvy keyword overlay,
 and emits per-ticker mention volume + velocity + Δ-sentiment.
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import SUBREDDITS, SENTIMENT_LOOKBACK_HOURS, USER_AGENT
+import data_provider  # noqa: E402
+from config import SENTIMENT_LOOKBACK_HOURS, SUBREDDITS, USER_AGENT  # noqa: E402
+
 try:
     from config import SENTIMENT_HALF_LIFE_HOURS
 except Exception:
@@ -34,31 +37,134 @@ log = logging.getLogger("optedge.sentiment")
 _VADER = SentimentIntensityAnalyzer()
 
 # Bullish/bearish keyword overlay tuned for retail options chatter
-BULLISH_KW = {"calls", "moon", "rip", "send it", "yolo", "long", "buying", "rocket",
-              "squeeze", "breakout", "tendies", "diamond hands", "bull"}
-BEARISH_KW = {"puts", "short", "crash", "dump", "bag", "bagholder", "rug", "drill",
-              "tank", "bear", "selling", "rolldown"}
+BULLISH_KW = {
+    "calls",
+    "moon",
+    "rip",
+    "send it",
+    "yolo",
+    "long",
+    "buying",
+    "rocket",
+    "squeeze",
+    "breakout",
+    "tendies",
+    "diamond hands",
+    "bull",
+}
+BEARISH_KW = {
+    "puts",
+    "short",
+    "crash",
+    "dump",
+    "bag",
+    "bagholder",
+    "rug",
+    "drill",
+    "tank",
+    "bear",
+    "selling",
+    "rolldown",
+}
 
 # Common cashtag/$ ticker pattern + bare-ticker fallback restricted to dictionary
 _TICKER_RE = re.compile(r"\$([A-Z]{1,5})\b|\b([A-Z]{2,5})\b")
 _STOPWORDS = {
     # v20.1 base
-    "USA", "CEO", "CFO", "USD", "ETF", "IPO", "FYI", "TLDR", "EOM", "DD",
-    "FOMO", "ATM", "ITM", "OTM", "IV", "API", "HQ", "PR", "SEC", "FED",
-    "AI", "EV", "GDP", "CPI", "FOMC", "EOD", "AH", "PM", "EPS", "DM",
+    "USA",
+    "CEO",
+    "CFO",
+    "USD",
+    "ETF",
+    "IPO",
+    "FYI",
+    "TLDR",
+    "EOM",
+    "DD",
+    "FOMO",
+    "ATM",
+    "ITM",
+    "OTM",
+    "IV",
+    "API",
+    "HQ",
+    "PR",
+    "SEC",
+    "FED",
+    "AI",
+    "EV",
+    "GDP",
+    "CPI",
+    "FOMC",
+    "EOD",
+    "AH",
+    "PM",
+    "EPS",
+    "DM",
     # v20.7 — common Reddit / WSB false positives that match the ticker regex
-    "NEW", "ALL", "FOR", "THE", "ARE", "BUY", "NOW", "GET", "CAN", "IRS",
-    "PIN", "ANY", "YES", "OWN", "GOT", "TOP", "RUG", "MAY", "FUD", "FAQ", "IMO", "TBH", "OBV", "JFC", "WTF", "LOL", "ROFL", "IDC",
-    "AND", "BUT", "OUT", "USE", "SEE", "WAY", "WHO", "WHY", "GOP", "EUR", "JPY", "GBP", "RIP", "DOJ", "EU", "UK", "US",
-    "TBD", "PT", "AVG", "VAR", "JD", "JS", "PY", "MIT", "VC", "RV",
+    "NEW",
+    "ALL",
+    "FOR",
+    "THE",
+    "ARE",
+    "BUY",
+    "NOW",
+    "GET",
+    "CAN",
+    "IRS",
+    "PIN",
+    "ANY",
+    "YES",
+    "OWN",
+    "GOT",
+    "TOP",
+    "RUG",
+    "MAY",
+    "FUD",
+    "FAQ",
+    "IMO",
+    "TBH",
+    "OBV",
+    "JFC",
+    "WTF",
+    "LOL",
+    "ROFL",
+    "IDC",
+    "AND",
+    "BUT",
+    "OUT",
+    "USE",
+    "SEE",
+    "WAY",
+    "WHO",
+    "WHY",
+    "GOP",
+    "EUR",
+    "JPY",
+    "GBP",
+    "RIP",
+    "DOJ",
+    "EU",
+    "UK",
+    "US",
+    "TBD",
+    "PT",
+    "AVG",
+    "VAR",
+    "JD",
+    "JS",
+    "PY",
+    "MIT",
+    "VC",
+    "RV",
 }
 
 
-def _allowed_tickers(universe: List[str]) -> set:
+def _allowed_tickers(universe: list[str]) -> set:
     return set(t.upper() for t in universe)
 
 
-def _extract_tickers(text: str, allowed: set) -> List[str]:
+def _extract_tickers(text: str, allowed: set) -> list[str]:
     if not text:
         return []
     found = set()
@@ -108,8 +214,7 @@ def _time_decay_weight(ts: datetime, now: datetime) -> float:
         return 1.0
 
 
-def _finbert_blend_scores(posts: List[Dict[str, Any]],
-                            max_texts: int = 800) -> int:
+def _finbert_blend_scores(posts: list[dict[str, Any]], max_texts: int = 800) -> int:
     """v20.7 — batched FinBERT pass to refine WSB sentiment scores.
 
     VADER alone reads "this thing is going to dump hard 🚀" as bullish
@@ -146,7 +251,7 @@ def _finbert_blend_scores(posts: List[Dict[str, Any]],
     if not fb_scores or len(fb_scores) != len(texts_to_score):
         return 0
     rescored = 0
-    for idx, fb_s in zip(indices, fb_scores):
+    for idx, fb_s in zip(indices, fb_scores, strict=False):
         # Original score was 0.6*vader + 0.4*kw. Reconstruct vader+kw weight=1
         # by treating it as "non-finbert" and add finbert at 0.5 weight,
         # renormalising. Concretely:  blended = 0.5*finbert + 0.5*old_score
@@ -157,7 +262,7 @@ def _finbert_blend_scores(posts: List[Dict[str, Any]],
     return rescored
 
 
-def _fetch_listing(sub: str, sort: str = "new", limit: int = 100) -> List[dict]:
+def _fetch_listing(sub: str, sort: str = "new", limit: int = 100) -> list[dict]:
     """Use the curl_cffi session (browser fingerprint) — better at slipping past Reddit's IP gate."""
     url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}"
     sess = data_provider.get_session()
@@ -173,7 +278,7 @@ def _fetch_listing(sub: str, sort: str = "new", limit: int = 100) -> List[dict]:
         return []
 
 
-def _fetch_comments(sub: str, limit: int = 100) -> List[dict]:
+def _fetch_comments(sub: str, limit: int = 100) -> list[dict]:
     """Recent comments across the sub — captures daily discussion + hot-post replies."""
     url = f"https://www.reddit.com/r/{sub}/comments.json?limit={limit}&sort=new"
     sess = data_provider.get_session()
@@ -188,15 +293,15 @@ def _fetch_comments(sub: str, limit: int = 100) -> List[dict]:
         return []
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     """Per-ticker: mentions, sentiment_now, sentiment_prev, sentiment_delta, velocity."""
     allowed = _allowed_tickers(universe)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(hours=SENTIMENT_LOOKBACK_HOURS)
     half = now - timedelta(hours=SENTIMENT_LOOKBACK_HOURS / 2)
 
     # Collect posts AND comments. Posts weight 1.0, comments 0.3 (noisier per-message).
-    posts: List[Dict[str, Any]] = []
+    posts: list[dict[str, Any]] = []
     n_post_msgs = 0
     n_comment_msgs = 0
     for sub in SUBREDDITS:
@@ -204,7 +309,7 @@ def run(universe: List[str]) -> pd.DataFrame:
         for sort in ("new", "hot"):
             items = _fetch_listing(sub, sort, 100)
             for it in items:
-                created = datetime.fromtimestamp(it.get("created_utc", 0), tz=timezone.utc)
+                created = datetime.fromtimestamp(it.get("created_utc", 0), tz=UTC)
                 if created < cutoff:
                     continue
                 text = " ".join([it.get("title") or "", it.get("selftext") or ""])
@@ -212,19 +317,24 @@ def run(universe: List[str]) -> pd.DataFrame:
                 if not tickers:
                     continue
                 score = _score_text(text)
-                posts.append({
-                    "sub": sub, "ts": created, "tickers": tickers,
-                    "score": score, "ups": it.get("ups", 0),
-                    "weight": 1.0,
-                    "_text": text[:512],
-                })
+                posts.append(
+                    {
+                        "sub": sub,
+                        "ts": created,
+                        "tickers": tickers,
+                        "score": score,
+                        "ups": it.get("ups", 0),
+                        "weight": 1.0,
+                        "_text": text[:512],
+                    }
+                )
                 n_post_msgs += 1
             time.sleep(0.3)
 
         # Comments — "WSB chat" / daily discussion / hot-post replies
         comments = _fetch_comments(sub, 100)
         for c in comments:
-            created = datetime.fromtimestamp(c.get("created_utc", 0), tz=timezone.utc)
+            created = datetime.fromtimestamp(c.get("created_utc", 0), tz=UTC)
             if created < cutoff:
                 continue
             text = c.get("body") or ""
@@ -232,37 +342,57 @@ def run(universe: List[str]) -> pd.DataFrame:
             if not tickers:
                 continue
             score = _score_text(text)
-            posts.append({
-                "sub": sub, "ts": created, "tickers": tickers,
-                "score": score, "ups": c.get("ups", 0),
-                "weight": 0.3,
-                "_text": text[:512],
-            })
+            posts.append(
+                {
+                    "sub": sub,
+                    "ts": created,
+                    "tickers": tickers,
+                    "score": score,
+                    "ups": c.get("ups", 0),
+                    "weight": 0.3,
+                    "_text": text[:512],
+                }
+            )
             n_comment_msgs += 1
         time.sleep(0.3)
 
-    log.info("sentiment scan: %d posts + %d comments captured ticker mentions",
-             n_post_msgs, n_comment_msgs)
+    log.info(
+        "sentiment scan: %d posts + %d comments captured ticker mentions",
+        n_post_msgs,
+        n_comment_msgs,
+    )
     # v20.7 — batched FinBERT pass to refine scores (VADER misreads degen-speak)
     n_finbert = _finbert_blend_scores(posts, max_texts=800)
     if n_finbert > 0:
-        log.info("sentiment scan: rescored %d posts via FinBERT (degen-aware)",
-                 n_finbert)
+        log.info("sentiment scan: rescored %d posts via FinBERT (degen-aware)", n_finbert)
     if not posts:
         log.warning("no reddit posts/comments captured (network blocked or rate-limited)")
-        return pd.DataFrame(columns=[
-            "ticker", "mentions", "sentiment_now", "sentiment_prev",
-            "sentiment_delta", "velocity",
-        ])
+        return pd.DataFrame(
+            columns=[
+                "ticker",
+                "mentions",
+                "sentiment_now",
+                "sentiment_prev",
+                "sentiment_delta",
+                "velocity",
+            ]
+        )
 
     # Aggregate per ticker × half-window — comments contribute 0.3× toward both
     # the score sum AND the mention count, so a ticker with only comment mentions
     # but no posts will have lower (correct) effective signal.
-    stats: Dict[str, Dict[str, Any]] = defaultdict(
-        lambda: {"now_score_sum": 0.0, "prev_score_sum": 0.0,
-                 "now_w": 0.0, "prev_w": 0.0,
-                 "decayed_score_sum": 0.0, "decayed_w": 0.0,
-                 "now_n": 0, "prev_n": 0, "ups": 0}
+    stats: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "now_score_sum": 0.0,
+            "prev_score_sum": 0.0,
+            "now_w": 0.0,
+            "prev_w": 0.0,
+            "decayed_score_sum": 0.0,
+            "decayed_w": 0.0,
+            "now_n": 0,
+            "prev_n": 0,
+            "ups": 0,
+        }
     )
     for p in posts:
         bucket = "now" if p["ts"] >= half else "prev"
@@ -283,15 +413,17 @@ def run(universe: List[str]) -> pd.DataFrame:
         s_now = d["now_score_sum"] / d["now_w"] if d["now_w"] else 0.0
         s_prev = d["prev_score_sum"] / d["prev_w"] if d["prev_w"] else 0.0
         s_decayed = d["decayed_score_sum"] / d["decayed_w"] if d["decayed_w"] else 0.0
-        rows.append({
-            "ticker": t,
-            "mentions": n_now + n_prev,
-            "decayed_mentions": d["now_w"] + d["prev_w"],
-            "sentiment_now": s_now,
-            "sentiment_prev": s_prev,
-            "sentiment_delta": s_now - s_prev,
-            "sentiment_decay": s_decayed,
-            "velocity": n_now - n_prev,
-            "ups": d["ups"],
-        })
+        rows.append(
+            {
+                "ticker": t,
+                "mentions": n_now + n_prev,
+                "decayed_mentions": d["now_w"] + d["prev_w"],
+                "sentiment_now": s_now,
+                "sentiment_prev": s_prev,
+                "sentiment_delta": s_now - s_prev,
+                "sentiment_decay": s_decayed,
+                "velocity": n_now - n_prev,
+                "ups": d["ups"],
+            }
+        )
     return pd.DataFrame(rows).sort_values("mentions", ascending=False)

@@ -13,7 +13,9 @@ Outputs per ticker:
   - iv_anomaly_side: call or put
   - iv_surface_score: signed score (positive = upward IV anomaly = buying pressure)
 """
+
 from __future__ import annotations
+
 import logging
 
 import numpy as np
@@ -57,16 +59,18 @@ def derive_from_contracts(contracts: pd.DataFrame, min_strikes: int = 6) -> pd.D
             z = residuals / sigma
             for i, strike in enumerate(strikes):
                 if abs(z[i]) > 2.0:
-                    anomaly_records.append({
-                        "ticker": ticker,
-                        "expiry": expiry,
-                        "side": side,
-                        "strike": float(strike),
-                        "iv_market": float(ivs[i]),
-                        "iv_fitted": float(fitted[i]),
-                        "iv_residual": float(residuals[i]),
-                        "z": float(z[i]),
-                    })
+                    anomaly_records.append(
+                        {
+                            "ticker": ticker,
+                            "expiry": expiry,
+                            "side": side,
+                            "strike": float(strike),
+                            "iv_market": float(ivs[i]),
+                            "iv_fitted": float(fitted[i]),
+                            "iv_residual": float(residuals[i]),
+                            "z": float(z[i]),
+                        }
+                    )
         except Exception:
             continue
 
@@ -85,18 +89,23 @@ def derive_from_contracts(contracts: pd.DataFrame, min_strikes: int = 6) -> pd.D
         # We use the signed z directly (capped)
         score = float(top["z"])
         if top["side"] == "put":
-            score = -score      # high IV anomaly on a PUT = hedge demand = bearish
-        rows.append({
-            "ticker": ticker,
-            "iv_anomaly_max_z": round(float(top["z"]), 2),
-            "iv_anomaly_count": int(len(grp)),
-            "iv_anomaly_top_strike": float(top["strike"]),
-            "iv_anomaly_top_side": top["side"],
-            "iv_anomaly_top_expiry": top["expiry"],
-            "iv_surface_score": round(max(-2.5, min(2.5, score)), 3),
-        })
+            score = -score  # high IV anomaly on a PUT = hedge demand = bearish
+        rows.append(
+            {
+                "ticker": ticker,
+                "iv_anomaly_max_z": round(float(top["z"]), 2),
+                "iv_anomaly_count": int(len(grp)),
+                "iv_anomaly_top_strike": float(top["strike"]),
+                "iv_anomaly_top_side": top["side"],
+                "iv_anomaly_top_expiry": top["expiry"],
+                "iv_surface_score": round(max(-2.5, min(2.5, score)), 3),
+            }
+        )
     out = pd.DataFrame(rows)
     if not out.empty:
-        log.info("iv_surface: %d tickers with anomalies, top z=%.1f",
-                 len(out), out["iv_anomaly_max_z"].abs().max())
+        log.info(
+            "iv_surface: %d tickers with anomalies, top z=%.1f",
+            len(out),
+            out["iv_anomaly_max_z"].abs().max(),
+        )
     return out

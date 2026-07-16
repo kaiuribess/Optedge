@@ -6,6 +6,7 @@ https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts
 
 This is risk context for manual research. It is not an execution feed.
 """
+
 from __future__ import annotations
 
 import logging
@@ -91,25 +92,27 @@ def parse_trade_halt_rss(xml_text: str) -> pd.DataFrame:
         resume_trade = _ndaq_text(item, "ResumptionTradeTime")
         reason_code = _ndaq_text(item, "ReasonCode").upper()
         is_active = not bool(resume_trade)
-        rows.append({
-            "symbol": symbol,
-            "name": _ndaq_text(item, "IssueName"),
-            "market": _ndaq_text(item, "Market"),
-            "reason_code": reason_code,
-            "halt_date": halt_date,
-            "halt_time": halt_time,
-            "halted_at": _parse_halt_time(halt_date, halt_time),
-            "pause_threshold_price": _ndaq_text(item, "PauseThresholdPrice") or None,
-            "resumption_date": _ndaq_text(item, "ResumptionDate") or None,
-            "resumption_quote_time": _ndaq_text(item, "ResumptionQuoteTime") or None,
-            "resumption_trade_time": resume_trade or None,
-            "active_halt": is_active,
-            "halt_risk_score": _risk_score(reason_code, is_active),
-            "published_at": _parse_pubdate(_text(item, "pubDate")) or feed_pubdate,
-            "feed_published_at": feed_pubdate,
-            "source": SOURCE_NAME,
-            "source_url": TRADE_HALTS_RSS_URL,
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": _ndaq_text(item, "IssueName"),
+                "market": _ndaq_text(item, "Market"),
+                "reason_code": reason_code,
+                "halt_date": halt_date,
+                "halt_time": halt_time,
+                "halted_at": _parse_halt_time(halt_date, halt_time),
+                "pause_threshold_price": _ndaq_text(item, "PauseThresholdPrice") or None,
+                "resumption_date": _ndaq_text(item, "ResumptionDate") or None,
+                "resumption_quote_time": _ndaq_text(item, "ResumptionQuoteTime") or None,
+                "resumption_trade_time": resume_trade or None,
+                "active_halt": is_active,
+                "halt_risk_score": _risk_score(reason_code, is_active),
+                "published_at": _parse_pubdate(_text(item, "pubDate")) or feed_pubdate,
+                "feed_published_at": feed_pubdate,
+                "source": SOURCE_NAME,
+                "source_url": TRADE_HALTS_RSS_URL,
+            }
+        )
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)

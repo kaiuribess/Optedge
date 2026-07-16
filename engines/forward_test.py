@@ -26,24 +26,26 @@ Replay logic per bucket:
   - futures_*: stop_price/target_price vs daily high/low path; first-hit wins.
   - Time stop: 30 days or contract expiry, whichever earlier.
 """
+
 from __future__ import annotations
+
 import glob
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from utils import bs_price, safe_float, safe_int
-from engines import learning
+import data_provider  # noqa: E402
+from engines import learning  # noqa: E402
+from utils import bs_price, safe_float, safe_int  # noqa: E402
 
 log = logging.getLogger("optedge.forward_test")
 LOGS_DIR = ROOT / "logs"
@@ -54,7 +56,7 @@ ELIGIBLE_FOR_MODEL_PROMOTION = False
 ELIGIBLE_FOR_LIVE_REVIEW = False
 
 
-def diagnostic_metadata() -> Dict[str, Any]:
+def diagnostic_metadata() -> dict[str, Any]:
     """Return the immutable evidence restrictions for this legacy module."""
     return {
         "evidence_status": EVIDENCE_STATUS,
@@ -75,7 +77,7 @@ def _load_options_logs() -> pd.DataFrame:
     for f in files:
         try:
             df = pd.read_parquet(f)
-            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=UTC)
             df["log_time"] = mtime
             df["_log_file"] = f
             dfs.append(df)
@@ -97,7 +99,7 @@ def _load_futures_logs() -> pd.DataFrame:
     for f in files:
         try:
             df = pd.read_parquet(f)
-            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=UTC)
             df["log_time"] = mtime
             df["_log_file"] = f
             dfs.append(df)
@@ -108,7 +110,7 @@ def _load_futures_logs() -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
-def log_futures_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
+def log_futures_signals(df: pd.DataFrame, asof: datetime) -> Path | None:
     """Persist futures signals to logs/futures_signals_<asof>.parquet."""
     if df is None or df.empty:
         return None
@@ -123,7 +125,7 @@ def log_futures_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
     return fp
 
 
-def log_shares_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
+def log_shares_signals(df: pd.DataFrame, asof: datetime) -> Path | None:
     """Persist shares signals to logs/shares_signals_<asof>.parquet (v16.1+).
 
     Captures: ticker, side='shares', spot (entry), share_score, confidence,
@@ -155,12 +157,34 @@ def log_shares_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         df_out["spot"] = spots
 
     keep_cols = [
-        "ticker", "spot", "share_score", "confidence", "classification", "market_cap",
-        "stop_pct", "target_pct", "suggested_dollars", "kelly_pct",
-        "z_mispricing", "z_iv_rank", "z_skew", "z_sent", "z_fund", "z_insider",
-        "z_macro", "z_news", "z_earnings", "z_value",
-        "sentiment_delta", "fund_score", "insider_score", "news_delta",
-        "n_24h", "top_headline", "reasoning", "risks",
+        "ticker",
+        "spot",
+        "share_score",
+        "confidence",
+        "classification",
+        "market_cap",
+        "stop_pct",
+        "target_pct",
+        "suggested_dollars",
+        "kelly_pct",
+        "z_mispricing",
+        "z_iv_rank",
+        "z_skew",
+        "z_sent",
+        "z_fund",
+        "z_insider",
+        "z_macro",
+        "z_news",
+        "z_earnings",
+        "z_value",
+        "sentiment_delta",
+        "fund_score",
+        "insider_score",
+        "news_delta",
+        "n_24h",
+        "top_headline",
+        "reasoning",
+        "risks",
         "pred_stock_return_pct",
     ]
     keep = [c for c in keep_cols if c in df_out.columns]
@@ -172,8 +196,7 @@ def log_shares_signals(df: pd.DataFrame, asof: datetime) -> Optional[Path]:
         log.warning("shares signal log failed: %s", e)
         return None
     n_with_spot = int(out["spot"].notna().sum()) if "spot" in out.columns else 0
-    log.info("logged %d shares signals (%d with spot) to %s",
-             len(out), n_with_spot, fp.name)
+    log.info("logged %d shares signals (%d with spot) to %s", len(out), n_with_spot, fp.name)
     return fp
 
 
@@ -186,7 +209,7 @@ def _load_shares_logs() -> pd.DataFrame:
     for f in files:
         try:
             df = pd.read_parquet(f)
-            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=timezone.utc)
+            mtime = datetime.fromtimestamp(Path(f).stat().st_mtime, tz=UTC)
             df["log_time"] = mtime
             df["_log_file"] = f
             dfs.append(df)
@@ -200,7 +223,7 @@ def _load_shares_logs() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Per-signal replay
 # ---------------------------------------------------------------------------
-def _replay_option_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
+def _replay_option_signal(row: pd.Series) -> dict[str, Any] | None:
     """Reprice an options signal using current spot + same IV (BS)."""
     ticker = row.get("ticker")
     if not ticker:
@@ -209,7 +232,9 @@ def _replay_option_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     days_old = None
     if log_time is not None:
         try:
-            days_old = (datetime.now(timezone.utc) - pd.to_datetime(log_time, utc=True)).total_seconds() / 86400
+            days_old = (
+                datetime.now(UTC) - pd.to_datetime(log_time, utc=True)
+            ).total_seconds() / 86400
         except Exception:
             pass
 
@@ -230,10 +255,10 @@ def _replay_option_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     if not exp_str:
         return None
     try:
-        exp = datetime.strptime(str(exp_str), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        exp = datetime.strptime(str(exp_str), "%Y-%m-%d").replace(tzinfo=UTC)
     except Exception:
         return None
-    T_days = (exp - datetime.now(timezone.utc)).total_seconds() / 86400
+    T_days = (exp - datetime.now(UTC)).total_seconds() / 86400
     if T_days <= 0:
         new_price = max(0.0, (spot_now - K) if is_call else (K - spot_now))
         outcome = "expired"
@@ -281,7 +306,7 @@ def _replay_option_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     return base
 
 
-def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
+def _replay_share_signal(row: pd.Series) -> dict[str, Any] | None:
     """Replay a shares signal: did stop or target hit first along realized path?"""
     ticker = row.get("ticker")
     if not ticker or row.get("side") in ("call", "put"):
@@ -294,8 +319,8 @@ def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     target_pct = safe_float(row.get("target_pct")) or 0.20
 
     # Pull history from log_time to now (max 60d)
-    days_old = (datetime.now(timezone.utc) - pd.to_datetime(log_time, utc=True)).total_seconds() / 86400
-    if days_old < 0.05:   # <~1 hour — too fresh to evaluate
+    days_old = (datetime.now(UTC) - pd.to_datetime(log_time, utc=True)).total_seconds() / 86400
+    if days_old < 0.05:  # <~1 hour — too fresh to evaluate
         return None
     period = "3mo" if days_old > 30 else "1mo"
     h = data_provider.get_history(ticker, period=period)
@@ -308,7 +333,9 @@ def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     if entry <= 0:
         try:
             log_date = pd.to_datetime(log_time).date()
-            idx_dates = pd.Series(h.index).apply(lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date())
+            idx_dates = pd.Series(h.index).apply(
+                lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date()
+            )
             on_or_after = h[idx_dates.values >= log_date]
             if not on_or_after.empty:
                 entry = float(on_or_after["Close"].iloc[0])
@@ -321,7 +348,9 @@ def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     # between UTC log timestamps and yfinance's local-time index.
     try:
         log_date = pd.to_datetime(log_time).date()
-        idx_dates = pd.Series(h.index).apply(lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date())
+        idx_dates = pd.Series(h.index).apply(
+            lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date()
+        )
         mask = idx_dates.values >= log_date
         h_after = h[mask]
     except Exception:
@@ -353,7 +382,7 @@ def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
         else:
             if len(h_after) >= 30:
                 outcome = "time_stop"
-                exit_price = float(h_after["Close"].iloc[min(29, len(h_after)-1)])
+                exit_price = float(h_after["Close"].iloc[min(29, len(h_after) - 1)])
                 holding_days = 30.0
 
     pnl_pct = (exit_price / entry) - 1
@@ -379,7 +408,7 @@ def _replay_share_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     return base
 
 
-def _replay_futures_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
+def _replay_futures_signal(row: pd.Series) -> dict[str, Any] | None:
     """Replay a futures signal: did stop or target hit first?"""
     sym = row.get("symbol")
     if not sym:
@@ -398,8 +427,8 @@ def _replay_futures_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     point_value = safe_float(row.get("point_value")) or 1.0
     bucket = row.get("bucket") or learning.bucket_for_futures_row(row.to_dict())
 
-    days_old = (datetime.now(timezone.utc) - pd.to_datetime(log_time, utc=True)).total_seconds() / 86400
-    if days_old < 0.05:   # <~1 hour — too fresh to evaluate
+    days_old = (datetime.now(UTC) - pd.to_datetime(log_time, utc=True)).total_seconds() / 86400
+    if days_old < 0.05:  # <~1 hour — too fresh to evaluate
         return None
     period = "3mo" if days_old > 30 else "1mo"
     h = data_provider.get_history(sym, period=period)
@@ -409,7 +438,9 @@ def _replay_futures_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     # Compare on date to dodge TZ mismatches (UTC log vs yfinance local index).
     try:
         log_date = pd.to_datetime(log_time).date()
-        idx_dates = pd.Series(h.index).apply(lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date())
+        idx_dates = pd.Series(h.index).apply(
+            lambda x: x.date() if hasattr(x, "date") else pd.to_datetime(x).date()
+        )
         mask = idx_dates.values >= log_date
         h_after = h[mask]
     except Exception:
@@ -422,24 +453,41 @@ def _replay_futures_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
     exit_price = float(h_after["Close"].iloc[-1])
     holding_days = float(min(30, len(h_after)))
 
-    if "Low" in h_after.columns and "High" in h_after.columns and stop_price > 0 and target_price > 0:
+    if (
+        "Low" in h_after.columns
+        and "High" in h_after.columns
+        and stop_price > 0
+        and target_price > 0
+    ):
         for i, (_, bar) in enumerate(h_after.iterrows()):
             lo = float(bar["Low"])
             hi = float(bar["High"])
             if is_long:
                 if lo <= stop_price:
-                    outcome = "stop"; exit_price = stop_price; holding_days = float(i+1); break
+                    outcome = "stop"
+                    exit_price = stop_price
+                    holding_days = float(i + 1)
+                    break
                 if hi >= target_price:
-                    outcome = "target"; exit_price = target_price; holding_days = float(i+1); break
+                    outcome = "target"
+                    exit_price = target_price
+                    holding_days = float(i + 1)
+                    break
             else:
                 if hi >= stop_price:
-                    outcome = "stop"; exit_price = stop_price; holding_days = float(i+1); break
+                    outcome = "stop"
+                    exit_price = stop_price
+                    holding_days = float(i + 1)
+                    break
                 if lo <= target_price:
-                    outcome = "target"; exit_price = target_price; holding_days = float(i+1); break
+                    outcome = "target"
+                    exit_price = target_price
+                    holding_days = float(i + 1)
+                    break
         else:
             if len(h_after) >= 30:
                 outcome = "time_stop"
-                exit_price = float(h_after["Close"].iloc[min(29, len(h_after)-1)])
+                exit_price = float(h_after["Close"].iloc[min(29, len(h_after) - 1)])
                 holding_days = 30.0
 
     pnl_pts = (exit_price - entry) if is_long else (entry - exit_price)
@@ -470,21 +518,25 @@ def _replay_futures_signal(row: pd.Series) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Replay orchestration per bucket
 # ---------------------------------------------------------------------------
-def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, pd.DataFrame]:
+def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> dict[str, pd.DataFrame]:
     """Replay every logged signal across all buckets. Returns dict[bucket -> outcomes_df]."""
-    out: Dict[str, List[Dict[str, Any]]] = {b: [] for b in learning.BUCKET_KEYS}
+    out: dict[str, list[dict[str, Any]]] = {b: [] for b in learning.BUCKET_KEYS}
 
     # Options + shares share the existing signals_*.parquet log
     opts_log = _load_options_logs()
     if not opts_log.empty:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
         try:
             opts_log = opts_log[pd.to_datetime(opts_log["log_time"], utc=True) >= cutoff]
         except Exception:
             pass
 
         # Replay options
-        opts_only = opts_log[opts_log.get("side", "").isin(["call", "put"])] if "side" in opts_log.columns else opts_log
+        opts_only = (
+            opts_log[opts_log.get("side", "").isin(["call", "put"])]
+            if "side" in opts_log.columns
+            else opts_log
+        )
         if not opts_only.empty:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futs = [ex.submit(_replay_option_signal, r) for _, r in opts_only.iterrows()]
@@ -497,7 +549,11 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
                         log.debug("opts replay fail: %s", e)
 
         # Replay shares (legacy fallback — pre-v16.1 signals_*.parquet that weren't options)
-        sh_only = opts_log[~opts_log.get("side", "").isin(["call","put"])] if "side" in opts_log.columns else pd.DataFrame()
+        sh_only = (
+            opts_log[~opts_log.get("side", "").isin(["call", "put"])]
+            if "side" in opts_log.columns
+            else pd.DataFrame()
+        )
         if not sh_only.empty:
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
                 futs = [ex.submit(_replay_share_signal, r) for _, r in sh_only.iterrows()]
@@ -512,7 +568,7 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
     # v16.1: dedicated shares-signal log
     sh_log = _load_shares_logs()
     if not sh_log.empty:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
         try:
             sh_log = sh_log[pd.to_datetime(sh_log["log_time"], utc=True) >= cutoff]
         except Exception:
@@ -531,7 +587,7 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
     # Futures: from dedicated log
     fut_log = _load_futures_logs()
     if not fut_log.empty:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
         try:
             fut_log = fut_log[pd.to_datetime(fut_log["log_time"], utc=True) >= cutoff]
         except Exception:
@@ -549,7 +605,7 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
 
     # Convert each bucket's list to a DataFrame, persist, return
     DATA_DIR.mkdir(exist_ok=True)
-    bucket_dfs: Dict[str, pd.DataFrame] = {}
+    bucket_dfs: dict[str, pd.DataFrame] = {}
     for bucket, rows in out.items():
         df = pd.DataFrame(rows) if rows else pd.DataFrame()
         if not df.empty:
@@ -568,16 +624,29 @@ def replay_outcomes(max_workers: int = 8, lookback_days: int = 60) -> Dict[str, 
 # ---------------------------------------------------------------------------
 # Rolling stats per bucket
 # ---------------------------------------------------------------------------
-def compute_rolling_stats(bucket_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+def compute_rolling_stats(bucket_dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Per-bucket rolling 30/60/90d hit rate + realized PnL."""
     rows = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for bucket, df in bucket_dfs.items():
         if df is None or df.empty:
-            rows.append({"bucket": bucket, "n_30d": 0, "n_60d": 0, "n_90d": 0,
-                         "win_rate_30d": None, "win_rate_60d": None, "win_rate_90d": None,
-                         "pnl_30d": 0.0, "pnl_60d": 0.0, "pnl_90d": 0.0,
-                         "avg_pnl_pct_30d": None, "avg_pnl_pct_60d": None, "avg_pnl_pct_90d": None})
+            rows.append(
+                {
+                    "bucket": bucket,
+                    "n_30d": 0,
+                    "n_60d": 0,
+                    "n_90d": 0,
+                    "win_rate_30d": None,
+                    "win_rate_60d": None,
+                    "win_rate_90d": None,
+                    "pnl_30d": 0.0,
+                    "pnl_60d": 0.0,
+                    "pnl_90d": 0.0,
+                    "avg_pnl_pct_30d": None,
+                    "avg_pnl_pct_60d": None,
+                    "avg_pnl_pct_90d": None,
+                }
+            )
             continue
         df = df.copy()
         df["log_time"] = pd.to_datetime(df["log_time"], utc=True, errors="coerce")
@@ -616,8 +685,9 @@ def compute_rolling_stats(bucket_dfs: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Per-bucket weight refit — drives self-learning
 # ---------------------------------------------------------------------------
-def refit_all_buckets(bucket_dfs: Dict[str, pd.DataFrame],
-                       min_lasso: int = 50, min_ic: int = 20) -> Dict[str, Dict[str, Any]]:
+def refit_all_buckets(
+    bucket_dfs: dict[str, pd.DataFrame], min_lasso: int = 50, min_ic: int = 20
+) -> dict[str, dict[str, Any]]:
     """Preserve the old return shape while refusing legacy weight promotion."""
     _ = (min_lasso, min_ic)
     return {
@@ -639,14 +709,18 @@ def refit_all_buckets(bucket_dfs: Dict[str, pd.DataFrame],
 # ---------------------------------------------------------------------------
 # Compatibility orchestrator for explicit legacy diagnostic callers
 # ---------------------------------------------------------------------------
-def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
-                       lookback_days: int = 60) -> Dict[str, Any]:
+def run_forward_cycle(
+    min_lasso: int = 50, min_ic: int = 20, lookback_days: int = 60
+) -> dict[str, Any]:
     """Replay legacy outcomes and report the enforced no-refit decision."""
     log.info("forward-test cycle: replaying logs (lookback=%dd)", lookback_days)
     bucket_dfs = replay_outcomes(lookback_days=lookback_days)
     n_total = sum(len(df) for df in bucket_dfs.values())
-    log.info("forward-test: %d outcomes across %d buckets", n_total,
-             sum(1 for df in bucket_dfs.values() if not df.empty))
+    log.info(
+        "forward-test: %d outcomes across %d buckets",
+        n_total,
+        sum(1 for df in bucket_dfs.values() if not df.empty),
+    )
 
     compute_rolling_stats(bucket_dfs)
     refit_results = refit_all_buckets(bucket_dfs, min_lasso=min_lasso, min_ic=min_ic)
@@ -665,7 +739,7 @@ def run_forward_cycle(min_lasso: int = 50, min_ic: int = 20,
 # ---------------------------------------------------------------------------
 # Legacy compatibility for callers that imported this module directly
 # ---------------------------------------------------------------------------
-def run_forward_test_legacy() -> Dict[str, Any]:
+def run_forward_test_legacy() -> dict[str, Any]:
     """Return the historical summary shape with explicit diagnostic labels."""
     bucket_dfs = replay_outcomes()
     all_rows = []
@@ -705,27 +779,40 @@ def run_forward_test_legacy() -> Dict[str, Any]:
             sub = pnl[(pnl["confidence"] >= lo) & (pnl["confidence"] < hi)]
             if sub.empty:
                 continue
-            buckets.append({
-                "bucket": lab,
-                "n": len(sub),
-                "win_rate": float((sub["pnl_pct"] > 0).mean()),
-                "avg_pnl": float(sub["pnl_pct"].mean()),
-                "median_pnl": float(sub["pnl_pct"].median()),
-            })
+            buckets.append(
+                {
+                    "bucket": lab,
+                    "n": len(sub),
+                    "win_rate": float((sub["pnl_pct"] > 0).mean()),
+                    "avg_pnl": float(sub["pnl_pct"].mean()),
+                    "median_pnl": float(sub["pnl_pct"].median()),
+                }
+            )
 
     by_type = []
-    for t in ("options_call", "options_put", "shares_long",
-              "futures_equity", "futures_treasury", "futures_metal",
-              "futures_energy", "futures_crypto", "futures_currency", "futures_agri"):
+    for t in (
+        "options_call",
+        "options_put",
+        "shares_long",
+        "futures_equity",
+        "futures_treasury",
+        "futures_metal",
+        "futures_energy",
+        "futures_crypto",
+        "futures_currency",
+        "futures_agri",
+    ):
         sub = pnl[pnl["bucket"] == t]
         if sub.empty:
             continue
-        by_type.append({
-            "type": t,
-            "n": len(sub),
-            "win_rate": float((sub["pnl_pct"] > 0).mean()),
-            "avg_pnl": float(sub["pnl_pct"].mean()),
-        })
+        by_type.append(
+            {
+                "type": t,
+                "n": len(sub),
+                "win_rate": float((sub["pnl_pct"] > 0).mean()),
+                "avg_pnl": float(sub["pnl_pct"].mean()),
+            }
+        )
 
     return {
         **diagnostic_metadata(),

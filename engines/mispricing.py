@@ -12,33 +12,47 @@ For each ticker:
   4. Detect skew (25-delta put IV vs 25-delta call IV).
   5. Detect term-structure slope.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import (
-    MIN_OPEN_INTEREST, MIN_DAILY_VOLUME, MAX_BID_ASK_SPREAD_PCT,
-    MIN_OPTION_PRICE, MIN_DTE, MAX_DTE, RISK_FREE_RATE_DEFAULT,
-    WORKERS_MISPRICING, HESTON_ENABLED,
+import data_provider  # noqa: E402
+from config import (  # noqa: E402
+    HESTON_ENABLED,
+    MAX_BID_ASK_SPREAD_PCT,
+    MAX_DTE,
+    MIN_DAILY_VOLUME,
+    MIN_DTE,
+    MIN_OPEN_INTEREST,
+    MIN_OPTION_PRICE,
+    RISK_FREE_RATE_DEFAULT,
+    WORKERS_MISPRICING,
 )
-from utils import bs_price, bs_implied_vol, bs_delta
+from utils import bs_delta, bs_implied_vol, bs_price  # noqa: E402
+
 # v20.3/v20.4: multi-model vectorized pricing ensemble
 try:
     from pricing_models import (
-        load_weights, classify_vix_regime, bs_price_vec, all_models_vec, ensemble_theo_vec,
+        all_models_vec,
+        bs_price_vec,
+        classify_vix_regime,
+        ensemble_theo_vec,
+        load_weights,
     )
+
     HAVE_ENSEMBLE = True
 except Exception:
     HAVE_ENSEMBLE = False
@@ -47,7 +61,7 @@ log = logging.getLogger("optedge.mispricing")
 
 
 # -------- Helpers ------------------------------------------------------
-def _historical_vol(close: pd.Series, n: int) -> Optional[float]:
+def _historical_vol(close: pd.Series, n: int) -> float | None:
     if close is None or len(close) < n + 1:
         return None
     rets = np.log(close / close.shift(1)).dropna().tail(n)
@@ -58,14 +72,14 @@ def _historical_vol(close: pd.Series, n: int) -> Optional[float]:
 
 def _years_to_expiry(expiry_str: str, asof: datetime) -> float:
     try:
-        exp = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        exp = datetime.strptime(expiry_str, "%Y-%m-%d").replace(tzinfo=UTC)
         days = (exp - asof).total_seconds() / 86400
         return max(days / 365.25, 1 / 365.25)
     except Exception:
         return 0.0
 
 
-def _fetch_blob(ticker: str) -> Dict[str, Any]:
+def _fetch_blob(ticker: str) -> dict[str, Any]:
     """Pull spot, HV stats, dividend yield, and chain in DTE window."""
     chain_data = data_provider.get_options_chain(ticker)
     if not chain_data or not chain_data.get("expirations"):
@@ -81,7 +95,7 @@ def _fetch_blob(ticker: str) -> Dict[str, Any]:
     hv60 = _historical_vol(close, 60) or hv30
     hv252 = _historical_vol(close, 252) or hv30
 
-    asof = datetime.now(timezone.utc)
+    asof = datetime.now(UTC)
     chains = []
     for exp, df in chain_data["chains"].items():
         T = _years_to_expiry(exp, asof)
@@ -109,8 +123,9 @@ def _fetch_blob(ticker: str) -> Dict[str, Any]:
     }
 
 
-def _pricing_edges(mispricing_pct: np.ndarray,
-                   spread_pct: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _pricing_edges(
+    mispricing_pct: np.ndarray, spread_pct: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return anomaly, long-buyer, and seller edges after round-trip spread.
 
     ``mispricing_pct`` is positive when market mid is above model value and
@@ -126,8 +141,9 @@ def _pricing_edges(mispricing_pct: np.ndarray,
     return anomaly_edge, buyer_edge, seller_edge
 
 
-def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
-                  regime: str = "normal") -> pd.DataFrame:
+def _enrich_chain(
+    blob: dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT, regime: str = "normal"
+) -> pd.DataFrame:
     """Compute multi-model theoretical prices + IV + mispricing for an entire
     chain at once. v20.4: fully vectorized — BS, CRR (80 steps), BJS all run
     on numpy arrays over the filtered contracts. No per-row Python loops.
@@ -144,46 +160,47 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
 
     # OI+volume pre-filter — drop dead contracts BEFORE any pricing work
     if "openInterest" in df.columns and "volume" in df.columns:
-        prefilter = (df["openInterest"].fillna(0) >= MIN_OPEN_INTEREST) & \
-                    (df["volume"].fillna(0) >= MIN_DAILY_VOLUME)
+        prefilter = (df["openInterest"].fillna(0) >= MIN_OPEN_INTEREST) & (
+            df["volume"].fillna(0) >= MIN_DAILY_VOLUME
+        )
         df = df[prefilter].copy()
     if df.empty:
         return pd.DataFrame()
 
     # ---- Build vectorized arrays ----
-    bid_arr  = pd.to_numeric(df.get("bid"),  errors="coerce").fillna(0).to_numpy()
-    ask_arr  = pd.to_numeric(df.get("ask"),  errors="coerce").fillna(0).to_numpy()
+    bid_arr = pd.to_numeric(df.get("bid"), errors="coerce").fillna(0).to_numpy()
+    ask_arr = pd.to_numeric(df.get("ask"), errors="coerce").fillna(0).to_numpy()
     last_arr = pd.to_numeric(df.get("lastPrice"), errors="coerce").fillna(0).to_numpy()
-    K_arr    = pd.to_numeric(df.get("strike"), errors="coerce").fillna(0).to_numpy()
-    T_arr    = pd.to_numeric(df.get("T"), errors="coerce").fillna(0).to_numpy()
-    dte_arr  = pd.to_numeric(df.get("dte"), errors="coerce").fillna(0).astype(int).to_numpy()
-    oi_arr   = pd.to_numeric(df.get("openInterest"), errors="coerce").fillna(0).astype(int).to_numpy()
-    vol_arr  = pd.to_numeric(df.get("volume"), errors="coerce").fillna(0).astype(int).to_numpy()
+    K_arr = pd.to_numeric(df.get("strike"), errors="coerce").fillna(0).to_numpy()
+    T_arr = pd.to_numeric(df.get("T"), errors="coerce").fillna(0).to_numpy()
+    dte_arr = pd.to_numeric(df.get("dte"), errors="coerce").fillna(0).astype(int).to_numpy()
+    oi_arr = pd.to_numeric(df.get("openInterest"), errors="coerce").fillna(0).astype(int).to_numpy()
+    vol_arr = pd.to_numeric(df.get("volume"), errors="coerce").fillna(0).astype(int).to_numpy()
     side_arr = df["side"].to_numpy()
     call_mask = side_arr == "call"
 
     # Mid + spread
     valid_quote = (bid_arr > 0) & (ask_arr > 0) & (ask_arr >= bid_arr)
     mid_arr = np.where(valid_quote, (bid_arr + ask_arr) / 2.0, last_arr)
-    spread_arr = np.where(valid_quote & (mid_arr > 0),
-                          (ask_arr - bid_arr) / np.where(mid_arr > 0, mid_arr, 1.0),
-                          1.0)
+    spread_arr = np.where(
+        valid_quote & (mid_arr > 0), (ask_arr - bid_arr) / np.where(mid_arr > 0, mid_arr, 1.0), 1.0
+    )
     keep = (mid_arr >= MIN_OPTION_PRICE) & (T_arr > 0) & (K_arr > 0)
     # Drop dead rows before pricing
     if not keep.any():
         return pd.DataFrame()
     df = df.iloc[keep].reset_index(drop=True)
-    bid_arr   = bid_arr[keep]
-    ask_arr   = ask_arr[keep]
-    last_arr  = last_arr[keep]
-    K_arr     = K_arr[keep]
-    T_arr     = T_arr[keep]
-    dte_arr   = dte_arr[keep]
-    oi_arr    = oi_arr[keep]
-    vol_arr   = vol_arr[keep]
-    side_arr  = side_arr[keep]
+    bid_arr = bid_arr[keep]
+    ask_arr = ask_arr[keep]
+    last_arr = last_arr[keep]
+    K_arr = K_arr[keep]
+    T_arr = T_arr[keep]
+    dte_arr = dte_arr[keep]
+    oi_arr = oi_arr[keep]
+    vol_arr = vol_arr[keep]
+    side_arr = side_arr[keep]
     call_mask = call_mask[keep]
-    mid_arr   = mid_arr[keep]
+    mid_arr = mid_arr[keep]
     spread_arr = spread_arr[keep]
 
     N = len(df)
@@ -195,8 +212,9 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     # ---- Implied vol per contract (still per-row; brentq is the bottleneck) ----
     iv_market_arr = np.zeros(N)
     for j in range(N):
-        iv = bs_implied_vol(mid_arr[j], spot, K_arr[j], T_arr[j], r, q_scalar,
-                             call=bool(call_mask[j]))
+        iv = bs_implied_vol(
+            mid_arr[j], spot, K_arr[j], T_arr[j], r, q_scalar, call=bool(call_mask[j])
+        )
         iv_market_arr[j] = iv if iv and iv > 0 else np.nan
 
     # Drop rows where IV is unsolvable (arbitrage / stale data)
@@ -204,14 +222,21 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     if not keep2.any():
         return pd.DataFrame()
     df = df.iloc[keep2].reset_index(drop=True)
-    bid_arr   = bid_arr[keep2];  ask_arr  = ask_arr[keep2]
-    last_arr  = last_arr[keep2]; K_arr    = K_arr[keep2]
-    T_arr     = T_arr[keep2];    dte_arr  = dte_arr[keep2]
-    oi_arr    = oi_arr[keep2];   vol_arr  = vol_arr[keep2]
-    side_arr  = side_arr[keep2]; call_mask = call_mask[keep2]
-    mid_arr   = mid_arr[keep2];  spread_arr = spread_arr[keep2]
+    bid_arr = bid_arr[keep2]
+    ask_arr = ask_arr[keep2]
+    last_arr = last_arr[keep2]
+    K_arr = K_arr[keep2]
+    T_arr = T_arr[keep2]
+    dte_arr = dte_arr[keep2]
+    oi_arr = oi_arr[keep2]
+    vol_arr = vol_arr[keep2]
+    side_arr = side_arr[keep2]
+    call_mask = call_mask[keep2]
+    mid_arr = mid_arr[keep2]
+    spread_arr = spread_arr[keep2]
     iv_market_arr = iv_market_arr[keep2]
-    S_arr     = S_arr[keep2];    q_arr    = q_arr[keep2]
+    S_arr = S_arr[keep2]
+    q_arr = q_arr[keep2]
     fair_vol_arr = fair_vol_arr[keep2]
 
     # ---- v20.5: per-expiry smile-smoothed fair vol ----
@@ -223,22 +248,20 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     if exp_arr is not None:
         # Quality mask: tight spread + meaningful OI + reasonable IV range
         quality_mask = (
-            (spread_arr <= 0.20) &
-            (oi_arr >= 200) &
-            (iv_market_arr >= 0.05) &
-            (iv_market_arr <= 3.0)
+            (spread_arr <= 0.20)
+            & (oi_arr >= 200)
+            & (iv_market_arr >= 0.05)
+            & (iv_market_arr <= 3.0)
         )
         # Per-expiry median IV (robust to outliers)
-        per_exp_iv: Dict[str, float] = {}
+        per_exp_iv: dict[str, float] = {}
         unique_exps = np.unique(exp_arr)
         for exp in unique_exps:
             mask = (exp_arr == exp) & quality_mask
-            if mask.sum() >= 6:   # need at least 6 quality contracts
+            if mask.sum() >= 6:  # need at least 6 quality contracts
                 per_exp_iv[exp] = float(np.median(iv_market_arr[mask]))
         # Apply: fair_vol_arr[i] = per-expiry median IV (fallback HV30)
-        fair_vol_arr = np.array([
-            per_exp_iv.get(str(exp_arr[j]), hv30) for j in range(len(df))
-        ])
+        fair_vol_arr = np.array([per_exp_iv.get(str(exp_arr[j]), hv30) for j in range(len(df))])
         # Sanity floor/ceiling
         fair_vol_arr = np.clip(fair_vol_arr, 0.05, 3.0)
 
@@ -253,22 +276,41 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
         if HESTON_ENABLED:
             models.add("heston")
         per_model = all_models_vec(
-            S_arr, K_arr, T_arr, r, fair_vol_arr, q_arr, call_mask,
+            S_arr,
+            K_arr,
+            T_arr,
+            r,
+            fair_vol_arr,
+            q_arr,
+            call_mask,
             cboe_theo=cboe_arr,
             crr_steps=80,
             models=models,
         )
         theo_arr = ensemble_theo_vec(per_model, weights)
-        theo_bs_arr  = per_model.get("bs",  np.full(len(df), np.nan))
+        theo_bs_arr = per_model.get("bs", np.full(len(df), np.nan))
         theo_crr_arr = per_model.get("crr", np.full(len(df), np.nan))
         theo_bjs_arr = per_model.get("bjs", np.full(len(df), np.nan))
         theo_cboe_arr = per_model.get("cboe", np.full(len(df), np.nan))
     else:
-        theo_bs_arr = bs_price_vec(S_arr, K_arr, T_arr, r, fair_vol_arr, q_arr, call_mask) \
-                       if HAVE_ENSEMBLE else np.array([bs_price(spot, K_arr[j], T_arr[j], r,
-                                                                  fair_vol_arr[j], q_scalar,
-                                                                  call=bool(call_mask[j]))
-                                                       for j in range(len(df))])
+        theo_bs_arr = (
+            bs_price_vec(S_arr, K_arr, T_arr, r, fair_vol_arr, q_arr, call_mask)
+            if HAVE_ENSEMBLE
+            else np.array(
+                [
+                    bs_price(
+                        spot,
+                        K_arr[j],
+                        T_arr[j],
+                        r,
+                        fair_vol_arr[j],
+                        q_scalar,
+                        call=bool(call_mask[j]),
+                    )
+                    for j in range(len(df))
+                ]
+            )
+        )
         theo_arr = theo_bs_arr
         theo_crr_arr = np.full(len(df), np.nan)
         theo_bjs_arr = np.full(len(df), np.nan)
@@ -278,25 +320,31 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     theo_arr = np.where(np.isfinite(theo_arr) & (theo_arr > 0), theo_arr, theo_bs_arr)
 
     # Greeks: prefer source-provided (CBOE) when present
-    delta_src = pd.to_numeric(df.get("delta"), errors="coerce").fillna(0).to_numpy() \
-                if "delta" in df.columns else np.zeros(len(df))
+    delta_src = (
+        pd.to_numeric(df.get("delta"), errors="coerce").fillna(0).to_numpy()
+        if "delta" in df.columns
+        else np.zeros(len(df))
+    )
     # Compute BS delta where source delta is zero/missing
-    delta_bs_arr = np.array([
-        bs_delta(spot, K_arr[j], T_arr[j], r, iv_market_arr[j], q_scalar,
-                  call=bool(call_mask[j]))
-        for j in range(len(df))
-    ])
+    delta_bs_arr = np.array(
+        [
+            bs_delta(
+                spot, K_arr[j], T_arr[j], r, iv_market_arr[j], q_scalar, call=bool(call_mask[j])
+            )
+            for j in range(len(df))
+        ]
+    )
     delta_arr = np.where(delta_src != 0, delta_src, delta_bs_arr)
 
     mispricing_dollar_arr = mid_arr - theo_arr
-    mispricing_pct_arr = np.where(theo_arr > 0,
-                                   (mid_arr - theo_arr) / theo_arr, 0.0)
+    mispricing_pct_arr = np.where(theo_arr > 0, (mid_arr - theo_arr) / theo_arr, 0.0)
     # v20.7 — net_edge accounts for half the bid-ask spread on each side of
     # the trade. A 5% mispricing on a contract with a 6% spread is NOT tradable.
     # net_edge_pct keeps the absolute anomaly for backward-compatible telemetry.
     # buyer/seller edges below preserve direction after the full spread.
     net_edge_pct_arr, buyer_edge_pct_arr, seller_edge_pct_arr = _pricing_edges(
-        mispricing_pct_arr, spread_arr,
+        mispricing_pct_arr,
+        spread_arr,
     )
     pricing_direction_arr = np.where(
         buyer_edge_pct_arr > 0,
@@ -306,50 +354,61 @@ def _enrich_chain(blob: Dict[str, Any], r: float = RISK_FREE_RATE_DEFAULT,
     vol_premium_arr = iv_market_arr - fair_vol_arr
 
     # Source-provided Greeks (CBOE) — keep raw values for the dashboard
-    gamma_src = pd.to_numeric(df.get("gamma"), errors="coerce").fillna(0).to_numpy() \
-                 if "gamma" in df.columns else np.zeros(len(df))
-    theta_src = pd.to_numeric(df.get("theta"), errors="coerce").fillna(0).to_numpy() \
-                 if "theta" in df.columns else np.zeros(len(df))
-    vega_src  = pd.to_numeric(df.get("vega"),  errors="coerce").fillna(0).to_numpy() \
-                 if "vega"  in df.columns else np.zeros(len(df))
+    gamma_src = (
+        pd.to_numeric(df.get("gamma"), errors="coerce").fillna(0).to_numpy()
+        if "gamma" in df.columns
+        else np.zeros(len(df))
+    )
+    theta_src = (
+        pd.to_numeric(df.get("theta"), errors="coerce").fillna(0).to_numpy()
+        if "theta" in df.columns
+        else np.zeros(len(df))
+    )
+    vega_src = (
+        pd.to_numeric(df.get("vega"), errors="coerce").fillna(0).to_numpy()
+        if "vega" in df.columns
+        else np.zeros(len(df))
+    )
 
-    out = pd.DataFrame({
-        "ticker": blob["ticker"],
-        "expiry": df["expiry"].to_numpy(),
-        "dte": dte_arr,
-        "side": side_arr,
-        "strike": K_arr,
-        "spot": S_arr,
-        "bid": bid_arr,
-        "ask": ask_arr,
-        "mid": mid_arr,
-        "last": last_arr,
-        "spread_pct": spread_arr,
-        "open_interest": oi_arr,
-        "volume": vol_arr,
-        "iv_market": iv_market_arr,
-        "fair_vol": fair_vol_arr,
-        "vol_premium": vol_premium_arr,
-        "theo_price": theo_arr,
-        "theo_bs": theo_bs_arr,
-        "theo_crr": theo_crr_arr,
-        "theo_bjs": theo_bjs_arr,
-        "theo_cboe": theo_cboe_arr,
-        "mispricing_dollar": mispricing_dollar_arr,
-        "mispricing_pct": mispricing_pct_arr,
-        "net_edge_pct": net_edge_pct_arr,
-        "buyer_edge_pct": buyer_edge_pct_arr,
-        "seller_edge_pct": seller_edge_pct_arr,
-        "pricing_direction": pricing_direction_arr,
-        "delta": delta_arr,
-        "gamma_src": gamma_src,
-        "theta_src": theta_src,
-        "vega_src":  vega_src,
-        "moneyness": K_arr / np.where(S_arr > 0, S_arr, 1.0),
-        "chain_source": blob.get("source", "unknown"),
-        "quote_quality": blob.get("quote_quality", "free_or_delayed"),
-        "regime": regime,
-    })
+    out = pd.DataFrame(
+        {
+            "ticker": blob["ticker"],
+            "expiry": df["expiry"].to_numpy(),
+            "dte": dte_arr,
+            "side": side_arr,
+            "strike": K_arr,
+            "spot": S_arr,
+            "bid": bid_arr,
+            "ask": ask_arr,
+            "mid": mid_arr,
+            "last": last_arr,
+            "spread_pct": spread_arr,
+            "open_interest": oi_arr,
+            "volume": vol_arr,
+            "iv_market": iv_market_arr,
+            "fair_vol": fair_vol_arr,
+            "vol_premium": vol_premium_arr,
+            "theo_price": theo_arr,
+            "theo_bs": theo_bs_arr,
+            "theo_crr": theo_crr_arr,
+            "theo_bjs": theo_bjs_arr,
+            "theo_cboe": theo_cboe_arr,
+            "mispricing_dollar": mispricing_dollar_arr,
+            "mispricing_pct": mispricing_pct_arr,
+            "net_edge_pct": net_edge_pct_arr,
+            "buyer_edge_pct": buyer_edge_pct_arr,
+            "seller_edge_pct": seller_edge_pct_arr,
+            "pricing_direction": pricing_direction_arr,
+            "delta": delta_arr,
+            "gamma_src": gamma_src,
+            "theta_src": theta_src,
+            "vega_src": vega_src,
+            "moneyness": K_arr / np.where(S_arr > 0, S_arr, 1.0),
+            "chain_source": blob.get("source", "unknown"),
+            "quote_quality": blob.get("quote_quality", "free_or_delayed"),
+            "regime": regime,
+        }
+    )
     return out
 
 
@@ -357,15 +416,15 @@ def _apply_filters(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     f = df[
-        (df["open_interest"] >= MIN_OPEN_INTEREST) &
-        (df["volume"] >= MIN_DAILY_VOLUME) &
-        (df["spread_pct"] <= MAX_BID_ASK_SPREAD_PCT) &
-        (df["mid"] >= MIN_OPTION_PRICE)
+        (df["open_interest"] >= MIN_OPEN_INTEREST)
+        & (df["volume"] >= MIN_DAILY_VOLUME)
+        & (df["spread_pct"] <= MAX_BID_ASK_SPREAD_PCT)
+        & (df["mid"] >= MIN_OPTION_PRICE)
     ].copy()
     return f
 
 
-def _per_ticker_summary(df: pd.DataFrame, blob: Dict[str, Any]) -> Dict[str, Any]:
+def _per_ticker_summary(df: pd.DataFrame, blob: dict[str, Any]) -> dict[str, Any]:
     if df.empty:
         return {}
 
@@ -426,7 +485,7 @@ def _detect_regime() -> str:
         return "normal"
 
 
-def _process_ticker(t: str, regime: str = "normal") -> Dict[str, Any]:
+def _process_ticker(t: str, regime: str = "normal") -> dict[str, Any]:
     """One ticker → {filtered_contracts: DataFrame|None, summary: dict|None}."""
     try:
         blob = _fetch_blob(t)
@@ -434,8 +493,10 @@ def _process_ticker(t: str, regime: str = "normal") -> Dict[str, Any]:
             return {"filtered": None, "summary": None}
         enriched = _enrich_chain(blob, regime=regime)
         filtered = _apply_filters(enriched)
-        return {"filtered": filtered if not filtered.empty else None,
-                "summary": _per_ticker_summary(enriched, blob)}
+        return {
+            "filtered": filtered if not filtered.empty else None,
+            "summary": _per_ticker_summary(enriched, blob),
+        }
     except Exception as e:
         log.warning("mispricing fail %s: %s", t, str(e)[:120])
         return {"filtered": None, "summary": None, "error": str(e)[:120]}
@@ -449,19 +510,31 @@ def _log_model_predictions(contracts: pd.DataFrame) -> None:
     """
     if contracts is None or contracts.empty:
         return
-    cols_needed = ["ticker","expiry","strike","side","spot","mid",
-                   "theo_bs","theo_crr","theo_bjs","theo_cboe","regime",
-                   "chain_source","quote_quality"]
+    cols_needed = [
+        "ticker",
+        "expiry",
+        "strike",
+        "side",
+        "spot",
+        "mid",
+        "theo_bs",
+        "theo_crr",
+        "theo_bjs",
+        "theo_cboe",
+        "regime",
+        "chain_source",
+        "quote_quality",
+    ]
     cols = [c for c in cols_needed if c in contracts.columns]
     if not cols:
         return
     sub = contracts[cols].copy()
-    sub["asof"] = datetime.now(timezone.utc).isoformat()
+    sub["asof"] = datetime.now(UTC).isoformat()
     log_dir = Path(__file__).resolve().parent.parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     parquet_path = log_dir / f"model_predictions_{stamp}.parquet"
-    json_path    = log_dir / f"model_predictions_{stamp}.json"
+    json_path = log_dir / f"model_predictions_{stamp}.json"
     try:
         sub.to_parquet(parquet_path, index=False)
         log.info("logged %d model predictions to %s", len(sub), parquet_path.name)
@@ -475,7 +548,7 @@ def _log_model_predictions(contracts: pd.DataFrame) -> None:
         log.debug("model predictions json log fail: %s", e)
 
 
-def run(universe: List[str], max_workers: int = None) -> Dict[str, Any]:
+def run(universe: list[str], max_workers: int = None) -> dict[str, Any]:
     """Parallel per-ticker processing. yfinance is rate-sensitive, so keep
     workers low (default 6).
 
@@ -487,14 +560,16 @@ def run(universe: List[str], max_workers: int = None) -> Dict[str, Any]:
     regime = _detect_regime()
     if HAVE_ENSEMBLE:
         w = load_weights(regime)
-        log.info("mispricing: regime=%s ensemble weights=%s",
-                 regime, {k: round(v, 2) for k, v in w.items()})
+        log.info(
+            "mispricing: regime=%s ensemble weights=%s",
+            regime,
+            {k: round(v, 2) for k, v in w.items()},
+        )
     rows = []
     summaries = []
     failures = 0
     completed = 0
-    log.info("fetching chains for %d tickers (parallel, %d workers)",
-             len(universe), workers)
+    log.info("fetching chains for %d tickers (parallel, %d workers)", len(universe), workers)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(_process_ticker, t, regime): t for t in universe}
@@ -516,9 +591,12 @@ def run(universe: List[str], max_workers: int = None) -> Dict[str, Any]:
                 log.info("[%d/%d]", completed, len(universe))
 
     if failures > len(universe) * 0.5:
-        log.error("MORE THAN HALF the tickers failed (%d/%d). Yahoo may be rate-limiting "
-                  "your IP. Wait 15 min and retry, or use --demo, or run setup_check.py.",
-                  failures, len(universe))
+        log.error(
+            "MORE THAN HALF the tickers failed (%d/%d). Yahoo may be rate-limiting "
+            "your IP. Wait 15 min and retry, or use --demo, or run setup_check.py.",
+            failures,
+            len(universe),
+        )
 
     contracts = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     summary = pd.DataFrame([s for s in summaries if s])
@@ -526,10 +604,13 @@ def run(universe: List[str], max_workers: int = None) -> Dict[str, Any]:
     if HAVE_ENSEMBLE and not contracts.empty:
         # Keep only the most actionable contracts (decent OI/volume) to avoid
         # logging hundreds of thousands of stale strikes each iter
-        sub = contracts[
-            (contracts.get("open_interest", 0) >= 100) &
-            (contracts.get("volume", 0) >= 10)
-        ].copy() if "open_interest" in contracts.columns else contracts
+        sub = (
+            contracts[
+                (contracts.get("open_interest", 0) >= 100) & (contracts.get("volume", 0) >= 10)
+            ].copy()
+            if "open_interest" in contracts.columns
+            else contracts
+        )
         if len(sub) > 5000:
             sub = sub.nlargest(5000, "open_interest")
         _log_model_predictions(sub)

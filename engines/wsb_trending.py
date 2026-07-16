@@ -6,45 +6,110 @@ the past 24h, extracts ticker mentions, ranks them by (mentions × log(ups+1)),
 and returns the top N. Add these to the universe at runtime so the screener
 follows what retail is actually trading TODAY.
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 import time
 from collections import defaultdict
-from typing import List, Dict, Set
-
-import sys
 from pathlib import Path
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import USER_AGENT
+import data_provider  # noqa: E402
+from config import USER_AGENT  # noqa: E402
 
 log = logging.getLogger("optedge.wsb")
 
-TRENDING_SUBS = ["wallstreetbets", "options", "stocks", "investing", "smallstreetbets",
-                 "pennystocks"]
+TRENDING_SUBS = [
+    "wallstreetbets",
+    "options",
+    "stocks",
+    "investing",
+    "smallstreetbets",
+    "pennystocks",
+]
 SORTS = ["hot", "rising", "new"]
 
 # Regex catches both $TICKER and bare TICKER (1-5 caps)
 _TICKER_RE = re.compile(r"\$([A-Z]{1,5})\b|\b([A-Z]{2,5})\b")
 _STOPWORDS = {
     # Generic
-    "USA", "USD", "EUR", "GDP", "CPI", "FOMC", "FED", "SEC", "ETF", "IPO", "API",
-    "EOM", "TLDR", "FYI", "IMO", "IIRC", "DD", "DM", "PR", "HQ", "AKA", "NSFW",
-    "AMA", "TIL", "CEO", "CFO", "COO", "CTO", "VP",
+    "USA",
+    "USD",
+    "EUR",
+    "GDP",
+    "CPI",
+    "FOMC",
+    "FED",
+    "SEC",
+    "ETF",
+    "IPO",
+    "API",
+    "EOM",
+    "TLDR",
+    "FYI",
+    "IMO",
+    "IIRC",
+    "DD",
+    "DM",
+    "PR",
+    "HQ",
+    "AKA",
+    "NSFW",
+    "AMA",
+    "TIL",
+    "CEO",
+    "CFO",
+    "COO",
+    "CTO",
+    "VP",
     # Trading slang that matches pattern
-    "FOMO", "ATM", "ITM", "OTM", "IV", "EOD", "AH", "PM", "EPS", "YOLO",
-    "WSB", "HFT", "GTFO", "LOL", "LMAO", "WTF", "OMG", "TBD", "AF",
+    "FOMO",
+    "ATM",
+    "ITM",
+    "OTM",
+    "IV",
+    "EOD",
+    "AH",
+    "PM",
+    "EPS",
+    "YOLO",
+    "WSB",
+    "HFT",
+    "GTFO",
+    "LOL",
+    "LMAO",
+    "WTF",
+    "OMG",
+    "TBD",
+    "AF",
     # Common false positives
-    "GO", "OF", "ON", "AT", "OR", "AND", "BUY", "SELL", "HOLD", "LONG",
-    "PUT", "CALL", "NEW", "OLD", "BIG", "ALL", "ANY",
+    "GO",
+    "OF",
+    "ON",
+    "AT",
+    "OR",
+    "AND",
+    "BUY",
+    "SELL",
+    "HOLD",
+    "LONG",
+    "PUT",
+    "CALL",
+    "NEW",
+    "OLD",
+    "BIG",
+    "ALL",
+    "ANY",
 }
 
 
-def _is_valid_ticker(sym: str, valid_set: Set[str]) -> bool:
+def _is_valid_ticker(sym: str, valid_set: set[str]) -> bool:
     if not sym or sym in _STOPWORDS:
         return False
     if valid_set and sym not in valid_set:
@@ -52,7 +117,7 @@ def _is_valid_ticker(sym: str, valid_set: Set[str]) -> bool:
     return True
 
 
-def _extract_tickers(text: str, valid_set: Set[str]) -> List[str]:
+def _extract_tickers(text: str, valid_set: set[str]) -> list[str]:
     if not text:
         return []
     out = []
@@ -63,7 +128,7 @@ def _extract_tickers(text: str, valid_set: Set[str]) -> List[str]:
     return out
 
 
-def _fetch_listing(sub: str, sort: str, limit: int = 100) -> List[Dict]:
+def _fetch_listing(sub: str, sort: str, limit: int = 100) -> list[dict]:
     sess = data_provider.get_session()
     url = f"https://www.reddit.com/r/{sub}/{sort}.json?limit={limit}"
     try:
@@ -77,7 +142,7 @@ def _fetch_listing(sub: str, sort: str, limit: int = 100) -> List[Dict]:
         return []
 
 
-def _fetch_comments(sub: str, limit: int = 100) -> List[Dict]:
+def _fetch_comments(sub: str, limit: int = 100) -> list[dict]:
     """Get the most recent comments from a sub. Captures the daily discussion
     thread + comments on hot posts + 'WSB chat'-style talk.
 
@@ -97,7 +162,7 @@ def _fetch_comments(sub: str, limit: int = 100) -> List[Dict]:
         return []
 
 
-def _fetch_sticky_comments(sub: str, limit: int = 500) -> List[Dict]:
+def _fetch_sticky_comments(sub: str, limit: int = 500) -> list[dict]:
     """Find the daily discussion sticky and pull all its comments in one fetch.
 
     Reddit's about/sticky.json returns the pinned post (whatever its name is
@@ -121,6 +186,7 @@ def _fetch_sticky_comments(sub: str, limit: int = 500) -> List[Dict]:
         else:
             return []
         out = []
+
         # Recursively flatten the comment tree
         def _walk(node):
             if not isinstance(node, dict):
@@ -134,6 +200,7 @@ def _fetch_sticky_comments(sub: str, limit: int = 500) -> List[Dict]:
                     replies = cd.get("replies")
                     if isinstance(replies, dict):
                         _walk(replies)
+
         _walk(comments_listing)
         # Cap at limit
         if limit and len(out) > limit:
@@ -145,8 +212,7 @@ def _fetch_sticky_comments(sub: str, limit: int = 500) -> List[Dict]:
         return []
 
 
-def get_trending(valid_universe: List[str], top_n: int = 50,
-                 min_mentions: int = 3) -> List[str]:
+def get_trending(valid_universe: list[str], top_n: int = 50, min_mentions: int = 3) -> list[str]:
     """Return up to `top_n` tickers from WSB-style subs that exceed `min_mentions`.
 
     Restricts matches to `valid_universe` so we don't surface random false
@@ -154,10 +220,11 @@ def get_trending(valid_universe: List[str], top_n: int = 50,
     pass an empty set as valid_universe and trust the regex.
     """
     valid_set = set(t.upper() for t in valid_universe)
-    score: Dict[str, float] = defaultdict(float)
-    mentions: Dict[str, int] = defaultdict(int)
+    score: dict[str, float] = defaultdict(float)
+    mentions: dict[str, int] = defaultdict(int)
 
     import math
+
     n_posts = 0
     n_comments = 0
     for sub in TRENDING_SUBS:
@@ -202,23 +269,24 @@ def get_trending(valid_universe: List[str], top_n: int = 50,
             n_comments += 1
         time.sleep(0.4)
 
-    log.info("wsb scan: %d posts + %d comments (incl sticky) processed",
-             n_posts, n_comments)
+    log.info("wsb scan: %d posts + %d comments (incl sticky) processed", n_posts, n_comments)
     ranked = sorted(score.items(), key=lambda kv: kv[1], reverse=True)
     out = [t for t, s in ranked if mentions[t] >= min_mentions][:top_n]
     log.info("wsb trending (top %d): %s", len(out), out[:20])
     return out
 
 
-def get_trending_with_metadata(valid_universe: List[str], top_n: int = 50,
-                                min_mentions: int = 3) -> List[Dict]:
+def get_trending_with_metadata(
+    valid_universe: list[str], top_n: int = 50, min_mentions: int = 3
+) -> list[dict]:
     """Same as get_trending but returns score/mention metadata."""
     valid_set = set(t.upper() for t in valid_universe)
-    score: Dict[str, float] = defaultdict(float)
-    mentions: Dict[str, int] = defaultdict(int)
-    total_ups: Dict[str, int] = defaultdict(int)
+    score: dict[str, float] = defaultdict(float)
+    mentions: dict[str, int] = defaultdict(int)
+    total_ups: dict[str, int] = defaultdict(int)
 
     import math
+
     n_posts = 0
     n_comments = 0
     for sub in TRENDING_SUBS:
@@ -261,8 +329,7 @@ def get_trending_with_metadata(valid_universe: List[str], top_n: int = 50,
             n_comments += 1
         time.sleep(0.4)
 
-    log.info("wsb metadata scan: %d posts + %d comments (incl sticky)",
-             n_posts, n_comments)
+    log.info("wsb metadata scan: %d posts + %d comments (incl sticky)", n_posts, n_comments)
     ranked = sorted(score.items(), key=lambda kv: kv[1], reverse=True)
     out = []
     for t, s in ranked:

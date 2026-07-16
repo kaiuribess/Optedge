@@ -8,16 +8,17 @@ Free, no-key source stack:
 Per ticker, the engine scores recent titles with VADER and emits headline
 counts, sentiment, velocity, and source metadata for dashboard transparency.
 """
+
 from __future__ import annotations
 
 import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import timezone
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -27,8 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import NEWS_MAX_HEADLINES_PER_TICKER, USER_AGENT, WORKERS_NEWS
+import data_provider  # noqa: E402
+from config import NEWS_MAX_HEADLINES_PER_TICKER, USER_AGENT, WORKERS_NEWS  # noqa: E402
 
 log = logging.getLogger("optedge.news")
 
@@ -36,7 +37,7 @@ _VADER = SentimentIntensityAnalyzer()
 _NEWS_CACHE_SEC = 3600
 
 
-def _empty_row(ticker: str) -> Dict[str, Any]:
+def _empty_row(ticker: str) -> dict[str, Any]:
     return {
         "ticker": ticker,
         "n_24h": 0,
@@ -51,10 +52,10 @@ def _empty_row(ticker: str) -> Dict[str, Any]:
     }
 
 
-def _parse_rss_items(xml_text: str, provider: str) -> List[Dict[str, Any]]:
+def _parse_rss_items(xml_text: str, provider: str) -> list[dict[str, Any]]:
     """Parse a small RSS feed into the common headline shape."""
     root = ET.fromstring(xml_text)
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for item in root.findall(".//item")[:NEWS_MAX_HEADLINES_PER_TICKER]:
         title = (item.findtext("title") or "").strip()
         pub_date = (item.findtext("pubDate") or "").strip()
@@ -64,7 +65,7 @@ def _parse_rss_items(xml_text: str, provider: str) -> List[Dict[str, Any]]:
         try:
             dt = parsedate_to_datetime(pub_date)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
             ts = dt.timestamp()
         except Exception:
             ts = time.time()
@@ -72,7 +73,7 @@ def _parse_rss_items(xml_text: str, provider: str) -> List[Dict[str, Any]]:
     return items
 
 
-def _fetch_provider_rss(ticker: str, provider: str, url: str) -> List[Dict[str, Any]]:
+def _fetch_provider_rss(ticker: str, provider: str, url: str) -> list[dict[str, Any]]:
     cache_key = f"news:{provider}:{ticker.upper()}"
     cached = data_provider.cache_get(cache_key, max_age_sec=_NEWS_CACHE_SEC)
     if cached is not None:
@@ -93,9 +94,9 @@ def _fetch_provider_rss(ticker: str, provider: str, url: str) -> List[Dict[str, 
         return []
 
 
-def _dedupe_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedupe_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = set()
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for item in sorted(items, key=lambda row: float(row.get("ts") or 0), reverse=True):
         key = (
             (item.get("title") or "").strip().lower(),
@@ -110,19 +111,19 @@ def _dedupe_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def _fetch_google_rss(ticker: str) -> List[Dict[str, Any]]:
+def _fetch_google_rss(ticker: str) -> list[dict[str, Any]]:
     query = f"%24{ticker.upper()}+stock"
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     return _fetch_provider_rss(ticker, "google_news", url)
 
 
-def _fetch_yahoo_rss(ticker: str) -> List[Dict[str, Any]]:
+def _fetch_yahoo_rss(ticker: str) -> list[dict[str, Any]]:
     symbol = ticker.upper()
     url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
     return _fetch_provider_rss(ticker, "yahoo_finance_rss", url)
 
 
-def _fetch_rss(ticker: str) -> List[Dict[str, Any]]:
+def _fetch_rss(ticker: str) -> list[dict[str, Any]]:
     """Pull free public RSS headlines, using Yahoo Finance as a no-key backup."""
     cache_key = f"news:v2:{ticker.upper()}"
     cached = data_provider.cache_get(cache_key, max_age_sec=_NEWS_CACHE_SEC)
@@ -136,7 +137,7 @@ def _fetch_rss(ticker: str) -> List[Dict[str, Any]]:
     return items
 
 
-def _score_ticker(ticker: str) -> Dict[str, Any]:
+def _score_ticker(ticker: str) -> dict[str, Any]:
     items = _fetch_rss(ticker)
     if not items:
         return _empty_row(ticker)
@@ -179,7 +180,7 @@ def _score_ticker(ticker: str) -> Dict[str, Any]:
     }
 
 
-def run(universe: List[str], max_workers: int | None = None) -> pd.DataFrame:
+def run(universe: list[str], max_workers: int | None = None) -> pd.DataFrame:
     """Parallel per-ticker news scoring."""
     workers = max_workers or WORKERS_NEWS
     rows = []

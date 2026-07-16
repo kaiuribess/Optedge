@@ -4,21 +4,23 @@
 Per ticker: revenue growth, gross/operating margin, EPS trend, P/E, EV/EBITDA,
 P/S, FCF yield, next earnings date, classification.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import WORKERS_FUNDAMENTALS
+import data_provider  # noqa: E402
+from config import WORKERS_FUNDAMENTALS  # noqa: E402
 
 log = logging.getLogger("optedge.fundamentals")
 
@@ -51,7 +53,7 @@ def _fund_score(rev_growth, op_margin, pe, ps, fcf_yield) -> float:
     return s
 
 
-def _per_ticker(t: str) -> Dict[str, Any]:
+def _per_ticker(t: str) -> dict[str, Any]:
     info = data_provider.get_fundamentals(t)
     rev_growth = info.get("revenueGrowth")
     gross_margin = info.get("grossMargins")
@@ -88,14 +90,13 @@ def _per_ticker(t: str) -> Dict[str, Any]:
     }
 
 
-def run(universe: List[str], max_workers: int = None) -> pd.DataFrame:
+def run(universe: list[str], max_workers: int = None) -> pd.DataFrame:
     """Parallel per-ticker processing. yfinance fundamentals are cached for 24h,
     so re-runs are much faster than the first run."""
     workers = max_workers or WORKERS_FUNDAMENTALS
     rows = []
     completed = 0
-    log.info("fundamentals for %d tickers (parallel, %d workers)",
-             len(universe), workers)
+    log.info("fundamentals for %d tickers (parallel, %d workers)", len(universe), workers)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(_per_ticker, t): t for t in universe}
         for fut in as_completed(futures):

@@ -13,37 +13,38 @@ v20.2 fixes vs v20.1:
 - Add CIK->ticker resolution from SEC company_tickers.json as a fallback for
   filings whose display_names happen to omit the parenthesized ticker.
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Set, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import SecContactRequiredError, sec_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import SecContactRequiredError, sec_headers  # noqa: E402
 
 log = logging.getLogger("optedge.form_144")
-
 
 
 def _sec_headers() -> dict[str, str]:
     return sec_headers(accept="application/json, text/plain, */*")
 
+
 # Display names look like: 'BLACKLINE, INC.  (BL)  (CIK 0001666134)'
-_TICKER_PAREN_RE = re.compile(r'\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK')
+_TICKER_PAREN_RE = re.compile(r"\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK")
 _CIK_RE = re.compile(r"\(CIK\s+(\d+)\)")
 
 
-def _extract_tickers(display_names) -> Set[str]:
-    tickers: Set[str] = set()
+def _extract_tickers(display_names) -> set[str]:
+    tickers: set[str] = set()
     if not display_names:
         return tickers
     if isinstance(display_names, str):
@@ -61,8 +62,8 @@ def _extract_tickers(display_names) -> Set[str]:
     return tickers
 
 
-def _extract_ciks(display_names) -> Set[str]:
-    ciks: Set[str] = set()
+def _extract_ciks(display_names) -> set[str]:
+    ciks: set[str] = set()
     if not display_names:
         return ciks
     if isinstance(display_names, str):
@@ -75,7 +76,7 @@ def _extract_ciks(display_names) -> Set[str]:
     return ciks
 
 
-def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> Dict[str, str]:
+def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> dict[str, str]:
     """SEC publishes a master CIK->ticker map at /files/company_tickers.json.
     Free, no key. Cached for a week (changes are rare)."""
     key = "sec_cik_ticker_map"
@@ -84,12 +85,13 @@ def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> Dict[str, str]:
         return cached
     sess = data_provider.get_session()
     try:
-        r = sess.get("https://www.sec.gov/files/company_tickers.json",
-                     headers=_sec_headers(), timeout=20)
+        r = sess.get(
+            "https://www.sec.gov/files/company_tickers.json", headers=_sec_headers(), timeout=20
+        )
         if r.status_code != 200:
             return {}
         data = r.json()
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         for _, rec in data.items():
             cik = str(rec.get("cik_str", "")).lstrip("0") or "0"
             tk = (rec.get("ticker") or "").upper().strip()
@@ -106,7 +108,7 @@ def _cik_to_ticker_map(max_age_sec: int = 7 * 86400) -> Dict[str, str]:
         return {}
 
 
-def _search_form_144(days_back: int = 30) -> List[Dict]:
+def _search_form_144(days_back: int = 30) -> list[dict]:
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
     date_from = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     key = f"form144:{date_from}:{date_to}"
@@ -129,13 +131,15 @@ def _search_form_144(days_back: int = 30) -> List[Dict]:
         out = []
         for h in hits[:1000]:
             s = h.get("_source", {})
-            out.append({
-                "display_names": s.get("display_names", []),
-                "tickers": s.get("tickers", []),
-                "ciks": s.get("ciks", []),
-                "file_date": s.get("file_date", ""),
-            })
-        if out:   # only cache non-empty
+            out.append(
+                {
+                    "display_names": s.get("display_names", []),
+                    "tickers": s.get("tickers", []),
+                    "ciks": s.get("ciks", []),
+                    "file_date": s.get("file_date", ""),
+                }
+            )
+        if out:  # only cache non-empty
             data_provider.cache_put(key, out)
         return out
     except SecContactRequiredError as e:
@@ -146,7 +150,7 @@ def _search_form_144(days_back: int = 30) -> List[Dict]:
         return []
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     universe_set = {t.upper() for t in universe}
@@ -157,14 +161,14 @@ def run(universe: List[str]) -> pd.DataFrame:
 
     # Build CIK fallback map lazily — only fetch if we have filings that
     # didn't yield a ticker via display_names
-    cik_map: Optional[Dict[str, str]] = None
+    cik_map: dict[str, str] | None = None
 
-    counts: Dict[str, int] = {}
-    dates: Dict[str, List[str]] = {}
+    counts: dict[str, int] = {}
+    dates: dict[str, list[str]] = {}
     for f in filings:
-        tickers: Set[str] = set()
+        tickers: set[str] = set()
         # Direct tickers field
-        for t in (f.get("tickers") or []):
+        for t in f.get("tickers") or []:
             if isinstance(t, str) and t:
                 tickers.add(t.upper())
         # Parens in display_names
@@ -190,22 +194,45 @@ def run(universe: List[str]) -> pd.DataFrame:
 
     rows = []
     for tk, n in counts.items():
-        if n >= 5:   score = -1.0
-        elif n >= 3: score = -0.5
-        elif n >= 1: score = -0.2
-        else:        score = 0.0
-        rows.append({
-            "ticker": tk,
-            "form_144_score": score,
-            "form_144_count_30d": n,
-            "form_144_latest_date": max(dates.get(tk, [""])),
-        })
+        if n >= 5:
+            score = -1.0
+        elif n >= 3:
+            score = -0.5
+        elif n >= 1:
+            score = -0.2
+        else:
+            score = 0.0
+        rows.append(
+            {
+                "ticker": tk,
+                "form_144_score": score,
+                "form_144_count_30d": n,
+                "form_144_latest_date": max(dates.get(tk, [""])),
+            }
+        )
     out = pd.DataFrame(rows).sort_values("form_144_score").reset_index(drop=True)
-    log.info("form 144: %d filings -> %d tickers in universe (30d)",
-             len(filings), len(out))
+    log.info("form 144: %d filings -> %d tickers in universe (30d)", len(filings), len(out))
     return out
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print(run(["AAPL","MSFT","NVDA","TSLA","META","STZ","BL","CIFR","LAD","FSLY","NNBR","CRCL","POWI"]))
+    print(
+        run(
+            [
+                "AAPL",
+                "MSFT",
+                "NVDA",
+                "TSLA",
+                "META",
+                "STZ",
+                "BL",
+                "CIFR",
+                "LAD",
+                "FSLY",
+                "NNBR",
+                "CRCL",
+                "POWI",
+            ]
+        )
+    )

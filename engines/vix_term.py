@@ -21,19 +21,20 @@ with a special 'ticker' value '__MARKET__' or applied via macro_state.
 For simplicity we expose it via a per-row score that broadcasts to all tickers
 when fused.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, List
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.vix_term")
 
@@ -48,18 +49,24 @@ def _last_close(ticker: str) -> float:
         return 0.0
 
 
-def compute_term_structure() -> Dict:
+def compute_term_structure() -> dict:
     """Return dict with:
-       vix_spot, vix_3m, vix_9d, contango_ratio (vix_3m/vix_spot),
-       regime in {'deep_contango','contango','flat','backwardation','deep_backwardation'},
-       term_score in [-1,1] (positive = contango = bull bias)
+    vix_spot, vix_3m, vix_9d, contango_ratio (vix_3m/vix_spot),
+    regime in {'deep_contango','contango','flat','backwardation','deep_backwardation'},
+    term_score in [-1,1] (positive = contango = bull bias)
     """
     vix = _last_close("^VIX")
     vix3m = _last_close("^VIX3M")
     vix9d = _last_close("^VIX9D")
     if vix <= 0 or vix3m <= 0:
-        return {"regime": "unknown", "term_score": 0.0, "contango_ratio": None,
-                "vix_spot": vix, "vix_3m": vix3m, "vix_9d": vix9d}
+        return {
+            "regime": "unknown",
+            "term_score": 0.0,
+            "contango_ratio": None,
+            "vix_spot": vix,
+            "vix_3m": vix3m,
+            "vix_9d": vix9d,
+        }
     ratio = vix3m / vix
     if ratio >= 1.15:
         regime, score = "deep_contango", 1.0
@@ -81,22 +88,30 @@ def compute_term_structure() -> Dict:
     }
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     """Broadcast the market-wide VIX term score to every ticker in the universe."""
     state = compute_term_structure()
     if state["regime"] == "unknown":
         log.info("VIX term: cannot compute (^VIX or ^VIX3M unavailable)")
         return pd.DataFrame()
-    log.info("VIX term: regime=%s ratio=%.3f spot=%.2f 3M=%.2f score=%+.1f",
-             state["regime"], state["contango_ratio"] or 0,
-             state["vix_spot"], state["vix_3m"], state["term_score"])
+    log.info(
+        "VIX term: regime=%s ratio=%.3f spot=%.2f 3M=%.2f score=%+.1f",
+        state["regime"],
+        state["contango_ratio"] or 0,
+        state["vix_spot"],
+        state["vix_3m"],
+        state["term_score"],
+    )
     score = state["term_score"]
-    rows = [{
-        "ticker": t,
-        "vix_term_score": score,
-        "vix_regime": state["regime"],
-        "vix_contango_ratio": state["contango_ratio"],
-    } for t in universe]
+    rows = [
+        {
+            "ticker": t,
+            "vix_term_score": score,
+            "vix_regime": state["regime"],
+            "vix_contango_ratio": state["contango_ratio"],
+        }
+        for t in universe
+    ]
     return pd.DataFrame(rows)
 
 

@@ -16,47 +16,87 @@ Sources (tried in order, results merged):
 
 Per-ticker, we keep the SOONEST upcoming catalyst across all sources.
 """
+
 from __future__ import annotations
+
 import logging
 import re
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Set
-
-import requests
-import pandas as pd
-
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import requests
+
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import (  # noqa: E402
+    SecContactRequiredError,
+    outbound_headers,
+    sec_headers,
+)
 
 log = logging.getLogger("optedge.fda")
 
 CACHE_KEY_PRIMARY = "fda_calendar"
-CACHE_TTL_SEC = 86400      # FDA calendar updates ~once per day
-
+CACHE_TTL_SEC = 86400  # FDA calendar updates ~once per day
 
 
 def _sec_headers() -> dict[str, str]:
     return sec_headers(accept="application/json, text/plain, */*")
 
+
 BIOTECH_TICKERS = {
-    "MRNA", "BNTX", "NVAX", "OCGN", "VKTX", "SAVA", "SRPT", "BLUE", "FATE",
-    "CRSP", "EDIT", "NTLA", "BEAM", "ARWR", "HALO", "EXEL", "INSM",
-    "TVTX", "AKBA", "VANI", "ANIP", "PRTA", "CRDF", "IOVA", "LXRX",
-    "REGN", "VRTX", "BIIB", "GILD", "AMGN", "BMY", "MRK", "LLY", "PFE",
-    "ABBV", "NVO", "AZN", "BAYRY", "ROCHE",
+    "MRNA",
+    "BNTX",
+    "NVAX",
+    "OCGN",
+    "VKTX",
+    "SAVA",
+    "SRPT",
+    "BLUE",
+    "FATE",
+    "CRSP",
+    "EDIT",
+    "NTLA",
+    "BEAM",
+    "ARWR",
+    "HALO",
+    "EXEL",
+    "INSM",
+    "TVTX",
+    "AKBA",
+    "VANI",
+    "ANIP",
+    "PRTA",
+    "CRDF",
+    "IOVA",
+    "LXRX",
+    "REGN",
+    "VRTX",
+    "BIIB",
+    "GILD",
+    "AMGN",
+    "BMY",
+    "MRK",
+    "LLY",
+    "PFE",
+    "ABBV",
+    "NVO",
+    "AZN",
+    "BAYRY",
+    "ROCHE",
 }
 
 
 # ---------------------------------------------------------------------------
 # Source 1: BioPharmCatalyst (unchanged from v20)
 # ---------------------------------------------------------------------------
-def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
+def _fetch_biopharmcatalyst() -> list[dict[str, Any]]:
     url = "https://www.biopharmcatalyst.com/calendars/fda-calendar"
     try:
         r = requests.get(url, headers=outbound_headers(), timeout=20)
@@ -64,6 +104,7 @@ def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
             log.debug("biopharmcatalyst -> %d", r.status_code)
             return []
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(r.text, "html.parser")
         rows = []
         for table in soup.find_all("table"):
@@ -82,20 +123,33 @@ def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
                     continue
                 date_match = None
                 for txt in texts:
-                    m = (re.search(r"(\w+\s+\d{1,2},?\s*\d{4})", txt) or
-                         re.search(r"(\d{1,2}/\d{1,2}/\d{4})", txt) or
-                         re.search(r"(\d{4}-\d{2}-\d{2})", txt))
+                    m = (
+                        re.search(r"(\w+\s+\d{1,2},?\s*\d{4})", txt)
+                        or re.search(r"(\d{1,2}/\d{1,2}/\d{4})", txt)
+                        or re.search(r"(\d{4}-\d{2}-\d{2})", txt)
+                    )
                     if m:
                         date_match = m.group(1)
                         break
                 full_text = " | ".join(texts).lower()
-                if "pdufa" in full_text: catalyst_type = "PDUFA"
-                elif "adcom" in full_text or "advisory" in full_text: catalyst_type = "ADCOM"
-                elif "topline" in full_text or "phase" in full_text: catalyst_type = "TOPLINE"
-                elif "chmp" in full_text: catalyst_type = "CHMP"
-                else: catalyst_type = "EVENT"
-                rows.append({"ticker": ticker_match, "date_str": date_match,
-                             "type": catalyst_type, "source": "biopharmcatalyst"})
+                if "pdufa" in full_text:
+                    catalyst_type = "PDUFA"
+                elif "adcom" in full_text or "advisory" in full_text:
+                    catalyst_type = "ADCOM"
+                elif "topline" in full_text or "phase" in full_text:
+                    catalyst_type = "TOPLINE"
+                elif "chmp" in full_text:
+                    catalyst_type = "CHMP"
+                else:
+                    catalyst_type = "EVENT"
+                rows.append(
+                    {
+                        "ticker": ticker_match,
+                        "date_str": date_match,
+                        "type": catalyst_type,
+                        "source": "biopharmcatalyst",
+                    }
+                )
         log.info("fda: biopharmcatalyst -> %d rows", len(rows))
         return rows
     except Exception as e:
@@ -106,7 +160,7 @@ def _fetch_biopharmcatalyst() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Source 2: RTTNews (kept from v20)
 # ---------------------------------------------------------------------------
-def _fetch_rttnews() -> List[Dict[str, Any]]:
+def _fetch_rttnews() -> list[dict[str, Any]]:
     url = "https://www.rttnews.com/CorpInfo/FDACalendar.aspx"
     try:
         r = requests.get(url, headers=outbound_headers(), timeout=20)
@@ -114,6 +168,7 @@ def _fetch_rttnews() -> List[Dict[str, Any]]:
             log.debug("rttnews -> %d", r.status_code)
             return []
         from bs4 import BeautifulSoup
+
         soup = BeautifulSoup(r.text, "html.parser")
         rows = []
         for tr in soup.find_all("tr"):
@@ -124,26 +179,46 @@ def _fetch_rttnews() -> List[Dict[str, Any]]:
             ticker_match = None
             for txt in texts:
                 m = re.search(r"\b([A-Z]{2,5})\b", txt.strip())
-                if m and m.group(1) not in {"FDA", "PDUFA", "ADCOM", "CHMP", "NDA",
-                                            "BLA", "ANDA", "REMS", "EUA"}:
+                if m and m.group(1) not in {
+                    "FDA",
+                    "PDUFA",
+                    "ADCOM",
+                    "CHMP",
+                    "NDA",
+                    "BLA",
+                    "ANDA",
+                    "REMS",
+                    "EUA",
+                }:
                     ticker_match = m.group(1)
                     break
             if not ticker_match:
                 continue
             date_match = None
             for txt in texts:
-                m = (re.search(r"(\w+\s+\d{1,2},?\s*\d{4})", txt) or
-                     re.search(r"(\d{1,2}/\d{1,2}/\d{4})", txt))
+                m = re.search(r"(\w+\s+\d{1,2},?\s*\d{4})", txt) or re.search(
+                    r"(\d{1,2}/\d{1,2}/\d{4})", txt
+                )
                 if m:
                     date_match = m.group(1)
                     break
             full_text = " | ".join(texts).lower()
-            if "pdufa" in full_text: catalyst_type = "PDUFA"
-            elif "adcom" in full_text or "advisory" in full_text: catalyst_type = "ADCOM"
-            elif "topline" in full_text or "phase" in full_text: catalyst_type = "TOPLINE"
-            else: catalyst_type = "EVENT"
-            rows.append({"ticker": ticker_match, "date_str": date_match,
-                         "type": catalyst_type, "source": "rttnews"})
+            if "pdufa" in full_text:
+                catalyst_type = "PDUFA"
+            elif "adcom" in full_text or "advisory" in full_text:
+                catalyst_type = "ADCOM"
+            elif "topline" in full_text or "phase" in full_text:
+                catalyst_type = "TOPLINE"
+            else:
+                catalyst_type = "EVENT"
+            rows.append(
+                {
+                    "ticker": ticker_match,
+                    "date_str": date_match,
+                    "type": catalyst_type,
+                    "source": "rttnews",
+                }
+            )
         log.info("fda: rttnews -> %d rows", len(rows))
         return rows
     except Exception as e:
@@ -154,7 +229,7 @@ def _fetch_rttnews() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Source 3: Drugs.com new-drugs page (kept from v20)
 # ---------------------------------------------------------------------------
-def _fetch_drugscom() -> List[Dict[str, Any]]:
+def _fetch_drugscom() -> list[dict[str, Any]]:
     url = "https://www.drugs.com/new-drugs.html"
     try:
         r = requests.get(url, headers=outbound_headers(), timeout=20)
@@ -163,14 +238,15 @@ def _fetch_drugscom() -> List[Dict[str, Any]]:
             return []
         # Drugs.com lists drug names but rarely tickers. We extract any cap-letter
         # patterns next to recognizable date strings.
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         text = r.text
         for m in re.finditer(r"\b([A-Z]{2,5})\b[^<]{0,80}?(\w+\s+\d{1,2},?\s*\d{4})", text):
             tk = m.group(1)
             if tk in {"FDA", "PDUFA", "ADCOM", "CHMP", "NDA", "BLA"}:
                 continue
-            rows.append({"ticker": tk, "date_str": m.group(2),
-                         "type": "EVENT", "source": "drugscom"})
+            rows.append(
+                {"ticker": tk, "date_str": m.group(2), "type": "EVENT", "source": "drugscom"}
+            )
         log.info("fda: drugs.com -> %d rows", len(rows))
         return rows
     except Exception as e:
@@ -181,7 +257,7 @@ def _fetch_drugscom() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Source 4 (NEW): openFDA recent supplements feed (keyless, official)
 # ---------------------------------------------------------------------------
-def _fetch_openfda() -> List[Dict[str, Any]]:
+def _fetch_openfda() -> list[dict[str, Any]]:
     """openFDA exposes drug approval submissions. Free, no key. Doesn't give
     forward PDUFA dates directly, but the most recent SUPPL submissions act
     as a proxy: a fresh supplement means the FDA is actively reviewing that
@@ -203,7 +279,7 @@ def _fetch_openfda() -> List[Dict[str, Any]]:
         if r.status_code != 200:
             return []
         data = r.json()
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for rec in data.get("results", []):
             sponsor = (rec.get("sponsor_name") or "").upper()
             # Crude sponsor->ticker heuristic: try a few common mappings
@@ -215,12 +291,14 @@ def _fetch_openfda() -> List[Dict[str, Any]]:
                 d = sub.get("submission_status_date")
                 if not d:
                     continue
-                rows.append({
-                    "ticker": ticker,
-                    "date_str": d,                        # YYYYMMDD
-                    "type": "EVENT",
-                    "source": "openfda",
-                })
+                rows.append(
+                    {
+                        "ticker": ticker,
+                        "date_str": d,  # YYYYMMDD
+                        "type": "EVENT",
+                        "source": "openfda",
+                    }
+                )
         if rows:
             data_provider.cache_put(cache_key, rows)
         log.info("fda: openFDA -> %d rows", len(rows))
@@ -231,21 +309,45 @@ def _fetch_openfda() -> List[Dict[str, Any]]:
 
 
 _SPONSOR_MAP = {
-    "PFIZER": "PFE", "MERCK SHARP": "MRK", "MERCK & CO": "MRK",
-    "ELI LILLY": "LLY", "ABBVIE": "ABBV", "BRISTOL MYERS": "BMY",
-    "BRISTOL-MYERS": "BMY", "JOHNSON": "JNJ", "ASTRAZENECA": "AZN",
-    "NOVARTIS": "NVS", "GLAXOSMITHKLINE": "GSK", "GSK ": "GSK",
-    "SANOFI": "SNY", "GILEAD": "GILD", "AMGEN": "AMGN",
-    "BIOGEN": "BIIB", "REGENERON": "REGN", "VERTEX": "VRTX",
-    "MODERNA": "MRNA", "BIONTECH": "BNTX", "NOVAVAX": "NVAX",
-    "SAREPTA": "SRPT", "BLUEBIRD": "BLUE", "CRISPR": "CRSP",
-    "EDITAS": "EDIT", "INTELLIA": "NTLA", "BEAM THERAPEUTICS": "BEAM",
-    "ARROWHEAD": "ARWR", "HALOZYME": "HALO", "EXELIXIS": "EXEL",
-    "INSMED": "INSM", "VIKING THERAPEUTICS": "VKTX",
-    "CASSAVA": "SAVA", "OCUGEN": "OCGN", "FATE THERAPEUTICS": "FATE",
+    "PFIZER": "PFE",
+    "MERCK SHARP": "MRK",
+    "MERCK & CO": "MRK",
+    "ELI LILLY": "LLY",
+    "ABBVIE": "ABBV",
+    "BRISTOL MYERS": "BMY",
+    "BRISTOL-MYERS": "BMY",
+    "JOHNSON": "JNJ",
+    "ASTRAZENECA": "AZN",
+    "NOVARTIS": "NVS",
+    "GLAXOSMITHKLINE": "GSK",
+    "GSK ": "GSK",
+    "SANOFI": "SNY",
+    "GILEAD": "GILD",
+    "AMGEN": "AMGN",
+    "BIOGEN": "BIIB",
+    "REGENERON": "REGN",
+    "VERTEX": "VRTX",
+    "MODERNA": "MRNA",
+    "BIONTECH": "BNTX",
+    "NOVAVAX": "NVAX",
+    "SAREPTA": "SRPT",
+    "BLUEBIRD": "BLUE",
+    "CRISPR": "CRSP",
+    "EDITAS": "EDIT",
+    "INTELLIA": "NTLA",
+    "BEAM THERAPEUTICS": "BEAM",
+    "ARROWHEAD": "ARWR",
+    "HALOZYME": "HALO",
+    "EXELIXIS": "EXEL",
+    "INSMED": "INSM",
+    "VIKING THERAPEUTICS": "VKTX",
+    "CASSAVA": "SAVA",
+    "OCUGEN": "OCGN",
+    "FATE THERAPEUTICS": "FATE",
 }
 
-def _sponsor_to_ticker(sponsor: str) -> Optional[str]:
+
+def _sponsor_to_ticker(sponsor: str) -> str | None:
     if not sponsor:
         return None
     sp = sponsor.upper()
@@ -258,7 +360,7 @@ def _sponsor_to_ticker(sponsor: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Source 5 (NEW): SEC EDGAR 8-K full-text "PDUFA" mentions
 # ---------------------------------------------------------------------------
-def _fetch_sec_8k_pdufa() -> List[Dict[str, Any]]:
+def _fetch_sec_8k_pdufa() -> list[dict[str, Any]]:
     """Search recent 8-K filings mentioning a forward PDUFA date. EDGAR's
     full-text search returns recent filings with the term anywhere in the doc."""
     cache_key = "sec_8k_pdufa"
@@ -278,27 +380,29 @@ def _fetch_sec_8k_pdufa() -> List[Dict[str, Any]]:
             return []
         data = r.json()
         hits = data.get("hits", {}).get("hits", [])
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for h in hits[:200]:
             s = h.get("_source", {})
             display_names = s.get("display_names") or []
-            tickers: Set[str] = set()
+            tickers: set[str] = set()
             for dn in display_names:
                 if not isinstance(dn, str):
                     continue
-                m = re.search(r'\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK', dn)
+                m = re.search(r"\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK", dn)
                 if m:
                     for part in m.group(1).split(","):
                         tk = part.strip().split("-")[0].split(".")[0].strip()
                         if tk and tk.isalpha() and 1 <= len(tk) <= 5:
                             tickers.add(tk)
             for tk in tickers:
-                rows.append({
-                    "ticker": tk,
-                    "date_str": s.get("file_date", ""),
-                    "type": "PDUFA",
-                    "source": "sec_8k",
-                })
+                rows.append(
+                    {
+                        "ticker": tk,
+                        "date_str": s.get("file_date", ""),
+                        "type": "PDUFA",
+                        "source": "sec_8k",
+                    }
+                )
         if rows:
             data_provider.cache_put(cache_key, rows)
         log.info("fda: sec 8-K PDUFA mentions -> %d rows", len(rows))
@@ -314,35 +418,39 @@ def _fetch_sec_8k_pdufa() -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Date parsing + scoring
 # ---------------------------------------------------------------------------
-def _parse_date(s: str) -> Optional[datetime]:
+def _parse_date(s: str) -> datetime | None:
     if not s:
         return None
     s = str(s).strip()
-    for fmt in ("%Y-%m-%d", "%Y%m%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y",
-                "%b %d %Y", "%B %d %Y"):
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
         try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(s, fmt).replace(tzinfo=UTC)
         except ValueError:
             continue
     return None
 
 
-def _score(days: Optional[int], catalyst_type: str) -> float:
+def _score(days: int | None, catalyst_type: str) -> float:
     if days is None or days < 0:
         return 0.0
-    type_w = {"PDUFA": 1.0, "ADCOM": 0.9, "TOPLINE": 0.7,
-              "CHMP": 0.6, "EVENT": 0.4}.get(catalyst_type, 0.3)
-    if days <= 2:  return 0.5 * type_w
-    if days <= 7:  return 0.9 * type_w
-    if days <= 21: return 1.0 * type_w
-    if days <= 45: return 0.6 * type_w
+    type_w = {"PDUFA": 1.0, "ADCOM": 0.9, "TOPLINE": 0.7, "CHMP": 0.6, "EVENT": 0.4}.get(
+        catalyst_type, 0.3
+    )
+    if days <= 2:
+        return 0.5 * type_w
+    if days <= 7:
+        return 0.9 * type_w
+    if days <= 21:
+        return 1.0 * type_w
+    if days <= 45:
+        return 0.6 * type_w
     return 0.2 * type_w
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     biotechs = set(t.upper() for t in universe) & BIOTECH_TICKERS
     if not biotechs:
         return pd.DataFrame()
@@ -352,7 +460,7 @@ def run(universe: List[str]) -> pd.DataFrame:
         rows = cached
     else:
         # Try all sources, merge results
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         rows.extend(_fetch_biopharmcatalyst())
         rows.extend(_fetch_rttnews())
         rows.extend(_fetch_drugscom())
@@ -365,8 +473,8 @@ def run(universe: List[str]) -> pd.DataFrame:
         log.info("fda_calendar: no rows from any source")
         return pd.DataFrame()
 
-    now = datetime.now(timezone.utc)
-    by_ticker: Dict[str, Dict[str, Any]] = {}
+    now = datetime.now(UTC)
+    by_ticker: dict[str, dict[str, Any]] = {}
     for r in rows:
         t = r.get("ticker", "").upper()
         if t not in biotechs:
@@ -405,6 +513,9 @@ def run(universe: List[str]) -> pd.DataFrame:
 
     df = pd.DataFrame(list(by_ticker.values()))
     if not df.empty:
-        log.info("fda_calendar: %d biotechs with catalysts (sources=%s)",
-                 len(df), df["fda_source"].value_counts().to_dict())
+        log.info(
+            "fda_calendar: %d biotechs with catalysts (sources=%s)",
+            len(df),
+            df["fda_source"].value_counts().to_dict(),
+        )
     return df

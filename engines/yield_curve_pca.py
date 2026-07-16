@@ -11,14 +11,14 @@ Free source stack:
   - Keyless FRED public CSV fallback
   - Official Treasury XML yield-curve feed when FRED is thin/unavailable
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List
 from xml.etree import ElementTree as ET
 
 import numpy as np
@@ -28,8 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from engines.fred_public import fred_csv_history
+import data_provider  # noqa: E402
+from engines.fred_public import fred_csv_history  # noqa: E402
 
 log = logging.getLogger("optedge.yield_curve")
 
@@ -59,8 +59,20 @@ TREASURY_D_NS = "{http://schemas.microsoft.com/ado/2007/08/dataservices}"
 TREASURY_M_NS = "{http://schemas.microsoft.com/ado/2007/08/dataservices/metadata}"
 
 LEVEL_BENEFICIARIES = [
-    "XLF", "JPM", "BAC", "WFC", "C", "USB", "PNC",
-    "MET", "PRU", "AFL", "ALL", "TRV", "CB", "AIG",
+    "XLF",
+    "JPM",
+    "BAC",
+    "WFC",
+    "C",
+    "USB",
+    "PNC",
+    "MET",
+    "PRU",
+    "AFL",
+    "ALL",
+    "TRV",
+    "CB",
+    "AIG",
 ]
 SLOPE_STEEP_BENEFICIARIES = ["XLF", "JPM", "BAC", "MS", "GS"]
 LEVEL_HARMED = ["XLU", "XLRE", "AMT", "PLD", "O", "TLT"]
@@ -78,7 +90,7 @@ def _get_fred_key() -> str:
         return ""
 
 
-def _fred_series_history(series_id: str, days: int = 90) -> List[Dict]:
+def _fred_series_history(series_id: str, days: int = 90) -> list[dict]:
     """Fetch daily history for a FRED series."""
     api_key = _get_fred_key()
     if not api_key:
@@ -131,15 +143,15 @@ def _build_fred_curve_panel(days: int = 60) -> pd.DataFrame:
     return pd.DataFrame(data).sort_index().tail(days).dropna(how="any")
 
 
-def _parse_treasury_xml_curve(xml_text: str) -> List[Dict[str, float | str]]:
+def _parse_treasury_xml_curve(xml_text: str) -> list[dict[str, float | str]]:
     """Parse the Treasury OData XML daily par yield-curve feed."""
     root = ET.fromstring(xml_text)
-    rows: List[Dict[str, float | str]] = []
+    rows: list[dict[str, float | str]] = []
     for props in root.findall(f".//{TREASURY_M_NS}properties"):
         date_text = props.findtext(f"{TREASURY_D_NS}NEW_DATE")
         if not date_text:
             continue
-        row: Dict[str, float | str] = {"date": date_text[:10]}
+        row: dict[str, float | str] = {"date": date_text[:10]}
         for tenor, field in TREASURY_XML_FIELDS.items():
             value_text = props.findtext(f"{TREASURY_D_NS}{field}")
             try:
@@ -152,7 +164,7 @@ def _parse_treasury_xml_curve(xml_text: str) -> List[Dict[str, float | str]]:
     return rows
 
 
-def _treasury_year_curve_rows(year: int) -> List[Dict[str, float | str]]:
+def _treasury_year_curve_rows(year: int) -> list[dict[str, float | str]]:
     cache_key = f"treasury_yield_curve_xml:{year}"
     cached = data_provider.cache_get(cache_key, max_age_sec=12 * 3600)
     if cached is not None:
@@ -178,8 +190,8 @@ def _treasury_year_curve_rows(year: int) -> List[Dict[str, float | str]]:
 
 def _build_treasury_curve_panel(days: int = 60) -> pd.DataFrame:
     """Return official Treasury XML curve panel when FRED is unavailable."""
-    year = datetime.now(timezone.utc).year
-    rows: List[Dict[str, float | str]] = []
+    year = datetime.now(UTC).year
+    rows: list[dict[str, float | str]] = []
     for offset in range(3):
         rows.extend(_treasury_year_curve_rows(year - offset))
         if len(rows) >= days:
@@ -201,7 +213,7 @@ def _build_curve_panel(days: int = 60) -> tuple[pd.DataFrame, str]:
     return fred_df if not fred_df.empty else treasury_df, "insufficient"
 
 
-def compute_pca_factors() -> Dict:
+def compute_pca_factors() -> dict:
     """Run PCA on the curve panel. Returns level/slope/curvature changes."""
     df, source = _build_curve_panel(days=60)
     if df.empty or len(df) < 20:
@@ -247,7 +259,7 @@ def compute_pca_factors() -> Dict:
     }
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     """Broadcast curve factor scores to affected ticker buckets."""
     state = compute_pca_factors()
     if state.get("n_obs", 0) < 20:
@@ -266,21 +278,25 @@ def run(universe: List[str]) -> pd.DataFrame:
     level_score_pos = max(-1.0, min(1.0, state["level_chg_5d"] * 5))
     slope_score_pos = max(-1.0, min(1.0, state["slope_chg_5d"] * 5))
     for ticker in LEVEL_BENEFICIARIES:
-        rows.append({
-            "ticker": ticker,
-            "curve_score": (level_score_pos + slope_score_pos) / 2,
-            "curve_factor": "level+slope",
-            "curve_source": state.get("curve_source", "unknown"),
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "curve_score": (level_score_pos + slope_score_pos) / 2,
+                "curve_factor": "level+slope",
+                "curve_source": state.get("curve_source", "unknown"),
+            }
+        )
     for ticker in LEVEL_HARMED:
         if any(row["ticker"] == ticker for row in rows):
             continue
-        rows.append({
-            "ticker": ticker,
-            "curve_score": -level_score_pos,
-            "curve_factor": "duration_hurt",
-            "curve_source": state.get("curve_source", "unknown"),
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "curve_score": -level_score_pos,
+                "curve_factor": "duration_hurt",
+                "curve_source": state.get("curve_source", "unknown"),
+            }
+        )
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows).reset_index(drop=True)

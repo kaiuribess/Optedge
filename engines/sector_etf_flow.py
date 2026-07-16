@@ -13,29 +13,47 @@ Output per sector ETF:
 This gets joined to each ticker via SECTOR_MAP, so a ticker in a hot sector
 gets its rank boosted.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.sector_flow")
 
 # Sector ETFs we care about
-SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB",
-               "XLRE", "XLU", "XLC", "SPY", "QQQ", "IWM", "DIA", "ARKK"]
+SECTOR_ETFS = [
+    "XLK",
+    "XLF",
+    "XLE",
+    "XLV",
+    "XLY",
+    "XLP",
+    "XLI",
+    "XLB",
+    "XLRE",
+    "XLU",
+    "XLC",
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "ARKK",
+]
 
 
-def _sector_stats(etf: str) -> Optional[Dict[str, Any]]:
+def _sector_stats(etf: str) -> dict[str, Any] | None:
     """Compute momentum + volume thrust for one ETF."""
     h = data_provider.get_history(etf, period="3mo")
     if h is None or h.empty or len(h) < 22:
@@ -49,7 +67,7 @@ def _sector_stats(etf: str) -> Optional[Dict[str, Any]]:
     last_vol = float(vols.iloc[-1])
     vol_thrust = last_vol / max(avg_vol_20, 1)
     # Flow score = momentum × (1 + vol_thrust_excess clamped)
-    excess_vol = max(0, min(2.0, vol_thrust - 1.0))   # cap at 2x normal
+    excess_vol = max(0, min(2.0, vol_thrust - 1.0))  # cap at 2x normal
     flow_score = (ret_5d * 3 + ret_20d * 1.5) * (1 + excess_vol * 0.5)
     return {
         "sector_etf": etf,
@@ -77,12 +95,15 @@ def run() -> pd.DataFrame:
                 pass
     df = pd.DataFrame(rows)
     if not df.empty:
-        log.info("sector_flow: %d ETFs, top flow: %s",
-                 len(df), df.sort_values("flow_score", ascending=False).iloc[0]["sector_etf"])
+        log.info(
+            "sector_flow: %d ETFs, top flow: %s",
+            len(df),
+            df.sort_values("flow_score", ascending=False).iloc[0]["sector_etf"],
+        )
     return df
 
 
-def per_ticker_score(universe: List[str], sector_flow: pd.DataFrame) -> pd.DataFrame:
+def per_ticker_score(universe: list[str], sector_flow: pd.DataFrame) -> pd.DataFrame:
     """Map each ticker → its sector ETF's flow_score."""
     if sector_flow is None or sector_flow.empty:
         return pd.DataFrame()
@@ -90,7 +111,7 @@ def per_ticker_score(universe: List[str], sector_flow: pd.DataFrame) -> pd.DataF
         from engines.sector_rs import SECTOR_MAP
     except Exception:
         return pd.DataFrame()
-    flow_map = dict(zip(sector_flow["sector_etf"], sector_flow["flow_score"]))
+    flow_map = dict(zip(sector_flow["sector_etf"], sector_flow["flow_score"], strict=False))
     rows = []
     for t in dict.fromkeys(universe):
         sec = SECTOR_MAP.get(t, "SPY")

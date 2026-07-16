@@ -15,27 +15,48 @@ Maps inventory surprise to energy-equity bias:
   - Bigger-than-expected crude DRAW   -> bullish
   - Similar logic for natgas
 """
+
 from __future__ import annotations
+
 import logging
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.eia")
 
-OIL_EQUITIES = ["XLE", "XOP", "USO", "XOM", "CVX", "COP", "OXY", "EOG", "SLB",
-                "MPC", "VLO", "PSX", "HAL", "FANG", "DVN", "PXD", "BKR", "WMB",
-                "KMI", "ENB", "ET"]
+OIL_EQUITIES = [
+    "XLE",
+    "XOP",
+    "USO",
+    "XOM",
+    "CVX",
+    "COP",
+    "OXY",
+    "EOG",
+    "SLB",
+    "MPC",
+    "VLO",
+    "PSX",
+    "HAL",
+    "FANG",
+    "DVN",
+    "PXD",
+    "BKR",
+    "WMB",
+    "KMI",
+    "ENB",
+    "ET",
+]
 NATGAS_EQUITIES = ["UNG", "BOIL", "KOLD", "EQT", "RRC", "AR", "CHK", "SWN", "CTRA", "OVV"]
 
 
@@ -48,12 +69,13 @@ def _get_eia_key() -> str:
         return key
     try:
         from keys import EIA_API_KEY
+
         return EIA_API_KEY
     except Exception:
         return ""
 
 
-def _fetch_v2_series(route: str, max_age_sec: int = 12 * 3600) -> Optional[List[Dict]]:
+def _fetch_v2_series(route: str, max_age_sec: int = 12 * 3600) -> list[dict] | None:
     """Fetch EIA v2 series. `route` is the path under /v2/."""
     key = _get_eia_key()
     if not key:
@@ -86,7 +108,7 @@ def _fetch_v2_series(route: str, max_age_sec: int = 12 * 3600) -> Optional[List[
         return None
 
 
-def _fetch_crude_stocks_api() -> Optional[List[Dict]]:
+def _fetch_crude_stocks_api() -> list[dict] | None:
     rows = _fetch_v2_series("petroleum/stoc/wstk/data/")
     if not rows:
         return None
@@ -99,7 +121,7 @@ def _fetch_crude_stocks_api() -> Optional[List[Dict]]:
     return out or None
 
 
-def _fetch_natgas_storage_api() -> Optional[List[Dict]]:
+def _fetch_natgas_storage_api() -> list[dict] | None:
     rows = _fetch_v2_series("natural-gas/stor/wkly/data/")
     if not rows:
         return None
@@ -116,7 +138,7 @@ def _fetch_natgas_storage_api() -> Optional[List[Dict]]:
 # ---------------------------------------------------------------------------
 # FALLBACK 1: Natural Gas storage HTML scrape (ir.eia.gov/ngs/ngs.html)
 # ---------------------------------------------------------------------------
-def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dict]]:
+def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> list[dict] | None:
     """Scrape EIA's weekly NG storage page. Returns [{date, value}] for the
     latest week + 5y-avg/year-ago comparison rows we synthesise into a series
     so the surprise calc still works."""
@@ -141,6 +163,7 @@ def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dic
         return None
     try:
         from datetime import datetime
+
         latest_date = datetime.strptime(m_date.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
     except Exception:
         return None
@@ -148,11 +171,11 @@ def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dic
     # the "Working gas in underground storage" row is the latest US total.
     # Look for sequences of <td>NNNN</td> following a Lower-48 mention.
     nums = re.findall(r">(\d[\d,]{2,6})<", text)
-    candidates: List[int] = []
+    candidates: list[int] = []
     for s in nums:
         try:
             v = int(s.replace(",", ""))
-            if 500 <= v <= 6000:    # plausible Bcf totals
+            if 500 <= v <= 6000:  # plausible Bcf totals
                 candidates.append(v)
         except ValueError:
             continue
@@ -160,17 +183,17 @@ def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dic
         return None
     # Latest, prior-week, year-ago, 5y-avg appear early in that order on the page
     latest = candidates[0]
-    prior  = candidates[1] if len(candidates) > 1 else latest
+    prior = candidates[1] if len(candidates) > 1 else latest
     yr_ago = candidates[2] if len(candidates) > 2 else latest
-    avg5y  = candidates[3] if len(candidates) > 3 else latest
+    avg5y = candidates[3] if len(candidates) > 3 else latest
     # Synthesise a small history list: [latest, prior, yr_ago_proxy, avg5y...]
     # _compute_surprise uses [0] vs avg of [1:5], so we pad sensibly.
     series = [
-        {"date": latest_date,       "value": float(latest)},
-        {"date": "prior_week",      "value": float(prior)},
-        {"date": "5y_avg",          "value": float(avg5y)},
-        {"date": "5y_avg",          "value": float(avg5y)},
-        {"date": "year_ago",        "value": float(yr_ago)},
+        {"date": latest_date, "value": float(latest)},
+        {"date": "prior_week", "value": float(prior)},
+        {"date": "5y_avg", "value": float(avg5y)},
+        {"date": "5y_avg", "value": float(avg5y)},
+        {"date": "year_ago", "value": float(yr_ago)},
     ]
     data_provider.cache_put(cache_key, series)
     return series
@@ -179,7 +202,7 @@ def _fetch_natgas_storage_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dic
 # ---------------------------------------------------------------------------
 # FALLBACK 2: Petroleum weekly HTML scrape
 # ---------------------------------------------------------------------------
-def _fetch_crude_stocks_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dict]]:
+def _fetch_crude_stocks_html(max_age_sec: int = 6 * 3600) -> list[dict] | None:
     """Scrape eia.gov/petroleum/supply/weekly for headline crude stocks number."""
     cache_key = "eia_petroleum_html"
     cached = data_provider.cache_get(cache_key, max_age_sec=max_age_sec)
@@ -200,6 +223,7 @@ def _fetch_crude_stocks_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dict]
     # Find the most recent date stamp in YYYY-MM-DD or "Month DD, YYYY" form
     # near a "crude" mention; bail if we can't establish a date.
     from datetime import datetime
+
     latest_date = None
     m = re.search(r"as of\s+([A-Za-z]+\s+\d+,\s*\d{4})", text, flags=re.IGNORECASE)
     if m:
@@ -219,25 +243,25 @@ def _fetch_crude_stocks_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dict]
     # Look for "Crude oil" or "Crude Oil" near a row of mb integers (millions of barrels)
     # Page reports in thousand barrels (kbbl), values typically 350,000 - 500,000
     nums = re.findall(r">\s*([\d,]{5,12})\s*<", text)
-    crude_nums: List[int] = []
+    crude_nums: list[int] = []
     for s in nums:
         try:
             v = int(s.replace(",", ""))
-            if 200_000 <= v <= 700_000:    # plausible kbbl totals (200-700 Mb)
+            if 200_000 <= v <= 700_000:  # plausible kbbl totals (200-700 Mb)
                 crude_nums.append(v)
         except ValueError:
             continue
     if not crude_nums:
         return None
     latest = crude_nums[0]
-    prior  = crude_nums[1] if len(crude_nums) > 1 else latest
+    prior = crude_nums[1] if len(crude_nums) > 1 else latest
     # Fabricate a short history for the surprise calc to operate on
     series = [
-        {"date": latest_date,  "value": float(latest)},
+        {"date": latest_date, "value": float(latest)},
         {"date": "prior_week", "value": float(prior)},
-        {"date": "prior_2",    "value": float(prior)},
-        {"date": "prior_3",    "value": float(prior)},
-        {"date": "prior_4",    "value": float(prior)},
+        {"date": "prior_2", "value": float(prior)},
+        {"date": "prior_3", "value": float(prior)},
+        {"date": "prior_4", "value": float(prior)},
     ]
     data_provider.cache_put(cache_key, series)
     return series
@@ -246,7 +270,7 @@ def _fetch_crude_stocks_html(max_age_sec: int = 6 * 3600) -> Optional[List[Dict]
 # ---------------------------------------------------------------------------
 # Shared scoring
 # ---------------------------------------------------------------------------
-def _compute_surprise(rows: List[Dict]) -> Optional[Dict]:
+def _compute_surprise(rows: list[dict]) -> dict | None:
     if not rows or len(rows) < 4:
         return None
     rows = sorted(rows, key=lambda r: r["date"], reverse=True)
@@ -265,9 +289,9 @@ def _compute_surprise(rows: List[Dict]) -> Optional[Dict]:
     }
 
 
-def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
+def run(universe: list[str] | None = None) -> pd.DataFrame:
     # PRIMARY: EIA v2 API
-    crude  = _fetch_crude_stocks_api()
+    crude = _fetch_crude_stocks_api()
     natgas = _fetch_natgas_storage_api()
     source = "eia_v2"
 
@@ -286,40 +310,63 @@ def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
     rows = []
-    crude_score = 0.0; crude_meta = ""
-    natgas_score = 0.0; natgas_meta = ""
+    crude_score = 0.0
+    crude_meta = ""
+    natgas_score = 0.0
+    natgas_meta = ""
 
     if crude:
         cs = _compute_surprise(crude)
         if cs:
             crude_score = max(-1.0, min(1.0, -cs["surprise_pct"] * 5))
-            crude_meta = (f"{cs['latest_date']}: {cs['latest_value']:.0f}kbbl vs 4w avg "
-                          f"{cs['avg_4w']:.0f}kbbl ({cs['surprise_pct']*100:+.1f}%)")
+            crude_meta = (
+                f"{cs['latest_date']}: {cs['latest_value']:.0f}kbbl vs 4w avg "
+                f"{cs['avg_4w']:.0f}kbbl ({cs['surprise_pct'] * 100:+.1f}%)"
+            )
 
     if natgas:
         ns = _compute_surprise(natgas)
         if ns:
             natgas_score = max(-1.0, min(1.0, -ns["surprise_pct"] * 5))
-            natgas_meta = (f"{ns['latest_date']}: {ns['latest_value']:.0f}bcf vs 4w avg "
-                           f"{ns['avg_4w']:.0f}bcf ({ns['surprise_pct']*100:+.1f}%)")
+            natgas_meta = (
+                f"{ns['latest_date']}: {ns['latest_value']:.0f}bcf vs 4w avg "
+                f"{ns['avg_4w']:.0f}bcf ({ns['surprise_pct'] * 100:+.1f}%)"
+            )
 
     if not crude_score and not natgas_score:
         return pd.DataFrame()
 
     for tk in OIL_EQUITIES:
-        rows.append({"ticker": tk, "eia_score": crude_score,
-                     "eia_meta": crude_meta, "eia_commodity": "crude",
-                     "eia_source": source})
+        rows.append(
+            {
+                "ticker": tk,
+                "eia_score": crude_score,
+                "eia_meta": crude_meta,
+                "eia_commodity": "crude",
+                "eia_source": source,
+            }
+        )
     for tk in NATGAS_EQUITIES:
         if any(r["ticker"] == tk for r in rows):
             continue
-        rows.append({"ticker": tk, "eia_score": natgas_score,
-                     "eia_meta": natgas_meta, "eia_commodity": "natgas",
-                     "eia_source": source})
+        rows.append(
+            {
+                "ticker": tk,
+                "eia_score": natgas_score,
+                "eia_meta": natgas_meta,
+                "eia_commodity": "natgas",
+                "eia_source": source,
+            }
+        )
 
     out = pd.DataFrame(rows)
-    log.info("EIA(%s): crude=%+.2f natgas=%+.2f -> %d ticker rows",
-             source, crude_score, natgas_score, len(out))
+    log.info(
+        "EIA(%s): crude=%+.2f natgas=%+.2f -> %d ticker rows",
+        source,
+        crude_score,
+        natgas_score,
+        len(out),
+    )
     return out
 
 

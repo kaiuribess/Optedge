@@ -18,15 +18,16 @@ factor next to the existing VADER-based news sentiment, not a replacement.
 These classifications are fallible research inputs, not expected returns or
 evidence of trading profitability.
 """
+
 from __future__ import annotations
+
 import logging
 import os
-from typing import Dict, List, Optional
+import sys
+from pathlib import Path
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -36,8 +37,8 @@ log = logging.getLogger("optedge.finbert")
 _MODEL = None
 _DEVICE = None
 _TOKENIZER = None
-_MODEL_LOAD_ATTEMPTED = False   # avoid retrying every iter when load fails
-_LOADED_MODEL_NAME: Optional[str] = None
+_MODEL_LOAD_ATTEMPTED = False  # avoid retrying every iter when load fails
+_LOADED_MODEL_NAME: str | None = None
 
 # v20.6: try multiple FinBERT variants in priority order. The first one
 # whose weights load successfully wins. We list safetensors-compatible
@@ -52,9 +53,9 @@ FINBERT_MODEL_CANDIDATES = [
     # (config.json exists but tokenizer_config.json / tokenizer.json / vocab all 404),
     # so it cannot load regardless of use_fast. Skip it entirely.
     ("mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis", (2, 0, 1)),  # primary
-    ("ProsusAI/finbert",                             (0, 1, 2)),  # fallback
+    ("ProsusAI/finbert", (0, 1, 2)),  # fallback
 ]
-_LABEL_IDX = (0, 1, 2)   # filled when the model loads
+_LABEL_IDX = (0, 1, 2)  # filled when the model loads
 
 
 def _ensure_loaded() -> bool:
@@ -64,21 +65,26 @@ def _ensure_loaded() -> bool:
         return True
     try:
         import torch
-        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
     except ImportError:
         return False
     # v20.5: detailed GPU diagnostics so the user can self-diagnose why CUDA
     # isn't picked up (most common cause: pip installed the CPU-only wheel).
     try:
         cuda_avail = torch.cuda.is_available()
-        log.info("finbert: torch=%s cuda_available=%s cuda_device_count=%d",
-                  torch.__version__, cuda_avail,
-                  torch.cuda.device_count() if cuda_avail else 0)
+        log.info(
+            "finbert: torch=%s cuda_available=%s cuda_device_count=%d",
+            torch.__version__,
+            cuda_avail,
+            torch.cuda.device_count() if cuda_avail else 0,
+        )
         if cuda_avail:
             try:
-                log.info("finbert: CUDA device 0 = %s (compute %s)",
-                          torch.cuda.get_device_name(0),
-                          torch.cuda.get_device_capability(0))
+                log.info(
+                    "finbert: CUDA device 0 = %s (compute %s)",
+                    torch.cuda.get_device_name(0),
+                    torch.cuda.get_device_capability(0),
+                )
             except Exception:
                 pass
         else:
@@ -88,14 +94,20 @@ def _ensure_loaded() -> bool:
                 log.warning("finbert: this torch build is CPU-only (no torch.version.cuda).")
                 log.warning("finbert: to enable GPU, reinstall torch with the CUDA wheel:")
                 log.warning("finbert:   pip uninstall -y torch")
-                log.warning("finbert:   pip install torch --index-url https://download.pytorch.org/whl/cu121")
+                log.warning(
+                    "finbert:   pip install torch --index-url https://download.pytorch.org/whl/cu121"
+                )
             else:
                 log.warning("finbert: torch reports CUDA %s but cuda.is_available()=False.", cv)
-                log.warning("finbert: usually means the NVIDIA driver is older than the CUDA runtime "
-                            "this torch was built against. Update NVIDIA driver, or install a torch "
-                            "matching your driver:")
+                log.warning(
+                    "finbert: usually means the NVIDIA driver is older than the CUDA runtime "
+                    "this torch was built against. Update NVIDIA driver, or install a torch "
+                    "matching your driver:"
+                )
                 log.warning("finbert:   nvidia-smi   (check your driver's CUDA support)")
-                log.warning("finbert: torch wheels: cu118, cu121, cu124. Pick one ≤ your driver's CUDA.")
+                log.warning(
+                    "finbert: torch wheels: cu118, cu121, cu124. Pick one ≤ your driver's CUDA."
+                )
     except Exception as e:
         log.debug("finbert: gpu probe failed (%s)", e)
 
@@ -131,25 +143,29 @@ def _ensure_loaded() -> bool:
             _TOKENIZER = None
             _MODEL = None
             continue
-    log.warning("finbert: all candidate models failed; last error: %s",
-                 str(last_err)[:200] if last_err else "?")
+    log.warning(
+        "finbert: all candidate models failed; last error: %s",
+        str(last_err)[:200] if last_err else "?",
+    )
     return False
 
 
-def _score_texts(texts: List[str], batch_size: int = 32) -> List[float]:
+def _score_texts(texts: list[str], batch_size: int = 32) -> list[float]:
     """Batched FinBERT inference. Returns per-text score in [-1, +1]:
     positive prob minus negative prob. Label indices come from the
     `_LABEL_IDX` mapping that was set when the model loaded."""
     if not texts or not _ensure_loaded():
         return [0.0] * len(texts)
     import torch
+
     pos_idx, neg_idx, _neu_idx = _LABEL_IDX
-    scores: List[float] = []
+    scores: list[float] = []
     with torch.no_grad():
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            enc = _TOKENIZER(batch, padding=True, truncation=True,
-                              max_length=128, return_tensors="pt").to(_DEVICE)
+            batch = texts[i : i + batch_size]
+            enc = _TOKENIZER(
+                batch, padding=True, truncation=True, max_length=128, return_tensors="pt"
+            ).to(_DEVICE)
             out = _MODEL(**enc)
             probs = torch.softmax(out.logits, dim=-1)
             s = (probs[:, pos_idx] - probs[:, neg_idx]).cpu().tolist()
@@ -164,8 +180,7 @@ def _default_batch_size() -> int:
         return 64 if _DEVICE == "cuda" else 32
 
 
-def run(news_df: Optional[pd.DataFrame] = None,
-        per_ticker_cap: int = 10) -> pd.DataFrame:
+def run(news_df: pd.DataFrame | None = None, per_ticker_cap: int = 10) -> pd.DataFrame:
     """Score recent headlines per ticker via FinBERT.
 
     Expects `news_df` with columns: ticker + one of (top_headline, headline,
@@ -184,16 +199,17 @@ def run(news_df: Optional[pd.DataFrame] = None,
             text_col = cand
             break
     if text_col is None or "ticker" not in news_df.columns:
-        log.warning("finbert: news_df missing text column. Available: %s",
-                     list(news_df.columns)[:10])
+        log.warning(
+            "finbert: news_df missing text column. Available: %s", list(news_df.columns)[:10]
+        )
         return pd.DataFrame()
     log.info("finbert: scoring %d rows using column '%s'", len(news_df), text_col)
 
     # Group per ticker — optedge's news engine emits one row per ticker, but
     # this also handles the multi-row case from other producers.
-    grouped = (news_df.groupby("ticker")[text_col]
-                       .apply(lambda s: [str(x).strip() for x in s.dropna()
-                                          if str(x).strip()][:per_ticker_cap]))
+    grouped = news_df.groupby("ticker")[text_col].apply(
+        lambda s: [str(x).strip() for x in s.dropna() if str(x).strip()][:per_ticker_cap]
+    )
 
     ticker_texts: list[tuple[str, str]] = []
     n_skipped = 0
@@ -204,13 +220,12 @@ def run(news_df: Optional[pd.DataFrame] = None,
         ticker_texts.extend((tk, text) for text in headlines)
 
     if not ticker_texts:
-        log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)",
-                  n_skipped)
+        log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)", n_skipped)
         return pd.DataFrame()
 
     all_scores = _score_texts([text for _, text in ticker_texts], batch_size=_default_batch_size())
-    by_ticker: Dict[str, list[tuple[float, str]]] = {}
-    for (tk, text), score in zip(ticker_texts, all_scores):
+    by_ticker: dict[str, list[tuple[float, str]]] = {}
+    for (tk, text), score in zip(ticker_texts, all_scores, strict=False):
         by_ticker.setdefault(tk, []).append((float(score), text))
 
     rows = []
@@ -219,30 +234,32 @@ def run(news_df: Optional[pd.DataFrame] = None,
             continue
         scores = [score for score, _text in scored]
         mean_score = sum(scores) / len(scores)
-        rows.append({
-            "ticker": tk,
-            "finbert_score": max(-1.0, min(1.0, mean_score)),
-            "finbert_n_headlines": len(scored),
-            "finbert_device": _DEVICE or "cpu",
-            "finbert_headline_preview": scored[0][1][:80],
-        })
+        rows.append(
+            {
+                "ticker": tk,
+                "finbert_score": max(-1.0, min(1.0, mean_score)),
+                "finbert_n_headlines": len(scored),
+                "finbert_device": _DEVICE or "cpu",
+                "finbert_headline_preview": scored[0][1][:80],
+            }
+        )
     if not rows:
-        log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)",
-                  n_skipped)
+        log.info("finbert: no scorable headlines (skipped %d tickers w/ empty text)", n_skipped)
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    log.info("finbert: scored %d tickers on %s (skipped %d empty)",
-              len(out), _DEVICE, n_skipped)
+    log.info("finbert: scored %d tickers on %s (skipped %d empty)", len(out), _DEVICE, n_skipped)
     return out
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Smoke test
-    fake = pd.DataFrame([
-        {"ticker": "AAPL", "headline": "Apple posts record iPhone sales and raises guidance"},
-        {"ticker": "AAPL", "headline": "Antitrust regulators open new probe into App Store"},
-        {"ticker": "TSLA", "headline": "Tesla recalls 500K vehicles over braking defect"},
-        {"ticker": "NVDA", "headline": "Nvidia beats earnings, data-center revenue up 60%"},
-    ])
+    fake = pd.DataFrame(
+        [
+            {"ticker": "AAPL", "headline": "Apple posts record iPhone sales and raises guidance"},
+            {"ticker": "AAPL", "headline": "Antitrust regulators open new probe into App Store"},
+            {"ticker": "TSLA", "headline": "Tesla recalls 500K vehicles over braking defect"},
+            {"ticker": "NVDA", "headline": "Nvidia beats earnings, data-center revenue up 60%"},
+        ]
+    )
     print(run(fake))

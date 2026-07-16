@@ -19,25 +19,40 @@ SOYB, DBA, MOO.
 No network required for the proximity component; yfinance is used for the
 5-day futures drift sign.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.wasde")
 
-AG_EQUITIES = ["DE", "AGCO", "BG", "ADM", "MOS", "NTR", "CF", "CTVA", "FMC",
-               "CORN", "WEAT", "SOYB", "DBA", "MOO"]
+AG_EQUITIES = [
+    "DE",
+    "AGCO",
+    "BG",
+    "ADM",
+    "MOS",
+    "NTR",
+    "CF",
+    "CTVA",
+    "FMC",
+    "CORN",
+    "WEAT",
+    "SOYB",
+    "DBA",
+    "MOO",
+]
 
 # USDA's published WASDE schedule: 8th-12th of each month, mid-morning ET.
 # We approximate the release as the 12th (latest typical date); using the 8th
@@ -86,12 +101,12 @@ def _proximity(days_since: int, days_to_next: int) -> float:
         return 0.3
     if 0 <= days_to_next <= 10:
         return 0.15
-    return 0.1   # background — keep ag exposure on the board
+    return 0.1  # background — keep ag exposure on the board
 
 
-def _futures_5d_drift() -> Dict[str, float]:
+def _futures_5d_drift() -> dict[str, float]:
     """% change over last 5 trading days for corn/soy/wheat continuous futures."""
-    out: Dict[str, float] = {}
+    out: dict[str, float] = {}
     for sym in ["ZC=F", "ZS=F", "ZW=F"]:
         h = data_provider.get_history(sym, period="10d", cache_age=3600)
         if h.empty or len(h) < 5:
@@ -99,13 +114,13 @@ def _futures_5d_drift() -> Dict[str, float]:
             continue
         try:
             closes = h["Close"].tolist()[-5:]
-            out[sym] = (closes[-1] / closes[0] - 1)
+            out[sym] = closes[-1] / closes[0] - 1
         except Exception:
             out[sym] = 0.0
     return out
 
 
-def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
+def run(universe: list[str] | None = None) -> pd.DataFrame:
     """Per-ticker wasde_score = sign(corn+soy+wheat avg drift) × proximity_decay."""
     today = datetime.utcnow()
     last = _most_recent_release(today)
@@ -120,20 +135,29 @@ def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
     # Always emit; magnitude scales with proximity × drift.
     score = max(-1.0, min(1.0, avg_drift * 10 * proximity))
 
-    log.info("WASDE: %d days since last (proximity=%.2f), %d to next, "
-             "drift=%+.2f%% -> score=%+.2f, %d rows",
-             days_since, proximity, days_to_next, avg_drift * 100,
-             score, len(AG_EQUITIES))
+    log.info(
+        "WASDE: %d days since last (proximity=%.2f), %d to next, "
+        "drift=%+.2f%% -> score=%+.2f, %d rows",
+        days_since,
+        proximity,
+        days_to_next,
+        avg_drift * 100,
+        score,
+        len(AG_EQUITIES),
+    )
 
-    rows = [{
-        "ticker": t,
-        "wasde_score": score,
-        "wasde_proximity": proximity,
-        "wasde_days_since": days_since,
-        "wasde_days_to_next": days_to_next,
-        "wasde_drift_5d": avg_drift,
-        "wasde_last_release": last.strftime("%Y-%m-%d"),
-    } for t in AG_EQUITIES]
+    rows = [
+        {
+            "ticker": t,
+            "wasde_score": score,
+            "wasde_proximity": proximity,
+            "wasde_days_since": days_since,
+            "wasde_days_to_next": days_to_next,
+            "wasde_drift_5d": avg_drift,
+            "wasde_last_release": last.strftime("%Y-%m-%d"),
+        }
+        for t in AG_EQUITIES
+    ]
     return pd.DataFrame(rows)
 
 

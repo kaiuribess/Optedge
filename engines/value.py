@@ -12,27 +12,29 @@ For each ticker, computes:
 Combines via Greenblatt: rank-of-earnings-yield + rank-of-roic, lowest sum wins.
 We ALSO output a value_score in z-units so it merges cleanly with fusion's other signals.
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from utils import safe_float, zscore
-from config import RISK_FREE_RATE_DEFAULT
+import data_provider  # noqa: E402
+from config import RISK_FREE_RATE_DEFAULT  # noqa: E402
+from utils import safe_float, zscore  # noqa: E402
 
 log = logging.getLogger("optedge.value")
 
 
-def _per_ticker(t: str) -> Dict[str, Any]:
+def _per_ticker(t: str) -> dict[str, Any]:
     info = data_provider.get_fundamentals(t)
     if not info:
         return {"ticker": t}
@@ -66,12 +68,18 @@ def _per_ticker(t: str) -> Dict[str, Any]:
     # +1 for each of: P/E < 20, P/B < 3 (proxied via P/S < 3), positive FCF yield,
     #   positive op margin, positive growth, P/E > 0
     graham = 0
-    if pe and 0 < pe < 20: graham += 1
-    if ps and 0 < ps < 3: graham += 1
-    if fcf_yield and fcf_yield > 0.04: graham += 1
-    if op_margin and op_margin > 0.10: graham += 1
-    if rev_growth and rev_growth > 0: graham += 1
-    if pe and pe > 0: graham += 1
+    if pe and 0 < pe < 20:
+        graham += 1
+    if ps and 0 < ps < 3:
+        graham += 1
+    if fcf_yield and fcf_yield > 0.04:
+        graham += 1
+    if op_margin and op_margin > 0.10:
+        graham += 1
+    if rev_growth and rev_growth > 0:
+        graham += 1
+    if pe and pe > 0:
+        graham += 1
 
     return {
         "ticker": t,
@@ -101,8 +109,9 @@ def _build_value_score(df: pd.DataFrame) -> pd.DataFrame:
     # Magic Formula: rank by earnings yield (high) + rank by ROIC (high), lowest sum wins
     df["ey_rank"] = df["earnings_yield"].rank(ascending=False, method="min")
     df["roic_rank"] = df["roic_proxy"].rank(ascending=False, method="min")
-    df["magic_sum"] = df["ey_rank"].fillna(df["ey_rank"].max() + 1) + \
-                      df["roic_rank"].fillna(df["roic_rank"].max() + 1)
+    df["magic_sum"] = df["ey_rank"].fillna(df["ey_rank"].max() + 1) + df["roic_rank"].fillna(
+        df["roic_rank"].max() + 1
+    )
     df["magic_rank"] = df["magic_sum"].rank(method="min").astype("Int64")
 
     # Z-score each component, then weighted combine into value_score.
@@ -113,7 +122,9 @@ def _build_value_score(df: pd.DataFrame) -> pd.DataFrame:
     # Lower P/E, P/S, EV/EBITDA = better value → use NEGATIVE z
     z_pe = -zscore(df["pe"].fillna(df["pe"].median() if not df["pe"].isna().all() else 20))
     z_ps = -zscore(df["ps"].fillna(df["ps"].median() if not df["ps"].isna().all() else 3))
-    z_ev = -zscore(df["ev_ebitda"].fillna(df["ev_ebitda"].median() if not df["ev_ebitda"].isna().all() else 12))
+    z_ev = -zscore(
+        df["ev_ebitda"].fillna(df["ev_ebitda"].median() if not df["ev_ebitda"].isna().all() else 12)
+    )
 
     df["value_score"] = (
         0.20 * z_ey
@@ -127,15 +138,19 @@ def _build_value_score(df: pd.DataFrame) -> pd.DataFrame:
 
     # Label: value bucket
     def _bucket(s):
-        if s > 1.0: return "deep value"
-        if s > 0.5: return "value"
-        if s > -0.5: return "fair"
+        if s > 1.0:
+            return "deep value"
+        if s > 0.5:
+            return "value"
+        if s > -0.5:
+            return "fair"
         return "expensive"
+
     df["value_bucket"] = df["value_score"].apply(_bucket)
     return df
 
 
-def run(universe: List[str], max_workers: int = 8) -> pd.DataFrame:
+def run(universe: list[str], max_workers: int = 8) -> pd.DataFrame:
     log.info("value/EV: %d tickers (parallel, %d workers)", len(universe), max_workers)
     rows = []
     completed = 0

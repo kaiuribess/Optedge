@@ -13,18 +13,19 @@ The supported interactive routes remain ``python run.py --forward`` for
 forward telemetry, ``python -m backtest.fixed_horizon`` for fixed-session
 settlement, and the local cockpit for the combined evidence view.
 """
+
 from __future__ import annotations
 
 import glob
 import json
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any
 
 import pandas as pd
-
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -34,7 +35,7 @@ DATA_DIR = ROOT / "data"
 LOGS_DIR = ROOT / "logs"
 
 
-def _summarize_log_files(pattern: str) -> Dict[str, Any]:
+def _summarize_log_files(pattern: str) -> dict[str, Any]:
     """Inventory local signal-log files that match ``pattern``."""
     files = sorted(glob.glob(str(LOGS_DIR / pattern)))
     if not files:
@@ -74,7 +75,7 @@ def _summarize_log_files(pattern: str) -> Dict[str, Any]:
     }
 
 
-def _artifact_status(path: Path) -> Dict[str, Any]:
+def _artifact_status(path: Path) -> dict[str, Any]:
     """Return read-only metadata for a local JSON or Parquet artifact."""
     if not path.exists():
         return {
@@ -107,7 +108,7 @@ def _artifact_status(path: Path) -> Dict[str, Any]:
     }
 
 
-def _current_pipeline_status() -> Dict[str, bool]:
+def _current_pipeline_status() -> dict[str, bool]:
     """Confirm that the supported evidence functions are importable."""
     try:
         from backtest.edge_lab import build_edge_lab
@@ -139,8 +140,8 @@ def _current_pipeline_status() -> Dict[str, bool]:
 
 def _trace_replay_one(
     row: pd.Series,
-    replay_fn: Callable[[pd.Series], Dict[str, Any] | None],
-) -> Dict[str, Any]:
+    replay_fn: Callable[[pd.Series], dict[str, Any] | None],
+) -> dict[str, Any]:
     """Compatibility helper that captures one caller-supplied replay result."""
     ticker = row.get("ticker") or row.get("symbol") or "?"
     try:

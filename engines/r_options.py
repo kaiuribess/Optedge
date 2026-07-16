@@ -7,21 +7,22 @@ for a different signal mix.
 
 Free, no auth.
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 from pathlib import Path
-from typing import Dict, List
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import outbound_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import outbound_headers  # noqa: E402
 
 log = logging.getLogger("optedge.r_options")
 
@@ -32,13 +33,14 @@ MAX_COMMENTS_PER_SUB = 200
 def _vader(text: str) -> float:
     try:
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
         sia = SentimentIntensityAnalyzer()
         return sia.polarity_scores(text)["compound"]
     except Exception:
         return 0.0
 
 
-def _fetch_sticky_comments(sub: str) -> List[Dict]:
+def _fetch_sticky_comments(sub: str) -> list[dict]:
     """Fetch the most recent sticky's comment tree from a subreddit."""
     key = f"r_options:{sub}"
     cached = data_provider.cache_get(key, max_age_sec=1800)
@@ -73,20 +75,20 @@ def _fetch_sticky_comments(sub: str) -> List[Dict]:
         return []
 
 
-def _extract_tickers(text: str, valid_universe: set) -> List[str]:
+def _extract_tickers(text: str, valid_universe: set) -> list[str]:
     """Match potential tickers in text."""
     # Cashtags + standalone all-caps 2-5 letter words
-    tags = re.findall(r'\$([A-Z]{1,5})\b', text)
-    words = re.findall(r'\b([A-Z]{2,5})\b', text)
+    tags = re.findall(r"\$([A-Z]{1,5})\b", text)
+    words = re.findall(r"\b([A-Z]{2,5})\b", text)
     found = set(tags + words)
     return [t for t in found if t in valid_universe]
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     universe_set = set(t.upper() for t in universe)
-    per_ticker: Dict[str, Dict] = {}
+    per_ticker: dict[str, dict] = {}
     for sub in SUBS:
         comments = _fetch_sticky_comments(sub)
         for c in comments:
@@ -107,12 +109,14 @@ def run(universe: List[str]) -> pd.DataFrame:
         if d["n"] < 2:  # filter noise
             continue
         avg_sent = d["sent_sum"] / d["n"]
-        rows.append({
-            "ticker": tk,
-            "r_options_score": max(-1.0, min(1.0, avg_sent * (1 + d["n"] / 20))),
-            "r_options_n": d["n"],
-            "r_options_avg_sent": avg_sent,
-        })
+        rows.append(
+            {
+                "ticker": tk,
+                "r_options_score": max(-1.0, min(1.0, avg_sent * (1 + d["n"] / 20))),
+                "r_options_n": d["n"],
+                "r_options_avg_sent": avg_sent,
+            }
+        )
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows).sort_values("r_options_n", ascending=False).reset_index(drop=True)

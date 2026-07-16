@@ -12,26 +12,41 @@ Free, no auth, no rate limit issues.
 
 API: https://api.hyperliquid.xyz/info
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, List
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.hyperliquid")
 
 # Crypto symbol -> equity exposures (high-correlation only)
 CRYPTO_EQUITY_MAP = {
-    "BTC": ["BITO", "IBIT", "GBTC", "MSTR", "COIN", "MARA", "RIOT", "CLSK",
-            "HUT", "WULF", "CIFR", "CORZ", "BITF", "HIVE"],
+    "BTC": [
+        "BITO",
+        "IBIT",
+        "GBTC",
+        "MSTR",
+        "COIN",
+        "MARA",
+        "RIOT",
+        "CLSK",
+        "HUT",
+        "WULF",
+        "CIFR",
+        "CORZ",
+        "BITF",
+        "HIVE",
+    ],
     "ETH": ["ETHA", "COIN"],
     "SOL": ["COIN"],
 }
@@ -39,7 +54,7 @@ CRYPTO_EQUITY_MAP = {
 HYPERLIQUID_API = "https://api.hyperliquid.xyz/info"
 
 
-def _fetch_meta_and_ctxs() -> Dict:
+def _fetch_meta_and_ctxs() -> dict:
     """Fetch universe metadata + funding/OI snapshots."""
     key = "hyperliquid:meta_ctxs"
     cached = data_provider.cache_get(key, max_age_sec=300)  # 5min cache
@@ -47,6 +62,7 @@ def _fetch_meta_and_ctxs() -> Dict:
         return cached
     try:
         import requests
+
         r = requests.post(HYPERLIQUID_API, json={"type": "metaAndAssetCtxs"}, timeout=15)
         if r.status_code != 200:
             return {}
@@ -63,7 +79,7 @@ def _fetch_meta_and_ctxs() -> Dict:
         return {}
 
 
-def _score_from_ctx(ctx: Dict) -> float:
+def _score_from_ctx(ctx: dict) -> float:
     """Combine funding + OI change into a sentiment score.
 
     funding is hourly (decimal): >0 = longs paying = bullish bias
@@ -90,7 +106,7 @@ def _score_from_ctx(ctx: Dict) -> float:
     return 0.0
 
 
-def run(universe: List[str] = None) -> pd.DataFrame:
+def run(universe: list[str] = None) -> pd.DataFrame:
     """Per-ticker hyperliquid_score for crypto-correlated equities."""
     payload = _fetch_meta_and_ctxs()
     if not payload:
@@ -114,21 +130,24 @@ def run(universe: List[str] = None) -> pd.DataFrame:
         except Exception:
             funding, oi = 0.0, 0.0
         for tk in equities:
-            rows.append({
-                "ticker": tk,
-                "hyperliquid_score": score,
-                "hl_crypto": crypto,
-                "hl_funding_annual": funding,
-                "hl_open_interest": oi,
-            })
+            rows.append(
+                {
+                    "ticker": tk,
+                    "hyperliquid_score": score,
+                    "hl_crypto": crypto,
+                    "hl_funding_annual": funding,
+                    "hl_open_interest": oi,
+                }
+            )
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
     # Take strongest signal per ticker
     out["abs"] = out["hyperliquid_score"].abs()
     out = out.sort_values("abs", ascending=False).drop_duplicates("ticker").drop(columns="abs")
-    log.info("hyperliquid: %d ticker rows from %d crypto assets",
-             len(out), out["hl_crypto"].nunique())
+    log.info(
+        "hyperliquid: %d ticker rows from %d crypto assets", len(out), out["hl_crypto"].nunique()
+    )
     return out.reset_index(drop=True)
 
 

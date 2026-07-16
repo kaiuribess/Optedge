@@ -10,27 +10,29 @@ The signal feeds the fusion layer as a directional boost — bullish factors get
 amplified when earnings is 7-21 days out (catalyst window), dampened when
 earnings is < 3 days out (IV crush risk).
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from config import EARNINGS_LOOKAHEAD_DAYS, WORKERS_EARNINGS
+import data_provider  # noqa: E402
+from config import EARNINGS_LOOKAHEAD_DAYS, WORKERS_EARNINGS  # noqa: E402
 
 log = logging.getLogger("optedge.earnings")
 
 
-def _fetch(ticker: str) -> Dict[str, Any]:
+def _fetch(ticker: str) -> dict[str, Any]:
     """Pull earnings details from yfinance with caching."""
     cache_key = f"earnings:{ticker}"
     cached = data_provider.cache_get(cache_key, max_age_sec=43200)  # 12h cache
@@ -46,7 +48,7 @@ def _fetch(ticker: str) -> Dict[str, Any]:
         next_date = None
         if ts:
             try:
-                next_date = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                next_date = datetime.fromtimestamp(ts, tz=UTC).date().isoformat()
             except Exception:
                 pass
 
@@ -78,11 +80,16 @@ def _fetch(ticker: str) -> Dict[str, Any]:
         return out
     except Exception as e:
         log.debug("earnings fetch fail %s: %s", ticker, e)
-        return {"ticker": ticker, "next_earnings_date": None, "eps_est": None,
-                "eps_actual": None, "last_eps_surprise_pct": None}
+        return {
+            "ticker": ticker,
+            "next_earnings_date": None,
+            "eps_est": None,
+            "eps_actual": None,
+            "last_eps_surprise_pct": None,
+        }
 
 
-def _score(row: Dict[str, Any]) -> float:
+def _score(row: dict[str, Any]) -> float:
     """Earnings catalyst score in roughly [-1, +1].
 
     +1: imminent earnings + recent positive surprise (bullish catalyst window)
@@ -93,20 +100,20 @@ def _score(row: Dict[str, Any]) -> float:
     if not next_date:
         return 0.0
     try:
-        edate = datetime.fromisoformat(next_date).replace(tzinfo=timezone.utc)
+        edate = datetime.fromisoformat(next_date).replace(tzinfo=UTC)
     except Exception:
         return 0.0
-    dte = (edate - datetime.now(timezone.utc)).days
+    dte = (edate - datetime.now(UTC)).days
     if dte < 0 or dte > EARNINGS_LOOKAHEAD_DAYS:
         return 0.0
 
     # Catalyst window strongest 7-21 days out, weaker either side
     if dte < 3:
-        window_weight = 0.3   # too close to earnings — IV crush dominates
+        window_weight = 0.3  # too close to earnings — IV crush dominates
     elif dte < 7:
         window_weight = 0.6
     elif dte < 21:
-        window_weight = 1.0   # sweet spot
+        window_weight = 1.0  # sweet spot
     else:
         window_weight = 0.5
 
@@ -114,19 +121,19 @@ def _score(row: Dict[str, Any]) -> float:
     direction = 0.0
     if surprise is not None:
         # Recent beats persist via PEAD; recent misses hurt
-        direction = max(-1.0, min(1.0, surprise * 5))   # 20% surprise → ±1
+        direction = max(-1.0, min(1.0, surprise * 5))  # 20% surprise → ±1
 
     return round(window_weight * direction, 3)
 
 
-def _process_ticker(t: str) -> Dict[str, Any]:
+def _process_ticker(t: str) -> dict[str, Any]:
     fetched = _fetch(t)
     fetched["earnings_score"] = _score(fetched)
     next_date = fetched.get("next_earnings_date")
     if next_date:
         try:
-            edate = datetime.fromisoformat(next_date).replace(tzinfo=timezone.utc)
-            fetched["days_to_earnings"] = (edate - datetime.now(timezone.utc)).days
+            edate = datetime.fromisoformat(next_date).replace(tzinfo=UTC)
+            fetched["days_to_earnings"] = (edate - datetime.now(UTC)).days
         except Exception:
             fetched["days_to_earnings"] = None
     else:
@@ -145,7 +152,7 @@ def _process_ticker(t: str) -> Dict[str, Any]:
     return fetched
 
 
-def run(universe: List[str], max_workers: int = None) -> pd.DataFrame:
+def run(universe: list[str], max_workers: int = None) -> pd.DataFrame:
     workers = max_workers or WORKERS_EARNINGS
     rows = []
     completed = 0

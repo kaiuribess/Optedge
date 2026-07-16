@@ -11,31 +11,33 @@ The "analyst momentum" signal is what we care about most: when strong-buy
 count rises month-over-month, that often precedes price movement (analyst
 herding effect — once one upgrades, others follow within a few weeks).
 """
+
 from __future__ import annotations
+
 import logging
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engines import finnhub_provider as fh
+from engines import finnhub_provider as fh  # noqa: E402
 
 log = logging.getLogger("optedge.analyst")
 
 
-def _score_one(symbol: str) -> Optional[Dict[str, Any]]:
+def _score_one(symbol: str) -> dict[str, Any] | None:
     """Per-ticker analyst score + momentum."""
     data = fh.get("/stock/recommendation", {"symbol": symbol}, cache_ttl=86400)
     if not data or not isinstance(data, list) or not data:
         return None
 
-    latest = data[0]   # most recent month
+    latest = data[0]  # most recent month
     sb = int(latest.get("strongBuy") or 0)
     b = int(latest.get("buy") or 0)
     h = int(latest.get("hold") or 0)
@@ -76,7 +78,7 @@ def _score_one(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def run(universe: List[str], top_n: int = 80, max_workers: int = 6) -> pd.DataFrame:
+def run(universe: list[str], top_n: int = 80, max_workers: int = 6) -> pd.DataFrame:
     """Pull analyst recommendations for top N tickers in the universe.
 
     Capped at top_n because Finnhub's free tier is 60/min and we want

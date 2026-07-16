@@ -19,27 +19,29 @@ Filter: only score tickers with earnings inside the next 14 days (or in the
 past 2 days for post-print drift). Outside that window no row is emitted —
 matches the engine's original v20 intent of focusing on the earnings catalyst.
 """
+
 from __future__ import annotations
+
 import logging
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.whisper")
 
 EARNINGS_WINDOW_DAYS_BEFORE = 14
-EARNINGS_WINDOW_DAYS_AFTER  = 2
+EARNINGS_WINDOW_DAYS_AFTER = 2
 
 
 # ---------------------------------------------------------------------------
@@ -51,12 +53,13 @@ def _get_finnhub_key() -> str:
         return key
     try:
         from keys import FINNHUB_API_KEY
+
         return FINNHUB_API_KEY
     except Exception:
         return ""
 
 
-def _fetch_finnhub_price_target(ticker: str) -> Optional[Dict]:
+def _fetch_finnhub_price_target(ticker: str) -> dict | None:
     key = _get_finnhub_key()
     if not key:
         return None
@@ -83,7 +86,7 @@ def _fetch_finnhub_price_target(ticker: str) -> Optional[Dict]:
 # ---------------------------------------------------------------------------
 # Fallback path: yfinance Ticker.info targetMeanPrice (no key, no quota)
 # ---------------------------------------------------------------------------
-def _fetch_yf_targets(ticker: str) -> Dict[str, Any]:
+def _fetch_yf_targets(ticker: str) -> dict[str, Any]:
     """Pull analyst targets + earnings timestamp from yfinance Ticker.info.
     Cached separately from the fundamentals cache so we don't disturb existing
     cached data."""
@@ -98,13 +101,13 @@ def _fetch_yf_targets(ticker: str) -> Dict[str, Any]:
         log.debug("whisper yf %s: %s", ticker, e)
         return {}
     out = {
-        "targetMeanPrice":         info.get("targetMeanPrice"),
-        "targetMedianPrice":       info.get("targetMedianPrice"),
+        "targetMeanPrice": info.get("targetMeanPrice"),
+        "targetMedianPrice": info.get("targetMedianPrice"),
         "numberOfAnalystOpinions": info.get("numberOfAnalystOpinions"),
-        "earningsTimestamp":       info.get("earningsTimestamp"),
-        "earningsTimestampStart":  info.get("earningsTimestampStart"),
-        "currentPrice":            info.get("currentPrice"),
-        "regularMarketPrice":      info.get("regularMarketPrice"),
+        "earningsTimestamp": info.get("earningsTimestamp"),
+        "earningsTimestampStart": info.get("earningsTimestampStart"),
+        "currentPrice": info.get("currentPrice"),
+        "regularMarketPrice": info.get("regularMarketPrice"),
     }
     if any(v is not None for v in out.values()):
         data_provider.cache_put(key, out)
@@ -114,7 +117,7 @@ def _fetch_yf_targets(ticker: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-def _spot_price(ticker: str, yf_info: Dict[str, Any]) -> Optional[float]:
+def _spot_price(ticker: str, yf_info: dict[str, Any]) -> float | None:
     for k in ("currentPrice", "regularMarketPrice"):
         v = yf_info.get(k)
         if v and v > 0:
@@ -128,17 +131,17 @@ def _spot_price(ticker: str, yf_info: Dict[str, Any]) -> Optional[float]:
         return None
 
 
-def _within_earnings_window(yf_info: Dict[str, Any]) -> Optional[int]:
+def _within_earnings_window(yf_info: dict[str, Any]) -> int | None:
     """Signed days-to-earnings if inside the catalyst window, else None.
     Returns None when no earnings timestamp is available (don't emit a row)."""
     ts = yf_info.get("earningsTimestamp") or yf_info.get("earningsTimestampStart")
     if not ts:
         return None
     try:
-        et = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        et = datetime.fromtimestamp(float(ts), tz=UTC)
     except Exception:
         return None
-    days = (et - datetime.now(tz=timezone.utc)).days
+    days = (et - datetime.now(tz=UTC)).days
     if days > EARNINGS_WINDOW_DAYS_BEFORE:
         return None
     if days < -EARNINGS_WINDOW_DAYS_AFTER:
@@ -158,7 +161,7 @@ def _score_gap(gap_pct: float) -> float:
     return 0.0
 
 
-def _process(ticker: str) -> Optional[Dict[str, Any]]:
+def _process(ticker: str) -> dict[str, Any] | None:
     # Always need yfinance info for spot + earnings window
     yf_info = _fetch_yf_targets(ticker)
     days_to_earn = _within_earnings_window(yf_info)
@@ -170,8 +173,8 @@ def _process(ticker: str) -> Optional[Dict[str, Any]]:
 
     # Primary: Finnhub (if key present)
     source = "yfinance"
-    target_mean: Optional[float] = None
-    n_analysts: Optional[int] = None
+    target_mean: float | None = None
+    n_analysts: int | None = None
     pt = _fetch_finnhub_price_target(ticker)
     if pt and pt.get("targetMean"):
         try:
@@ -212,8 +215,12 @@ def _process(ticker: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def run(universe: List[str], earnings_df: Optional[pd.DataFrame] = None,
-        max_tickers: int = 80, max_workers: int = 6) -> pd.DataFrame:
+def run(
+    universe: list[str],
+    earnings_df: pd.DataFrame | None = None,
+    max_tickers: int = 80,
+    max_workers: int = 6,
+) -> pd.DataFrame:
     """Whisper-proxy: analyst-target-vs-spot gap for tickers near earnings.
 
     Layered: Finnhub primary when key is set, yfinance targetMeanPrice fallback.
@@ -223,7 +230,7 @@ def run(universe: List[str], earnings_df: Optional[pd.DataFrame] = None,
     if not universe:
         return pd.DataFrame()
     targets = list(dict.fromkeys(universe))[:max_tickers]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(_process, tk): tk for tk in targets}
         for fut in as_completed(futs):
@@ -238,8 +245,9 @@ def run(universe: List[str], earnings_df: Optional[pd.DataFrame] = None,
         return pd.DataFrame()
     out = pd.DataFrame(rows)
     src_counts = out["whisper_source"].value_counts().to_dict()
-    log.info("whisper: %d tickers in earnings window (-2d..+14d) (sources=%s)",
-             len(out), src_counts)
+    log.info(
+        "whisper: %d tickers in earnings window (-2d..+14d) (sources=%s)", len(out), src_counts
+    )
     return out
 
 

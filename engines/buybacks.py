@@ -8,29 +8,30 @@ v20.1 fix: EFTS returns tickers in `display_names` field (formatted as
 "Company Name (TICKER, TICKER-WT) (CIK 0001234567)"), NOT in the `tickers`
 field which is usually empty. Parser updated.
 """
+
 from __future__ import annotations
+
 import logging
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Set
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import SecContactRequiredError, sec_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import SecContactRequiredError, sec_headers  # noqa: E402
 
 log = logging.getLogger("optedge.buybacks")
 
 
-
 def _sec_headers() -> dict[str, str]:
     return sec_headers(accept="application/json, text/plain, */*")
+
 
 BUYBACK_PHRASES = [
     "repurchase program",
@@ -44,12 +45,12 @@ BUYBACK_PHRASES = [
 #   "Apple Inc.  (AAPL, AAPL-PA)  (CIK 0000320193)"
 #   "Vistance Networks, Inc.  (VISN)  (CIK 0001517228)"
 # We want the first paren group (which holds tickers), skipping the CIK group.
-_TICKER_PAREN_RE = re.compile(r'\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK')
+_TICKER_PAREN_RE = re.compile(r"\(([A-Z][A-Z0-9\-,\s\.]*)\)\s*\(CIK")
 
 
-def _extract_tickers(display_names) -> Set[str]:
+def _extract_tickers(display_names) -> set[str]:
     """Pull ticker symbols from EFTS display_names list."""
-    tickers: Set[str] = set()
+    tickers: set[str] = set()
     if not display_names:
         return tickers
     if isinstance(display_names, str):
@@ -69,7 +70,7 @@ def _extract_tickers(display_names) -> Set[str]:
     return tickers
 
 
-def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
+def _edgar_search(query: str, days_back: int = 14) -> list[dict]:
     """EDGAR full-text search for 8-K filings containing `query`."""
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
     date_from = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -83,6 +84,7 @@ def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
         return cached
     try:
         import requests
+
         r = requests.get(url, headers=_sec_headers(), timeout=20)
         if r.status_code != 200:
             log.debug("efts %s -> %d", query, r.status_code)
@@ -92,13 +94,15 @@ def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
         out = []
         for h in hits[:100]:
             s = h.get("_source", {})
-            out.append({
-                "display_names": s.get("display_names", []),
-                "tickers": s.get("tickers", []),
-                "file_date": s.get("file_date", ""),
-                "form": s.get("form", ""),
-                "ciks": s.get("ciks", []),
-            })
+            out.append(
+                {
+                    "display_names": s.get("display_names", []),
+                    "tickers": s.get("tickers", []),
+                    "file_date": s.get("file_date", ""),
+                    "form": s.get("form", ""),
+                    "ciks": s.get("ciks", []),
+                }
+            )
         data_provider.cache_put(key, out)
         return out
     except SecContactRequiredError as e:
@@ -109,7 +113,7 @@ def _edgar_search(query: str, days_back: int = 14) -> List[Dict]:
         return []
 
 
-def run(universe: List[str]) -> pd.DataFrame:
+def run(universe: list[str]) -> pd.DataFrame:
     if not universe:
         return pd.DataFrame()
     universe_set = {t.upper() for t in universe}
@@ -124,7 +128,7 @@ def run(universe: List[str]) -> pd.DataFrame:
 
     # Dedup by (ticker, date) and aggregate per ticker
     seen = set()
-    ticker_scores: Dict[str, Dict] = {}
+    ticker_scores: dict[str, dict] = {}
     n_hits_seen = len(all_filings)
     n_matched = 0
     for f in all_filings:
@@ -141,9 +145,14 @@ def run(universe: List[str]) -> pd.DataFrame:
             if k in seen:
                 continue
             seen.add(k)
-            entry = ticker_scores.setdefault(tk, {
-                "buyback_score": 0.0, "buyback_dates": [], "n_mentions": 0,
-            })
+            entry = ticker_scores.setdefault(
+                tk,
+                {
+                    "buyback_score": 0.0,
+                    "buyback_dates": [],
+                    "n_mentions": 0,
+                },
+            )
             entry["buyback_score"] = max(entry["buyback_score"], 0.5)
             entry["buyback_dates"].append(date)
             entry["n_mentions"] += 1
@@ -151,15 +160,21 @@ def run(universe: List[str]) -> pd.DataFrame:
             if len(set(entry["buyback_dates"])) >= 2:
                 entry["buyback_score"] = min(1.0, entry["buyback_score"] + 0.3)
     if not ticker_scores:
-        log.info("buybacks: %d hits, 0 matched universe (parsed %d filings, "
-                 "no overlap)", n_hits_seen, n_hits_seen)
+        log.info(
+            "buybacks: %d hits, 0 matched universe (parsed %d filings, no overlap)",
+            n_hits_seen,
+            n_hits_seen,
+        )
         return pd.DataFrame()
-    rows = [{
-        "ticker": tk,
-        "buyback_score": d["buyback_score"],
-        "buyback_date_latest": max(d["buyback_dates"]) if d["buyback_dates"] else "",
-        "buyback_n_filings": d["n_mentions"],
-    } for tk, d in ticker_scores.items()]
+    rows = [
+        {
+            "ticker": tk,
+            "buyback_score": d["buyback_score"],
+            "buyback_date_latest": max(d["buyback_dates"]) if d["buyback_dates"] else "",
+            "buyback_n_filings": d["n_mentions"],
+        }
+        for tk, d in ticker_scores.items()
+    ]
     out = pd.DataFrame(rows).sort_values("buyback_score", ascending=False).reset_index(drop=True)
     log.info("buybacks: %d hits -> %d tickers matched universe", n_hits_seen, len(out))
     return out

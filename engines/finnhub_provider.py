@@ -4,12 +4,14 @@
 Free tier: 60 req/min. We cache aggressively (24h) since most of these
 data sources update slowly.
 """
+
 from __future__ import annotations
+
 import logging
-import time
 import sys
+import time
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
 
 import requests
 
@@ -17,12 +19,13 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 try:
     from keys import FINNHUB_API_KEY
 except Exception:
     import os
+
     FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
 log = logging.getLogger("optedge.finnhub")
@@ -34,8 +37,9 @@ def _ratelimit_sleep():
     time.sleep(1.0)
 
 
-def get(endpoint: str, params: Dict[str, Any] = None,
-        cache_ttl: int = 86400, force: bool = False) -> Optional[Dict[str, Any]]:
+def get(
+    endpoint: str, params: dict[str, Any] = None, cache_ttl: int = 86400, force: bool = False
+) -> dict[str, Any] | None:
     """Generic Finnhub GET with disk cache + retry."""
     if not FINNHUB_API_KEY:
         return None

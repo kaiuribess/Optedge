@@ -21,20 +21,21 @@ References:
 - https://publicreporting.cftc.gov/Data-API/gpe5-46if
 - https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm
 """
+
 from __future__ import annotations
+
 import io
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, Optional, List
 
 import pandas as pd
 
-import sys
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.cot")
 
@@ -43,43 +44,59 @@ log = logging.getLogger("optedge.cot")
 # read (managed_money for commodities, leveraged_money for financials).
 COT_MARKETS = {
     # ---- Financial futures (TFF) ----
-    "13874A": {"name": "S&P 500 E-MINI",        "fut": "/ES",  "kind": "tff",
-               "etfs": ["SPY", "VOO", "IVV"]},
-    "209742": {"name": "NASDAQ-100 E-MINI",     "fut": "/NQ",  "kind": "tff",
-               "etfs": ["QQQ"]},
-    "239742": {"name": "RUSSELL 2000 E-MINI",   "fut": "/RTY", "kind": "tff",
-               "etfs": ["IWM"]},
-    "043602": {"name": "10-YEAR US T-NOTES",    "fut": "/ZN",  "kind": "tff",
-               "etfs": ["IEF", "TLT"]},
-    "020601": {"name": "30-YEAR US TBONDS",     "fut": "/ZB",  "kind": "tff",
-               "etfs": ["TLT"]},
-    "098662": {"name": "EURO FX",               "fut": "/6E",  "kind": "tff",
-               "etfs": ["FXE"]},
-    "133741": {"name": "BITCOIN",               "fut": "/BTC", "kind": "tff",
-               "etfs": ["BITO", "IBIT", "GBTC", "MSTR", "COIN", "MARA", "RIOT"]},
+    "13874A": {
+        "name": "S&P 500 E-MINI",
+        "fut": "/ES",
+        "kind": "tff",
+        "etfs": ["SPY", "VOO", "IVV"],
+    },
+    "209742": {"name": "NASDAQ-100 E-MINI", "fut": "/NQ", "kind": "tff", "etfs": ["QQQ"]},
+    "239742": {"name": "RUSSELL 2000 E-MINI", "fut": "/RTY", "kind": "tff", "etfs": ["IWM"]},
+    "043602": {"name": "10-YEAR US T-NOTES", "fut": "/ZN", "kind": "tff", "etfs": ["IEF", "TLT"]},
+    "020601": {"name": "30-YEAR US TBONDS", "fut": "/ZB", "kind": "tff", "etfs": ["TLT"]},
+    "098662": {"name": "EURO FX", "fut": "/6E", "kind": "tff", "etfs": ["FXE"]},
+    "133741": {
+        "name": "BITCOIN",
+        "fut": "/BTC",
+        "kind": "tff",
+        "etfs": ["BITO", "IBIT", "GBTC", "MSTR", "COIN", "MARA", "RIOT"],
+    },
     # ---- Commodity futures (Disagg) ----
-    "088691": {"name": "GOLD",                  "fut": "/GC",  "kind": "disagg",
-               "etfs": ["GLD", "GDX", "NEM", "GOLD", "RGLD"]},
-    "084691": {"name": "SILVER",                "fut": "/SI",  "kind": "disagg",
-               "etfs": ["SLV", "PAAS", "AG", "HL"]},
-    "067651": {"name": "WTI CRUDE OIL",         "fut": "/CL",  "kind": "disagg",
-               "etfs": ["XLE", "USO", "XOM", "CVX", "COP", "OXY"]},
-    "023651": {"name": "NATURAL GAS",           "fut": "/NG",  "kind": "disagg",
-               "etfs": ["UNG", "BOIL", "KOLD"]},
-    "001602": {"name": "WHEAT",                 "fut": "/ZW",  "kind": "disagg",
-               "etfs": ["WEAT"]},
-    "002602": {"name": "CORN",                  "fut": "/ZC",  "kind": "disagg",
-               "etfs": ["CORN", "DE", "AGCO"]},
-    "005602": {"name": "SOYBEANS",              "fut": "/ZS",  "kind": "disagg",
-               "etfs": ["SOYB", "BG", "ADM"]},
+    "088691": {
+        "name": "GOLD",
+        "fut": "/GC",
+        "kind": "disagg",
+        "etfs": ["GLD", "GDX", "NEM", "GOLD", "RGLD"],
+    },
+    "084691": {
+        "name": "SILVER",
+        "fut": "/SI",
+        "kind": "disagg",
+        "etfs": ["SLV", "PAAS", "AG", "HL"],
+    },
+    "067651": {
+        "name": "WTI CRUDE OIL",
+        "fut": "/CL",
+        "kind": "disagg",
+        "etfs": ["XLE", "USO", "XOM", "CVX", "COP", "OXY"],
+    },
+    "023651": {
+        "name": "NATURAL GAS",
+        "fut": "/NG",
+        "kind": "disagg",
+        "etfs": ["UNG", "BOIL", "KOLD"],
+    },
+    "001602": {"name": "WHEAT", "fut": "/ZW", "kind": "disagg", "etfs": ["WEAT"]},
+    "002602": {"name": "CORN", "fut": "/ZC", "kind": "disagg", "etfs": ["CORN", "DE", "AGCO"]},
+    "005602": {"name": "SOYBEANS", "fut": "/ZS", "kind": "disagg", "etfs": ["SOYB", "BG", "ADM"]},
 }
 
 SOCRATA_DISAGG = "https://publicreporting.cftc.gov/resource/72hh-3qpy.json"
-SOCRATA_TFF    = "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
-LEGACY_TXT     = "https://www.cftc.gov/dea/newcot/c_disagg.txt"
+SOCRATA_TFF = "https://publicreporting.cftc.gov/resource/gpe5-46if.json"
+LEGACY_TXT = "https://www.cftc.gov/dea/newcot/c_disagg.txt"
 
 
-def _socrata_fetch_one(url: str, code: str, max_age_sec: int = 24 * 3600) -> Optional[Dict]:
+def _socrata_fetch_one(url: str, code: str, max_age_sec: int = 24 * 3600) -> dict | None:
     """Pull the single latest row for a given CFTC contract market code."""
     cache_key = f"cot_socrata:{url}:{code}"
     cached = data_provider.cache_get(cache_key, max_age_sec=max_age_sec)
@@ -107,19 +124,19 @@ def _socrata_fetch_one(url: str, code: str, max_age_sec: int = 24 * 3600) -> Opt
         return None
 
 
-def _score_from_row(row: Dict, kind: str) -> Optional[Dict]:
+def _score_from_row(row: dict, kind: str) -> dict | None:
     """Compute managed/leveraged-money net position + week-over-week change."""
     try:
         if kind == "tff":
-            long_now   = float(row.get("lev_money_positions_long")  or 0)
-            short_now  = float(row.get("lev_money_positions_short") or 0)
-            chg_long   = float(row.get("change_in_lev_money_long")  or 0)
-            chg_short  = float(row.get("change_in_lev_money_short") or 0)
+            long_now = float(row.get("lev_money_positions_long") or 0)
+            short_now = float(row.get("lev_money_positions_short") or 0)
+            chg_long = float(row.get("change_in_lev_money_long") or 0)
+            chg_short = float(row.get("change_in_lev_money_short") or 0)
         else:  # disagg
-            long_now   = float(row.get("m_money_positions_long_all")  or 0)
-            short_now  = float(row.get("m_money_positions_short_all") or 0)
-            chg_long   = float(row.get("change_in_m_money_long_all")  or 0)
-            chg_short  = float(row.get("change_in_m_money_short_all") or 0)
+            long_now = float(row.get("m_money_positions_long_all") or 0)
+            short_now = float(row.get("m_money_positions_short_all") or 0)
+            chg_long = float(row.get("change_in_m_money_long_all") or 0)
+            chg_short = float(row.get("change_in_m_money_short_all") or 0)
     except (TypeError, ValueError):
         return None
     net_now = long_now - short_now
@@ -133,7 +150,7 @@ def _score_from_row(row: Dict, kind: str) -> Optional[Dict]:
     }
 
 
-def _try_legacy_txt() -> Optional[pd.DataFrame]:
+def _try_legacy_txt() -> pd.DataFrame | None:
     """Last-resort fallback to the commodities-only TXT file."""
     key = f"cot_txt:{LEGACY_TXT}"
     cached = data_provider.cache_get(key, max_age_sec=24 * 3600)
@@ -157,14 +174,14 @@ def _try_legacy_txt() -> Optional[pd.DataFrame]:
         return None
 
 
-def _score_from_txt_row(row) -> Optional[Dict]:
+def _score_from_txt_row(row) -> dict | None:
     """TXT column positions (Disaggregated): col 13/14 = M_Money long/short,
-       col 32/33 = change in M_Money long/short."""
+    col 32/33 = change in M_Money long/short."""
     try:
-        m_long  = float(row.iloc[13])
+        m_long = float(row.iloc[13])
         m_short = float(row.iloc[14])
         if len(row) >= 34:
-            chg_long  = float(row.iloc[32])
+            chg_long = float(row.iloc[32])
             chg_short = float(row.iloc[33])
         else:
             chg_long = chg_short = 0.0
@@ -180,8 +197,8 @@ def _score_from_txt_row(row) -> Optional[Dict]:
     }
 
 
-def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
-    rows: List[Dict] = []
+def run(universe: list[str] | None = None) -> pd.DataFrame:
+    rows: list[dict] = []
     sources_used = {"socrata": 0, "txt": 0}
 
     # Primary path: Socrata, one query per market code (small fan-out, all keyless)
@@ -196,14 +213,16 @@ def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
         sources_used["socrata"] += 1
         score = max(-1.0, min(1.0, sig["net_change_pct"]))
         for sym in meta["etfs"]:
-            rows.append({
-                "ticker": sym,
-                "cot_score": score,
-                "cot_market": meta["name"],
-                "cot_net_latest": sig["net_latest"],
-                "cot_net_change": sig["net_change"],
-                "cot_report_date": sig["report_date"],
-            })
+            rows.append(
+                {
+                    "ticker": sym,
+                    "cot_score": score,
+                    "cot_market": meta["name"],
+                    "cot_net_latest": sig["net_latest"],
+                    "cot_net_change": sig["net_change"],
+                    "cot_report_date": sig["report_date"],
+                }
+            )
 
     # Fallback: legacy TXT (commodities only — financials remain empty if we get here)
     if not rows:
@@ -221,14 +240,16 @@ def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
                 sources_used["txt"] += 1
                 score = max(-1.0, min(1.0, sig["net_change_pct"]))
                 for sym in meta["etfs"]:
-                    rows.append({
-                        "ticker": sym,
-                        "cot_score": score,
-                        "cot_market": meta["name"],
-                        "cot_net_latest": sig["net_latest"],
-                        "cot_net_change": sig["net_change"],
-                        "cot_report_date": sig["report_date"],
-                    })
+                    rows.append(
+                        {
+                            "ticker": sym,
+                            "cot_score": score,
+                            "cot_market": meta["name"],
+                            "cot_net_latest": sig["net_latest"],
+                            "cot_net_change": sig["net_change"],
+                            "cot_report_date": sig["report_date"],
+                        }
+                    )
 
     if not rows:
         log.info("CoT: 0 markets matched from any source (network blocked?)")
@@ -237,8 +258,12 @@ def run(universe: Optional[List[str]] = None) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     out["abs"] = out["cot_score"].abs()
     out = out.sort_values("abs", ascending=False).drop_duplicates("ticker").drop(columns="abs")
-    log.info("CoT: socrata=%d txt=%d markets -> %d ticker rows",
-             sources_used["socrata"], sources_used["txt"], len(out))
+    log.info(
+        "CoT: socrata=%d txt=%d markets -> %d ticker rows",
+        sources_used["socrata"],
+        sources_used["txt"],
+        len(out),
+    )
     return out.reset_index(drop=True)
 
 

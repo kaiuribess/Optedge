@@ -8,13 +8,14 @@ This is public exchange activity context, not a consolidated OPRA feed and not
 an execution quote. Optedge uses it as a sanity-check layer for option
 candidates before a Robinhood/Codex review.
 """
+
 from __future__ import annotations
 
 import io
 import logging
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
-from optedge.http_identity import outbound_headers
+import data_provider  # noqa: E402
+from optedge.http_identity import outbound_headers  # noqa: E402
 
 log = logging.getLogger("optedge.cboe_symbol_data")
 
-CBOE_SYMBOL_DATA_CSV = "https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt={market}"
+CBOE_SYMBOL_DATA_CSV = (
+    "https://www.cboe.com/us/options/market_statistics/symbol_data/csv/?mkt={market}"
+)
 CBOE_OPTION_MARKETS = {
     "cone": "Cboe Options",
     "opt": "BZX Options",
@@ -71,17 +74,17 @@ def _num(value: Any) -> float | None:
 
 
 def _infer_expiry(month: int, day: int, asof: datetime | None = None) -> str | None:
-    asof = asof or datetime.now(timezone.utc)
+    asof = asof or datetime.now(UTC)
     base_year = int(asof.year)
     try:
-        expiry = datetime(base_year, month, day, tzinfo=timezone.utc)
+        expiry = datetime(base_year, month, day, tzinfo=UTC)
     except ValueError:
         return None
     # Cboe labels omit year. If the date is already clearly behind us, treat it
     # as the next listed year.
     if expiry.date() < asof.date():
         try:
-            expiry = datetime(base_year + 1, month, day, tzinfo=timezone.utc)
+            expiry = datetime(base_year + 1, month, day, tzinfo=UTC)
         except ValueError:
             return None
     return expiry.date().isoformat()
@@ -178,20 +181,22 @@ def parse_symbol_data_csv(
         volume = _num(item.get("Volume")) or 0.0
         bid = _num(item.get("Bid Price"))
         ask = _num(item.get("Ask Price"))
-        rows.append({
-            **parsed,
-            "cboe_activity_contract": contract_label,
-            "cboe_activity_volume": int(volume),
-            "cboe_activity_matched": int(_num(item.get("Matched")) or 0),
-            "cboe_activity_routed": int(_num(item.get("Routed")) or 0),
-            "cboe_activity_bid_size": int(_num(item.get("Bid Size")) or 0),
-            "cboe_activity_bid": bid,
-            "cboe_activity_ask_size": int(_num(item.get("Ask Size")) or 0),
-            "cboe_activity_ask": ask,
-            "cboe_activity_last": _num(item.get("Last Price")),
-            "cboe_activity_venue": venue,
-            "cboe_activity_source": "cboe_symbol_data",
-        })
+        rows.append(
+            {
+                **parsed,
+                "cboe_activity_contract": contract_label,
+                "cboe_activity_volume": int(volume),
+                "cboe_activity_matched": int(_num(item.get("Matched")) or 0),
+                "cboe_activity_routed": int(_num(item.get("Routed")) or 0),
+                "cboe_activity_bid_size": int(_num(item.get("Bid Size")) or 0),
+                "cboe_activity_bid": bid,
+                "cboe_activity_ask_size": int(_num(item.get("Ask Size")) or 0),
+                "cboe_activity_ask": ask,
+                "cboe_activity_last": _num(item.get("Last Price")),
+                "cboe_activity_venue": venue,
+                "cboe_activity_source": "cboe_symbol_data",
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -212,7 +217,9 @@ def fetch_market(
     sess = data_provider.get_session()
     resp = sess.get(url, headers=_headers(), timeout=20)
     if getattr(resp, "status_code", 0) != 200:
-        raise RuntimeError(f"Cboe symbol data {market} returned HTTP {getattr(resp, 'status_code', 'unknown')}")
+        raise RuntimeError(
+            f"Cboe symbol data {market} returned HTTP {getattr(resp, 'status_code', 'unknown')}"
+        )
     df = parse_symbol_data_csv(getattr(resp, "text", "") or "", market=market, symbols=symbols)
     if not df.empty:
         data_provider.cache_put(cache_key, df.to_dict("records"))
@@ -229,33 +236,44 @@ def aggregate_activity(df: pd.DataFrame) -> pd.DataFrame:
             return pd.DataFrame()
     work = df.copy()
     for col in [
-        "cboe_activity_volume", "cboe_activity_matched", "cboe_activity_routed",
-        "cboe_activity_bid_size", "cboe_activity_ask_size",
+        "cboe_activity_volume",
+        "cboe_activity_matched",
+        "cboe_activity_routed",
+        "cboe_activity_bid_size",
+        "cboe_activity_ask_size",
     ]:
         work[col] = pd.to_numeric(work.get(col), errors="coerce").fillna(0)
     rows: list[dict[str, Any]] = []
     for key, group in work.groupby(group_cols, dropna=False):
         ticker, expiry, strike, option_side = key
         best = group.sort_values("cboe_activity_volume", ascending=False).iloc[0]
-        venues = sorted({str(v) for v in group.get("cboe_activity_venue", pd.Series()).dropna() if str(v)})
-        rows.append({
-            "ticker": ticker,
-            "expiry": expiry,
-            "strike": float(strike),
-            "option_side": option_side,
-            "cboe_activity_volume": int(group["cboe_activity_volume"].sum()),
-            "cboe_activity_matched": int(group["cboe_activity_matched"].sum()),
-            "cboe_activity_routed": int(group["cboe_activity_routed"].sum()),
-            "cboe_activity_bid_size": int(group["cboe_activity_bid_size"].sum()),
-            "cboe_activity_ask_size": int(group["cboe_activity_ask_size"].sum()),
-            "cboe_activity_bid": best.get("cboe_activity_bid"),
-            "cboe_activity_ask": best.get("cboe_activity_ask"),
-            "cboe_activity_last": best.get("cboe_activity_last"),
-            "cboe_activity_contract": best.get("cboe_activity_contract"),
-            "cboe_activity_venues": ",".join(venues),
-            "cboe_activity_source": "cboe_symbol_data",
-        })
-    return pd.DataFrame(rows).sort_values("cboe_activity_volume", ascending=False).reset_index(drop=True)
+        venues = sorted(
+            {str(v) for v in group.get("cboe_activity_venue", pd.Series()).dropna() if str(v)}
+        )
+        rows.append(
+            {
+                "ticker": ticker,
+                "expiry": expiry,
+                "strike": float(strike),
+                "option_side": option_side,
+                "cboe_activity_volume": int(group["cboe_activity_volume"].sum()),
+                "cboe_activity_matched": int(group["cboe_activity_matched"].sum()),
+                "cboe_activity_routed": int(group["cboe_activity_routed"].sum()),
+                "cboe_activity_bid_size": int(group["cboe_activity_bid_size"].sum()),
+                "cboe_activity_ask_size": int(group["cboe_activity_ask_size"].sum()),
+                "cboe_activity_bid": best.get("cboe_activity_bid"),
+                "cboe_activity_ask": best.get("cboe_activity_ask"),
+                "cboe_activity_last": best.get("cboe_activity_last"),
+                "cboe_activity_contract": best.get("cboe_activity_contract"),
+                "cboe_activity_venues": ",".join(venues),
+                "cboe_activity_source": "cboe_symbol_data",
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("cboe_activity_volume", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 def run(
@@ -281,7 +299,9 @@ def run(
     if symbols:
         out = out[out["ticker"].isin(symbols)].copy()
     if min_volume:
-        out = out[pd.to_numeric(out["cboe_activity_volume"], errors="coerce").fillna(0) >= int(min_volume)].copy()
+        out = out[
+            pd.to_numeric(out["cboe_activity_volume"], errors="coerce").fillna(0) >= int(min_volume)
+        ].copy()
     if not out.empty:
         log.info("cboe_symbol_data: %d active option contracts", len(out))
     return out.reset_index(drop=True)

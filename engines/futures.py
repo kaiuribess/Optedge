@@ -13,22 +13,24 @@ Output is bullish-tilted scores in roughly [-2, +2]. The fusion layer ranks
 the most bullish (long futures plays) and most bearish (long puts on the
 ETF proxy — e.g. SPY puts as a way to express short S&P 500 view).
 """
+
 from __future__ import annotations
+
 import logging
 import math
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Any, Optional
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import data_provider
+import data_provider  # noqa: E402
 
 log = logging.getLogger("optedge.futures")
 
@@ -62,7 +64,7 @@ FUTURES = [
 ]
 
 
-def _hv(close: pd.Series, n: int) -> Optional[float]:
+def _hv(close: pd.Series, n: int) -> float | None:
     if close is None or len(close) < n + 1:
         return None
     rets = np.log(close / close.shift(1)).dropna().tail(n)
@@ -71,7 +73,7 @@ def _hv(close: pd.Series, n: int) -> Optional[float]:
     return float(rets.std() * math.sqrt(252))
 
 
-def _atr(h: pd.DataFrame, n: int = 20) -> Optional[float]:
+def _atr(h: pd.DataFrame, n: int = 20) -> float | None:
     if h is None or h.empty or len(h) < n + 1:
         return None
     if not {"High", "Low", "Close"}.issubset(h.columns):
@@ -80,25 +82,39 @@ def _atr(h: pd.DataFrame, n: int = 20) -> Optional[float]:
     low = h["Low"].astype(float)
     close = h["Close"].astype(float)
     prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1).dropna()
+    tr = (
+        pd.concat(
+            [
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ],
+            axis=1,
+        )
+        .max(axis=1)
+        .dropna()
+    )
     if len(tr) < n:
         return None
     return float(tr.tail(n).mean())
 
 
-def _process(meta: Dict[str, Any]) -> Dict[str, Any]:
+def _process(meta: dict[str, Any]) -> dict[str, Any]:
     sym = meta["symbol"]
     try:
         h = data_provider.get_history(sym, period="1y")
         if h is None or h.empty or "Close" not in h.columns:
-            return {**meta, "spot": None, "ret_5d": None, "ret_20d": None,
-                    "ret_60d": None, "hv20": None, "atr20": None,
-                    "range_pos": None,
-                    "futures_score": 0.0}
+            return {
+                **meta,
+                "spot": None,
+                "ret_5d": None,
+                "ret_20d": None,
+                "ret_60d": None,
+                "hv20": None,
+                "atr20": None,
+                "range_pos": None,
+                "futures_score": 0.0,
+            }
         close = h["Close"].dropna()
         if close.empty:
             return {**meta, "futures_score": 0.0}
@@ -117,13 +133,13 @@ def _process(meta: Dict[str, Any]) -> Dict[str, Any]:
         # Directional score
         score = 0.0
         if ret_20d is not None:
-            score += max(-1.0, min(1.0, ret_20d * 5))   # +1 at 20%
+            score += max(-1.0, min(1.0, ret_20d * 5))  # +1 at 20%
         if ret_5d is not None:
-            score += max(-0.5, min(0.5, ret_5d * 10))   # +0.5 at 5%
+            score += max(-0.5, min(0.5, ret_5d * 10))  # +0.5 at 5%
         if range_pos < 0.25:
-            score += 0.3                                # mean-reversion bias near lows
+            score += 0.3  # mean-reversion bias near lows
         elif range_pos > 0.85:
-            score -= 0.2                                # caution near highs
+            score -= 0.2  # caution near highs
         # VIX inverts: low VIX = bullish for equities (handled in fusion via macro),
         # but VIX itself trending up is its own signal. Keep raw direction.
 

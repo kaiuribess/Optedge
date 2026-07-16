@@ -17,14 +17,16 @@ boosts puts when put flow is heavy).
 Data source: yfinance chains we already pull in the mispricing engine —
 this is essentially free.
 """
+
 from __future__ import annotations
+
 import logging
 import math
+import sys
+from pathlib import Path
 
 import pandas as pd
 
-import sys
-from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -38,9 +40,17 @@ def derive_from_contracts(contracts: pd.DataFrame) -> pd.DataFrame:
     Expected columns: ticker, side, open_interest, volume.
     """
     if contracts is None or contracts.empty:
-        return pd.DataFrame(columns=["ticker", "uoa_score", "uoa_max_ratio",
-                                      "uoa_call_ratio", "uoa_put_ratio",
-                                      "uoa_call_top_strike", "uoa_put_top_strike"])
+        return pd.DataFrame(
+            columns=[
+                "ticker",
+                "uoa_score",
+                "uoa_max_ratio",
+                "uoa_call_ratio",
+                "uoa_put_ratio",
+                "uoa_call_top_strike",
+                "uoa_put_top_strike",
+            ]
+        )
     c = contracts.copy()
     # Compute ratio (cap denominator at 1 to avoid divide-by-zero)
     c["uoa_ratio"] = c["volume"].fillna(0) / c["open_interest"].clip(lower=1)
@@ -56,24 +66,35 @@ def derive_from_contracts(contracts: pd.DataFrame) -> pd.DataFrame:
         # Top single-contract ratio per side
         call_top = calls["uoa_ratio"].max() if not calls.empty else 0.0
         put_top = puts["uoa_ratio"].max() if not puts.empty else 0.0
-        call_strike = (calls.loc[calls["uoa_ratio"].idxmax(), "strike"]
-                       if not calls.empty and call_top > 0 else None)
-        put_strike = (puts.loc[puts["uoa_ratio"].idxmax(), "strike"]
-                      if not puts.empty and put_top > 0 else None)
+        call_strike = (
+            calls.loc[calls["uoa_ratio"].idxmax(), "strike"]
+            if not calls.empty and call_top > 0
+            else None
+        )
+        put_strike = (
+            puts.loc[puts["uoa_ratio"].idxmax(), "strike"]
+            if not puts.empty and put_top > 0
+            else None
+        )
         # Per-ticker score: log-scaled signed difference. ±1 around ratio 2, ±2 around 5.
         signed = call_top - put_top
         score = math.copysign(math.log1p(abs(signed)), signed)
         max_ratio = max(call_top, put_top)
-        rows.append({
-            "ticker": ticker,
-            "uoa_score": round(float(score), 3),
-            "uoa_max_ratio": round(float(max_ratio), 2),
-            "uoa_call_ratio": round(float(call_top), 2),
-            "uoa_put_ratio": round(float(put_top), 2),
-            "uoa_call_top_strike": float(call_strike) if call_strike is not None else None,
-            "uoa_put_top_strike": float(put_strike) if put_strike is not None else None,
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "uoa_score": round(float(score), 3),
+                "uoa_max_ratio": round(float(max_ratio), 2),
+                "uoa_call_ratio": round(float(call_top), 2),
+                "uoa_put_ratio": round(float(put_top), 2),
+                "uoa_call_top_strike": float(call_strike) if call_strike is not None else None,
+                "uoa_put_top_strike": float(put_strike) if put_strike is not None else None,
+            }
+        )
     df = pd.DataFrame(rows)
-    log.info("UOA computed: %d tickers, top ratio %.2fx", len(df),
-             df["uoa_max_ratio"].max() if not df.empty else 0)
+    log.info(
+        "UOA computed: %d tickers, top ratio %.2fx",
+        len(df),
+        df["uoa_max_ratio"].max() if not df.empty else 0,
+    )
     return df

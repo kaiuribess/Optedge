@@ -7,6 +7,7 @@ https://www.nasdaqtrader.com/trader.aspx?id=regshothreshold
 This is settlement/short-pressure context for research. It is not a standalone
 entry or exit signal.
 """
+
 from __future__ import annotations
 
 import logging
@@ -25,13 +26,7 @@ SOURCE_NAME = "nasdaq_trader_regsho_threshold"
 
 
 def _clean_header(value: str) -> str:
-    return (
-        str(value or "")
-        .strip()
-        .lower()
-        .replace(" ", "_")
-        .replace("/", "_")
-    )
+    return str(value or "").strip().lower().replace(" ", "_").replace("/", "_")
 
 
 def parse_threshold_file(text: str, source_url: str | None = None) -> pd.DataFrame:
@@ -56,17 +51,23 @@ def parse_threshold_file(text: str, source_url: str | None = None) -> pd.DataFra
             continue
         regsho_flag = str(row.get("reg_sho_threshold_flag") or "").strip().upper()
         rule_3210 = str(row.get("rule_3210") or "").strip().upper()
-        rows.append({
-            "symbol": symbol,
-            "name": row.get("security_name") or "",
-            "market_category": row.get("market_category") or "",
-            "reg_sho_threshold_flag": regsho_flag,
-            "rule_3210": rule_3210,
-            "is_threshold": regsho_flag == "Y" or rule_3210 == "Y",
-            "settlement_risk_score": 86 if regsho_flag == "Y" else 78 if rule_3210 == "Y" else 55,
-            "source": SOURCE_NAME,
-            "source_url": source_url,
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": row.get("security_name") or "",
+                "market_category": row.get("market_category") or "",
+                "reg_sho_threshold_flag": regsho_flag,
+                "rule_3210": rule_3210,
+                "is_threshold": regsho_flag == "Y" or rule_3210 == "Y",
+                "settlement_risk_score": 86
+                if regsho_flag == "Y"
+                else 78
+                if rule_3210 == "Y"
+                else 55,
+                "source": SOURCE_NAME,
+                "source_url": source_url,
+            }
+        )
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
@@ -81,7 +82,7 @@ def _extract_download_url(html: str) -> str | None:
     match = re.search(r'href=["\'](?P<url>[^"\']*nasdaqth\d{8}\.txt)["\']', html or "", re.I)
     if match:
         return urljoin(REGSHO_PAGE_URL, match.group("url"))
-    match = re.search(r'(?P<url>/dynamic/symdir/regsho/nasdaqth\d{8}\.txt)', html or "", re.I)
+    match = re.search(r"(?P<url>/dynamic/symdir/regsho/nasdaqth\d{8}\.txt)", html or "", re.I)
     if match:
         return urljoin(REGSHO_PAGE_URL, match.group("url"))
     return None
