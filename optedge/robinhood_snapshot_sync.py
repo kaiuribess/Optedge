@@ -7,6 +7,7 @@ MCP calls and normalize the result.  Only the recursively redacted snapshot and
 pseudonymous equity ledger are persisted.  There is no scheduler, polling,
 retry, review, or placement call in this module.
 """
+
 from __future__ import annotations
 
 import copy
@@ -122,9 +123,9 @@ def _data_envelope(value: Any, code: str) -> dict[str, Any]:
 
 def _schema_accepts(schema: Mapping[str, Any], field: str) -> bool:
     properties = schema.get("properties")
-    return (
-        isinstance(properties, Mapping) and field in properties
-    ) or schema.get("additionalProperties", True) is not False
+    return (isinstance(properties, Mapping) and field in properties) or schema.get(
+        "additionalProperties", True
+    ) is not False
 
 
 def _field_schema(schema: Mapping[str, Any], field: str) -> dict[str, Any]:
@@ -381,9 +382,7 @@ def _sync_robinhood_broker_snapshot(
             scope[tool_name] = captured
             if tool_name in {"get_option_positions", "get_option_orders"}:
                 all_option_ids.update(
-                    _option_ids_from_rows(
-                        _collection_rows(captured, collection_key)
-                    )
+                    _option_ids_from_rows(_collection_rows(captured, collection_key))
                 )
         account_snapshots.append(scope)
 

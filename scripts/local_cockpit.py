@@ -7,6 +7,7 @@ Robinhood OAuth connection can store revocable tokens in the operating-system
 credential vault; passwords, MFA codes, cookies, and raw tokens never belong in
 the cockpit.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,7 @@ import struct
 import sys
 import time
 import webbrowser
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,47 +45,49 @@ ROOT_BOOTSTRAP = Path(__file__).resolve().parent.parent
 if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
-import data_provider
-from engines import cboe_symbol_data as cboe_symbol_data_engine
-from engines import dark_pool as dark_pool_engine
-from engines import sec_ftd as sec_ftd_engine
-from engines.fred_public import fred_csv_history
-from engines.nasdaq_screener import small_cap_movers
-from engines.regsho_threshold import threshold_rows_for_symbols
-from engines.short_sale_circuit import circuit_rows_for_symbols
-from engines.trading_halts import halt_rows_for_symbols
-from optedge.leaps_swing import score_leaps_swing_candidate
-from optedge.robinhood_connection import (
+import data_provider  # noqa: E402
+from engines import cboe_symbol_data as cboe_symbol_data_engine  # noqa: E402
+from engines import dark_pool as dark_pool_engine  # noqa: E402
+from engines import sec_ftd as sec_ftd_engine  # noqa: E402
+from engines.fred_public import fred_csv_history  # noqa: E402
+from engines.nasdaq_screener import small_cap_movers  # noqa: E402
+from engines.regsho_threshold import threshold_rows_for_symbols  # noqa: E402
+from engines.short_sale_circuit import circuit_rows_for_symbols  # noqa: E402
+from engines.trading_halts import halt_rows_for_symbols  # noqa: E402
+from optedge.leaps_swing import score_leaps_swing_candidate  # noqa: E402
+from optedge.robinhood_connection import (  # noqa: E402
     RobinhoodConnectionError,
     RobinhoodConnectionManager,
 )
-from optedge.robinhood_finalist import (
+from optedge.robinhood_finalist import (  # noqa: E402
     RobinhoodFinalistCheckError,
     apply_finalist_check_to_sources,
     check_best_option_finalist,
     load_finalist_check_status,
 )
-from optedge.robinhood_snapshot_sync import (
+from optedge.robinhood_snapshot_sync import (  # noqa: E402
     RobinhoodSnapshotSyncError,
     sync_robinhood_broker_snapshot,
 )
-from optedge.strategy_profile import (
+from optedge.strategy_profile import (  # noqa: E402
     LEAPS_EVIDENCE_LANE,
     LEAPS_SWING_PROFILE,
     SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
 )
-from risk.account_drawdown import (
+from risk.account_drawdown import (  # noqa: E402
     POLICY_VERSION as ACCOUNT_DRAWDOWN_POLICY_VERSION,
+)
+from risk.account_drawdown import (  # noqa: E402
     evaluate_account_drawdown,
     source_snapshot_digest,
 )
-from risk.portfolio import (
+from risk.portfolio import (  # noqa: E402
     evaluate_post_trade_portfolio,
     summarize_broker_account_capital_at_risk,
 )
-from risk.trade_plan import (
+from risk.trade_plan import (  # noqa: E402
     ACCOUNT_KEY_DERIVATION_HEX_LENGTH,
     ACCOUNT_KEY_DERIVATION_NAMESPACE,
     ACCOUNT_KEY_DERIVATION_SCHEMA,
@@ -94,8 +97,32 @@ from risk.trade_plan import (
     size_long_option_trade,
     size_share_trade,
 )
-from scripts.lookup_symbol import DATA_DIR, lookup_symbol, rich_lookup_kwargs, save_lookup
-from scripts.normalize_robinhood_broker_snapshot import (
+from scripts.export_external_paper_track import (  # noqa: E402
+    _load_option_chain_shortlist,
+    build_external_orders,
+)
+from scripts.export_external_paper_track import (  # noqa: E402
+    write_outputs as write_paper_outputs,
+)
+from scripts.export_robinhood_agentic_queue import (  # noqa: E402
+    append_agent_decision,
+    build_agentic_cycle_packet,
+    build_robinhood_queue,
+    decision_log_summary,
+    manual_review_quote_provenance_reasons,
+    research_quote_provenance_warnings,
+    robinhood_mcp_option_review_plan,
+)
+from scripts.export_robinhood_agentic_queue import (  # noqa: E402
+    write_outputs as write_robinhood_queue_outputs,
+)
+from scripts.lookup_symbol import (  # noqa: E402
+    DATA_DIR,
+    lookup_symbol,
+    rich_lookup_kwargs,
+    save_lookup,
+)
+from scripts.normalize_robinhood_broker_snapshot import (  # noqa: E402
     RAW_BUNDLE_SCHEMA,
     SNAPSHOT_SCHEMA,
     account_equity_ledger_path,
@@ -104,28 +131,26 @@ from scripts.normalize_robinhood_broker_snapshot import (
     load_consistent_account_equity_ledger,
     normalize_broker_snapshot,
 )
-from scripts.export_external_paper_track import (
-    _load_option_chain_shortlist,
-    build_external_orders,
-    write_outputs as write_paper_outputs,
+from scripts.research_jobs import (  # noqa: E402
+    create_job,
+    create_refresh_job,
+    job_dashboard_path,
+    job_lookup_path,
+    list_jobs,
+    read_job,
+    read_job_log,
 )
-from scripts.export_robinhood_agentic_queue import (
-    append_agent_decision, build_agentic_cycle_packet, build_robinhood_queue,
-    decision_log_summary, manual_review_quote_provenance_reasons,
-    research_quote_provenance_warnings, robinhood_mcp_option_review_plan,
-    write_outputs as write_robinhood_queue_outputs,
+from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol  # noqa: E402
+from scripts.symbol_resolver import (  # noqa: E402
+    COMMON_ALIASES,
+    load_nasdaq_symbol_directory,
+    load_sec_company_tickers,
+    nasdaq_symbol_cache_meta,
+    nasdaq_symbol_search,
+    resolve_symbol,
+    sec_company_cache_meta,
+    sec_company_search,
 )
-from scripts.research_jobs import (
-    create_job, create_refresh_job, job_dashboard_path, job_lookup_path, list_jobs,
-    read_job, read_job_log,
-)
-from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
-from scripts.symbol_resolver import (
-    COMMON_ALIASES, load_nasdaq_symbol_directory, load_sec_company_tickers,
-    nasdaq_symbol_cache_meta, nasdaq_symbol_search, resolve_symbol,
-    sec_company_cache_meta, sec_company_search,
-)
-
 
 FRESH_SNAPSHOT_MINUTES = SWING_EXECUTION_PROFILE.snapshot_fresh_minutes
 STALE_SNAPSHOT_MINUTES = SWING_EXECUTION_PROFILE.snapshot_stale_minutes
@@ -137,13 +162,14 @@ LIVE_QUOTE_MAX_AGE_SECONDS = 120
 EQUITY_REVIEW_MAX_SPREAD_PCT = 0.01
 ACCOUNT_EQUITY_OVERSTATEMENT_TOLERANCE_PCT = 0.01
 COCKPIT_CSRF_TOKEN = secrets.token_urlsafe(32)
-_REPORT_MEMO: contextvars.ContextVar[dict[tuple[str, str], Any] | None] = (
-    contextvars.ContextVar("optedge_report_memo", default=None)
+_REPORT_MEMO: contextvars.ContextVar[dict[tuple[str, str], Any] | None] = contextvars.ContextVar(
+    "optedge_report_memo", default=None
 )
 
 
 def _memoized_report(func):
     """Reuse identical report builds only inside one command-center request."""
+
     @functools.wraps(func)
     def wrapped(*args, **kwargs):
         cache = _REPORT_MEMO.get()
@@ -159,6 +185,7 @@ def _memoized_report(func):
 
 def _with_report_memo(func):
     """Create a thread-safe request-local memo scope for nested report builders."""
+
     @functools.wraps(func)
     def wrapped(*args, **kwargs):
         if _REPORT_MEMO.get() is not None:
@@ -171,36 +198,70 @@ def _with_report_memo(func):
 
     return wrapped
 
+
 ARTIFACTS = {
     "latest-dashboard": ("dashboard_*.html", "text/html; charset=utf-8"),
     "validation-report": ("validation_report.html", "text/html; charset=utf-8"),
     "validation-summary": ("validation_summary.json", "application/json; charset=utf-8"),
     "fixed-horizon-summary": ("fixed_horizon_summary.json", "application/json; charset=utf-8"),
-    "option-history-coverage": ("robinhood_option_history_coverage.json", "application/json; charset=utf-8"),
-    "option-history-requests": ("robinhood_option_history_requests.json", "application/json; charset=utf-8"),
+    "option-history-coverage": (
+        "robinhood_option_history_coverage.json",
+        "application/json; charset=utf-8",
+    ),
+    "option-history-requests": (
+        "robinhood_option_history_requests.json",
+        "application/json; charset=utf-8",
+    ),
     "option-history-prompt": ("robinhood_option_history_prompt.md", "text/markdown; charset=utf-8"),
-    "option-history-snapshot": ("robinhood_option_history_snapshot.json", "application/json; charset=utf-8"),
+    "option-history-snapshot": (
+        "robinhood_option_history_snapshot.json",
+        "application/json; charset=utf-8",
+    ),
     "factor-ic": ("factor_ic_summary.json", "application/json; charset=utf-8"),
     "position-aging": ("position_aging_summary.json", "application/json; charset=utf-8"),
     "equity-curve": ("equity_curve.png", "image/png"),
     "external-paper-orders": ("external_paper_orders.csv", "text/csv; charset=utf-8"),
     "option-chain-shortlist": ("option_chain_shortlist.csv", "text/csv; charset=utf-8"),
-    "option-chain-shortlist-json": ("option_chain_shortlist.json", "application/json; charset=utf-8"),
+    "option-chain-shortlist-json": (
+        "option_chain_shortlist.json",
+        "application/json; charset=utf-8",
+    ),
     "swing-packet-json": ("swing_packet.json", "application/json; charset=utf-8"),
     "swing-packet-md": ("swing_packet.md", "text/markdown; charset=utf-8"),
     "robinhood-agentic-queue": ("robinhood_agentic_queue.json", "application/json; charset=utf-8"),
     "robinhood-agentic-prompt": ("robinhood_agentic_prompt.md", "text/markdown; charset=utf-8"),
     "robinhood-agentic-cycle": ("robinhood_agentic_cycle.json", "application/json; charset=utf-8"),
-    "robinhood-agentic-cycle-prompt": ("robinhood_agentic_cycle_prompt.md", "text/markdown; charset=utf-8"),
+    "robinhood-agentic-cycle-prompt": (
+        "robinhood_agentic_cycle_prompt.md",
+        "text/markdown; charset=utf-8",
+    ),
     "agentic-paper-positions": ("agentic_paper_positions.json", "application/json; charset=utf-8"),
     "agentic-paper-orders": ("agentic_paper_orders.jsonl", "application/x-ndjson; charset=utf-8"),
-    "robinhood-live-order-tickets": ("robinhood_live_order_tickets.json", "application/json; charset=utf-8"),
-    "robinhood-broker-snapshot": ("robinhood_broker_snapshot.json", "application/json; charset=utf-8"),
-    "robinhood-finalist-check": ("robinhood_finalist_check.json", "application/json; charset=utf-8"),
-    "robinhood-research-coverage": ("robinhood_research_coverage.json", "application/json; charset=utf-8"),
-    "robinhood-research-requests": ("robinhood_research_requests.json", "application/json; charset=utf-8"),
+    "robinhood-live-order-tickets": (
+        "robinhood_live_order_tickets.json",
+        "application/json; charset=utf-8",
+    ),
+    "robinhood-broker-snapshot": (
+        "robinhood_broker_snapshot.json",
+        "application/json; charset=utf-8",
+    ),
+    "robinhood-finalist-check": (
+        "robinhood_finalist_check.json",
+        "application/json; charset=utf-8",
+    ),
+    "robinhood-research-coverage": (
+        "robinhood_research_coverage.json",
+        "application/json; charset=utf-8",
+    ),
+    "robinhood-research-requests": (
+        "robinhood_research_requests.json",
+        "application/json; charset=utf-8",
+    ),
     "robinhood-research-prompt": ("robinhood_research_prompt.md", "text/markdown; charset=utf-8"),
-    "robinhood-research-snapshot": ("robinhood_research_snapshot.json", "application/json; charset=utf-8"),
+    "robinhood-research-snapshot": (
+        "robinhood_research_snapshot.json",
+        "application/json; charset=utf-8",
+    ),
     "position-hygiene-plan": ("position_hygiene_plan.json", "application/json; charset=utf-8"),
 }
 
@@ -210,12 +271,34 @@ OPPORTUNITY_SPECS = {
         "label": "Options",
         "symbol_col": "ticker",
         "columns": [
-            "asset", "actionable", "ticker", "side", "strike", "expiry", "dte", "mid", "spot",
-            "confidence", "rank_score", "fused_score", "trade_status",
-            "suggested_contracts", "spread_pct", "ev_pct", "net_edge_pct",
-            "buyer_edge_pct", "seller_edge_pct", "pricing_direction", "trade_gate_reason",
-            "stop_price", "target_price", "chain_source", "quote_quality",
-            "snapshot_age_min", "snapshot_freshness", "top_headline",
+            "asset",
+            "actionable",
+            "ticker",
+            "side",
+            "strike",
+            "expiry",
+            "dte",
+            "mid",
+            "spot",
+            "confidence",
+            "rank_score",
+            "fused_score",
+            "trade_status",
+            "suggested_contracts",
+            "spread_pct",
+            "ev_pct",
+            "net_edge_pct",
+            "buyer_edge_pct",
+            "seller_edge_pct",
+            "pricing_direction",
+            "trade_gate_reason",
+            "stop_price",
+            "target_price",
+            "chain_source",
+            "quote_quality",
+            "snapshot_age_min",
+            "snapshot_freshness",
+            "top_headline",
         ],
     },
     "share": {
@@ -223,9 +306,21 @@ OPPORTUNITY_SPECS = {
         "label": "Shares",
         "symbol_col": "ticker",
         "columns": [
-            "asset", "actionable", "ticker", "spot", "confidence", "rank_score", "fused_score",
-            "trade_status", "suggested_dollars", "ev_pct", "stop_price",
-            "target_price", "snapshot_age_min", "snapshot_freshness", "top_headline",
+            "asset",
+            "actionable",
+            "ticker",
+            "spot",
+            "confidence",
+            "rank_score",
+            "fused_score",
+            "trade_status",
+            "suggested_dollars",
+            "ev_pct",
+            "stop_price",
+            "target_price",
+            "snapshot_age_min",
+            "snapshot_freshness",
+            "top_headline",
         ],
     },
     "futures": {
@@ -233,11 +328,29 @@ OPPORTUNITY_SPECS = {
         "label": "Futures",
         "symbol_col": "symbol",
         "columns": [
-            "asset", "actionable", "symbol", "name", "direction", "contract", "using_micro",
-            "futures_score", "rank_score", "confidence", "trade_status",
-            "suggested_contracts", "entry_price", "stop_price", "target_price",
-            "risk_dollars", "reward_dollars", "ret_20d", "hv20", "range_pos",
-            "snapshot_age_min", "snapshot_freshness", "top_headline",
+            "asset",
+            "actionable",
+            "symbol",
+            "name",
+            "direction",
+            "contract",
+            "using_micro",
+            "futures_score",
+            "rank_score",
+            "confidence",
+            "trade_status",
+            "suggested_contracts",
+            "entry_price",
+            "stop_price",
+            "target_price",
+            "risk_dollars",
+            "reward_dollars",
+            "ret_20d",
+            "hv20",
+            "range_pos",
+            "snapshot_age_min",
+            "snapshot_freshness",
+            "top_headline",
         ],
     },
     "value": {
@@ -245,9 +358,22 @@ OPPORTUNITY_SPECS = {
         "label": "Value",
         "symbol_col": "ticker",
         "columns": [
-            "asset", "actionable", "ticker", "value_score", "value_bucket", "pe", "fcf_yield",
-            "earnings_yield", "rev_growth", "op_margin", "insider_score",
-            "n_buys", "n_sells", "snapshot_age_min", "snapshot_freshness", "top_headline",
+            "asset",
+            "actionable",
+            "ticker",
+            "value_score",
+            "value_bucket",
+            "pe",
+            "fcf_yield",
+            "earnings_yield",
+            "rev_growth",
+            "op_margin",
+            "insider_score",
+            "n_buys",
+            "n_sells",
+            "snapshot_age_min",
+            "snapshot_freshness",
+            "top_headline",
         ],
     },
 }
@@ -921,8 +1047,8 @@ def _direct_open_counts(data_dir: Path) -> dict[str, int]:
 
 
 def _snapshot_age_minutes(path: Path) -> float:
-    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-    return max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+    modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    return max(0.0, (datetime.now(UTC) - modified).total_seconds() / 60.0)
 
 
 def _snapshot_freshness(age_minutes: float | None) -> str:
@@ -959,15 +1085,15 @@ def _parse_iso_utc(value: Any) -> datetime | None:
             return None
         dt = parsed.to_pydatetime()
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _iso_age_minutes(value: Any) -> float | None:
     dt = _parse_iso_utc(value)
     if dt is None:
         return None
-    delta_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+    delta_seconds = (datetime.now(UTC) - dt).total_seconds()
     if delta_seconds < -300:
         return None
     return max(0.0, delta_seconds / 60.0)
@@ -1031,8 +1157,8 @@ def _file_meta(path: Path | None) -> dict[str, Any] | None:
     if path is None or not path.exists() or not path.is_file():
         return None
     stat = path.stat()
-    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
-    age_minutes = max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+    modified = datetime.fromtimestamp(stat.st_mtime, UTC)
+    age_minutes = max(0.0, (datetime.now(UTC) - modified).total_seconds() / 60.0)
     return {
         "name": path.name,
         "path": str(path),
@@ -1056,10 +1182,10 @@ def _png_validation_error(path: Path | None) -> str | None:
     saw_iend = False
     while offset + 8 <= len(data):
         try:
-            length = struct.unpack(">I", data[offset:offset + 4])[0]
+            length = struct.unpack(">I", data[offset : offset + 4])[0]
         except Exception:
             return "invalid chunk length"
-        chunk_type = data[offset + 4:offset + 8]
+        chunk_type = data[offset + 4 : offset + 8]
         offset += 8
         chunk_end = offset + length
         crc_end = chunk_end + 4
@@ -1171,7 +1297,7 @@ def _dedupe_position_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _watchlist_file(data_dir: Path = DATA_DIR) -> Path:
@@ -1189,8 +1315,8 @@ def _watchlist_entry_id(resolution: dict[str, Any], query: str) -> str:
     request = resolution.get("request") or {}
     if request:
         raw = (
-            f"{symbol}_{request.get('side','')}_{request.get('expiry','')}_"
-            f"{request.get('strike','')}"
+            f"{symbol}_{request.get('side', '')}_{request.get('expiry', '')}_"
+            f"{request.get('strike', '')}"
         )
     else:
         raw = symbol
@@ -1222,43 +1348,51 @@ def _enrich_watchlist_entry(entry: dict[str, Any], data_dir: Path) -> dict[str, 
         swing = brief.get("swing_verdict") or {}
         alternatives = brief.get("option_alternatives") or {}
         comparison = brief.get("contract_comparison") or {}
-        readiness_checks = readiness.get("checks") if isinstance(readiness.get("checks"), list) else []
-        out.update({
-            "local_hits": _clean_value(report.get("total_hits")),
-            "best_idea": _clean_value(best.get("label")),
-            "best_status": _clean_value(best.get("trade_status")),
-            "best_confidence": _clean_value(best.get("confidence")),
-            "best_score": _clean_value(best.get("score")),
-            "paper_readiness_status": _clean_value(readiness.get("status")),
-            "paper_readiness_label": _clean_value(readiness.get("label")),
-            "paper_readiness_score": _clean_value(readiness.get("score")),
-            "paper_readiness_bad_count": sum(1 for row in readiness_checks if row.get("level") == "bad"),
-            "paper_readiness_warn_count": sum(1 for row in readiness_checks if row.get("level") == "warn"),
-            "option_alt_count": _clean_value(alternatives.get("count")),
-            "option_alt_best": _clean_value(alternatives.get("best_label")),
-            "option_alt_reason": _clean_value(alternatives.get("best_reason")),
-            "option_alt_score": _clean_value(alternatives.get("best_score")),
-            "option_alt_readiness": _clean_value(alternatives.get("best_readiness_score")),
-            "option_alt_swing_fit": _clean_value(alternatives.get("best_swing_fit_score")),
-            "option_alt_spread_pct": _clean_value(alternatives.get("best_spread_pct")),
-            "contract_pick_label": _clean_value(comparison.get("label")),
-            "contract_pick_winner": _clean_value(comparison.get("winner")),
-            "contract_pick_score": _clean_value(comparison.get("edge_score")),
-            "contract_pick_reasons": _clean_value(comparison.get("reasons")),
-            "swing_verdict_label": _clean_value(swing.get("label")),
-            "swing_verdict_score": _clean_value(swing.get("score")),
-            "swing_verdict_decision": _clean_value(swing.get("decision")),
-            "swing_verdict_bias": _clean_value(swing.get("bias")),
-            "swing_verdict_risk_reward": _clean_value(swing.get("risk_reward")),
-            "swing_verdict_playbook": _clean_value(swing.get("playbook")),
-            "swing_verdict_blockers": _clean_value(swing.get("blockers")),
-            "swing_verdict_reasons": _clean_value(swing.get("reasons")),
-            "open_count": _clean_value(open_pos.get("count")),
-            "avg_unrealized_pct": _clean_value(open_pos.get("avg_unrealized_pct")),
-            "max_exit_pressure": _clean_value(open_pos.get("max_exit_pressure")),
-            "warning_count": len(brief.get("risk_warnings") or []),
-            "last_enriched_at": _now_iso(),
-        })
+        readiness_checks = (
+            readiness.get("checks") if isinstance(readiness.get("checks"), list) else []
+        )
+        out.update(
+            {
+                "local_hits": _clean_value(report.get("total_hits")),
+                "best_idea": _clean_value(best.get("label")),
+                "best_status": _clean_value(best.get("trade_status")),
+                "best_confidence": _clean_value(best.get("confidence")),
+                "best_score": _clean_value(best.get("score")),
+                "paper_readiness_status": _clean_value(readiness.get("status")),
+                "paper_readiness_label": _clean_value(readiness.get("label")),
+                "paper_readiness_score": _clean_value(readiness.get("score")),
+                "paper_readiness_bad_count": sum(
+                    1 for row in readiness_checks if row.get("level") == "bad"
+                ),
+                "paper_readiness_warn_count": sum(
+                    1 for row in readiness_checks if row.get("level") == "warn"
+                ),
+                "option_alt_count": _clean_value(alternatives.get("count")),
+                "option_alt_best": _clean_value(alternatives.get("best_label")),
+                "option_alt_reason": _clean_value(alternatives.get("best_reason")),
+                "option_alt_score": _clean_value(alternatives.get("best_score")),
+                "option_alt_readiness": _clean_value(alternatives.get("best_readiness_score")),
+                "option_alt_swing_fit": _clean_value(alternatives.get("best_swing_fit_score")),
+                "option_alt_spread_pct": _clean_value(alternatives.get("best_spread_pct")),
+                "contract_pick_label": _clean_value(comparison.get("label")),
+                "contract_pick_winner": _clean_value(comparison.get("winner")),
+                "contract_pick_score": _clean_value(comparison.get("edge_score")),
+                "contract_pick_reasons": _clean_value(comparison.get("reasons")),
+                "swing_verdict_label": _clean_value(swing.get("label")),
+                "swing_verdict_score": _clean_value(swing.get("score")),
+                "swing_verdict_decision": _clean_value(swing.get("decision")),
+                "swing_verdict_bias": _clean_value(swing.get("bias")),
+                "swing_verdict_risk_reward": _clean_value(swing.get("risk_reward")),
+                "swing_verdict_playbook": _clean_value(swing.get("playbook")),
+                "swing_verdict_blockers": _clean_value(swing.get("blockers")),
+                "swing_verdict_reasons": _clean_value(swing.get("reasons")),
+                "open_count": _clean_value(open_pos.get("count")),
+                "avg_unrealized_pct": _clean_value(open_pos.get("avg_unrealized_pct")),
+                "max_exit_pressure": _clean_value(open_pos.get("max_exit_pressure")),
+                "warning_count": len(brief.get("risk_warnings") or []),
+                "last_enriched_at": _now_iso(),
+            }
+        )
     except Exception as exc:
         out["enrichment_error"] = str(exc)[:180]
     return out
@@ -1296,7 +1430,9 @@ def load_watchlist(data_dir: Path = DATA_DIR, enrich: bool = False) -> dict[str,
             continue
         seen.add(item_id)
         cleaned.append(row)
-    entries = [_enrich_watchlist_entry(row, Path(data_dir)) for row in cleaned] if enrich else cleaned
+    entries = (
+        [_enrich_watchlist_entry(row, Path(data_dir)) for row in cleaned] if enrich else cleaned
+    )
     if enrich:
         entries = sorted(entries, key=_watchlist_sort_key, reverse=True)
     return {
@@ -1318,7 +1454,7 @@ def _parse_date_yyyy_mm_dd(value: Any) -> datetime | None:
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text[:10]).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(text[:10]).replace(tzinfo=UTC)
     except Exception:
         return None
 
@@ -1370,7 +1506,7 @@ def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> d
 
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    today = datetime.now(timezone.utc)
+    today = datetime.now(UTC)
     for symbol in symbols[:60]:
         try:
             report = recent_filings_for_symbol(symbol, limit=8)
@@ -1384,20 +1520,24 @@ def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> d
             filing_date = _parse_date_yyyy_mm_dd(filing.get("filing_date"))
             days_old = (today.date() - filing_date.date()).days if filing_date else None
             priority, freshness = _sec_filing_priority(
-                filing.get("form"), filing.get("filing_signal"), days_old,
+                filing.get("form"),
+                filing.get("filing_signal"),
+                days_old,
             )
-            rows.append({
-                "priority": priority,
-                "ticker": symbol,
-                "company_name": filing.get("company_name") or report.get("company_name"),
-                "form": filing.get("form"),
-                "filing_date": filing.get("filing_date"),
-                "days_old": days_old,
-                "freshness": freshness,
-                "signal": filing.get("filing_signal"),
-                "description": filing.get("description"),
-                "url": filing.get("url"),
-            })
+            rows.append(
+                {
+                    "priority": priority,
+                    "ticker": symbol,
+                    "company_name": filing.get("company_name") or report.get("company_name"),
+                    "form": filing.get("form"),
+                    "filing_date": filing.get("filing_date"),
+                    "days_old": days_old,
+                    "freshness": freshness,
+                    "signal": filing.get("filing_signal"),
+                    "description": filing.get("description"),
+                    "url": filing.get("url"),
+                }
+            )
 
     rows = sorted(
         rows,
@@ -1417,7 +1557,8 @@ def build_watchlist_sec_filings(data_dir: Path = DATA_DIR, limit: int = 40) -> d
 
     fresh_count = sum(_float_value(row.get("days_old"), default=9999.0) <= 14 for row in rows)
     high_impact_count = sum(
-        str(row.get("signal") or "") in {
+        str(row.get("signal") or "")
+        in {
             "dilution_or_offering_watch",
             "material_event_review",
             "ownership_change_review",
@@ -1457,7 +1598,7 @@ def _request_dte(expiry: Any) -> int | None:
     exp = pd.to_datetime(str(expiry or ""), errors="coerce", utc=True)
     if pd.isna(exp):
         return None
-    return int((exp.date() - datetime.now(timezone.utc).date()).days)
+    return int((exp.date() - datetime.now(UTC).date()).days)
 
 
 def _saved_contract_status(dte: int | None, readiness: Any) -> str:
@@ -1484,7 +1625,9 @@ def _norm_option_side(value: Any) -> str:
     return side
 
 
-def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: int | None) -> dict[str, Any]:
+def _saved_contract_quote_snapshot(
+    symbol: str, request: dict[str, Any], dte: int | None
+) -> dict[str, Any]:
     ticker = str(symbol or request.get("ticker") or "").upper()
     expiry = str(request.get("expiry") or "").strip()
     side = _norm_option_side(request.get("side"))
@@ -1506,7 +1649,9 @@ def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: in
         return {
             "quote_status": "missing_expiry",
             "chain_source": _clean_value(blob.get("source")) if isinstance(blob, dict) else None,
-            "quote_quality": _clean_value(blob.get("quote_quality")) if isinstance(blob, dict) else None,
+            "quote_quality": _clean_value(blob.get("quote_quality"))
+            if isinstance(blob, dict)
+            else None,
             "quote_checked_at": _now_iso(),
         }
 
@@ -1520,7 +1665,9 @@ def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: in
         return {
             "quote_status": "missing_contract",
             "chain_source": _clean_value(blob.get("source")) if isinstance(blob, dict) else None,
-            "quote_quality": _clean_value(blob.get("quote_quality")) if isinstance(blob, dict) else None,
+            "quote_quality": _clean_value(blob.get("quote_quality"))
+            if isinstance(blob, dict)
+            else None,
             "quote_checked_at": _now_iso(),
         }
 
@@ -1535,11 +1682,23 @@ def _saved_contract_quote_snapshot(symbol: str, request: dict[str, Any], dte: in
     mid = _option_mid(best)
     spread_pct = _option_spread_pct(best, mid)
     spot = _float_value(blob.get("spot"), default=math.nan) if isinstance(blob, dict) else math.nan
-    moneyness = ((strike - spot) / spot) if math.isfinite(strike) and math.isfinite(spot) and spot > 0 else None
+    moneyness = (
+        ((strike - spot) / spot)
+        if math.isfinite(strike) and math.isfinite(spot) and spot > 0
+        else None
+    )
     quote_quality = (
-        blob.get("quote_quality")
-        or ("live_or_broker" if str(blob.get("source") or "") == "tradier" else "free_or_delayed")
-    ) if isinstance(blob, dict) else "unknown"
+        (
+            blob.get("quote_quality")
+            or (
+                "live_or_broker"
+                if str(blob.get("source") or "") == "tradier"
+                else "free_or_delayed"
+            )
+        )
+        if isinstance(blob, dict)
+        else "unknown"
+    )
     quote_row = {
         "symbol": ticker,
         "side": side,
@@ -1770,7 +1929,9 @@ def build_saved_option_contracts(
         request = entry.get("request") if isinstance(entry, dict) else None
         if not isinstance(request, dict) or request.get("asset") != "option":
             continue
-        chain_context = entry.get("chain_context") if isinstance(entry.get("chain_context"), dict) else {}
+        chain_context = (
+            entry.get("chain_context") if isinstance(entry.get("chain_context"), dict) else {}
+        )
         dte = _request_dte(request.get("expiry"))
         side = str(request.get("side") or "").strip().lower()
         row = {
@@ -1784,9 +1945,13 @@ def build_saved_option_contracts(
             "dte": dte,
             "dte_bucket": _option_dte_bucket(float(dte if dte is not None else -1)),
             "status": _saved_contract_status(dte, entry.get("paper_readiness_status")),
-            "paper_readiness": _clean_value(entry.get("paper_readiness_label") or entry.get("paper_readiness_status")),
+            "paper_readiness": _clean_value(
+                entry.get("paper_readiness_label") or entry.get("paper_readiness_status")
+            ),
             "paper_readiness_score": _clean_value(entry.get("paper_readiness_score")),
-            "swing_verdict": _clean_value(entry.get("swing_verdict_label") or entry.get("swing_verdict_decision")),
+            "swing_verdict": _clean_value(
+                entry.get("swing_verdict_label") or entry.get("swing_verdict_decision")
+            ),
             "swing_verdict_score": _clean_value(entry.get("swing_verdict_score")),
             "swing_verdict_decision": _clean_value(entry.get("swing_verdict_decision")),
             "swing_verdict_bias": _clean_value(entry.get("swing_verdict_bias")),
@@ -1806,8 +1971,12 @@ def build_saved_option_contracts(
             "saved_grade_reasons": _clean_value(chain_context.get("grade_reasons")),
             "saved_readiness_label": _clean_value(chain_context.get("readiness_label")),
             "saved_readiness_score": _clean_value(chain_context.get("readiness_score")),
-            "saved_contract_quality_score": _clean_value(chain_context.get("contract_quality_score")),
-            "saved_chain_source": _clean_value(chain_context.get("chain_source") or chain_context.get("source")),
+            "saved_contract_quality_score": _clean_value(
+                chain_context.get("contract_quality_score")
+            ),
+            "saved_chain_source": _clean_value(
+                chain_context.get("chain_source") or chain_context.get("source")
+            ),
             "saved_quote_quality": _clean_value(chain_context.get("quote_quality")),
             "saved_data_delay": _clean_value(chain_context.get("data_delay")),
             "saved_mid": _clean_value(chain_context.get("mid")),
@@ -1870,7 +2039,9 @@ def build_saved_option_contracts(
         "triage_counts": triage_counts,
         "call_count": sum(row.get("side") == "call" for row in rows),
         "put_count": sum(row.get("side") == "put" for row in rows),
-        "swing_count": sum(_float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows),
+        "swing_count": sum(
+            _float_value(row.get("dte"), default=-1.0) >= MIN_SWING_OPTION_DTE for row in rows
+        ),
         "rows": rows,
         "notes": [
             "Saved contracts come from the local research watchlist option requests.",
@@ -1887,7 +2058,9 @@ def _save_watchlist(entries: list[dict[str, Any]], data_dir: Path = DATA_DIR) ->
     path.write_text(json.dumps(entries, indent=2, default=str), encoding="utf-8")
 
 
-def add_watchlist_query(query: str, data_dir: Path = DATA_DIR, context: dict[str, Any] | None = None) -> dict[str, Any]:
+def add_watchlist_query(
+    query: str, data_dir: Path = DATA_DIR, context: dict[str, Any] | None = None
+) -> dict[str, Any]:
     clean = str(query or "").strip()
     if not clean:
         return {"ok": False, "error": "query is required"}
@@ -1952,17 +2125,21 @@ def add_watchlist_queries(items: Any, data_dir: Path = DATA_DIR, limit: int = 12
             entry = result.get("entry") or {}
             if result.get("updated_existing"):
                 updated_existing += 1
-            saved.append({
-                "id": entry.get("id"),
-                "query": entry.get("query"),
-                "symbol": entry.get("symbol"),
-                "updated_existing": bool(result.get("updated_existing")),
-            })
+            saved.append(
+                {
+                    "id": entry.get("id"),
+                    "query": entry.get("query"),
+                    "symbol": entry.get("symbol"),
+                    "updated_existing": bool(result.get("updated_existing")),
+                }
+            )
         else:
-            errors.append({
-                "query": query,
-                "error": result.get("error") or "could not save",
-            })
+            errors.append(
+                {
+                    "query": query,
+                    "error": result.get("error") or "could not save",
+                }
+            )
     watchlist = load_watchlist(data_dir)
     return {
         "ok": bool(saved) and not errors,
@@ -1984,8 +2161,9 @@ def remove_watchlist_entry(entry_id: str, data_dir: Path = DATA_DIR) -> dict[str
     return {"ok": removed, "removed": removed, **load_watchlist(data_dir)}
 
 
-def _scan_args_from_controls(mode: str = "full", bankroll: Any = None,
-                             aggressive: bool = False) -> list[str]:
+def _scan_args_from_controls(
+    mode: str = "full", bankroll: Any = None, aggressive: bool = False
+) -> list[str]:
     scan_args = ["--minimal"] if str(mode or "full").strip().lower() == "quick" else []
     if aggressive:
         scan_args.append("--aggressive")
@@ -2012,13 +2190,15 @@ def run_watchlist_scans(
         query = str(entry.get("query") or entry.get("symbol") or "").strip()
         if not query:
             continue
-        jobs.append(create_job(
-            query,
-            data_dir,
-            launch=launch,
-            extra_scan_args=scan_args,
-            scan_mode=str(mode or "full"),
-        ))
+        jobs.append(
+            create_job(
+                query,
+                data_dir,
+                launch=launch,
+                extra_scan_args=scan_args,
+                scan_mode=str(mode or "full"),
+            )
+        )
     return {
         "ok": True,
         "count": len(jobs),
@@ -2045,14 +2225,15 @@ def warm_symbol_caches(data_dir: Path = DATA_DIR, timeout: float = 8.0) -> dict[
     ok = sec_ok or nasdaq_ok
     return {
         "ok": ok,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "row_count": len(rows),
         "nasdaq_row_count": len(nasdaq_rows),
         "cache": meta,
         "nasdaq_cache": nasdaq_meta,
         "message": (
             f"Symbol search caches ready: SEC {len(rows)} row(s), Nasdaq {len(nasdaq_rows)} row(s)."
-            if ok else "Symbol search caches could not be warmed right now."
+            if ok
+            else "Symbol search caches could not be warmed right now."
         ),
     }
 
@@ -2122,7 +2303,7 @@ def _position_is_expired(row: dict[str, Any], asset: str, now: datetime | None =
     expiry = _parse_iso_utc(expiry_value)
     if expiry is None:
         return False
-    asof = now or datetime.now(timezone.utc)
+    asof = now or datetime.now(UTC)
     if isinstance(expiry_value, str) and "T" not in expiry_value:
         return asof.date() > expiry.date()
     return asof >= expiry
@@ -2579,14 +2760,17 @@ def _option_contract_grade(row: dict[str, Any], max_premium: float) -> dict[str,
         grade = "D"
         lane = "wait"
 
-    side_text = "call" if side.startswith("call") else "put" if side.startswith("put") else "contract"
+    side_text = (
+        "call" if side.startswith("call") else "put" if side.startswith("put") else "contract"
+    )
     dte_text = f"{int(dte)} DTE" if math.isfinite(dte) else "unknown DTE"
     premium_text = f"${premium:.0f} premium" if math.isfinite(premium) else "unknown premium"
     spread_text = f"{spread * 100:.1f}% spread" if math.isfinite(spread) else "unknown spread"
     break_even_move = _float_value(row.get("breakeven_move_pct"), default=math.nan)
     break_even_text = (
         f"{break_even_move * 100:.1f}% break-even move"
-        if math.isfinite(break_even_move) else "unknown break-even"
+        if math.isfinite(break_even_move)
+        else "unknown break-even"
     )
     budget_fit = str(row.get("budget_fit") or "").replace("_", " ")
     thesis = (
@@ -2619,11 +2803,13 @@ def _option_chain_factor_breakdown(row: dict[str, Any], max_premium: float) -> l
     def add(factor: str, score: float, detail: str) -> None:
         if not math.isfinite(score):
             return
-        factors.append({
-            "factor": factor,
-            "score": int(round(_clamp(score, 0.0, 100.0))),
-            "detail": detail[:160],
-        })
+        factors.append(
+            {
+                "factor": factor,
+                "score": int(round(_clamp(score, 0.0, 100.0))),
+                "detail": detail[:160],
+            }
+        )
 
     if math.isfinite(dte):
         if dte < MIN_SWING_OPTION_DTE:
@@ -2636,9 +2822,15 @@ def _option_chain_factor_breakdown(row: dict[str, Any], max_premium: float) -> l
             runway_score = 80.0
         else:
             runway_score = 55.0
-        add("Runway", runway_score, f"{int(dte)} DTE, {row.get('dte_bucket') or _option_dte_bucket(dte)}")
+        add(
+            "Runway",
+            runway_score,
+            f"{int(dte)} DTE, {row.get('dte_bucket') or _option_dte_bucket(dte)}",
+        )
 
-    liquidity_score = min(100.0, 28.0 + 12.0 * math.log1p(max(0.0, oi)) + 4.0 * math.log1p(max(0.0, volume)))
+    liquidity_score = min(
+        100.0, 28.0 + 12.0 * math.log1p(max(0.0, oi)) + 4.0 * math.log1p(max(0.0, volume))
+    )
     add("Liquidity", liquidity_score, f"OI {int(oi):,}, volume {int(volume):,}")
 
     if math.isfinite(spread):
@@ -2681,7 +2873,11 @@ def _option_chain_factor_breakdown(row: dict[str, Any], max_premium: float) -> l
         label = str(row.get("breakeven_move_label") or "").replace("_", " ") or "break-even"
         add("Break-even", breakeven_score, f"{breakeven_move * 100:.1f}% move, {label}")
 
-    add("Swing fit", swing_fit, f"{str(row.get('swing_fit_label') or 'unscored').replace('_', ' ')} / {int(round(swing_fit))}")
+    add(
+        "Swing fit",
+        swing_fit,
+        f"{str(row.get('swing_fit_label') or 'unscored').replace('_', ' ')} / {int(round(swing_fit))}",
+    )
     if math.isfinite(quality):
         add("Quality", min(100.0, max(0.0, 50.0 + quality * 5.0)), f"quality score {quality:.1f}")
 
@@ -2732,14 +2928,10 @@ def _leaps_swing_scan_fields(
         "planned_hold_sessions": holding.get("planned_hold_sessions"),
         "default_hold_sessions": LEAPS_SWING_PROFILE.default_hold_sessions,
         "max_hold_sessions": holding.get("max_hold_sessions"),
-        "contract_dte_is_not_hold_time": bool(
-            holding.get("contract_dte_is_not_hold_time")
-        ),
+        "contract_dte_is_not_hold_time": bool(holding.get("contract_dte_is_not_hold_time")),
         "stop_loss_fraction": management.get("stop_loss_fraction"),
         "target_gain_fraction": management.get("target_gain_fraction"),
-        "breakeven_review_trigger_fraction": management.get(
-            "breakeven_review_trigger_fraction"
-        ),
+        "breakeven_review_trigger_fraction": management.get("breakeven_review_trigger_fraction"),
         "manual_management_only": bool(management.get("manual_management_only")),
     }
 
@@ -2818,28 +3010,45 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
     mid_idx = len(spreads) // 2
     median_spread = None
     if spreads:
-        median_spread = spreads[mid_idx] if len(spreads) % 2 else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
-    best_call = next((row for row in rows if str(row.get("side") or "").lower().startswith("call")), None)
-    best_put = next((row for row in rows if str(row.get("side") or "").lower().startswith("put")), None)
+        median_spread = (
+            spreads[mid_idx]
+            if len(spreads) % 2
+            else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
+        )
+    best_call = next(
+        (row for row in rows if str(row.get("side") or "").lower().startswith("call")), None
+    )
+    best_put = next(
+        (row for row in rows if str(row.get("side") or "").lower().startswith("put")), None
+    )
     best_reviewable = next(
         (row for row in rows if str(row.get("readiness_label") or "") in {"ready", "review"}),
         None,
     )
     budget = max_premium if max_premium > 0 else 500.0
-    best_ready = next((row for row in rows if str(row.get("readiness_label") or "") == "ready"), None)
+    best_ready = next(
+        (row for row in rows if str(row.get("readiness_label") or "") == "ready"), None
+    )
     best_budget = next(
-        (row for row in rows if _float_value(row.get("premium_dollars"), default=math.inf) <= budget),
+        (
+            row
+            for row in rows
+            if _float_value(row.get("premium_dollars"), default=math.inf) <= budget
+        ),
         None,
     )
     best_liquid = next(
         (
-            row for row in rows
+            row
+            for row in rows
             if _float_value(row.get("openInterest"), default=0.0) >= 100
             and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
         ),
         None,
     )
-    best_long_dated = next((row for row in rows if _float_value(row.get("dte"), default=0.0) >= 180), None)
+    best_long_dated = next(
+        (row for row in rows if _float_value(row.get("dte"), default=0.0) >= 180), None
+    )
     grade_counts: dict[str, int] = {}
     swing_fit_counts: dict[str, int] = {}
     profile_status_counts: dict[str, int] = {}
@@ -2852,13 +3061,16 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         if profile_status:
             profile_status_counts[profile_status] = profile_status_counts.get(profile_status, 0) + 1
     leaps_rows = [
-        row for row in rows
-        if str(row.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name
+        row for row in rows if str(row.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name
     ]
-    best_leaps = max(
-        leaps_rows,
-        key=lambda row: _float_value(row.get("leaps_quality_score"), default=-1.0),
-    ) if leaps_rows else None
+    best_leaps = (
+        max(
+            leaps_rows,
+            key=lambda row: _float_value(row.get("leaps_quality_score"), default=-1.0),
+        )
+        if leaps_rows
+        else None
+    )
     return {
         "best_call": _chain_contract_label(best_call),
         "best_put": _chain_contract_label(best_put),
@@ -2868,15 +3080,22 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         "best_liquid": _chain_contract_label(best_liquid),
         "best_long_dated": _chain_contract_label(best_long_dated),
         "grade_counts": grade_counts,
-        "primary_review_count": sum(str(row.get("review_lane") or "") == "primary_review" for row in rows),
+        "primary_review_count": sum(
+            str(row.get("review_lane") or "") == "primary_review" for row in rows
+        ),
         "median_spread_pct": _clean_value(median_spread),
-        "under_budget_count": sum(_float_value(row.get("premium_dollars"), default=math.inf) <= budget for row in rows),
+        "under_budget_count": sum(
+            _float_value(row.get("premium_dollars"), default=math.inf) <= budget for row in rows
+        ),
         "liquid_count": sum(
             _float_value(row.get("openInterest"), default=0.0) >= 100
             and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
             for row in rows
         ),
-        "swing_count": sum(MIN_SWING_OPTION_DTE <= _float_value(row.get("dte"), default=-1.0) <= 180 for row in rows),
+        "swing_count": sum(
+            MIN_SWING_OPTION_DTE <= _float_value(row.get("dte"), default=-1.0) <= 180
+            for row in rows
+        ),
         "long_dated_count": sum(_float_value(row.get("dte"), default=0.0) >= 180 for row in rows),
         "ready_count": sum(str(row.get("readiness_label") or "") == "ready" for row in rows),
         "review_count": sum(str(row.get("readiness_label") or "") == "review" for row in rows),
@@ -2884,10 +3103,12 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
         "swing_fit_counts": swing_fit_counts,
         "clean_swing_count": swing_fit_counts.get("clean_swing", 0),
         "reviewable_swing_count": swing_fit_counts.get("reviewable_swing", 0),
-        "best_swing_fit": _chain_contract_label(max(
-            rows,
-            key=lambda row: _float_value(row.get("swing_fit_score"), default=-1.0),
-        )),
+        "best_swing_fit": _chain_contract_label(
+            max(
+                rows,
+                key=lambda row: _float_value(row.get("swing_fit_score"), default=-1.0),
+            )
+        ),
         "profile_status_counts": profile_status_counts,
         "leaps_execution_ready_count": profile_status_counts.get("execution_ready", 0),
         "leaps_research_only_count": profile_status_counts.get("research_only", 0),
@@ -2896,7 +3117,9 @@ def _option_chain_scan_summary(rows: list[dict[str, Any]], max_premium: float) -
     }
 
 
-def _option_chain_expiry_summary(rows: list[dict[str, Any]], max_premium: float = 0.0) -> list[dict[str, Any]]:
+def _option_chain_expiry_summary(
+    rows: list[dict[str, Any]], max_premium: float = 0.0
+) -> list[dict[str, Any]]:
     by_expiry: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_expiry.setdefault(str(row.get("expiry") or ""), []).append(row)
@@ -2914,44 +3137,63 @@ def _option_chain_expiry_summary(rows: list[dict[str, Any]], max_premium: float 
         mid_idx = len(spreads) // 2
         median_spread = None
         if spreads:
-            median_spread = spreads[mid_idx] if len(spreads) % 2 else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
+            median_spread = (
+                spreads[mid_idx]
+                if len(spreads) % 2
+                else (spreads[mid_idx - 1] + spreads[mid_idx]) / 2.0
+            )
         dte_values = [_float_value(row.get("dte"), default=math.nan) for row in items]
         dte_values = [value for value in dte_values if math.isfinite(value)]
         dte = int(min(dte_values)) if dte_values else None
         best_call = next((row for row in items if str(row.get("side") or "") == "call"), None)
         best_put = next((row for row in items if str(row.get("side") or "") == "put"), None)
         under_budget = [
-            row for row in items
+            row
+            for row in items
             if _float_value(row.get("premium_dollars"), default=math.inf) <= budget
         ]
-        best_budget = max(under_budget or items, key=lambda row: _option_contract_rank_tuple(row, budget))
+        best_budget = max(
+            under_budget or items, key=lambda row: _option_contract_rank_tuple(row, budget)
+        )
         best_budget_premium = _float_value(best_budget.get("premium_dollars"), default=math.nan)
-        summaries.append({
-            "expiry": expiry,
-            "dte": dte,
-            "dte_bucket": _option_dte_bucket(float(dte or 0)),
-            "contracts": len(items),
-            "calls": sum(str(row.get("side") or "") == "call" for row in items),
-            "puts": sum(str(row.get("side") or "") == "put" for row in items),
-            "median_spread_pct": _clean_value(median_spread),
-            "under_budget_count": len(under_budget),
-            "reviewable_count": sum(str(row.get("readiness_label") or "") in {"ready", "review"} for row in items),
-            "primary_review_count": sum(str(row.get("review_lane") or "") == "primary_review" for row in items),
-            "clean_swing_count": sum(str(row.get("swing_fit_label") or "") == "clean_swing" for row in items),
-            "liquid_count": sum(
-                _float_value(row.get("openInterest"), default=0.0) >= 100
-                and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
-                for row in items
-            ),
-            "best_call": _chain_contract_label(best_call),
-            "best_put": _chain_contract_label(best_put),
-            "best_budget": _chain_contract_label(best_budget),
-            "best_budget_grade": _clean_value(best_budget.get("contract_grade")),
-            "best_budget_fit": _clean_value(best_budget.get("budget_fit")),
-            "best_budget_premium": _clean_value(round(best_budget_premium, 2) if math.isfinite(best_budget_premium) else None),
-            "best_budget_spread_pct": _clean_value(best_budget.get("spread_pct")),
-            "best_budget_score": _clean_value(best_budget.get("swing_fit_score") or best_budget.get("contract_quality_score")),
-        })
+        summaries.append(
+            {
+                "expiry": expiry,
+                "dte": dte,
+                "dte_bucket": _option_dte_bucket(float(dte or 0)),
+                "contracts": len(items),
+                "calls": sum(str(row.get("side") or "") == "call" for row in items),
+                "puts": sum(str(row.get("side") or "") == "put" for row in items),
+                "median_spread_pct": _clean_value(median_spread),
+                "under_budget_count": len(under_budget),
+                "reviewable_count": sum(
+                    str(row.get("readiness_label") or "") in {"ready", "review"} for row in items
+                ),
+                "primary_review_count": sum(
+                    str(row.get("review_lane") or "") == "primary_review" for row in items
+                ),
+                "clean_swing_count": sum(
+                    str(row.get("swing_fit_label") or "") == "clean_swing" for row in items
+                ),
+                "liquid_count": sum(
+                    _float_value(row.get("openInterest"), default=0.0) >= 100
+                    and _float_value(row.get("spread_pct"), default=1.0) <= 0.15
+                    for row in items
+                ),
+                "best_call": _chain_contract_label(best_call),
+                "best_put": _chain_contract_label(best_put),
+                "best_budget": _chain_contract_label(best_budget),
+                "best_budget_grade": _clean_value(best_budget.get("contract_grade")),
+                "best_budget_fit": _clean_value(best_budget.get("budget_fit")),
+                "best_budget_premium": _clean_value(
+                    round(best_budget_premium, 2) if math.isfinite(best_budget_premium) else None
+                ),
+                "best_budget_spread_pct": _clean_value(best_budget.get("spread_pct")),
+                "best_budget_score": _clean_value(
+                    best_budget.get("swing_fit_score") or best_budget.get("contract_quality_score")
+                ),
+            }
+        )
     return sorted(
         summaries,
         key=lambda row: (
@@ -2984,7 +3226,9 @@ def _option_chain_trade_plan(
         else "watch_only"
     )
     contract = str(primary.get("contract_query") or "").strip()
-    side_label = "call" if side.startswith("call") else "put" if side.startswith("put") else "option"
+    side_label = (
+        "call" if side.startswith("call") else "put" if side.startswith("put") else "option"
+    )
     entry_text = f"{mid:.2f}" if math.isfinite(mid) else "unknown"
     premium_text = f"${premium:.0f}" if math.isfinite(premium) else "unknown premium"
     checklist = [
@@ -3027,13 +3271,26 @@ def _option_chain_trade_plan(
 def _open_exposure_for_symbol(data_dir: Path, symbol: str) -> dict[str, Any]:
     clean = str(symbol or "").strip().upper()
     if not clean:
-        return {"symbol": clean, "has_open": False, "open_count": 0, "asset_counts": {}, "labels": []}
+        return {
+            "symbol": clean,
+            "has_open": False,
+            "open_count": 0,
+            "asset_counts": {},
+            "labels": [],
+        }
     try:
         report = build_positions(data_dir, asset="all", query=clean, status="all", limit=500)
     except Exception:
-        return {"symbol": clean, "has_open": False, "open_count": 0, "asset_counts": {}, "labels": []}
+        return {
+            "symbol": clean,
+            "has_open": False,
+            "open_count": 0,
+            "asset_counts": {},
+            "labels": [],
+        }
     rows = [
-        row for row in (report.get("rows") or [])
+        row
+        for row in (report.get("rows") or [])
         if str(row.get("ticker_or_symbol") or "").upper() == clean
     ]
     asset_counts: dict[str, int] = {}
@@ -3055,26 +3312,31 @@ def _open_exposure_for_symbol(data_dir: Path, symbol: str) -> dict[str, Any]:
         "attention_count": attention_count,
         "labels": labels[:5],
         "summary": (
-            f"{len(rows)} open {clean} position(s)"
-            if rows else f"No open {clean} positions found"
+            f"{len(rows)} open {clean} position(s)" if rows else f"No open {clean} positions found"
         ),
     }
 
 
 def _chain_open_exposure_fields(exposure: dict[str, Any] | None) -> dict[str, Any]:
     exposure = exposure if isinstance(exposure, dict) else {}
-    asset_counts = exposure.get("asset_counts") if isinstance(exposure.get("asset_counts"), dict) else {}
+    asset_counts = (
+        exposure.get("asset_counts") if isinstance(exposure.get("asset_counts"), dict) else {}
+    )
     return {
         "open_exposure_count": int(_float_value(exposure.get("open_count"), default=0.0)),
         "open_exposure_assets": ", ".join(
             f"{asset}:{count}" for asset, count in sorted(asset_counts.items())
         ),
         "open_exposure_summary": _clean_value(exposure.get("summary")),
-        "open_exposure_attention_count": int(_float_value(exposure.get("attention_count"), default=0.0)),
+        "open_exposure_attention_count": int(
+            _float_value(exposure.get("attention_count"), default=0.0)
+        ),
     }
 
 
-def _add_open_exposure_warning(row: dict[str, Any], exposure: dict[str, Any] | None) -> dict[str, Any]:
+def _add_open_exposure_warning(
+    row: dict[str, Any], exposure: dict[str, Any] | None
+) -> dict[str, Any]:
     out = dict(row)
     fields = _chain_open_exposure_fields(exposure)
     out.update(fields)
@@ -3113,13 +3375,15 @@ def _option_chain_decision_pack(
             "open_exposure": exposure or {},
         }
     saveable = [
-        row for row in rows
+        row
+        for row in rows
         if str(row.get("contract_grade") or "").upper() in {"A", "B"}
         and str(row.get("review_lane") or "") != "wait"
         and _row_profile_execution_ready(row)
     ]
     reviewable = [
-        row for row in rows
+        row
+        for row in rows
         if str(row.get("readiness_label") or "") in {"ready", "review"}
         and _row_profile_execution_ready(row)
     ]
@@ -3159,7 +3423,9 @@ def _option_chain_decision_pack(
     elif budget_fit == "stretch":
         risk_notes.append("One contract is near the selected premium budget.")
     elif math.isfinite(budget_usage) and budget_usage > 0.75:
-        risk_notes.append(f"One contract uses {budget_usage * 100:.0f}% of the selected premium budget.")
+        risk_notes.append(
+            f"One contract uses {budget_usage * 100:.0f}% of the selected premium budget."
+        )
     dte = _float_value(primary.get("dte"), default=0.0)
     if dte < MIN_SWING_OPTION_DTE:
         risk_notes.append(f"DTE is below the {MIN_SWING_OPTION_DTE}d swing minimum.")
@@ -3181,10 +3447,9 @@ def _option_chain_decision_pack(
     risk_notes = list(dict.fromkeys(risk_notes))[:6]
 
     profile_status = str(primary.get("leaps_swing_status") or "")
-    if (
-        str(primary.get("execution_profile") or "") == LEAPS_SWING_PROFILE.name
-        and not _row_profile_execution_ready(primary)
-    ):
+    if str(
+        primary.get("execution_profile") or ""
+    ) == LEAPS_SWING_PROFILE.name and not _row_profile_execution_ready(primary):
         status = "research_only" if profile_status == "research_only" else "blocked"
         label = "LEAPS research only" if status == "research_only" else "LEAPS blocked"
         next_step = (
@@ -3234,6 +3499,7 @@ def _chain_quote_provenance(
     describes the returned quote set. Processing/export times are intentionally
     absent from this lookup.
     """
+
     def field(source: Any, key: str) -> str:
         value = _clean_value(source.get(key))
         return "" if value is None else str(value).strip()
@@ -3288,9 +3554,17 @@ def build_option_chain_scan(
     resolution = resolve_symbol(clean)
     ticker = str(resolution.get("symbol") or "").upper()
     if not ticker:
-        return {"ok": False, "error": resolution.get("error") or "could not resolve ticker", "rows": []}
+        return {
+            "ok": False,
+            "error": resolution.get("error") or "could not resolve ticker",
+            "rows": [],
+        }
     if ticker.endswith("=F") or ticker.startswith("^"):
-        return {"ok": False, "error": f"{ticker} is not an equity or ETF option-chain symbol", "rows": []}
+        return {
+            "ok": False,
+            "error": f"{ticker} is not an equity or ETF option-chain symbol",
+            "rows": [],
+        }
 
     preset_norm, preset_cfg = _chain_preset_config(preset)
     if preset_norm != "custom":
@@ -3317,17 +3591,26 @@ def build_option_chain_scan(
     try:
         blob = _fetch_option_chain_for_provider_status(ticker)
     except Exception as exc:
-        return {"ok": False, "error": f"option-chain fetch failed: {exc}", "symbol": ticker, "rows": []}
+        return {
+            "ok": False,
+            "error": f"option-chain fetch failed: {exc}",
+            "symbol": ticker,
+            "rows": [],
+        }
     if not blob or not blob.get("chains"):
         return {"ok": False, "error": "no option-chain data returned", "symbol": ticker, "rows": []}
 
-    scan_generated_at = datetime.now(timezone.utc).isoformat()
+    scan_generated_at = datetime.now(UTC).isoformat()
     spot = _float_value(blob.get("spot"), default=math.nan)
     source = str(blob.get("source") or "unknown")
-    quote_quality = blob.get("quote_quality") or ("live_or_broker" if source == "tradier" else "free_or_delayed")
-    source_attempts = blob.get("source_attempts") if isinstance(blob.get("source_attempts"), list) else []
+    quote_quality = blob.get("quote_quality") or (
+        "live_or_broker" if source == "tradier" else "free_or_delayed"
+    )
+    source_attempts = (
+        blob.get("source_attempts") if isinstance(blob.get("source_attempts"), list) else []
+    )
     open_exposure = _open_exposure_for_symbol(data_dir, ticker)
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(UTC).date()
     rows: list[dict[str, Any]] = []
     rejection_examples: list[dict[str, Any]] = []
     rejected = 0
@@ -3355,7 +3638,11 @@ def build_option_chain_scan(
             volume = int(_float_value(raw.get("volume"), default=0.0))
             premium = mid * 100.0 if math.isfinite(mid) else float("nan")
             source_quote_at, source_quote_time_basis = _chain_quote_provenance(blob, raw)
-            moneyness = ((strike - spot) / spot) if math.isfinite(strike) and math.isfinite(spot) and spot > 0 else None
+            moneyness = (
+                ((strike - spot) / spot)
+                if math.isfinite(strike) and math.isfinite(spot) and spot > 0
+                else None
+            )
 
             if side_norm != "all" and contract_side != side_norm:
                 reasons = [f"side is not {side_norm}"]
@@ -3377,19 +3664,23 @@ def build_option_chain_scan(
                 for reason in unique_reasons:
                     rejection_reason_counts[reason] = rejection_reason_counts.get(reason, 0) + 1
                 if len(rejection_examples) < 25:
-                    rejection_examples.append({
-                        "side": contract_side or "-",
-                        "expiry": str(expiry),
-                        "dte": dte,
-                        "strike": _clean_value(strike),
-                        "mid": _clean_value(round(mid, 4) if math.isfinite(mid) else None),
-                        "premium_dollars": _clean_value(round(premium, 2) if math.isfinite(premium) else None),
-                        "spread_pct": _clean_value(spread_pct),
-                        "openInterest": oi,
-                        "volume": volume,
-                        "reason": "; ".join(unique_reasons),
-                        "reasons": unique_reasons,
-                    })
+                    rejection_examples.append(
+                        {
+                            "side": contract_side or "-",
+                            "expiry": str(expiry),
+                            "dte": dte,
+                            "strike": _clean_value(strike),
+                            "mid": _clean_value(round(mid, 4) if math.isfinite(mid) else None),
+                            "premium_dollars": _clean_value(
+                                round(premium, 2) if math.isfinite(premium) else None
+                            ),
+                            "spread_pct": _clean_value(spread_pct),
+                            "openInterest": oi,
+                            "volume": volume,
+                            "reason": "; ".join(unique_reasons),
+                            "reasons": unique_reasons,
+                        }
+                    )
                 continue
 
             row = {
@@ -3399,7 +3690,8 @@ def build_option_chain_scan(
                 "symbol": ticker,
                 "side": contract_side,
                 "underlying_type": (
-                    "index" if is_known_index_option_symbol(ticker)
+                    "index"
+                    if is_known_index_option_symbol(ticker)
                     else SWING_EXECUTION_OPTION_UNDERLYING_TYPE
                 ),
                 "expiry": str(expiry),
@@ -3427,14 +3719,13 @@ def build_option_chain_scan(
                 ),
                 "execution_profile": execution_profile,
                 "strategy_evidence_lane": (
-                    LEAPS_EVIDENCE_LANE
-                    if execution_profile == LEAPS_SWING_PROFILE.name
-                    else ""
+                    LEAPS_EVIDENCE_LANE if execution_profile == LEAPS_SWING_PROFILE.name else ""
                 ),
             }
             row["contract_query"] = (
                 f"{ticker} {expiry} {'C' if contract_side == 'call' else 'P'} {strike:g}"
-                if math.isfinite(strike) else ""
+                if math.isfinite(strike)
+                else ""
             )
             row.update(
                 _option_chain_trade_refs(
@@ -3451,15 +3742,15 @@ def build_option_chain_scan(
             if execution_profile == LEAPS_SWING_PROFILE.name:
                 quote_age_minutes = _iso_age_minutes(source_quote_at)
                 quote_age_seconds = (
-                    quote_age_minutes * 60.0
-                    if quote_age_minutes is not None
-                    else None
+                    quote_age_minutes * 60.0 if quote_age_minutes is not None else None
                 )
-                row.update(_leaps_swing_scan_fields(
-                    row,
-                    quote_age_seconds=quote_age_seconds,
-                    account_budget=max_premium if max_premium > 0 else None,
-                ))
+                row.update(
+                    _leaps_swing_scan_fields(
+                        row,
+                        quote_age_seconds=quote_age_seconds,
+                        account_budget=max_premium if max_premium > 0 else None,
+                    )
+                )
                 if not row["leaps_execution_ready"]:
                     row["review_lane"] = (
                         "leaps_research_only"
@@ -3467,14 +3758,12 @@ def build_option_chain_scan(
                         else "leaps_blocked"
                     )
                     row["readiness_label"] = "wait"
-                    profile_flags = [
-                        f"LEAPS {row['leaps_swing_status'].replace('_', ' ')}"
-                    ]
+                    profile_flags = [f"LEAPS {row['leaps_swing_status'].replace('_', ' ')}"]
                     profile_flags.extend(row.get("leaps_hard_blockers") or [])
                     profile_flags.extend(row.get("leaps_data_blockers") or [])
-                    row["risk_flags"] = list(dict.fromkeys(
-                        list(row.get("risk_flags") or []) + profile_flags
-                    ))[:10]
+                    row["risk_flags"] = list(
+                        dict.fromkeys(list(row.get("risk_flags") or []) + profile_flags)
+                    )[:10]
             row["chain_factor_breakdown"] = _option_chain_factor_breakdown(row, max_premium)
             row["chain_factor_summary"] = _swing_factor_summary(row["chain_factor_breakdown"])
             rows.append(row)
@@ -3514,7 +3803,9 @@ def build_option_chain_scan(
         "source": source,
         "quote_quality": quote_quality,
         "data_delay": _clean_value(blob.get("data_delay")),
-        "source_attempts": [{k: _clean_value(v) for k, v in row.items()} for row in source_attempts],
+        "source_attempts": [
+            {k: _clean_value(v) for k, v in row.items()} for row in source_attempts
+        ],
         "open_exposure": open_exposure,
         "providers_checked": len(source_attempts),
         "spot": _clean_value(spot),
@@ -3530,9 +3821,7 @@ def build_option_chain_scan(
         "preset_description": preset_cfg.get("description"),
         "execution_profile": execution_profile,
         "strategy_evidence_lane": (
-            LEAPS_EVIDENCE_LANE
-            if execution_profile == LEAPS_SWING_PROFILE.name
-            else ""
+            LEAPS_EVIDENCE_LANE if execution_profile == LEAPS_SWING_PROFILE.name else ""
         ),
         "profile_policy_version": (
             LEAPS_SWING_PROFILE.policy_version
@@ -3556,7 +3845,8 @@ def build_option_chain_scan(
             "Option-chain scan uses Optedge's existing provider stack.",
             "Free/keyless sources may be delayed, incomplete, or blocked for some tickers.",
             "This view inspects contracts only; it does not place trades.",
-        ] + (
+        ]
+        + (
             [
                 "LEAPS means 365-900 contract DTE; it does not mean a one-year hold.",
                 "The manual LEAPS swing policy reviews at 3/5/10 sessions and caps the hold at 20 sessions.",
@@ -3578,14 +3868,14 @@ def _chain_candidate_exclusion(row: dict[str, Any] | None) -> str | None:
     ]
     flags = {
         str(item or "").strip().lower()
-        for item in (
-            row.get("market_structure_risk_flags")
-            or row.get("risk_flags")
-            or []
-        )
+        for item in (row.get("market_structure_risk_flags") or row.get("risk_flags") or [])
         if str(item or "").strip()
     }
-    if bool(row.get("active_halt")) or "active_halt" in flags or any("active trading halt" in item for item in warnings):
+    if (
+        bool(row.get("active_halt"))
+        or "active_halt" in flags
+        or any("active trading halt" in item for item in warnings)
+    ):
         return "active trading halt"
     review_action = str(row.get("review_action") or "").strip().lower()
     readiness = str(row.get("readiness_label") or "").strip().lower()
@@ -3603,7 +3893,9 @@ def _chain_candidate_fit(
 ) -> dict[str, Any]:
     score_val = _float_value(score, default=math.nan)
     asset = str(row.get("asset") or "").strip().lower() if isinstance(row, dict) else ""
-    review_action = str(row.get("review_action") or "").strip().lower() if isinstance(row, dict) else ""
+    review_action = (
+        str(row.get("review_action") or "").strip().lower() if isinstance(row, dict) else ""
+    )
     source_norm = str(source or "").strip().lower()
     if manual:
         priority = 92.0
@@ -3639,7 +3931,9 @@ def _chain_candidate_fit(
     else:
         overlay = "symbol -> 3m+ chain"
 
-    warning_count = _float_value(row.get("warning_count"), default=0.0) if isinstance(row, dict) else 0.0
+    warning_count = (
+        _float_value(row.get("warning_count"), default=0.0) if isinstance(row, dict) else 0.0
+    )
     if warning_count > 0 and not manual:
         priority -= min(12.0, warning_count * 3.0)
         fit += " with warnings"
@@ -3677,11 +3971,19 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
             "reason": reason or source,
             "asset": _clean_value(row.get("asset")) if isinstance(row, dict) else None,
             "lane": _clean_value(row.get("lane")) if isinstance(row, dict) else None,
-            "review_action": _clean_value(row.get("review_action")) if isinstance(row, dict) else None,
-            "readiness_label": _clean_value(row.get("readiness_label")) if isinstance(row, dict) else None,
-            "warning_count": _clean_value(row.get("warning_count")) if isinstance(row, dict) else None,
+            "review_action": _clean_value(row.get("review_action"))
+            if isinstance(row, dict)
+            else None,
+            "readiness_label": _clean_value(row.get("readiness_label"))
+            if isinstance(row, dict)
+            else None,
+            "warning_count": _clean_value(row.get("warning_count"))
+            if isinstance(row, dict)
+            else None,
             "market_structure_risk_score": (
-                _clean_value(row.get("market_structure_risk_score")) if isinstance(row, dict) else None
+                _clean_value(row.get("market_structure_risk_score"))
+                if isinstance(row, dict)
+                else None
             ),
         }
         candidate.update(_chain_candidate_fit(source, score, row, manual=manual))
@@ -3712,12 +4014,18 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
         return {"candidates": rows[:limit], "excluded_candidates": excluded}
 
     try:
-        gated = build_climate_gated_setups(data_dir, per_asset=6, limit=max(limit, 10), include_held=False)
+        gated = build_climate_gated_setups(
+            data_dir, per_asset=6, limit=max(limit, 10), include_held=False
+        )
         for row in gated.get("rows", []):
             asset = str(row.get("asset") or "")
             if asset not in {"option", "share", "value"}:
                 continue
-            reasons = row.get("climate_gate_reasons") if isinstance(row.get("climate_gate_reasons"), list) else []
+            reasons = (
+                row.get("climate_gate_reasons")
+                if isinstance(row.get("climate_gate_reasons"), list)
+                else []
+            )
             reason = "; ".join(str(item) for item in reasons[:3] if item) or row.get("setup") or ""
             add(
                 row.get("ticker_or_symbol"),
@@ -3744,7 +4052,12 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
             if asset not in {"option", "share", "value"}:
                 continue
             reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
-            reason = "; ".join(str(item) for item in reasons[:3] if item) or row.get("lane") or row.get("setup") or ""
+            reason = (
+                "; ".join(str(item) for item in reasons[:3] if item)
+                or row.get("lane")
+                or row.get("setup")
+                or ""
+            )
             add(
                 row.get("ticker_or_symbol"),
                 f"swing scout {asset}",
@@ -3780,7 +4093,9 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
     return {"candidates": rows[:limit], "excluded_candidates": excluded}
 
 
-def _bulk_chain_symbol_candidates(data_dir: Path, query: str = "", limit: int = 8) -> list[dict[str, Any]]:
+def _bulk_chain_symbol_candidates(
+    data_dir: Path, query: str = "", limit: int = 8
+) -> list[dict[str, Any]]:
     """Compatibility wrapper for callers that only need the accepted queue."""
     return _bulk_chain_symbol_selection(data_dir, query=query, limit=limit)["candidates"]
 
@@ -3853,17 +4168,21 @@ def build_option_chain_batch(
                 if row.get("reason")
             ),
             "grades": _clean_value((report.get("scan_summary") or {}).get("grade_counts")),
-            "best_reviewable": _clean_value((report.get("scan_summary") or {}).get("best_reviewable")),
+            "best_reviewable": _clean_value(
+                (report.get("scan_summary") or {}).get("best_reviewable")
+            ),
         }
         exposure_fields = _chain_open_exposure_fields(report.get("open_exposure"))
         summary.update(exposure_fields)
         symbol_summaries.append(summary)
         if not report.get("ok"):
-            errors.append({
-                "symbol": symbol,
-                "candidate_source": candidate.get("source"),
-                "error": report.get("error") or "chain scan failed",
-            })
+            errors.append(
+                {
+                    "symbol": symbol,
+                    "candidate_source": candidate.get("source"),
+                    "error": report.get("error") or "chain scan failed",
+                }
+            )
             continue
         source = str(report.get("source") or "unknown")
         source_counts[source] = source_counts.get(source, 0) + 1
@@ -3900,7 +4219,7 @@ def build_option_chain_batch(
     )[:limit]
     return {
         "ok": True,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "query": str(query or "").strip(),
         "preset": _chain_preset_config(preset)[0],
         "candidate_count": len(candidates),
@@ -3914,7 +4233,8 @@ def build_option_chain_batch(
             for row in symbol_summaries
         ),
         "open_exposure_symbols": [
-            row.get("symbol") for row in symbol_summaries
+            row.get("symbol")
+            for row in symbol_summaries
             if _float_value(row.get("open_exposure_count"), default=0.0) > 0
         ],
         "grade_counts": grade_counts,
@@ -3950,7 +4270,9 @@ def _shortlist_cell(value: Any) -> Any:
     return value
 
 
-def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, Any]:
+def write_option_chain_shortlist(
+    report: dict[str, Any], data_dir: Path = DATA_DIR
+) -> dict[str, Any]:
     """Write the latest 3m+ option-chain shortlist as portable review artifacts."""
     if not isinstance(report, dict):
         return {"ok": False, "error": "chain shortlist report is required"}
@@ -3958,7 +4280,7 @@ def write_option_chain_shortlist(report: dict[str, Any], data_dir: Path = DATA_D
     if not isinstance(rows, list) or not rows:
         return {"ok": False, "error": "no chain shortlist rows to export"}
 
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = datetime.now(UTC).isoformat()
     source_generated_at = str(report.get("generated_at") or "")
     normalized: list[dict[str, Any]] = []
     for row in rows:
@@ -4070,7 +4392,13 @@ def _setup_symbol(row: pd.Series, asset: str, spec: dict[str, Any]) -> str:
 def _setup_label(row: pd.Series, asset: str, symbol: str) -> str:
     if asset == "option":
         side_raw = str(row.get("side") or "").strip().lower()
-        side = "C" if side_raw.startswith("c") else "P" if side_raw.startswith("p") else side_raw.upper()
+        side = (
+            "C"
+            if side_raw.startswith("c")
+            else "P"
+            if side_raw.startswith("p")
+            else side_raw.upper()
+        )
         strike = _short_number(row.get("strike"))
         expiry = str(row.get("expiry") or "").strip()
         return " ".join(part for part in (symbol, side, strike, expiry) if part)
@@ -4289,7 +4617,9 @@ def _setup_gate(record: dict[str, Any]) -> dict[str, Any]:
     readiness = str(record.get("readiness_label") or "").strip().lower()
     trade_status = str(record.get("trade_status") or "").strip().lower()
     freshness = str(record.get("snapshot_freshness") or "").strip().lower()
-    flags = [str(flag).strip().lower() for flag in (record.get("risk_flags") or []) if str(flag).strip()]
+    flags = [
+        str(flag).strip().lower() for flag in (record.get("risk_flags") or []) if str(flag).strip()
+    ]
     blockers: list[str] = []
     checks: list[str] = []
     needs_quote = False
@@ -4310,12 +4640,22 @@ def _setup_gate(record: dict[str, Any]) -> dict[str, Any]:
         checks.append("snapshot is aging")
 
     severe_flag_terms = (
-        "below 90 dte", "no contract size", "no share size", "very wide spread",
-        "avoid swing fit", "status skip", "status blocked",
+        "below 90 dte",
+        "no contract size",
+        "no share size",
+        "very wide spread",
+        "avoid swing fit",
+        "status skip",
+        "status blocked",
     )
     quote_flag_terms = (
-        "verify live quote", "unknown quote source", "missing spread", "wide spread",
-        "missing stop", "missing target", "aging snapshot",
+        "verify live quote",
+        "unknown quote source",
+        "missing spread",
+        "wide spread",
+        "missing stop",
+        "missing target",
+        "aging snapshot",
     )
     for flag in flags:
         if any(term in flag for term in severe_flag_terms):
@@ -4399,7 +4739,10 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
         suggested_dollars = _optional_float_value(record.get("suggested_dollars"))
         max_units = (
             max(1, int(suggested_dollars // entry))
-            if suggested_dollars is not None and suggested_dollars > 0 and entry is not None and entry > 0
+            if suggested_dollars is not None
+            and suggested_dollars > 0
+            and entry is not None
+            and entry > 0
             else None
         )
     artifact_age = _optional_float_value(row.get("artifact_age_minutes"))
@@ -4412,7 +4755,9 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
         artifact_at = _clean_value(row.get("_source_mtime"))
     artifact_basis = _clean_value(row.get("artifact_time_basis"))
     if artifact_basis is None:
-        artifact_basis = "generated_at" if _clean_value(row.get("generated_at")) else "file_mtime_age"
+        artifact_basis = (
+            "generated_at" if _clean_value(row.get("generated_at")) else "file_mtime_age"
+        )
     candidate: dict[str, Any] = {
         "asset": asset,
         "symbol": symbol,
@@ -4451,41 +4796,63 @@ def _planner_candidate(row: pd.Series, record: dict[str, Any], asset: str) -> di
             blockers.append("missing expiry")
         if underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
             blockers.append("missing explicit equity underlying type")
-        candidate.update({
-            "option_type": side or None,
-            "strike": strike,
-            "expiry": expiry or None,
-            "underlying_type": underlying_type or None,
-            "contract_multiplier": 100,
-            "contract": record.get("contract") or row.get("contract_query"),
-        })
+        candidate.update(
+            {
+                "option_type": side or None,
+                "strike": strike,
+                "expiry": expiry or None,
+                "underlying_type": underlying_type or None,
+                "contract_multiplier": 100,
+                "contract": record.get("contract") or row.get("contract_query"),
+            }
+        )
     else:
-        candidate.update({
-            "underlying_type": "equity",
-            "contract_multiplier": 1,
-        })
+        candidate.update(
+            {
+                "underlying_type": "equity",
+                "contract_multiplier": 1,
+            }
+        )
 
     identity = {
         key: candidate.get(key)
         for key in (
-            "asset", "symbol", "direction", "option_type", "strike", "expiry",
-            "underlying_type", "contract_multiplier", "entry_price", "stop_price",
-            "target_price", "max_units", "source_file", "source_generated_at",
-            "source_artifact_at", "source_artifact_time_basis",
+            "asset",
+            "symbol",
+            "direction",
+            "option_type",
+            "strike",
+            "expiry",
+            "underlying_type",
+            "contract_multiplier",
+            "entry_price",
+            "stop_price",
+            "target_price",
+            "max_units",
+            "source_file",
+            "source_generated_at",
+            "source_artifact_at",
+            "source_artifact_time_basis",
             # Age is deliberately excluded: the same immutable artifact must
             # keep the same identity while the wall clock advances.
-            "source_quote_at", "source_price_session", "source_price_basis",
-            "bid", "ask", "mid",
+            "source_quote_at",
+            "source_price_session",
+            "source_price_basis",
+            "bid",
+            "ask",
+            "mid",
         )
     }
     fingerprint = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()[:24]
-    candidate.update({
-        "candidate_fingerprint": fingerprint,
-        "plan_ready": not blockers,
-        "blockers": blockers,
-    })
+    candidate.update(
+        {
+            "candidate_fingerprint": fingerprint,
+            "plan_ready": not blockers,
+            "blockers": blockers,
+        }
+    )
     return candidate
 
 
@@ -4515,10 +4882,14 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
         "asset": asset,
         "ticker_or_symbol": symbol,
         "setup": _setup_label(row, asset, symbol),
-        "action": _clean_value(row.get("side") or row.get("direction") or ("buy" if asset != "value" else "review")),
+        "action": _clean_value(
+            row.get("side") or row.get("direction") or ("buy" if asset != "value" else "review")
+        ),
         "score": round(score, 4),
         "confidence": _clean_value(row.get("confidence")),
-        "trade_status": _clean_value(row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")),
+        "trade_status": _clean_value(
+            row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")
+        ),
         "entry_price": entry_price,
         "stop_price": stop_price,
         "target_price": target_price,
@@ -4595,29 +4966,35 @@ def build_best_setups(
             chain_df = _load_option_chain_shortlist(data_dir)
             if not chain_df.empty:
                 if "artifact_age_minutes" in chain_df.columns:
-                    chain_age = pd.to_numeric(
-                        chain_df["artifact_age_minutes"], errors="coerce"
-                    )
+                    chain_age = pd.to_numeric(chain_df["artifact_age_minutes"], errors="coerce")
                     chain_df["snapshot_age_min"] = chain_age
                     chain_df["snapshot_freshness"] = chain_age.map(
-                        lambda value: _snapshot_freshness(
-                            None if pd.isna(value) else float(value)
-                        )
+                        lambda value: _snapshot_freshness(None if pd.isna(value) else float(value))
                     )
                 chain_shortlist_rows = int(len(chain_df))
-                sources["option_chain_shortlist"] = str(chain_df["_source_file"].iloc[0]) if "_source_file" in chain_df.columns else "option_chain_shortlist"
-                df = pd.concat([df, chain_df], ignore_index=True, sort=False) if not df.empty else chain_df
+                sources["option_chain_shortlist"] = (
+                    str(chain_df["_source_file"].iloc[0])
+                    if "_source_file" in chain_df.columns
+                    else "option_chain_shortlist"
+                )
+                df = (
+                    pd.concat([df, chain_df], ignore_index=True, sort=False)
+                    if not df.empty
+                    else chain_df
+                )
         if df.empty:
             by_asset[asset_name] = []
-            summaries.append({
-                "asset": asset_name,
-                "source_file": source_file,
-                "rows": 0,
-                "actionable_rows": 0,
-                "selected": 0,
-                "chain_shortlist_rows": chain_shortlist_rows,
-                "status": "missing",
-            })
+            summaries.append(
+                {
+                    "asset": asset_name,
+                    "source_file": source_file,
+                    "rows": 0,
+                    "actionable_rows": 0,
+                    "selected": 0,
+                    "chain_shortlist_rows": chain_shortlist_rows,
+                    "status": "missing",
+                }
+            )
             continue
 
         out = df.copy()
@@ -4638,21 +5015,26 @@ def build_best_setups(
             for _, row in candidates.head(per_asset).iterrows()
         ]
         by_asset[asset_name] = [
-            {k: v for k, v in record.items() if not k.startswith("_")}
-            for record in asset_records
+            {k: v for k, v in record.items() if not k.startswith("_")} for record in asset_records
         ]
         rows.extend(asset_records)
-        summaries.append({
-            "asset": asset_name,
-            "source_file": source_file,
-            "rows": int(len(out)),
-            "actionable_rows": int(len(actionable)),
-            "selected": int(len(asset_records)),
-            "chain_shortlist_rows": chain_shortlist_rows,
-            "status": "actionable" if len(actionable) else "review_only",
-            "snapshot_freshness": _clean_value(out["snapshot_freshness"].iloc[0]) if "snapshot_freshness" in out.columns else None,
-            "snapshot_age_min": _clean_value(out["snapshot_age_min"].iloc[0]) if "snapshot_age_min" in out.columns else None,
-        })
+        summaries.append(
+            {
+                "asset": asset_name,
+                "source_file": source_file,
+                "rows": int(len(out)),
+                "actionable_rows": int(len(actionable)),
+                "selected": int(len(asset_records)),
+                "chain_shortlist_rows": chain_shortlist_rows,
+                "status": "actionable" if len(actionable) else "review_only",
+                "snapshot_freshness": _clean_value(out["snapshot_freshness"].iloc[0])
+                if "snapshot_freshness" in out.columns
+                else None,
+                "snapshot_age_min": _clean_value(out["snapshot_age_min"].iloc[0])
+                if "snapshot_age_min" in out.columns
+                else None,
+            }
+        )
 
     rows = sorted(rows, key=lambda row: _float_value(row.get("_sort_score")), reverse=True)[:limit]
     clean_rows = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
@@ -4660,7 +5042,7 @@ def build_best_setups(
     if clean_rows:
         decision_row = sorted(clean_rows, key=_setup_gate_priority, reverse=True)[0]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(clean_rows),
         "rows": clean_rows,
         "decision_row": decision_row,
@@ -4695,12 +5077,8 @@ def _comparison_exact_identity(record: dict[str, Any]) -> dict[str, Any]:
     planner = record.get("planner_candidate")
     planner = planner if isinstance(planner, dict) else {}
     asset = str(record.get("asset") or planner.get("asset") or "").strip().lower()
-    symbol = str(
-        planner.get("symbol") or record.get("ticker_or_symbol") or ""
-    ).strip().upper()
-    direction = str(
-        planner.get("direction") or record.get("action") or "long"
-    ).strip().lower()
+    symbol = str(planner.get("symbol") or record.get("ticker_or_symbol") or "").strip().upper()
+    direction = str(planner.get("direction") or record.get("action") or "long").strip().lower()
     if direction in {"buy", "bull", "bullish"}:
         direction = "long"
     elif direction in {"sell", "bear", "bearish"}:
@@ -4709,28 +5087,27 @@ def _comparison_exact_identity(record: dict[str, Any]) -> dict[str, Any]:
         "asset": asset,
         "symbol": symbol,
         "direction": direction,
-        "label": _comparison_value(
-            planner.get("identity_label"), record.get("setup"), symbol
-        ),
+        "label": _comparison_value(planner.get("identity_label"), record.get("setup"), symbol),
     }
     if asset == "option":
-        identity.update({
-            "option_type": _agentic_option_side(
-                planner.get("option_type") or record.get("action")
-            ),
-            "strike": _optional_float_value(planner.get("strike")),
-            "expiry": _agentic_expiry_key(
-                planner.get("expiry") or record.get("expiry")
-            ),
-            "underlying_type": str(
-                planner.get("underlying_type") or ""
-            ).strip().lower() or None,
-            "contract": _comparison_value(
-                planner.get("contract"), record.get("contract"), record.get("setup")
-            ),
-        })
+        identity.update(
+            {
+                "option_type": _agentic_option_side(
+                    planner.get("option_type") or record.get("action")
+                ),
+                "strike": _optional_float_value(planner.get("strike")),
+                "expiry": _agentic_expiry_key(planner.get("expiry") or record.get("expiry")),
+                "underlying_type": str(planner.get("underlying_type") or "").strip().lower()
+                or None,
+                "contract": _comparison_value(
+                    planner.get("contract"), record.get("contract"), record.get("setup")
+                ),
+            }
+        )
     elif asset == "futures":
-        identity["contract"] = _comparison_value(record.get("setup"), record.get("ticker_or_symbol"))
+        identity["contract"] = _comparison_value(
+            record.get("setup"), record.get("ticker_or_symbol")
+        )
     return identity
 
 
@@ -4806,9 +5183,7 @@ def _comparison_source_state(
     if not artifact_present:
         source_blockers.append("artifact provenance or age is missing")
     elif not artifact_fresh:
-        source_blockers.append(
-            f"source artifact is stale ({_short_age_label(artifact_age)} old)"
-        )
+        source_blockers.append(f"source artifact is stale ({_short_age_label(artifact_age)} old)")
 
     quote_reasons = manual_review_quote_provenance_reasons(provenance_row)
     if quote_at is None or quote_age is None:
@@ -4833,7 +5208,12 @@ def _comparison_source_state(
     elif source_gate_pass:
         source_score = 3
         source_status = "aging"
-    elif artifact_fresh and quote_at is not None and quote_age is not None and quote_age <= STALE_SNAPSHOT_MINUTES:
+    elif (
+        artifact_fresh
+        and quote_at is not None
+        and quote_age is not None
+        and quote_age <= STALE_SNAPSHOT_MINUTES
+    ):
         source_score = 2
         source_status = "quote_stale"
     elif artifact_fresh:
@@ -4857,14 +5237,20 @@ def _comparison_source_state(
         "source_score": source_score,
         "source_gate_pass": source_gate_pass,
         "blockers": source_blockers,
-        "warnings": list(dict.fromkeys([
-            *research_quote_provenance_warnings(provenance_row),
-            *(
-                ["share execution bid/ask will be validated from Robinhood during manual review"]
-                if asset == "share" and quote_reasons
-                else []
-            ),
-        ])),
+        "warnings": list(
+            dict.fromkeys(
+                [
+                    *research_quote_provenance_warnings(provenance_row),
+                    *(
+                        [
+                            "share execution bid/ask will be validated from Robinhood during manual review"
+                        ]
+                        if asset == "share" and quote_reasons
+                        else []
+                    ),
+                ]
+            )
+        ),
     }
 
 
@@ -4873,9 +5259,9 @@ def _comparison_edge_state(asset: str, edge: dict[str, Any]) -> dict[str, Any]:
     rows = rows if isinstance(rows, list) else []
     lane = next(
         (
-            row for row in rows
-            if isinstance(row, dict)
-            and str(row.get("asset") or "").strip().lower() == asset
+            row
+            for row in rows
+            if isinstance(row, dict) and str(row.get("asset") or "").strip().lower() == asset
         ),
         {},
     )
@@ -4883,10 +5269,14 @@ def _comparison_edge_state(asset: str, edge: dict[str, Any]) -> dict[str, Any]:
     attestation = attestation if isinstance(attestation, dict) else {}
     attestation_ok = attestation.get("met") is not False
     eligible = bool(lane.get("live_capital_eligible") is True and attestation_ok)
-    blocker = None if eligible else _comparison_value(
-        lane.get("primary_blocker"),
-        edge.get("primary_blocker"),
-        f"{asset.title()} Edge Lab lane is unavailable",
+    blocker = (
+        None
+        if eligible
+        else _comparison_value(
+            lane.get("primary_blocker"),
+            edge.get("primary_blocker"),
+            f"{asset.title()} Edge Lab lane is unavailable",
+        )
     )
     return {
         "eligible": eligible,
@@ -4916,9 +5306,11 @@ def _comparison_overlap_state(
         row_status = str(row.get("status") or row.get("trade_status") or "").strip().lower()
         if any(token in row_status for token in ("expired", "closed", "cancelled", "canceled")):
             continue
-        row_symbol = str(
-            row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or ""
-        ).strip().upper()
+        row_symbol = (
+            str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "")
+            .strip()
+            .upper()
+        )
         if not symbol or row_symbol != symbol:
             continue
         underlying_count += 1
@@ -4933,9 +5325,12 @@ def _comparison_overlap_state(
         blockers.append("same-underlying directional exposure already exists")
     return {
         "label": (
-            "exact contract overlap" if exact_contract
-            else "directional overlap" if same_direction
-            else f"{underlying_count} same-underlying position(s)" if underlying_count
+            "exact contract overlap"
+            if exact_contract
+            else "directional overlap"
+            if same_direction
+            else f"{underlying_count} same-underlying position(s)"
+            if underlying_count
             else "none"
         ),
         "underlying_count": underlying_count,
@@ -4984,19 +5379,27 @@ def _comparison_economics(
         )
     )
     bid = _optional_float_value(
-        _comparison_value(broker_match.get("source_bid"), broker_match.get("bid"), planner.get("bid"))
+        _comparison_value(
+            broker_match.get("source_bid"), broker_match.get("bid"), planner.get("bid")
+        )
     )
     ask = _optional_float_value(
-        _comparison_value(broker_match.get("source_ask"), broker_match.get("ask"), planner.get("ask"))
+        _comparison_value(
+            broker_match.get("source_ask"), broker_match.get("ask"), planner.get("ask")
+        )
     )
-    valid_bid_ask = bool(
-        bid is not None and bid > 0 and ask is not None and ask >= bid
-    )
+    valid_bid_ask = bool(bid is not None and bid > 0 and ask is not None and ask >= bid)
     if valid_bid_ask and bid is not None and ask is not None:
         quote_mid = (ask + bid) / 2.0
         spread = max(0.0, ask - bid) / quote_mid if quote_mid > 0 else None
-    multiplier = _optional_float_value(planner.get("contract_multiplier")) or (100.0 if asset == "option" else 1.0)
-    units = _optional_float_value(planner.get("max_units")) or _optional_float_value(record.get("suggested_contracts")) or 1.0
+    multiplier = _optional_float_value(planner.get("contract_multiplier")) or (
+        100.0 if asset == "option" else 1.0
+    )
+    units = (
+        _optional_float_value(planner.get("max_units"))
+        or _optional_float_value(record.get("suggested_contracts"))
+        or 1.0
+    )
     units = max(1.0, float(units))
     slippage_fraction = max(0.005, (spread or 0.0) / 2.0)
     adjusted_entry = entry * (1.0 + slippage_fraction) if entry is not None else None
@@ -5021,7 +5424,8 @@ def _comparison_economics(
     max_spread = (
         SWING_EXECUTION_PROFILE.max_option_spread_pct
         if asset == "option"
-        else EQUITY_REVIEW_MAX_SPREAD_PCT if asset == "share"
+        else EQUITY_REVIEW_MAX_SPREAD_PCT
+        if asset == "share"
         else None
     )
     if asset == "option" and not valid_bid_ask:
@@ -5034,9 +5438,7 @@ def _comparison_economics(
         execution_blockers.append("bid/ask spread is missing")
         execution_score = 0
     elif max_spread is not None and spread is not None and spread > max_spread:
-        execution_blockers.append(
-            f"spread {spread:.1%} exceeds the {max_spread:.1%} review limit"
-        )
+        execution_blockers.append(f"spread {spread:.1%} exceeds the {max_spread:.1%} review limit")
         execution_score = 0
     elif spread is None:
         execution_score = 1
@@ -5057,9 +5459,7 @@ def _comparison_economics(
         rr_score = 1
     else:
         rr_score = 0
-        economics_blockers.append(
-            f"slippage-adjusted reward/risk is only {adjusted_rr:.2f}x"
-        )
+        economics_blockers.append(f"slippage-adjusted reward/risk is only {adjusted_rr:.2f}x")
     return {
         "entry_price": round(entry, 4) if entry is not None else None,
         "stop_price": round(stop, 4) if stop is not None else None,
@@ -5092,9 +5492,7 @@ def _comparison_catalyst_regime(
         record.get("next_catalyst_date"), record.get("days_to_catalyst")
     )
     whisper_gap = _float_value(record.get("whisper_gap_pct"), default=math.nan)
-    event_risk, event_action = _event_risk_level(
-        earnings_days, catalyst_days, whisper_gap
-    )
+    event_risk, event_action = _event_risk_level(earnings_days, catalyst_days, whisper_gap)
     climate_score = _float_value(command.get("climate_score"), default=math.nan)
     if not math.isfinite(climate_score):
         regime_status, regime_score = "unknown", 0
@@ -5111,7 +5509,9 @@ def _comparison_catalyst_regime(
     return {
         "event_risk": event_risk,
         "event_action": event_action,
-        "next_earnings_date": _clean_value(record.get("next_earnings_date") or record.get("earnings_date")),
+        "next_earnings_date": _clean_value(
+            record.get("next_earnings_date") or record.get("earnings_date")
+        ),
         "next_catalyst_date": _clean_value(record.get("next_catalyst_date")),
         "regime_status": regime_status,
         "regime_label": _comparison_value(command.get("climate_label"), "unknown"),
@@ -5181,7 +5581,9 @@ def _candidate_comparison_row(
         and not economics["economics_blockers"]
         and not catalyst["blockers"]
     )
-    validation_score = 2 if validation_clear and not overlap["blockers"] else 1 if validation_clear else 0
+    validation_score = (
+        2 if validation_clear and not overlap["blockers"] else 1 if validation_clear else 0
+    )
     ranking_vector = [
         int(source["source_score"]),
         int(edge_state["score"]),
@@ -5303,7 +5705,8 @@ def build_candidate_comparison(
     else:
         baseline_reason = (
             f"No candidate clears every planner gate. First blocker: {top[0].get('primary_blocker')}"
-            if top else "No exact swing candidate is available in the current snapshot."
+            if top
+            else "No exact swing candidate is available in the current snapshot."
         )
         winner_id = "no_trade"
     baseline = {
@@ -5335,7 +5738,7 @@ def build_candidate_comparison(
     }
     return {
         "schema": "optedge_candidate_comparison_v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "winner_id": winner_id,
         "candidate_count": len(candidates),
         "displayed_candidate_count": len(top),
@@ -5362,16 +5765,31 @@ def build_candidate_comparison(
 def _market_cap_profile(row: pd.Series) -> dict[str, Any]:
     cap = _float_value(row.get("market_cap") or row.get("market_cap_f"), default=math.nan)
     if not math.isfinite(cap) or cap <= 0:
-        return {"market_cap": None, "bucket": "unknown", "bonus": 0.0, "warning": "missing market cap"}
+        return {
+            "market_cap": None,
+            "bucket": "unknown",
+            "bonus": 0.0,
+            "warning": "missing market cap",
+        }
     if cap < 300_000_000:
-        return {"market_cap": cap, "bucket": "micro", "bonus": 14.0, "warning": "micro-cap execution risk"}
+        return {
+            "market_cap": cap,
+            "bucket": "micro",
+            "bonus": 14.0,
+            "warning": "micro-cap execution risk",
+        }
     if cap < 2_000_000_000:
         return {"market_cap": cap, "bucket": "small", "bonus": 18.0, "warning": None}
     if cap < 10_000_000_000:
         return {"market_cap": cap, "bucket": "small-mid", "bonus": 14.0, "warning": None}
     if cap < 25_000_000_000:
         return {"market_cap": cap, "bucket": "mid", "bonus": 7.0, "warning": None}
-    return {"market_cap": cap, "bucket": "large", "bonus": -10.0, "warning": "large-cap; less small-cap asymmetry"}
+    return {
+        "market_cap": cap,
+        "bucket": "large",
+        "bonus": -10.0,
+        "warning": "large-cap; less small-cap asymmetry",
+    }
 
 
 def _positive_component(value: Any, scale: float, cap: float) -> float:
@@ -5387,7 +5805,9 @@ def _swing_scout_components(row: pd.Series, asset: str) -> dict[str, Any]:
     squeeze = (
         _positive_component(row.get("short_int_score"), 6.0, 12.0)
         + _positive_component(row.get("short_pct_of_float"), 55.0, 12.0)
-        + _positive_component(_float_value(row.get("short_vol_ratio"), default=0.0) - 0.45, 18.0, 7.0)
+        + _positive_component(
+            _float_value(row.get("short_vol_ratio"), default=0.0) - 0.45, 18.0, 7.0
+        )
         + _positive_component(row.get("dark_pool_score"), 5.0, 7.0)
         + _positive_component(row.get("uoa_score"), 5.0, 8.0)
     )
@@ -5446,7 +5866,9 @@ def _swing_scout_components(row: pd.Series, asset: str) -> dict[str, Any]:
             execution += 5.0
 
     quality = _clamp((readiness_score - 55.0) * 0.35, 0.0, 16.0)
-    confidence_component = _clamp((confidence - 50.0) * 0.30, 0.0, 15.0) if math.isfinite(confidence) else 0.0
+    confidence_component = (
+        _clamp((confidence - 50.0) * 0.30, 0.0, 15.0) if math.isfinite(confidence) else 0.0
+    )
     return {
         "market_cap_profile": cap_profile,
         "squeeze": round(squeeze, 2),
@@ -5497,8 +5919,14 @@ def _swing_factor_summary(factors: list[dict[str, Any]], limit: int = 3) -> str 
     return " + ".join(names[:limit]) if names else None
 
 
-def _swing_factor_breakdown(row: pd.Series, asset: str, components: dict[str, Any]) -> list[dict[str, Any]]:
-    cap_profile = components.get("market_cap_profile") if isinstance(components.get("market_cap_profile"), dict) else {}
+def _swing_factor_breakdown(
+    row: pd.Series, asset: str, components: dict[str, Any]
+) -> list[dict[str, Any]]:
+    cap_profile = (
+        components.get("market_cap_profile")
+        if isinstance(components.get("market_cap_profile"), dict)
+        else {}
+    )
     readiness = components.get("readiness") if isinstance(components.get("readiness"), dict) else {}
     factors: list[dict[str, Any]] = []
 
@@ -5506,81 +5934,190 @@ def _swing_factor_breakdown(row: pd.Series, asset: str, components: dict[str, An
         score_val = _float_value(score, default=0.0)
         if score_val < minimum:
             return
-        factors.append({
-            "factor": factor,
-            "score": round(score_val, 2),
-            "detail": detail[:160],
-        })
+        factors.append(
+            {
+                "factor": factor,
+                "score": round(score_val, 2),
+                "detail": detail[:160],
+            }
+        )
 
     if asset != "futures":
         cap_bonus = _float_value(cap_profile.get("bonus"), default=0.0)
         cap = _fmt_compact_number(cap_profile.get("market_cap"), precision=0)
-        detail = _join_factor_parts([
-            str(cap_profile.get("bucket") or "unknown") + " cap",
-            f"${cap}" if cap else None,
-        ], "market cap profile")
+        detail = _join_factor_parts(
+            [
+                str(cap_profile.get("bucket") or "unknown") + " cap",
+                f"${cap}" if cap else None,
+            ],
+            "market cap profile",
+        )
         add("Market cap", max(cap_bonus, 0.0), detail, minimum=0.1)
 
-    add("Squeeze", components.get("squeeze"), _join_factor_parts([
-        f"short float {_fmt_ratio_pct(row.get('short_pct_of_float'))}" if _fmt_ratio_pct(row.get("short_pct_of_float")) else None,
-        f"short vol {_fmt_ratio_pct(row.get('short_vol_ratio'))}" if _fmt_ratio_pct(row.get("short_vol_ratio")) else None,
-        f"short score {_fmt_compact_number(row.get('short_int_score'))}" if _fmt_compact_number(row.get("short_int_score")) else None,
-        f"UOA {_fmt_compact_number(row.get('uoa_score'))}" if _fmt_compact_number(row.get("uoa_score")) else None,
-        f"dark pool {_fmt_compact_number(row.get('dark_pool_score'))}" if _fmt_compact_number(row.get("dark_pool_score")) else None,
-    ], "short interest or flow pressure"))
-    add("Attention", components.get("attention"), _join_factor_parts([
-        f"social {_fmt_compact_number(row.get('social_score'))}" if _fmt_compact_number(row.get("social_score")) else None,
-        f"trends {_fmt_compact_number(row.get('gtrends_score'))}" if _fmt_compact_number(row.get("gtrends_score")) else None,
-        f"twitter {_fmt_compact_number(row.get('twitter_score'))}" if _fmt_compact_number(row.get("twitter_score")) else None,
-        f"mentions {_fmt_compact_number(row.get('mentions'), precision=0)}" if _fmt_compact_number(row.get("mentions"), precision=0) else None,
-    ], "retail attention lift"))
-    add("Momentum", components.get("momentum"), _join_factor_parts([
-        f"tech {_fmt_compact_number(row.get('tech_score'))}" if _fmt_compact_number(row.get("tech_score")) else None,
-        f"sector RS {_fmt_compact_number(row.get('sector_rs_score'))}" if _fmt_compact_number(row.get("sector_rs_score")) else None,
-        f"20d {_fmt_ratio_pct(row.get('ticker_ret_20d') or row.get('ret_20d'))}" if _fmt_ratio_pct(row.get("ticker_ret_20d") or row.get("ret_20d")) else None,
-        f"rank {_fmt_compact_number(row.get('rank_score'))}" if _fmt_compact_number(row.get("rank_score")) else None,
-        f"futures {_fmt_compact_number(row.get('futures_score'))}" if _fmt_compact_number(row.get("futures_score")) else None,
-    ], "price or macro momentum"))
-    add("Value", components.get("value"), _join_factor_parts([
-        f"value {_fmt_compact_number(row.get('value_score'))}" if _fmt_compact_number(row.get("value_score")) else None,
-        f"FCF {_fmt_ratio_pct(row.get('fcf_yield'))}" if _fmt_ratio_pct(row.get("fcf_yield")) else None,
-        f"growth {_fmt_ratio_pct(row.get('rev_growth'))}" if _fmt_ratio_pct(row.get("rev_growth")) else None,
-        f"fund {_fmt_compact_number(row.get('fund_score'))}" if _fmt_compact_number(row.get("fund_score")) else None,
-    ], "value or fundamental dislocation"))
+    add(
+        "Squeeze",
+        components.get("squeeze"),
+        _join_factor_parts(
+            [
+                f"short float {_fmt_ratio_pct(row.get('short_pct_of_float'))}"
+                if _fmt_ratio_pct(row.get("short_pct_of_float"))
+                else None,
+                f"short vol {_fmt_ratio_pct(row.get('short_vol_ratio'))}"
+                if _fmt_ratio_pct(row.get("short_vol_ratio"))
+                else None,
+                f"short score {_fmt_compact_number(row.get('short_int_score'))}"
+                if _fmt_compact_number(row.get("short_int_score"))
+                else None,
+                f"UOA {_fmt_compact_number(row.get('uoa_score'))}"
+                if _fmt_compact_number(row.get("uoa_score"))
+                else None,
+                f"dark pool {_fmt_compact_number(row.get('dark_pool_score'))}"
+                if _fmt_compact_number(row.get("dark_pool_score"))
+                else None,
+            ],
+            "short interest or flow pressure",
+        ),
+    )
+    add(
+        "Attention",
+        components.get("attention"),
+        _join_factor_parts(
+            [
+                f"social {_fmt_compact_number(row.get('social_score'))}"
+                if _fmt_compact_number(row.get("social_score"))
+                else None,
+                f"trends {_fmt_compact_number(row.get('gtrends_score'))}"
+                if _fmt_compact_number(row.get("gtrends_score"))
+                else None,
+                f"twitter {_fmt_compact_number(row.get('twitter_score'))}"
+                if _fmt_compact_number(row.get("twitter_score"))
+                else None,
+                f"mentions {_fmt_compact_number(row.get('mentions'), precision=0)}"
+                if _fmt_compact_number(row.get("mentions"), precision=0)
+                else None,
+            ],
+            "retail attention lift",
+        ),
+    )
+    add(
+        "Momentum",
+        components.get("momentum"),
+        _join_factor_parts(
+            [
+                f"tech {_fmt_compact_number(row.get('tech_score'))}"
+                if _fmt_compact_number(row.get("tech_score"))
+                else None,
+                f"sector RS {_fmt_compact_number(row.get('sector_rs_score'))}"
+                if _fmt_compact_number(row.get("sector_rs_score"))
+                else None,
+                f"20d {_fmt_ratio_pct(row.get('ticker_ret_20d') or row.get('ret_20d'))}"
+                if _fmt_ratio_pct(row.get("ticker_ret_20d") or row.get("ret_20d"))
+                else None,
+                f"rank {_fmt_compact_number(row.get('rank_score'))}"
+                if _fmt_compact_number(row.get("rank_score"))
+                else None,
+                f"futures {_fmt_compact_number(row.get('futures_score'))}"
+                if _fmt_compact_number(row.get("futures_score"))
+                else None,
+            ],
+            "price or macro momentum",
+        ),
+    )
+    add(
+        "Value",
+        components.get("value"),
+        _join_factor_parts(
+            [
+                f"value {_fmt_compact_number(row.get('value_score'))}"
+                if _fmt_compact_number(row.get("value_score"))
+                else None,
+                f"FCF {_fmt_ratio_pct(row.get('fcf_yield'))}"
+                if _fmt_ratio_pct(row.get("fcf_yield"))
+                else None,
+                f"growth {_fmt_ratio_pct(row.get('rev_growth'))}"
+                if _fmt_ratio_pct(row.get("rev_growth"))
+                else None,
+                f"fund {_fmt_compact_number(row.get('fund_score'))}"
+                if _fmt_compact_number(row.get("fund_score"))
+                else None,
+            ],
+            "value or fundamental dislocation",
+        ),
+    )
 
     execution_parts: list[str | None]
     if asset == "option":
         execution_parts = [
-            f"{int(_float_value(row.get('dte')))}d DTE" if math.isfinite(_float_value(row.get("dte"), default=math.nan)) else None,
-            f"spread {_fmt_ratio_pct(row.get('spread_pct'))}" if _fmt_ratio_pct(row.get("spread_pct")) else None,
-            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)" if _fmt_compact_number(row.get("suggested_contracts"), precision=0) else None,
+            f"{int(_float_value(row.get('dte')))}d DTE"
+            if math.isfinite(_float_value(row.get("dte"), default=math.nan))
+            else None,
+            f"spread {_fmt_ratio_pct(row.get('spread_pct'))}"
+            if _fmt_ratio_pct(row.get("spread_pct"))
+            else None,
+            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)"
+            if _fmt_compact_number(row.get("suggested_contracts"), precision=0)
+            else None,
         ]
     elif asset == "share":
         execution_parts = [
-            f"size {_fmt_dollars(row.get('suggested_dollars'))}" if _fmt_dollars(row.get("suggested_dollars")) else None,
-            f"EV {_fmt_ratio_pct(row.get('ev_pct'))}" if _fmt_ratio_pct(row.get("ev_pct")) else None,
+            f"size {_fmt_dollars(row.get('suggested_dollars'))}"
+            if _fmt_dollars(row.get("suggested_dollars"))
+            else None,
+            f"EV {_fmt_ratio_pct(row.get('ev_pct'))}"
+            if _fmt_ratio_pct(row.get("ev_pct"))
+            else None,
         ]
     elif asset == "futures":
         reward = _float_value(row.get("reward_dollars"), default=math.nan)
         risk = _float_value(row.get("risk_dollars"), default=math.nan)
-        rr = reward / risk if math.isfinite(reward) and math.isfinite(risk) and risk > 0 else math.nan
+        rr = (
+            reward / risk
+            if math.isfinite(reward) and math.isfinite(risk) and risk > 0
+            else math.nan
+        )
         execution_parts = [
             str(row.get("contract") or row.get("micro_contract") or "").strip() or None,
             "micro" if bool(row.get("using_micro")) else None,
-            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)" if _fmt_compact_number(row.get("suggested_contracts"), precision=0) else None,
+            f"{_fmt_compact_number(row.get('suggested_contracts'), precision=0)} contract(s)"
+            if _fmt_compact_number(row.get("suggested_contracts"), precision=0)
+            else None,
             f"R/R {rr:.1f}x" if math.isfinite(rr) else None,
         ]
     else:
         execution_parts = [str(row.get("value_bucket") or "").strip() or None]
-    add("Execution", components.get("execution"), _join_factor_parts(execution_parts, "sizing and execution quality"))
-    add("Quality", components.get("quality"), _join_factor_parts([
-        str(readiness.get("readiness_label") or "").strip() or None,
-        f"readiness {_fmt_compact_number(readiness.get('readiness_score'), precision=0)}" if _fmt_compact_number(readiness.get("readiness_score"), precision=0) else None,
-    ], "setup readiness"))
-    add("Confidence", components.get("confidence"), _join_factor_parts([
-        f"confidence {_fmt_compact_number(row.get('confidence'), precision=0)}" if _fmt_compact_number(row.get("confidence"), precision=0) else None,
-    ], "model confidence"))
-    return sorted(factors, key=lambda item: _float_value(item.get("score"), default=0.0), reverse=True)[:5]
+    add(
+        "Execution",
+        components.get("execution"),
+        _join_factor_parts(execution_parts, "sizing and execution quality"),
+    )
+    add(
+        "Quality",
+        components.get("quality"),
+        _join_factor_parts(
+            [
+                str(readiness.get("readiness_label") or "").strip() or None,
+                f"readiness {_fmt_compact_number(readiness.get('readiness_score'), precision=0)}"
+                if _fmt_compact_number(readiness.get("readiness_score"), precision=0)
+                else None,
+            ],
+            "setup readiness",
+        ),
+    )
+    add(
+        "Confidence",
+        components.get("confidence"),
+        _join_factor_parts(
+            [
+                f"confidence {_fmt_compact_number(row.get('confidence'), precision=0)}"
+                if _fmt_compact_number(row.get("confidence"), precision=0)
+                else None,
+            ],
+            "model confidence",
+        ),
+    )
+    return sorted(
+        factors, key=lambda item: _float_value(item.get("score"), default=0.0), reverse=True
+    )[:5]
 
 
 def _swing_scout_lane(row: pd.Series, asset: str, components: dict[str, Any]) -> str:
@@ -5602,12 +6139,16 @@ def _swing_scout_lane(row: pd.Series, asset: str, components: dict[str, Any]) ->
     return "small_cap_share_swing"
 
 
-def _swing_scout_reasons(row: pd.Series, asset: str, components: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _swing_scout_reasons(
+    row: pd.Series, asset: str, components: dict[str, Any]
+) -> tuple[list[str], list[str]]:
     reasons: list[str] = []
     warnings: list[str] = []
     cap = components["market_cap_profile"]
     if asset != "futures":
-        reasons.append(f"{cap['bucket']} cap" if cap.get("bucket") != "unknown" else "market cap unknown")
+        reasons.append(
+            f"{cap['bucket']} cap" if cap.get("bucket") != "unknown" else "market cap unknown"
+        )
         if cap.get("warning"):
             warnings.append(str(cap["warning"]))
     if _float_value(components.get("squeeze")) >= 12:
@@ -5710,7 +6251,9 @@ def _swing_scout_record(row: pd.Series, asset: str, source_file: str | None) -> 
         "readiness_label": readiness.get("readiness_label"),
         "confidence": _clean_value(row.get("confidence")),
         "rank_score": _clean_value(row.get("rank_score")),
-        "trade_status": _clean_value(row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")),
+        "trade_status": _clean_value(
+            row.get("trade_status") or ("Trade" if bool(row.get("actionable")) else "Review")
+        ),
         "entry_price": _setup_entry_price(row, asset),
         "stop_price": _clean_value(row.get("stop_price")),
         "target_price": _clean_value(row.get("target_price")),
@@ -5830,7 +6373,9 @@ def _market_structure_risk_maps(symbols: list[str]) -> dict[str, dict[str, Any]]
                 risk[symbol]["regsho_threshold"] = True
                 add_warning(symbol, "Reg SHO threshold list")
                 add_flag(symbol, "regsho_threshold")
-                bump(symbol, _float_value(threshold.get("settlement_risk_score"), default=86.0), 12.0)
+                bump(
+                    symbol, _float_value(threshold.get("settlement_risk_score"), default=86.0), 12.0
+                )
 
     try:
         circuits = circuit_rows_for_symbols(sorted(wanted), cache_age=30 * 60)
@@ -5890,14 +6435,10 @@ def _nasdaq_mover_scout_record(
     risk_score = _float_value(market_risk.get("score"), default=0.0)
     risk_penalty = _float_value(market_risk.get("penalty"), default=0.0)
     risk_warnings = [
-        str(item).strip()
-        for item in (market_risk.get("warnings") or [])
-        if str(item).strip()
+        str(item).strip() for item in (market_risk.get("warnings") or []) if str(item).strip()
     ]
     risk_flags = [
-        str(item).strip()
-        for item in (market_risk.get("risk_flags") or [])
-        if str(item).strip()
+        str(item).strip() for item in (market_risk.get("risk_flags") or []) if str(item).strip()
     ]
     warnings.extend(risk_warnings)
     base_score = (
@@ -5913,23 +6454,29 @@ def _nasdaq_mover_scout_record(
         },
     ]
     if math.isfinite(short_vol_ratio):
-        factor_breakdown.append({
-            "factor": "Short volume",
-            "score": round(max(short_pressure_bonus, 0), 2),
-            "detail": f"FINRA short-volume {short_vol_ratio * 100:.0f}%",
-        })
+        factor_breakdown.append(
+            {
+                "factor": "Short volume",
+                "score": round(max(short_pressure_bonus, 0), 2),
+                "detail": f"FINRA short-volume {short_vol_ratio * 100:.0f}%",
+            }
+        )
     if cap > 0:
-        factor_breakdown.append({
-            "factor": "Market cap",
-            "score": 8.0 if cap < 2_000_000_000 else 3.0,
-            "detail": f"${cap / 1_000_000:.0f}M market cap",
-        })
+        factor_breakdown.append(
+            {
+                "factor": "Market cap",
+                "score": 8.0 if cap < 2_000_000_000 else 3.0,
+                "detail": f"${cap / 1_000_000:.0f}M market cap",
+            }
+        )
     if risk_score > 0:
-        factor_breakdown.append({
-            "factor": "Market-structure risk",
-            "score": -round(min(45.0, risk_penalty), 2),
-            "detail": ", ".join(risk_warnings[:3]) or "Nasdaq market-structure warning",
-        })
+        factor_breakdown.append(
+            {
+                "factor": "Market-structure risk",
+                "score": -round(min(45.0, risk_penalty), 2),
+                "detail": ", ".join(risk_warnings[:3]) or "Nasdaq market-structure warning",
+            }
+        )
     factor_breakdown = sorted(
         factor_breakdown,
         key=lambda item: _float_value(item.get("score"), default=0.0),
@@ -5963,8 +6510,12 @@ def _nasdaq_mover_scout_record(
         "expiry": None,
         "spread_pct": None,
         "short_pct_of_float": None,
-        "short_vol_ratio": _clean_value(short_vol_ratio if math.isfinite(short_vol_ratio) else None),
-        "dark_pool_score": _clean_value(dark_pool_score if math.isfinite(dark_pool_score) else None),
+        "short_vol_ratio": _clean_value(
+            short_vol_ratio if math.isfinite(short_vol_ratio) else None
+        ),
+        "dark_pool_score": _clean_value(
+            dark_pool_score if math.isfinite(dark_pool_score) else None
+        ),
         "social_score": None,
         "gtrends_score": None,
         "tech_score": None,
@@ -6028,9 +6579,14 @@ def _append_nasdaq_mover_scout_rows(
         short_flow = dark_pool_engine.run(mover_symbols, lookback_days=3)
     except Exception:
         short_flow = pd.DataFrame()
-    if isinstance(short_flow, pd.DataFrame) and not short_flow.empty and "ticker" in short_flow.columns:
+    if (
+        isinstance(short_flow, pd.DataFrame)
+        and not short_flow.empty
+        and "ticker" in short_flow.columns
+    ):
         enrich_cols = [
-            col for col in ("ticker", "short_vol_ratio", "short_vol", "total_vol", "dark_pool_score")
+            col
+            for col in ("ticker", "short_vol_ratio", "short_vol", "total_vol", "dark_pool_score")
             if col in short_flow.columns
         ]
         if len(enrich_cols) > 1:
@@ -6100,7 +6656,9 @@ def build_swing_scout(
         out["actionable"] = out.apply(_is_actionable, axis=1)
         reviewed_count += int(len(out))
         if asset_name == "option" and "dte" in out.columns:
-            out = out[pd.to_numeric(out["dte"], errors="coerce").fillna(0.0) >= MIN_SWING_OPTION_DTE]
+            out = out[
+                pd.to_numeric(out["dte"], errors="coerce").fillna(0.0) >= MIN_SWING_OPTION_DTE
+            ]
         for _, row in out.iterrows():
             record = _swing_scout_record(row, asset_name, source_file)
             if record["swing_scout_score"] < min_score:
@@ -6144,7 +6702,7 @@ def build_swing_scout(
         action_name = str(row.get("review_action") or "unknown")
         review_action_counts[action_name] = review_action_counts.get(action_name, 0) + 1
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(rows),
         "reviewed_count": reviewed_count,
         "rows": rows,
@@ -6173,7 +6731,9 @@ def build_swing_scout(
 
 
 def _suggestion_text(row: dict[str, Any]) -> str:
-    return " ".join(str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")).lower()
+    return " ".join(
+        str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")
+    ).lower()
 
 
 def _add_suggestion(
@@ -6197,39 +6757,49 @@ def _add_suggestion(
     if key in seen:
         return
     seen.add(key)
-    rows.append({
-        "symbol": clean_symbol,
-        "label": clean_label,
-        "kind": kind,
-        "source": source,
-        "query": clean_query,
-        "name": _clean_value(name),
-        "score": _clean_value(score),
-        "trade_status": _clean_value(trade_status),
-    })
+    rows.append(
+        {
+            "symbol": clean_symbol,
+            "label": clean_label,
+            "kind": kind,
+            "source": source,
+            "query": clean_query,
+            "name": _clean_value(name),
+            "score": _clean_value(score),
+            "trade_status": _clean_value(trade_status),
+        }
+    )
 
 
 def _option_query_from_row(row: pd.Series | dict[str, Any]) -> str:
-    ticker = str(
-        row.get("ticker")
-        or row.get("symbol")
-        or row.get("chain_symbol")
-        or row.get("ticker_or_symbol")
-        or ""
-    ).strip().upper()
+    ticker = (
+        str(
+            row.get("ticker")
+            or row.get("symbol")
+            or row.get("chain_symbol")
+            or row.get("ticker_or_symbol")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     expiry = str(
         row.get("expiry")
         or row.get("expiration_date")
         or row.get("lastTradeDateOrContractMonth")
         or ""
     ).strip()
-    side_raw = str(
-        row.get("side")
-        or row.get("option_side")
-        or row.get("option_type")
-        or row.get("right")
-        or ""
-    ).strip().upper()
+    side_raw = (
+        str(
+            row.get("side")
+            or row.get("option_side")
+            or row.get("option_type")
+            or row.get("right")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     side = "C" if side_raw.startswith("C") else "P" if side_raw.startswith("P") else side_raw[:1]
     strike = row.get("strike", row.get("strike_price"))
     if not ticker or not expiry or not side or strike in (None, ""):
@@ -6250,15 +6820,35 @@ def _add_broker_snapshot_suggestions(
     if not isinstance(snapshot, dict):
         return
     accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
-    direct_options = snapshot.get("option_positions") if isinstance(snapshot.get("option_positions"), list) else []
-    direct_equities = snapshot.get("equity_positions") if isinstance(snapshot.get("equity_positions"), list) else []
+    direct_options = (
+        snapshot.get("option_positions")
+        if isinstance(snapshot.get("option_positions"), list)
+        else []
+    )
+    direct_equities = (
+        snapshot.get("equity_positions")
+        if isinstance(snapshot.get("equity_positions"), list)
+        else []
+    )
 
     def add_option(raw: dict[str, Any], account_label: Any = None) -> None:
-        symbol = str(raw.get("chain_symbol") or raw.get("symbol") or raw.get("ticker") or "").strip().upper()
+        symbol = (
+            str(raw.get("chain_symbol") or raw.get("symbol") or raw.get("ticker") or "")
+            .strip()
+            .upper()
+        )
         if not symbol:
             return
-        side_raw = str(raw.get("option_type") or raw.get("side") or raw.get("right") or "").strip().lower()
-        side = "C" if side_raw.startswith("call") or side_raw == "c" else "P" if side_raw.startswith("put") or side_raw == "p" else side_raw.upper()
+        side_raw = (
+            str(raw.get("option_type") or raw.get("side") or raw.get("right") or "").strip().lower()
+        )
+        side = (
+            "C"
+            if side_raw.startswith("call") or side_raw == "c"
+            else "P"
+            if side_raw.startswith("put") or side_raw == "p"
+            else side_raw.upper()
+        )
         expiry = str(raw.get("expiration_date") or raw.get("expiry") or "").strip()
         strike = str(raw.get("strike_price") or raw.get("strike") or "").strip()
         qty = _float_value(raw.get("quantity") or raw.get("contracts"), default=None)
@@ -6266,9 +6856,16 @@ def _add_broker_snapshot_suggestions(
         contract = " ".join(part for part in [symbol, expiry, side, strike] if part)
         label = f"{symbol} broker {qty_text}{contract}".strip()
         _add_suggestion(
-            rows, seen, symbol, label, "broker_option", "Robinhood broker snapshot",
-            query=_option_query_from_row(raw) or symbol, name=account_label,
-            score=1.2, trade_status="broker_open",
+            rows,
+            seen,
+            symbol,
+            label,
+            "broker_option",
+            "Robinhood broker snapshot",
+            query=_option_query_from_row(raw) or symbol,
+            name=account_label,
+            score=1.2,
+            trade_status="broker_open",
         )
 
     def add_equity(raw: dict[str, Any], account_label: Any = None) -> None:
@@ -6278,9 +6875,16 @@ def _add_broker_snapshot_suggestions(
         qty = _float_value(raw.get("quantity") or raw.get("shares"), default=None)
         qty_text = f"{qty:g} shares" if qty is not None else "shares"
         _add_suggestion(
-            rows, seen, symbol, f"{symbol} broker {qty_text}", "broker_equity",
-            "Robinhood broker snapshot", query=symbol, name=account_label,
-            score=1.15, trade_status="broker_open",
+            rows,
+            seen,
+            symbol,
+            f"{symbol} broker {qty_text}",
+            "broker_equity",
+            "Robinhood broker snapshot",
+            query=symbol,
+            name=account_label,
+            score=1.15,
+            trade_status="broker_open",
         )
 
     for raw in direct_options:
@@ -6292,7 +6896,9 @@ def _add_broker_snapshot_suggestions(
     for account in accounts:
         if not isinstance(account, dict):
             continue
-        account_label = account.get("nickname") or account.get("label") or account.get("account_mask")
+        account_label = (
+            account.get("nickname") or account.get("label") or account.get("account_mask")
+        )
         for raw in account.get("option_positions") or []:
             if isinstance(raw, dict):
                 add_option(raw, account_label)
@@ -6313,13 +6919,27 @@ def build_symbol_suggestions(
 
     for alias, (symbol, name) in sorted(COMMON_ALIASES.items()):
         _add_suggestion(
-            rows, seen, symbol, f"{symbol} - {name}", "alias", "built-in aliases",
-            query=symbol, name=name, score=0.25,
+            rows,
+            seen,
+            symbol,
+            f"{symbol} - {name}",
+            "alias",
+            "built-in aliases",
+            query=symbol,
+            name=name,
+            score=0.25,
         )
         if alias != symbol.lower():
             _add_suggestion(
-                rows, seen, symbol, f"{alias.title()} -> {symbol}", "alias",
-                "built-in aliases", query=alias, name=name, score=0.2,
+                rows,
+                seen,
+                symbol,
+                f"{alias.title()} -> {symbol}",
+                "alias",
+                "built-in aliases",
+                query=alias,
+                name=name,
+                score=0.2,
             )
 
     for asset_name, spec in OPPORTUNITY_SPECS.items():
@@ -6338,8 +6958,15 @@ def build_symbol_suggestions(
                 side = str(row.get("side") or "").upper()[:1]
                 label = f"{symbol} {side} {row.get('strike', '-')} {row.get('expiry', '-')}"
                 _add_suggestion(
-                    rows, seen, symbol, label, "option", "latest options",
-                    query=option_query, score=score, trade_status=status,
+                    rows,
+                    seen,
+                    symbol,
+                    label,
+                    "option",
+                    "latest options",
+                    query=option_query,
+                    score=score,
+                    trade_status=status,
                 )
             elif asset_name == "futures":
                 name = row.get("name")
@@ -6349,14 +6976,29 @@ def build_symbol_suggestions(
                 if name:
                     label = f"{label} - {name}"
                 _add_suggestion(
-                    rows, seen, symbol, label, "futures", "latest futures",
-                    query=str(symbol or ""), name=name, score=score, trade_status=status,
+                    rows,
+                    seen,
+                    symbol,
+                    label,
+                    "futures",
+                    "latest futures",
+                    query=str(symbol or ""),
+                    name=name,
+                    score=score,
+                    trade_status=status,
                 )
             else:
                 label = f"{symbol} {asset_name}"
                 _add_suggestion(
-                    rows, seen, symbol, label, asset_name, f"latest {asset_name}",
-                    query=str(symbol or ""), score=score, trade_status=status,
+                    rows,
+                    seen,
+                    symbol,
+                    label,
+                    asset_name,
+                    f"latest {asset_name}",
+                    query=str(symbol or ""),
+                    score=score,
+                    trade_status=status,
                 )
 
     chain_df = _load_option_chain_shortlist(data_dir)
@@ -6382,8 +7024,14 @@ def build_symbol_suggestions(
             if details:
                 label = f"{label} ({', '.join(details)})"
             _add_suggestion(
-                rows, seen, symbol, label, "chain_option", "saved option-chain shortlist",
-                query=option_query, score=_opportunity_score(row),
+                rows,
+                seen,
+                symbol,
+                label,
+                "chain_option",
+                "saved option-chain shortlist",
+                query=option_query,
+                score=_opportunity_score(row),
                 trade_status=row.get("trade_status") or row.get("readiness_label"),
             )
 
@@ -6399,8 +7047,14 @@ def build_symbol_suggestions(
             label = normalized.get("position_label") or str(symbol or "")
             query = _option_query_from_row(item) if asset_name == "option" else str(symbol or "")
             _add_suggestion(
-                rows, seen, symbol, label, f"open_{asset_name}",
-                "open positions", query=query or str(symbol or ""), score=0.5,
+                rows,
+                seen,
+                symbol,
+                label,
+                f"open_{asset_name}",
+                "open positions",
+                query=query or str(symbol or ""),
+                score=0.5,
                 trade_status=normalized.get("trade_status"),
             )
 
@@ -6408,26 +7062,43 @@ def build_symbol_suggestions(
 
     for item in load_watchlist(data_dir).get("entries", []):
         _add_suggestion(
-            rows, seen, item.get("symbol"), str(item.get("query") or item.get("symbol") or ""),
-            "watchlist", "research watchlist", query=str(item.get("query") or item.get("symbol") or ""),
-            name=item.get("name"), score=0.75,
+            rows,
+            seen,
+            item.get("symbol"),
+            str(item.get("query") or item.get("symbol") or ""),
+            "watchlist",
+            "research watchlist",
+            query=str(item.get("query") or item.get("symbol") or ""),
+            name=item.get("name"),
+            score=0.75,
         )
 
     if len(query_norm) >= 2:
         for item in sec_company_search(query, limit=limit, fetch_if_stale=False):
             _add_suggestion(
-                rows, seen, item.get("symbol"),
+                rows,
+                seen,
+                item.get("symbol"),
                 f"{item.get('symbol')} - {item.get('name') or 'SEC company'}",
-                "sec", "SEC company tickers", query=str(item.get("symbol") or ""),
-                name=item.get("name"), score=item.get("score"),
+                "sec",
+                "SEC company tickers",
+                query=str(item.get("symbol") or ""),
+                name=item.get("name"),
+                score=item.get("score"),
             )
         for item in nasdaq_symbol_search(query, limit=limit, fetch_if_stale=False):
             type_label = str(item.get("type") or "symbol").lower()
             _add_suggestion(
-                rows, seen, item.get("symbol"),
+                rows,
+                seen,
+                item.get("symbol"),
                 f"{item.get('symbol')} - {item.get('name') or 'Nasdaq symbol'}",
-                "nasdaq", "Nasdaq Trader symbol directory", query=str(item.get("symbol") or ""),
-                name=item.get("name"), score=item.get("score"), trade_status=type_label,
+                "nasdaq",
+                "Nasdaq Trader symbol directory",
+                query=str(item.get("symbol") or ""),
+                name=item.get("name"),
+                score=item.get("score"),
+                trade_status=type_label,
             )
 
     if query_norm:
@@ -6436,13 +7107,22 @@ def build_symbol_suggestions(
     def sort_key(row: dict[str, Any]) -> tuple[int, int, float, str]:
         text = _suggestion_text(row)
         symbol = str(row.get("symbol") or "").lower()
-        prefix = 1 if query_norm and (symbol.startswith(query_norm) or text.startswith(query_norm)) else 0
-        exact = 1 if query_norm and (symbol == query_norm or str(row.get("query") or "").lower() == query_norm) else 0
+        prefix = (
+            1
+            if query_norm and (symbol.startswith(query_norm) or text.startswith(query_norm))
+            else 0
+        )
+        exact = (
+            1
+            if query_norm
+            and (symbol == query_norm or str(row.get("query") or "").lower() == query_norm)
+            else 0
+        )
         return (exact, prefix, _float_value(row.get("score")), str(row.get("symbol") or ""))
 
     rows = sorted(rows, key=sort_key, reverse=True)[:limit]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "query": query,
         "count": len(rows),
         "rows": rows,
@@ -6529,7 +7209,7 @@ def build_paper_candidates(
         selected_count = int(len(df))
     reason_counts = _reason_counts_from_frame(df)
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "asset": asset,
         "query": query,
         "max_new": max_new,
@@ -6609,7 +7289,7 @@ def build_robinhood_agentic_queue_report(
             "cycle_prompt": str(data_dir / "robinhood_agentic_cycle_prompt.md"),
         }
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "wrote_files": bool(paths),
         "paths": paths,
         "status": queue.get("status"),
@@ -6626,7 +7306,9 @@ def build_robinhood_agentic_queue_report(
         "gated_ready_to_submit_count": (
             (cycle_packet.get("queue_summary") or {}).get("gated_ready_to_submit_count")
         ),
-        "review_only_entry_candidate_count": len(cycle_packet.get("review_only_entry_candidates") or []),
+        "review_only_entry_candidate_count": len(
+            cycle_packet.get("review_only_entry_candidates") or []
+        ),
         "decision_log": cycle_packet.get("decision_log") or {},
         "readiness": queue.get("readiness") or {},
         "diagnostics": queue.get("diagnostics") or {},
@@ -6670,7 +7352,11 @@ def _agentic_strike_key(value: Any) -> str:
 
 
 def _agentic_contract_key(row: dict[str, Any]) -> str:
-    symbol = str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "").strip().upper()
+    symbol = (
+        str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "")
+        .strip()
+        .upper()
+    )
     side = _agentic_option_side(
         row.get("option_side") or row.get("option_type") or row.get("right") or row.get("side")
     )
@@ -6680,7 +7366,11 @@ def _agentic_contract_key(row: dict[str, Any]) -> str:
 
 
 def _agentic_direction_key(row: dict[str, Any]) -> str:
-    symbol = str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "").strip().upper()
+    symbol = (
+        str(row.get("symbol") or row.get("ticker") or row.get("ticker_or_symbol") or "")
+        .strip()
+        .upper()
+    )
     option_side = _agentic_option_side(
         row.get("option_side") or row.get("option_type") or row.get("right")
     )
@@ -6719,9 +7409,8 @@ def _agentic_open_option_keys(open_positions: list[dict[str, Any]]) -> tuple[set
             "option_side": raw.get("option_side") or raw.get("side"),
             "strike": raw.get("strike"),
             "expiry": raw.get("expiry"),
-            "direction": raw.get("direction") or (
-                f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"
-            ),
+            "direction": raw.get("direction")
+            or (f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"),
         }
         contract_key = _agentic_contract_key(row)
         direction_key = _agentic_direction_key(row)
@@ -6756,30 +7445,52 @@ def _agentic_ticket_preflight(
 
     freshness_values = (queue_freshness, cycle_freshness, ticket_packet_freshness, ticket_freshness)
     if "missing" in freshness_values:
-        add("block", "Fresh packet", "Queue, cycle, and ticket timestamps must all be present before live review.")
+        add(
+            "block",
+            "Fresh packet",
+            "Queue, cycle, and ticket timestamps must all be present before live review.",
+        )
     elif "stale" in freshness_values:
-        add("block", "Fresh packet", "Queue, cycle, and ticket files must be refreshed before live review.")
-    elif queue_freshness == "aging" or cycle_freshness == "aging" or ticket_packet_freshness == "aging" or ticket_freshness == "aging":
+        add(
+            "block",
+            "Fresh packet",
+            "Queue, cycle, and ticket files must be refreshed before live review.",
+        )
+    elif (
+        queue_freshness == "aging"
+        or cycle_freshness == "aging"
+        or ticket_packet_freshness == "aging"
+        or ticket_freshness == "aging"
+    ):
         add("warn", "Fresh packet", "Packet is aging; refresh if market conditions changed.")
     else:
         add("pass", "Fresh packet", "Queue, cycle, and ticket timestamps are fresh.")
 
     gate_status = str(entry_gate.get("status") or "").strip().lower()
     if gate_status == "blocked" or blockers:
-        add("block", "Entry gate", "Fresh entries are blocked by validation, guardrail, stale-data, or kill-switch checks.")
+        add(
+            "block",
+            "Entry gate",
+            "Fresh entries are blocked by validation, guardrail, stale-data, or kill-switch checks.",
+        )
     elif entry_gate.get("new_entries_allowed_after_live_checks") is True:
         add("pass", "Entry gate", "Local gate allows review after live broker/quote checks.")
     else:
         add("warn", "Entry gate", "Entry gate is not explicitly open; treat this as review-only.")
 
     missing = [
-        name for name in ("symbol", "option_side", "strike", "expiry", "limit_price", "quantity")
+        name
+        for name in ("symbol", "option_side", "strike", "expiry", "limit_price", "quantity")
         if ticket.get(name) in (None, "")
     ]
     if missing:
         add("block", "Contract fields", f"Missing required field(s): {', '.join(missing)}.")
     else:
-        add("pass", "Contract fields", "Exact symbol, side, strike, expiry, limit, and quantity are present.")
+        add(
+            "pass",
+            "Contract fields",
+            "Exact symbol, side, strike, expiry, limit, and quantity are present.",
+        )
 
     quantity = _float_value(ticket.get("quantity"), default=0.0)
     limit_price = _float_value(ticket.get("limit_price"), default=0.0)
@@ -6792,35 +7503,55 @@ def _agentic_ticket_preflight(
     elif premium <= 0:
         add("block", "Order size", "Estimated premium could not be calculated.")
     elif premium > 250:
-        add("warn", "Order size", f"Estimated premium ${premium:.0f} is above the usual $500-account half-budget cap.")
+        add(
+            "warn",
+            "Order size",
+            f"Estimated premium ${premium:.0f} is above the usual $500-account half-budget cap.",
+        )
     else:
         add("pass", "Order size", f"Estimated premium ${premium:.0f} fits the small-account cap.")
 
     funded_option_accounts = [
-        row for row in account_readiness_rows
+        row
+        for row in account_readiness_rows
         if isinstance(row, dict)
         and row.get("agentic_allowed") is True
         and row.get("options_ready") is True
         and row.get("funded") is True
     ]
     buying_power_values = [
-        _float_value(row.get("buying_power"), default=math.nan)
-        for row in funded_option_accounts
+        _float_value(row.get("buying_power"), default=math.nan) for row in funded_option_accounts
     ]
     buying_power_values = [value for value in buying_power_values if math.isfinite(value)]
     if not funded_option_accounts:
-        add("block", "Account capacity", "No funded agentic-accessible options account is available in the broker snapshot.")
+        add(
+            "block",
+            "Account capacity",
+            "No funded agentic-accessible options account is available in the broker snapshot.",
+        )
     elif not buying_power_values:
-        add("block", "Account capacity", "Broker buying power is missing for the eligible options account.")
+        add(
+            "block",
+            "Account capacity",
+            "Broker buying power is missing for the eligible options account.",
+        )
     elif premium > max(buying_power_values) + 0.01:
-        add("block", "Account capacity", f"Estimated ${premium:.0f} debit exceeds every eligible account's snapshot buying power.")
+        add(
+            "block",
+            "Account capacity",
+            f"Estimated ${premium:.0f} debit exceeds every eligible account's snapshot buying power.",
+        )
     else:
-        add("pass", "Account capacity", "At least one eligible account has enough snapshot buying power; refresh it live before review.")
+        add(
+            "pass",
+            "Account capacity",
+            "At least one eligible account has enough snapshot buying power; refresh it live before review.",
+        )
 
     expiry_dt = _parse_iso_utc(ticket.get("expiry"))
     dte = None
     if expiry_dt is not None:
-        dte = (expiry_dt.date() - datetime.now(timezone.utc).date()).days
+        dte = (expiry_dt.date() - datetime.now(UTC).date()).days
     if dte is None:
         add("block", "Swing DTE", "Expiry could not be parsed.")
     elif dte < MIN_SWING_OPTION_DTE:
@@ -6833,60 +7564,158 @@ def _agentic_ticket_preflight(
     else:
         add("pass", "Paper duplicate", "No matching local paper contract is open.")
     if contract_key in optedge_contract_keys or direction_key in optedge_direction_keys:
-        add("warn", "Optedge duplicate", "Optedge already has matching contract or same-direction exposure.")
+        add(
+            "warn",
+            "Optedge duplicate",
+            "Optedge already has matching contract or same-direction exposure.",
+        )
     else:
         add("pass", "Optedge duplicate", "No matching local Optedge option exposure found.")
     if contract_key in broker_working_contract_keys:
-        add("block", "Working broker order", "Robinhood already has a working order for this exact contract.")
+        add(
+            "block",
+            "Working broker order",
+            "Robinhood already has a working order for this exact contract.",
+        )
     else:
-        add("pass", "Working broker order", "No matching working broker order appears in the fresh snapshot.")
+        add(
+            "pass",
+            "Working broker order",
+            "No matching working broker order appears in the fresh snapshot.",
+        )
 
     if ticket.get("confirmation_required", True):
-        add("pass", "Confirmation", "Ticket is confirmation-required and has not been broker-submitted by this cockpit.")
+        add(
+            "pass",
+            "Confirmation",
+            "Ticket is confirmation-required and has not been broker-submitted by this cockpit.",
+        )
     else:
         add("block", "Confirmation", "Ticket is not marked confirmation-required.")
 
     if ticket.get("live_submit_allowed_by_this_script"):
-        add("block", "Execution mode", "Local ticket claims script live-submit is allowed; keep cockpit approval-gated.")
+        add(
+            "block",
+            "Execution mode",
+            "Local ticket claims script live-submit is allowed; keep cockpit approval-gated.",
+        )
     else:
         add("pass", "Execution mode", "Local script is not allowed to place broker orders.")
 
     mcp_plan = ticket.get("robinhood_mcp_review_plan")
     mcp_plan = mcp_plan if isinstance(mcp_plan, dict) else {}
     if not mcp_plan:
-        add("block", "MCP review plan", "Ticket is missing the structured Robinhood MCP review plan; rebuild tickets before live review.")
+        add(
+            "block",
+            "MCP review plan",
+            "Ticket is missing the structured Robinhood MCP review plan; rebuild tickets before live review.",
+        )
     elif mcp_plan.get("review_tool") != "review_option_order":
-        add("block", "MCP review plan", "Ticket does not require review_option_order before broker placement.")
+        add(
+            "block",
+            "MCP review plan",
+            "Ticket does not require review_option_order before broker placement.",
+        )
     elif not mcp_plan.get("requires_explicit_user_confirmation_before_place"):
-        add("block", "MCP review plan", "Ticket MCP plan does not require explicit user confirmation before placement.")
+        add(
+            "block",
+            "MCP review plan",
+            "Ticket MCP plan does not require explicit user confirmation before placement.",
+        )
     elif mcp_plan.get("script_submits_live_orders"):
-        add("block", "MCP review plan", "Ticket MCP plan allows script-submitted live orders; keep workflow approval-gated.")
+        add(
+            "block",
+            "MCP review plan",
+            "Ticket MCP plan allows script-submitted live orders; keep workflow approval-gated.",
+        )
     else:
         expected_plan = robinhood_mcp_option_review_plan(ticket)
-        actual_lookup = mcp_plan.get("contract_lookup") if isinstance(mcp_plan.get("contract_lookup"), dict) else {}
-        expected_lookup = expected_plan.get("contract_lookup") if isinstance(expected_plan.get("contract_lookup"), dict) else {}
-        actual_args = mcp_plan.get("review_arguments_template") if isinstance(mcp_plan.get("review_arguments_template"), dict) else {}
-        expected_args = expected_plan.get("review_arguments_template") if isinstance(expected_plan.get("review_arguments_template"), dict) else {}
-        actual_leg = next((row for row in (actual_args.get("legs") or []) if isinstance(row, dict)), {})
-        expected_leg = next((row for row in (expected_args.get("legs") or []) if isinstance(row, dict)), {})
+        actual_lookup = (
+            mcp_plan.get("contract_lookup")
+            if isinstance(mcp_plan.get("contract_lookup"), dict)
+            else {}
+        )
+        expected_lookup = (
+            expected_plan.get("contract_lookup")
+            if isinstance(expected_plan.get("contract_lookup"), dict)
+            else {}
+        )
+        actual_args = (
+            mcp_plan.get("review_arguments_template")
+            if isinstance(mcp_plan.get("review_arguments_template"), dict)
+            else {}
+        )
+        expected_args = (
+            expected_plan.get("review_arguments_template")
+            if isinstance(expected_plan.get("review_arguments_template"), dict)
+            else {}
+        )
+        actual_leg = next(
+            (row for row in (actual_args.get("legs") or []) if isinstance(row, dict)), {}
+        )
+        expected_leg = next(
+            (row for row in (expected_args.get("legs") or []) if isinstance(row, dict)), {}
+        )
         comparisons = {
-            "place tool": (mcp_plan.get("place_tool_after_explicit_confirmation"), expected_plan.get("place_tool_after_explicit_confirmation")),
-            "lookup symbol": (actual_lookup.get("chain_symbol"), expected_lookup.get("chain_symbol")),
-            "lookup expiry": (actual_lookup.get("expiration_date"), expected_lookup.get("expiration_date")),
-            "lookup strike": (_agentic_strike_key(actual_lookup.get("strike_price")), _agentic_strike_key(expected_lookup.get("strike_price"))),
-            "lookup type": (_agentic_option_side(actual_lookup.get("type")), _agentic_option_side(expected_lookup.get("type"))),
+            "place tool": (
+                mcp_plan.get("place_tool_after_explicit_confirmation"),
+                expected_plan.get("place_tool_after_explicit_confirmation"),
+            ),
+            "lookup symbol": (
+                actual_lookup.get("chain_symbol"),
+                expected_lookup.get("chain_symbol"),
+            ),
+            "lookup expiry": (
+                actual_lookup.get("expiration_date"),
+                expected_lookup.get("expiration_date"),
+            ),
+            "lookup strike": (
+                _agentic_strike_key(actual_lookup.get("strike_price")),
+                _agentic_strike_key(expected_lookup.get("strike_price")),
+            ),
+            "lookup type": (
+                _agentic_option_side(actual_lookup.get("type")),
+                _agentic_option_side(expected_lookup.get("type")),
+            ),
             "review symbol": (actual_args.get("chain_symbol"), expected_args.get("chain_symbol")),
-            "review underlying type": (actual_args.get("underlying_type"), expected_args.get("underlying_type")),
-            "review quantity": (str(actual_args.get("quantity") or ""), str(expected_args.get("quantity") or "")),
-            "review price": (_float_value(actual_args.get("price"), default=math.nan), _float_value(expected_args.get("price"), default=math.nan)),
+            "review underlying type": (
+                actual_args.get("underlying_type"),
+                expected_args.get("underlying_type"),
+            ),
+            "review quantity": (
+                str(actual_args.get("quantity") or ""),
+                str(expected_args.get("quantity") or ""),
+            ),
+            "review price": (
+                _float_value(actual_args.get("price"), default=math.nan),
+                _float_value(expected_args.get("price"), default=math.nan),
+            ),
             "review type": (actual_args.get("type"), expected_args.get("type")),
-            "review time in force": (actual_args.get("time_in_force"), expected_args.get("time_in_force")),
-            "review market hours": (actual_args.get("market_hours"), expected_args.get("market_hours")),
-            "account placeholder": (actual_args.get("account_number"), expected_args.get("account_number")),
-            "leg option id placeholder": (actual_leg.get("option_id"), expected_leg.get("option_id")),
+            "review time in force": (
+                actual_args.get("time_in_force"),
+                expected_args.get("time_in_force"),
+            ),
+            "review market hours": (
+                actual_args.get("market_hours"),
+                expected_args.get("market_hours"),
+            ),
+            "account placeholder": (
+                actual_args.get("account_number"),
+                expected_args.get("account_number"),
+            ),
+            "leg option id placeholder": (
+                actual_leg.get("option_id"),
+                expected_leg.get("option_id"),
+            ),
             "leg side": (actual_leg.get("side"), expected_leg.get("side")),
-            "leg position effect": (actual_leg.get("position_effect"), expected_leg.get("position_effect")),
-            "leg ratio": (str(actual_leg.get("ratio_quantity") or ""), str(expected_leg.get("ratio_quantity") or "")),
+            "leg position effect": (
+                actual_leg.get("position_effect"),
+                expected_leg.get("position_effect"),
+            ),
+            "leg ratio": (
+                str(actual_leg.get("ratio_quantity") or ""),
+                str(expected_leg.get("ratio_quantity") or ""),
+            ),
         }
         mismatches = []
         if len(actual_args.get("legs") or []) != 1:
@@ -6904,9 +7733,17 @@ def _agentic_ticket_preflight(
             elif str(actual_value or "") != str(expected_value or ""):
                 mismatches.append(label)
         if mismatches:
-            add("block", "MCP plan integrity", f"Embedded review plan disagrees with the ticket: {', '.join(mismatches)}.")
+            add(
+                "block",
+                "MCP plan integrity",
+                f"Embedded review plan disagrees with the ticket: {', '.join(mismatches)}.",
+            )
         else:
-            add("pass", "MCP review plan", "Ticket fields reconcile to review_option_order, explicit confirmation, and approval-gated placement.")
+            add(
+                "pass",
+                "MCP review plan",
+                "Ticket fields reconcile to review_option_order, explicit confirmation, and approval-gated placement.",
+            )
 
     block_count = sum(1 for row in checks if row["level"] == "block")
     warn_count = sum(1 for row in checks if row["level"] == "warn")
@@ -6929,9 +7766,8 @@ def _agentic_open_option_marks(open_positions: list[dict[str, Any]]) -> dict[str
             "option_side": raw.get("option_side") or raw.get("side"),
             "strike": raw.get("strike"),
             "expiry": raw.get("expiry"),
-            "direction": raw.get("direction") or (
-                f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"
-            ),
+            "direction": raw.get("direction")
+            or (f"long_{str(raw.get('option_side') or raw.get('side') or '').strip().lower()}"),
         }
         contract_key = _agentic_contract_key(row)
         if not contract_key.strip("|"):
@@ -6943,7 +7779,9 @@ def _agentic_open_option_marks(open_positions: list[dict[str, Any]]) -> dict[str
         marks[contract_key] = {
             "contract_key": contract_key,
             "current_price": current_price if math.isfinite(current_price) else None,
-            "source": _clean_value(raw.get("last_reprice_source") or raw.get("source") or "optedge_open_positions"),
+            "source": _clean_value(
+                raw.get("last_reprice_source") or raw.get("source") or "optedge_open_positions"
+            ),
             "latest_exit_pressure": _clean_value(raw.get("latest_exit_pressure")),
             "latest_exit_action": _clean_value(raw.get("latest_exit_action")),
             "reprice_failed_count": int(_float_value(raw.get("reprice_failed_count"), default=0.0)),
@@ -6966,7 +7804,7 @@ def _agentic_paper_book(
     needs_quote_count = 0
     review_count = 0
     pnl_values: list[float] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     for raw in active_paper[-50:]:
         if not isinstance(raw, dict):
@@ -6974,14 +7812,30 @@ def _agentic_paper_book(
         contract_key = _agentic_contract_key(raw)
         mark = marks.get(contract_key, {})
         quantity = max(0, int(_float_value(raw.get("quantity"), default=0.0)))
-        entry_price = _float_value(raw.get("entry_price") or raw.get("paper_limit_price"), default=math.nan)
+        entry_price = _float_value(
+            raw.get("entry_price") or raw.get("paper_limit_price"), default=math.nan
+        )
         current_price = _float_value(mark.get("current_price"), default=math.nan)
-        entry_premium = entry_price * quantity * 100.0 if math.isfinite(entry_price) and quantity > 0 else math.nan
-        current_value = current_price * quantity * 100.0 if math.isfinite(current_price) and quantity > 0 else math.nan
-        pnl_pct = ((current_price - entry_price) / entry_price) if (
-            math.isfinite(entry_price) and entry_price > 0 and math.isfinite(current_price)
-        ) else math.nan
-        pnl_dollars = (current_value - entry_premium) if math.isfinite(current_value) and math.isfinite(entry_premium) else math.nan
+        entry_premium = (
+            entry_price * quantity * 100.0
+            if math.isfinite(entry_price) and quantity > 0
+            else math.nan
+        )
+        current_value = (
+            current_price * quantity * 100.0
+            if math.isfinite(current_price) and quantity > 0
+            else math.nan
+        )
+        pnl_pct = (
+            ((current_price - entry_price) / entry_price)
+            if (math.isfinite(entry_price) and entry_price > 0 and math.isfinite(current_price))
+            else math.nan
+        )
+        pnl_dollars = (
+            (current_value - entry_premium)
+            if math.isfinite(current_value) and math.isfinite(entry_premium)
+            else math.nan
+        )
         stop_price = _float_value(raw.get("stop_price_reference"), default=math.nan)
         target_price = _float_value(raw.get("target_price_reference"), default=math.nan)
         opened_at = _parse_iso_utc(raw.get("opened_at"))
@@ -7022,33 +7876,41 @@ def _agentic_paper_book(
         if review_action != "hold_review":
             review_count += 1
 
-        rows.append({
-            "symbol": _clean_value(raw.get("symbol") or raw.get("ticker_or_symbol")),
-            "contract": _clean_value(raw.get("contract")),
-            "status": _clean_value(raw.get("status")),
-            "option_side": _clean_value(raw.get("option_side")),
-            "strike": _clean_value(raw.get("strike")),
-            "expiry": _clean_value(raw.get("expiry")),
-            "dte": _clean_value(dte),
-            "quantity": quantity,
-            "entry_price": _clean_value(entry_price if math.isfinite(entry_price) else None),
-            "current_price": _clean_value(current_price if math.isfinite(current_price) else None),
-            "pnl_pct": _clean_value(pnl_pct if math.isfinite(pnl_pct) else None),
-            "pnl_dollars": _clean_value(pnl_dollars if math.isfinite(pnl_dollars) else None),
-            "entry_premium_dollars": _clean_value(entry_premium if math.isfinite(entry_premium) else None),
-            "current_value_dollars": _clean_value(current_value if math.isfinite(current_value) else None),
-            "stop_price_reference": _clean_value(raw.get("stop_price_reference")),
-            "target_price_reference": _clean_value(raw.get("target_price_reference")),
-            "age_days": _clean_value(round(age_days, 2) if age_days is not None else None),
-            "mark_source": _clean_value(mark.get("source")),
-            "latest_exit_action": _clean_value(mark.get("latest_exit_action")),
-            "latest_exit_pressure": _clean_value(mark.get("latest_exit_pressure")),
-            "reprice_failed_count": _clean_value(mark.get("reprice_failed_count")),
-            "review_action": review_action,
-            "review_reason": review_reason,
-            "paper_override_validation_gate": bool(raw.get("paper_override_validation_gate")),
-            "swing_fit_label": _clean_value(raw.get("swing_fit_label")),
-        })
+        rows.append(
+            {
+                "symbol": _clean_value(raw.get("symbol") or raw.get("ticker_or_symbol")),
+                "contract": _clean_value(raw.get("contract")),
+                "status": _clean_value(raw.get("status")),
+                "option_side": _clean_value(raw.get("option_side")),
+                "strike": _clean_value(raw.get("strike")),
+                "expiry": _clean_value(raw.get("expiry")),
+                "dte": _clean_value(dte),
+                "quantity": quantity,
+                "entry_price": _clean_value(entry_price if math.isfinite(entry_price) else None),
+                "current_price": _clean_value(
+                    current_price if math.isfinite(current_price) else None
+                ),
+                "pnl_pct": _clean_value(pnl_pct if math.isfinite(pnl_pct) else None),
+                "pnl_dollars": _clean_value(pnl_dollars if math.isfinite(pnl_dollars) else None),
+                "entry_premium_dollars": _clean_value(
+                    entry_premium if math.isfinite(entry_premium) else None
+                ),
+                "current_value_dollars": _clean_value(
+                    current_value if math.isfinite(current_value) else None
+                ),
+                "stop_price_reference": _clean_value(raw.get("stop_price_reference")),
+                "target_price_reference": _clean_value(raw.get("target_price_reference")),
+                "age_days": _clean_value(round(age_days, 2) if age_days is not None else None),
+                "mark_source": _clean_value(mark.get("source")),
+                "latest_exit_action": _clean_value(mark.get("latest_exit_action")),
+                "latest_exit_pressure": _clean_value(mark.get("latest_exit_pressure")),
+                "reprice_failed_count": _clean_value(mark.get("reprice_failed_count")),
+                "review_action": review_action,
+                "review_reason": review_reason,
+                "paper_override_validation_gate": bool(raw.get("paper_override_validation_gate")),
+                "swing_fit_label": _clean_value(raw.get("swing_fit_label")),
+            }
+        )
 
     summary = {
         "open_count": len(rows),
@@ -7065,7 +7927,9 @@ def _agentic_paper_book(
     return rows[-12:], summary
 
 
-def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _broker_snapshot_option_rows(
+    snapshot: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
     direct_positions = (
         snapshot.get("option_positions")
@@ -7076,12 +7940,24 @@ def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[st
     rows: list[dict[str, Any]] = []
     if isinstance(direct_positions, list):
         for raw in direct_positions:
-            state = str(raw.get("state") or raw.get("status") or "open").strip().lower() if isinstance(raw, dict) else ""
-            quantity = _float_value(
-                raw.get("signed_quantity", raw.get("quantity") or raw.get("contracts")),
-                default=0.0,
-            ) if isinstance(raw, dict) else 0.0
-            if isinstance(raw, dict) and abs(quantity) > 0 and state not in {"closed", "expired", "cancelled"}:
+            state = (
+                str(raw.get("state") or raw.get("status") or "open").strip().lower()
+                if isinstance(raw, dict)
+                else ""
+            )
+            quantity = (
+                _float_value(
+                    raw.get("signed_quantity", raw.get("quantity") or raw.get("contracts")),
+                    default=0.0,
+                )
+                if isinstance(raw, dict)
+                else 0.0
+            )
+            if (
+                isinstance(raw, dict)
+                and abs(quantity) > 0
+                and state not in {"closed", "expired", "cancelled"}
+            ):
                 rows.append(dict(raw))
     for account_index, account in enumerate(accounts, start=1):
         if not isinstance(account, dict):
@@ -7124,15 +8000,22 @@ def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[st
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for raw in rows:
-        symbol = str(
-            raw.get("symbol")
-            or raw.get("chain_symbol")
-            or raw.get("ticker")
-            or raw.get("ticker_or_symbol")
-            or ""
-        ).strip().upper()
+        symbol = (
+            str(
+                raw.get("symbol")
+                or raw.get("chain_symbol")
+                or raw.get("ticker")
+                or raw.get("ticker_or_symbol")
+                or ""
+            )
+            .strip()
+            .upper()
+        )
         key = (
-            raw.get("account_key") or raw.get("account_mask") or raw.get("account_label") or raw.get("account"),
+            raw.get("account_key")
+            or raw.get("account_mask")
+            or raw.get("account_label")
+            or raw.get("account"),
             symbol,
             _agentic_option_side(
                 raw.get("option_side")
@@ -7143,10 +8026,12 @@ def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[st
             _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date")),
             _agentic_strike_key(raw.get("strike") or raw.get("strike_price")),
             str(raw.get("position_type") or raw.get("type") or "").strip().lower(),
-            _clean_value(_float_value(
-                raw.get("signed_quantity", raw.get("quantity") or raw.get("contracts")),
-                default=0.0,
-            )),
+            _clean_value(
+                _float_value(
+                    raw.get("signed_quantity", raw.get("quantity") or raw.get("contracts")),
+                    default=0.0,
+                )
+            ),
         )
         if key in seen:
             continue
@@ -7156,18 +8041,19 @@ def _broker_snapshot_option_rows(snapshot: dict[str, Any]) -> tuple[list[dict[st
 
 
 def _broker_option_record(raw: dict[str, Any]) -> dict[str, Any]:
-    symbol = str(
-        raw.get("symbol")
-        or raw.get("chain_symbol")
-        or raw.get("ticker")
-        or raw.get("ticker_or_symbol")
-        or ""
-    ).strip().upper()
+    symbol = (
+        str(
+            raw.get("symbol")
+            or raw.get("chain_symbol")
+            or raw.get("ticker")
+            or raw.get("ticker_or_symbol")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     side = _agentic_option_side(
-        raw.get("option_side")
-        or raw.get("option_type")
-        or raw.get("side")
-        or raw.get("right")
+        raw.get("option_side") or raw.get("option_type") or raw.get("side") or raw.get("right")
     )
     expiry = _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date"))
     strike = _agentic_strike_key(raw.get("strike") or raw.get("strike_price"))
@@ -7187,33 +8073,48 @@ def _broker_option_record(raw: dict[str, Any]) -> dict[str, Any]:
         "quantity": _clean_value(quantity),
         "signed_quantity": _clean_value(signed_quantity),
         "position_type": position_type,
-        "average_price": _clean_value(raw.get("average_price") or raw.get("avg_price") or raw.get("entry_price")),
-        "current_price": _clean_value(raw.get("current_price") or raw.get("mark_price") or raw.get("last_price")),
-        "account": _clean_value(raw.get("account_label") or raw.get("account") or raw.get("nickname")),
+        "average_price": _clean_value(
+            raw.get("average_price") or raw.get("avg_price") or raw.get("entry_price")
+        ),
+        "current_price": _clean_value(
+            raw.get("current_price") or raw.get("mark_price") or raw.get("last_price")
+        ),
+        "account": _clean_value(
+            raw.get("account_label") or raw.get("account") or raw.get("nickname")
+        ),
         "account_key": _clean_value(raw.get("account_key")),
         "account_mask": _clean_value(raw.get("account_mask")),
-        "agentic_allowed": _clean_value(raw.get("account_agentic_allowed") or raw.get("agentic_allowed")),
+        "agentic_allowed": _clean_value(
+            raw.get("account_agentic_allowed") or raw.get("agentic_allowed")
+        ),
         "option_level": _clean_value(raw.get("account_option_level") or raw.get("option_level")),
     }
     missing = [
-        label for label, value in (
+        label
+        for label, value in (
             ("symbol", symbol),
             ("side", side),
             ("strike", strike),
             ("expiry", expiry),
-        ) if value in ("", None)
+        )
+        if value in ("", None)
     ]
     row["contract_key"] = _agentic_contract_key(row)
     row["missing_fields"] = missing
     row["contract"] = (
         f"{symbol} {expiry} {side.upper()} {strike}"
-        if not missing else raw.get("contract") or raw.get("local_symbol") or symbol
+        if not missing
+        else raw.get("contract") or raw.get("local_symbol") or symbol
     )
     return {k: _clean_value(v) for k, v in row.items()}
 
 
 def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, Any]:
-    symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("ticker_or_symbol") or "").strip().upper()
+    symbol = (
+        str(raw.get("symbol") or raw.get("ticker") or raw.get("ticker_or_symbol") or "")
+        .strip()
+        .upper()
+    )
     side = _agentic_option_side(raw.get("option_side") or raw.get("side"))
     expiry = _agentic_expiry_key(raw.get("expiry") or raw.get("expiration_date"))
     strike = _agentic_strike_key(raw.get("strike") or raw.get("strike_price"))
@@ -7233,14 +8134,16 @@ def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, 
         "position_type": position_type,
         "account_key": _clean_value(raw.get("account_key")),
         "entry_price": _clean_value(raw.get("entry_price") or raw.get("paper_limit_price")),
-        "current_price": _clean_value(raw.get("current_price") or raw.get("current_mid") or raw.get("last_price")),
+        "current_price": _clean_value(
+            raw.get("current_price") or raw.get("current_mid") or raw.get("last_price")
+        ),
         "trade_status": _clean_value(raw.get("trade_status") or raw.get("status")),
         "latest_exit_action": _clean_value(raw.get("latest_exit_action")),
         "latest_exit_pressure": _clean_value(raw.get("latest_exit_pressure")),
         "source": source,
     }
     expiry_dt = _parse_iso_utc(expiry)
-    row["dte"] = (expiry_dt.date() - datetime.now(timezone.utc).date()).days if expiry_dt else None
+    row["dte"] = (expiry_dt.date() - datetime.now(UTC).date()).days if expiry_dt else None
     row["contract_key"] = _agentic_contract_key(row)
     row["contract"] = raw.get("contract") or f"{symbol} {expiry} {side.upper()} {strike}"
     return {k: _clean_value(v) for k, v in row.items()}
@@ -7248,12 +8151,16 @@ def _agentic_local_option_record(raw: dict[str, Any], source: str) -> dict[str, 
 
 def _local_option_tracking_scope(raw: dict[str, Any]) -> str:
     """Separate broker-linked lifecycle state from research/paper positions."""
-    explicit = str(
-        raw.get("tracking_scope")
-        or raw.get("position_scope")
-        or raw.get("execution_scope")
-        or ""
-    ).strip().lower()
+    explicit = (
+        str(
+            raw.get("tracking_scope")
+            or raw.get("position_scope")
+            or raw.get("execution_scope")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     if explicit in {"broker", "broker_linked", "live", "robinhood", "robinhood_live"}:
         return "broker_linked"
     broker_identity = any(
@@ -7283,7 +8190,9 @@ def _aggregate_option_records(
         signed_quantity = _float_value(row.get("signed_quantity"), default=math.nan)
         if not math.isfinite(signed_quantity):
             quantity = _float_value(row.get("quantity"), default=0.0)
-            signed_quantity = -abs(quantity) if row.get("position_type") == "short" else abs(quantity)
+            signed_quantity = (
+                -abs(quantity) if row.get("position_type") == "short" else abs(quantity)
+            )
         position_type = str(row.get("position_type") or "").strip().lower()
         if key not in groups:
             aggregate = dict(row)
@@ -7294,9 +8203,9 @@ def _aggregate_option_records(
             groups[key] = aggregate
             continue
         aggregate = groups[key]
-        aggregate["signed_quantity"] = _float_value(
-            aggregate.get("signed_quantity"), default=0.0
-        ) + signed_quantity
+        aggregate["signed_quantity"] = (
+            _float_value(aggregate.get("signed_quantity"), default=0.0) + signed_quantity
+        )
         aggregate["quantity"] = abs(float(aggregate["signed_quantity"]))
         types = set(aggregate.get("position_types") or [])
         if position_type:
@@ -7362,8 +8271,8 @@ def _broker_account_readiness(
                 if math.isfinite(candidate) and candidate > 0:
                     account_equity = candidate
                     break
-        explicit_buying_power_ready = (
-            math.isfinite(explicit_buying_power) and math.isfinite(explicit_unleveraged)
+        explicit_buying_power_ready = math.isfinite(explicit_buying_power) and math.isfinite(
+            explicit_unleveraged
         )
         portfolio_ready = (
             math.isfinite(account_equity)
@@ -7392,38 +8301,41 @@ def _broker_account_readiness(
         else:
             status = "not_ready"
             detail = "Snapshot does not show agentic access or options approval."
-        rows.append({
-            "account": _clean_value(
-                account.get("label")
-                or account.get("nickname")
-                or account.get("account_mask")
-                or account.get("account_number")
-            ),
-            "account_mask": _clean_value(account.get("account_mask")),
-            "account_key": _clean_value(account.get("account_key")),
-            "type": _clean_value(account.get("brokerage_account_type") or account.get("type")),
-            "state": _clean_value(state),
-            "active": active,
-            "agentic_allowed": agentic_allowed,
-            "option_level": _clean_value(option_level),
-            "options_ready": options_ready,
-            "buying_power": _clean_value(buying_power if math.isfinite(buying_power) else None),
-            "account_equity": _clean_value(account_equity if math.isfinite(account_equity) else None),
-            "funded": funded,
-            "portfolio_ready": portfolio_ready,
-            "status": status,
-            "detail": detail,
-        })
+        rows.append(
+            {
+                "account": _clean_value(
+                    account.get("label")
+                    or account.get("nickname")
+                    or account.get("account_mask")
+                    or account.get("account_number")
+                ),
+                "account_mask": _clean_value(account.get("account_mask")),
+                "account_key": _clean_value(account.get("account_key")),
+                "type": _clean_value(account.get("brokerage_account_type") or account.get("type")),
+                "state": _clean_value(state),
+                "active": active,
+                "agentic_allowed": agentic_allowed,
+                "option_level": _clean_value(option_level),
+                "options_ready": options_ready,
+                "buying_power": _clean_value(buying_power if math.isfinite(buying_power) else None),
+                "account_equity": _clean_value(
+                    account_equity if math.isfinite(account_equity) else None
+                ),
+                "funded": funded,
+                "portfolio_ready": portfolio_ready,
+                "status": status,
+                "detail": detail,
+            }
+        )
 
     agentic_count = sum(1 for row in rows if row.get("agentic_allowed") is True)
     option_ready_count = sum(1 for row in rows if row.get("options_ready") is True)
     agentic_option_rows = [
-        row for row in rows
+        row
+        for row in rows
         if row.get("agentic_allowed") is True and row.get("options_ready") is True
     ]
-    active_agentic_option_rows = [
-        row for row in agentic_option_rows if row.get("active") is True
-    ]
+    active_agentic_option_rows = [row for row in agentic_option_rows if row.get("active") is True]
     funded_agentic_option_rows = [
         row for row in active_agentic_option_rows if row.get("funded") is True
     ]
@@ -7434,11 +8346,15 @@ def _broker_account_readiness(
     elif active_agentic_option_rows:
         status = "needs_funding"
         label = "Fund agentic options account"
-        detail = "Agentic options access is available, but buying power is not positive in the snapshot."
+        detail = (
+            "Agentic options access is available, but buying power is not positive in the snapshot."
+        )
     elif agentic_option_rows:
         status = "inactive_account"
         label = "Agentic options account inactive"
-        detail = "Agentic options permissions exist, but the snapshot does not show an active account."
+        detail = (
+            "Agentic options permissions exist, but the snapshot does not show an active account."
+        )
     elif agentic_count and option_ready_count:
         status = "split_permissions"
         label = "Split account permissions"
@@ -7467,7 +8383,9 @@ def _broker_account_readiness(
     }
 
 
-def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _robinhood_mcp_capability_rows(
+    account_readiness: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     """Summarize Robinhood MCP capabilities separately from local execution policy."""
     readiness = account_readiness if isinstance(account_readiness, dict) else {}
     rows = readiness.get("rows") if isinstance(readiness.get("rows"), list) else []
@@ -7501,21 +8419,83 @@ def _robinhood_mcp_capability_rows(account_readiness: dict[str, Any] | None) -> 
     if not has_snapshot_accounts:
         unknown = "unknown until a fresh read-only broker snapshot is normalized"
         return [
-            row("Accounts / buying power", "read supported", unknown, "read-only", "Refresh the raw MCP snapshot before trusting readiness."),
-            row("Search / live saved scanners", "read supported", unknown, "read-only", "Resolves company names and runs saved Robinhood screeners against live market data."),
-            row("Fundamentals / earnings / equity history", "read supported", unknown, "read-only", "Adds broker-side company, catalyst, and trend checks to each candidate review."),
-            row("Positions / orders", "read supported", unknown, "read-only", "Useful for reconciliation and lifecycle audits."),
-            row("Broker realized P&L / trade history", "read supported", unknown, "read-only", "Keeps real broker outcomes separate from local simulated results."),
-            row("Option chains / contracts / quotes", "read supported", unknown, "read-only", "Useful for exact contract verification before a paper/live review."),
-            row("Option price history", "read supported", unknown, "read-only", "Adds recent contract-price behavior; interpolated bars should be ignored."),
-            row("Equity order review / placement", "write supported", unknown, "confirmation required", "Optedge does not auto-submit broker orders."),
-            row("Single-leg option review / placement", "write supported", unknown, "confirmation required", "Requires one account with agentic access, options approval, and funding."),
+            row(
+                "Accounts / buying power",
+                "read supported",
+                unknown,
+                "read-only",
+                "Refresh the raw MCP snapshot before trusting readiness.",
+            ),
+            row(
+                "Search / live saved scanners",
+                "read supported",
+                unknown,
+                "read-only",
+                "Resolves company names and runs saved Robinhood screeners against live market data.",
+            ),
+            row(
+                "Fundamentals / earnings / equity history",
+                "read supported",
+                unknown,
+                "read-only",
+                "Adds broker-side company, catalyst, and trend checks to each candidate review.",
+            ),
+            row(
+                "Positions / orders",
+                "read supported",
+                unknown,
+                "read-only",
+                "Useful for reconciliation and lifecycle audits.",
+            ),
+            row(
+                "Broker realized P&L / trade history",
+                "read supported",
+                unknown,
+                "read-only",
+                "Keeps real broker outcomes separate from local simulated results.",
+            ),
+            row(
+                "Option chains / contracts / quotes",
+                "read supported",
+                unknown,
+                "read-only",
+                "Useful for exact contract verification before a paper/live review.",
+            ),
+            row(
+                "Option price history",
+                "read supported",
+                unknown,
+                "read-only",
+                "Adds recent contract-price behavior; interpolated bars should be ignored.",
+            ),
+            row(
+                "Equity order review / placement",
+                "write supported",
+                unknown,
+                "confirmation required",
+                "Optedge does not auto-submit broker orders.",
+            ),
+            row(
+                "Single-leg option review / placement",
+                "write supported",
+                unknown,
+                "confirmation required",
+                "Requires one account with agentic access, options approval, and funding.",
+            ),
         ]
 
-    equity_status = "ready for review if funded" if funded_agentic_equity else (
-        "agentic account exists but buying power is not positive" if has_agentic else "no agentic-accessible account"
+    equity_status = (
+        "ready for review if funded"
+        if funded_agentic_equity
+        else (
+            "agentic account exists but buying power is not positive"
+            if has_agentic
+            else "no agentic-accessible account"
+        )
     )
-    option_status = "ready for review if user approves" if has_funded_agentic_options else readiness_label
+    option_status = (
+        "ready for review if user approves" if has_funded_agentic_options else readiness_label
+    )
     return [
         row(
             "Accounts / buying power",
@@ -7606,11 +8586,7 @@ def build_broker_reconciliation(
     """Compare local state with one optional, caller-frozen broker snapshot."""
     data_dir = Path(data_dir)
     snapshot_path = data_dir / "robinhood_broker_snapshot.json"
-    snapshot = (
-        snapshot_override
-        if snapshot_override is not None
-        else _read_json(snapshot_path)
-    )
+    snapshot = snapshot_override if snapshot_override is not None else _read_json(snapshot_path)
     snapshot_digest = hashlib.sha256(
         json.dumps(
             snapshot,
@@ -7624,43 +8600,54 @@ def build_broker_reconciliation(
     open_positions = open_positions if isinstance(open_positions, list) else []
     paper_positions = paper_positions if isinstance(paper_positions, list) else []
     active_paper = [
-        row for row in paper_positions
+        row
+        for row in paper_positions
         if isinstance(row, dict) and str(row.get("status") or "").lower() != "closed"
     ]
 
     broker_linked_positions = [
-        row for row in open_positions
+        row
+        for row in open_positions
         if isinstance(row, dict) and _local_option_tracking_scope(row) == "broker_linked"
     ]
     research_positions = [
-        row for row in open_positions
+        row
+        for row in open_positions
         if isinstance(row, dict) and _local_option_tracking_scope(row) == "research_lifecycle"
     ]
-    local_rows = _aggregate_option_records([
-        _agentic_local_option_record(row, "optedge")
-        for row in broker_linked_positions
-    ], by_account=True)
-    research_rows = _aggregate_option_records([
-        _agentic_local_option_record(row, "research")
-        for row in research_positions
-    ], by_account=False)
+    local_rows = _aggregate_option_records(
+        [_agentic_local_option_record(row, "optedge") for row in broker_linked_positions],
+        by_account=True,
+    )
+    research_rows = _aggregate_option_records(
+        [_agentic_local_option_record(row, "research") for row in research_positions],
+        by_account=False,
+    )
     research_expired_count = sum(
-        1 for row in research_rows
+        1
+        for row in research_rows
         if math.isfinite(_float_value(row.get("dte"), default=math.nan))
         and _float_value(row.get("dte"), default=math.nan) < 0
     )
     research_active_count = len(research_rows) - research_expired_count
-    paper_rows = _aggregate_option_records([
-        _agentic_local_option_record(row, "paper")
-        for row in active_paper
-        if isinstance(row, dict)
-    ], by_account=True)
-    paper_keys = {str(row.get("contract_key")) for row in paper_rows if str(row.get("contract_key") or "").strip("|")}
+    paper_rows = _aggregate_option_records(
+        [
+            _agentic_local_option_record(row, "paper")
+            for row in active_paper
+            if isinstance(row, dict)
+        ],
+        by_account=True,
+    )
+    paper_keys = {
+        str(row.get("contract_key"))
+        for row in paper_rows
+        if str(row.get("contract_key") or "").strip("|")
+    }
 
     if not isinstance(snapshot, dict) or not snapshot:
         empty_readiness = _broker_account_readiness([])
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "status": "missing_snapshot",
             "label": "Broker snapshot missing",
             "snapshot_path": str(snapshot_path),
@@ -7702,7 +8689,9 @@ def build_broker_reconciliation(
             "account_readiness_rows": [],
             "robinhood_mcp_capabilities": _robinhood_mcp_capability_rows(empty_readiness),
             "rows": [],
-            "warnings": ["Add data/robinhood_broker_snapshot.json before trusting live Robinhood reconciliation."],
+            "warnings": [
+                "Add data/robinhood_broker_snapshot.json before trusting live Robinhood reconciliation."
+            ],
             "notes": [
                 "This reconciliation is local/offline and does not connect to a broker.",
                 "A broker snapshot should contain current option positions with symbol, side, strike, expiry, and quantity.",
@@ -7717,10 +8706,18 @@ def build_broker_reconciliation(
         by_account=True,
     )
     terminal_option_order_states = {
-        "filled", "cancelled", "canceled", "rejected", "failed", "voided",
-        "expired", "partially_filled_rest_cancelled",
+        "filled",
+        "cancelled",
+        "canceled",
+        "rejected",
+        "failed",
+        "voided",
+        "expired",
+        "partially_filled_rest_cancelled",
     }
-    raw_option_orders = snapshot.get("option_orders") if isinstance(snapshot.get("option_orders"), list) else []
+    raw_option_orders = (
+        snapshot.get("option_orders") if isinstance(snapshot.get("option_orders"), list) else []
+    )
     working_option_orders: list[dict[str, Any]] = []
     working_option_order_keys: set[str] = set()
     for raw_order in raw_option_orders:
@@ -7764,7 +8761,8 @@ def build_broker_reconciliation(
         candidates = local_by_contract.get(key) or []
         broker_account_key = str(row.get("account_key") or "")
         exact_account_candidates = [
-            candidate for candidate in candidates
+            candidate
+            for candidate in candidates
             if broker_account_key and str(candidate.get("account_key") or "") == broker_account_key
         ]
         unscoped_candidates = [
@@ -7814,33 +8812,42 @@ def build_broker_reconciliation(
         else:
             status = "broker_only_paper_overlap" if in_paper else "broker_only"
             broker_only_count += 1
-        rows.append({
-            "status": status,
-            "source": "broker",
-            "contract": row.get("contract"),
-            "symbol": row.get("symbol"),
-            "option_side": row.get("option_side"),
-            "strike": row.get("strike"),
-            "expiry": row.get("expiry"),
-            "quantity": row.get("quantity"),
-            "signed_quantity": row.get("signed_quantity"),
-            "position_type": row.get("position_type"),
-            "account": row.get("account"),
-            "account_key": row.get("account_key"),
-            "account_mask": row.get("account_mask"),
-            "local_quantity": local_match_row.get("quantity") if local_match_row else None,
-            "local_signed_quantity": local_match_row.get("signed_quantity") if local_match_row else None,
-            "local_position_type": local_match_row.get("position_type") if local_match_row else None,
-            "average_price": row.get("average_price"),
-            "current_price": row.get("current_price"),
-            "local_match": (
-                "both" if in_optedge and in_paper
-                else "optedge" if in_optedge
-                else "paper_reference_only" if in_paper
-                else "-"
-            ),
-            "missing_fields": ", ".join(missing),
-        })
+        rows.append(
+            {
+                "status": status,
+                "source": "broker",
+                "contract": row.get("contract"),
+                "symbol": row.get("symbol"),
+                "option_side": row.get("option_side"),
+                "strike": row.get("strike"),
+                "expiry": row.get("expiry"),
+                "quantity": row.get("quantity"),
+                "signed_quantity": row.get("signed_quantity"),
+                "position_type": row.get("position_type"),
+                "account": row.get("account"),
+                "account_key": row.get("account_key"),
+                "account_mask": row.get("account_mask"),
+                "local_quantity": local_match_row.get("quantity") if local_match_row else None,
+                "local_signed_quantity": local_match_row.get("signed_quantity")
+                if local_match_row
+                else None,
+                "local_position_type": local_match_row.get("position_type")
+                if local_match_row
+                else None,
+                "average_price": row.get("average_price"),
+                "current_price": row.get("current_price"),
+                "local_match": (
+                    "both"
+                    if in_optedge and in_paper
+                    else "optedge"
+                    if in_optedge
+                    else "paper_reference_only"
+                    if in_paper
+                    else "-"
+                ),
+                "missing_fields": ", ".join(missing),
+            }
+        )
 
     local_only_count = 0
     local_expired_count = 0
@@ -7854,24 +8861,26 @@ def build_broker_reconciliation(
             local_expired_count += 1
         else:
             local_only_count += 1
-        rows.append({
-            "status": "local_expired" if is_expired else "local_only",
-            "source": "optedge",
-            "contract": row.get("contract"),
-            "symbol": row.get("symbol"),
-            "option_side": row.get("option_side"),
-            "strike": row.get("strike"),
-            "expiry": row.get("expiry"),
-            "dte": row.get("dte"),
-            "quantity": row.get("quantity"),
-            "signed_quantity": row.get("signed_quantity"),
-            "position_type": row.get("position_type"),
-            "account_key": row.get("account_key"),
-            "trade_status": row.get("trade_status"),
-            "latest_exit_action": row.get("latest_exit_action"),
-            "latest_exit_pressure": row.get("latest_exit_pressure"),
-            "local_match": "-",
-        })
+        rows.append(
+            {
+                "status": "local_expired" if is_expired else "local_only",
+                "source": "optedge",
+                "contract": row.get("contract"),
+                "symbol": row.get("symbol"),
+                "option_side": row.get("option_side"),
+                "strike": row.get("strike"),
+                "expiry": row.get("expiry"),
+                "dte": row.get("dte"),
+                "quantity": row.get("quantity"),
+                "signed_quantity": row.get("signed_quantity"),
+                "position_type": row.get("position_type"),
+                "account_key": row.get("account_key"),
+                "trade_status": row.get("trade_status"),
+                "latest_exit_action": row.get("latest_exit_action"),
+                "latest_exit_pressure": row.get("latest_exit_pressure"),
+                "local_match": "-",
+            }
+        )
 
     paper_only_count = 0
     paper_expired_count = 0
@@ -7885,38 +8894,38 @@ def build_broker_reconciliation(
             paper_expired_count += 1
         else:
             paper_only_count += 1
-        rows.append({
-            "status": "paper_expired" if is_expired else "paper_only",
-            "source": "paper",
-            "contract": row.get("contract"),
-            "symbol": row.get("symbol"),
-            "option_side": row.get("option_side"),
-            "strike": row.get("strike"),
-            "expiry": row.get("expiry"),
-            "dte": row.get("dte"),
-            "quantity": row.get("quantity"),
-            "trade_status": row.get("trade_status"),
-            "local_match": "-",
-        })
+        rows.append(
+            {
+                "status": "paper_expired" if is_expired else "paper_only",
+                "source": "paper",
+                "contract": row.get("contract"),
+                "symbol": row.get("symbol"),
+                "option_side": row.get("option_side"),
+                "strike": row.get("strike"),
+                "expiry": row.get("expiry"),
+                "dte": row.get("dte"),
+                "quantity": row.get("quantity"),
+                "trade_status": row.get("trade_status"),
+                "local_match": "-",
+            }
+        )
 
     snapshot_schema = str(snapshot.get("schema") or "")
     raw_bundle_schema = str(snapshot.get("raw_bundle_schema") or "")
     trusted_capture_provenance = (
-        snapshot_schema == SNAPSHOT_SCHEMA
-        and raw_bundle_schema == RAW_BUNDLE_SCHEMA
+        snapshot_schema == SNAPSHOT_SCHEMA and raw_bundle_schema == RAW_BUNDLE_SCHEMA
     )
     account_readiness = _broker_account_readiness(
         accounts,
         strict_v2_portfolio=raw_bundle_schema == RAW_BUNDLE_SCHEMA,
     )
     option_ready_accounts = [
-        row for row in accounts
+        row
+        for row in accounts
         if isinstance(row, dict) and _account_options_ready(row.get("option_level"))
     ]
     agentic_accounts = [
-        row
-        for row in accounts
-        if isinstance(row, dict) and row.get("agentic_allowed") is True
+        row for row in accounts if isinstance(row, dict) and row.get("agentic_allowed") is True
     ]
     agentic_option_ready = bool(account_readiness.get("agentic_option_ready"))
     warnings: list[str] = []
@@ -7925,43 +8934,61 @@ def build_broker_reconciliation(
     ]
     reported_account_readiness = dict(account_readiness)
     if not trusted_capture_provenance:
-        reported_account_readiness.update({
-            "status": "capture_untrusted",
-            "label": "Trusted V2 broker capture required",
-            "detail": (
-                f"Manual review requires snapshot schema {SNAPSHOT_SCHEMA} normalized from "
-                f"raw bundle schema {RAW_BUNDLE_SCHEMA}."
-            ),
-            "agentic_option_ready": False,
-            "funded_agentic_option_count": 0,
-        })
+        reported_account_readiness.update(
+            {
+                "status": "capture_untrusted",
+                "label": "Trusted V2 broker capture required",
+                "detail": (
+                    f"Manual review requires snapshot schema {SNAPSHOT_SCHEMA} normalized from "
+                    f"raw bundle schema {RAW_BUNDLE_SCHEMA}."
+                ),
+                "agentic_option_ready": False,
+                "funded_agentic_option_count": 0,
+            }
+        )
     elif normalization_blockers:
-        reported_account_readiness.update({
-            "status": "capture_incomplete",
-            "label": "Broker capture incomplete",
-            "detail": "Required account-scoped reads or pagination evidence are incomplete.",
-            "agentic_option_ready": False,
-            "funded_agentic_option_count": 0,
-        })
+        reported_account_readiness.update(
+            {
+                "status": "capture_incomplete",
+                "label": "Broker capture incomplete",
+                "detail": "Required account-scoped reads or pagination evidence are incomplete.",
+                "agentic_option_ready": False,
+                "funded_agentic_option_count": 0,
+            }
+        )
     warnings.extend(normalization_blockers)
     if not trusted_capture_provenance:
         warnings.append(str(reported_account_readiness["detail"]))
     if agentic_accounts and not agentic_option_ready:
         warnings.append("Agentic account snapshot does not show options approval.")
     if option_ready_accounts and not agentic_option_ready:
-        warnings.append("An options-approved account exists, but it is not marked agentic in the snapshot.")
+        warnings.append(
+            "An options-approved account exists, but it is not marked agentic in the snapshot."
+        )
     if account_readiness.get("status") != "ready":
-        warnings.append(str(account_readiness.get("detail") or account_readiness.get("label") or "Agentic options account is not ready."))
+        warnings.append(
+            str(
+                account_readiness.get("detail")
+                or account_readiness.get("label")
+                or "Agentic options account is not ready."
+            )
+        )
     if snapshot_age is None:
         warnings.append("Broker snapshot timestamp is missing.")
     elif snapshot_age > AGENTIC_STALE_MINUTES:
         warnings.append(f"Broker snapshot is stale ({_short_age_label(snapshot_age)} old).")
     if broker_only_count:
-        warnings.append(f"{broker_only_count} broker option position(s) are not tracked by Optedge or local paper.")
+        warnings.append(
+            f"{broker_only_count} broker option position(s) are not tracked by Optedge or local paper."
+        )
     if local_only_count:
-        warnings.append(f"{local_only_count} local Optedge option position(s) are not in the broker snapshot.")
+        warnings.append(
+            f"{local_only_count} local Optedge option position(s) are not in the broker snapshot."
+        )
     if local_expired_count:
-        warnings.append(f"{local_expired_count} expired Optedge option position(s) are still open locally.")
+        warnings.append(
+            f"{local_expired_count} expired Optedge option position(s) are still open locally."
+        )
     if research_rows:
         warnings.append(
             f"{len(research_rows)} Optedge research lifecycle option row(s) are tracked separately from broker holdings."
@@ -7971,9 +8998,13 @@ def build_broker_reconciliation(
             f"{paper_only_count} agentic paper option position(s) are tracked separately from broker holdings."
         )
     if paper_expired_count:
-        warnings.append(f"{paper_expired_count} expired paper option position(s) are still open locally.")
+        warnings.append(
+            f"{paper_expired_count} expired paper option position(s) are still open locally."
+        )
     if missing_contract_fields_count:
-        warnings.append(f"{missing_contract_fields_count} broker row(s) need strike/side/expiry details to match exactly.")
+        warnings.append(
+            f"{missing_contract_fields_count} broker row(s) need strike/side/expiry details to match exactly."
+        )
     if quantity_mismatch_count:
         warnings.append(
             f"{quantity_mismatch_count} broker/local option position(s) have different aggregate signed quantities."
@@ -7992,10 +9023,15 @@ def build_broker_reconciliation(
         )
 
     if (
-        broker_only_count or local_only_count
-        or local_expired_count or missing_contract_fields_count
-        or quantity_mismatch_count or type_mismatch_count or account_scope_mismatch_count
-        or unresolved_working_option_order_count or normalization_blockers
+        broker_only_count
+        or local_only_count
+        or local_expired_count
+        or missing_contract_fields_count
+        or quantity_mismatch_count
+        or type_mismatch_count
+        or account_scope_mismatch_count
+        or unresolved_working_option_order_count
+        or normalization_blockers
     ):
         status = "mismatch"
         label = "Broker/local mismatch"
@@ -8010,7 +9046,7 @@ def build_broker_reconciliation(
         label = "Broker/local synced"
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": status,
         "label": label,
         "snapshot_path": str(snapshot_path),
@@ -8041,7 +9077,9 @@ def build_broker_reconciliation(
         "agentic_readiness_status": reported_account_readiness.get("status"),
         "agentic_readiness_label": reported_account_readiness.get("label"),
         "agentic_readiness_detail": reported_account_readiness.get("detail"),
-        "funded_agentic_option_count": reported_account_readiness.get("funded_agentic_option_count"),
+        "funded_agentic_option_count": reported_account_readiness.get(
+            "funded_agentic_option_count"
+        ),
         "working_option_order_count": len(working_option_orders),
         "unresolved_working_option_order_count": unresolved_working_option_order_count,
         "working_option_order_contract_keys": sorted(working_option_order_keys),
@@ -8129,7 +9167,9 @@ def normalize_robinhood_broker_snapshot_file(
         }
         return result
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(snapshot, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True, default=str), encoding="utf-8"
+    )
     result["equity_ledger_update"] = append_account_equity_ledgers(
         snapshot,
         default_account_equity_ledger_dir(data_dir),
@@ -8154,19 +9194,28 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     open_positions = open_positions if isinstance(open_positions, list) else []
 
     active_paper = [
-        row for row in paper_positions
+        row
+        for row in paper_positions
         if isinstance(row, dict) and str(row.get("status") or "").lower() != "closed"
     ]
     paper_contract_keys, paper_direction_keys = _agentic_open_option_keys(active_paper)
     optedge_contract_keys, optedge_direction_keys = _agentic_open_option_keys(open_positions)
     broker_reconciliation = build_broker_reconciliation(data_dir)
     entry_gate = cycle.get("entry_gate") if isinstance(cycle.get("entry_gate"), dict) else {}
-    hard_pause_reasons = cycle.get("hard_pause_reasons") if isinstance(cycle.get("hard_pause_reasons"), list) else []
-    gate_blockers = entry_gate.get("blockers") if isinstance(entry_gate.get("blockers"), list) else []
-    gate_warnings = entry_gate.get("warnings") if isinstance(entry_gate.get("warnings"), list) else []
+    hard_pause_reasons = (
+        cycle.get("hard_pause_reasons") if isinstance(cycle.get("hard_pause_reasons"), list) else []
+    )
+    gate_blockers = (
+        entry_gate.get("blockers") if isinstance(entry_gate.get("blockers"), list) else []
+    )
+    gate_warnings = (
+        entry_gate.get("warnings") if isinstance(entry_gate.get("warnings"), list) else []
+    )
     queue_age = _iso_age_minutes(queue.get("generated_at"))
     cycle_age = _iso_age_minutes(cycle.get("generated_at"))
-    ticket_packet_generated_at = tickets_blob.get("generated_at") if isinstance(tickets_blob, dict) else None
+    ticket_packet_generated_at = (
+        tickets_blob.get("generated_at") if isinstance(tickets_blob, dict) else None
+    )
     ticket_packet_age = _iso_age_minutes(ticket_packet_generated_at)
     queue_freshness = _agentic_freshness(queue_age)
     cycle_freshness = _agentic_freshness(cycle_age)
@@ -8204,9 +9253,9 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         blockers.append("broker/local position mismatch must be reviewed before live-ticket action")
     if tickets:
         broker_snapshot_age = broker_reconciliation.get("snapshot_age_minutes")
-        broker_readiness_status = str(
-            broker_reconciliation.get("agentic_readiness_status") or ""
-        ).strip().lower()
+        broker_readiness_status = (
+            str(broker_reconciliation.get("agentic_readiness_status") or "").strip().lower()
+        )
         funded_agentic_options = int(
             _float_value(
                 broker_reconciliation.get("funded_agentic_option_count"),
@@ -8234,7 +9283,9 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     if cycle_freshness == "aging":
         freshness_warnings.append(f"agentic cycle is aging ({_short_age_label(cycle_age)} old)")
     if tickets and ticket_packet_freshness == "aging":
-        freshness_warnings.append(f"live ticket packet is aging ({_short_age_label(ticket_packet_age)} old)")
+        freshness_warnings.append(
+            f"live ticket packet is aging ({_short_age_label(ticket_packet_age)} old)"
+        )
     if not tickets and broker_status in {"missing_snapshot", "mismatch", "review"}:
         freshness_warnings.extend(str(x) for x in (broker_reconciliation.get("warnings") or [])[:3])
 
@@ -8256,10 +9307,20 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         contract_key = _agentic_contract_key(ticket)
         direction_key = _agentic_direction_key(ticket)
         paper_tracked = contract_key in paper_contract_keys
-        optedge_duplicate = contract_key in optedge_contract_keys or direction_key in optedge_direction_keys
+        optedge_duplicate = (
+            contract_key in optedge_contract_keys or direction_key in optedge_direction_keys
+        )
         ticket_age = _iso_age_minutes(ticket.get("generated_at") or ticket_packet_generated_at)
         ticket_freshness = _agentic_freshness(ticket_age)
-        status = "paper_tracked" if paper_tracked else "stale" if ticket_freshness == "stale" else "blocked" if blockers else "confirmation_required"
+        status = (
+            "paper_tracked"
+            if paper_tracked
+            else "stale"
+            if ticket_freshness == "stale"
+            else "blocked"
+            if blockers
+            else "confirmation_required"
+        )
         preflight = _agentic_ticket_preflight(
             ticket,
             contract_key=contract_key,
@@ -8278,7 +9339,11 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         )
         mcp_plan = ticket.get("robinhood_mcp_review_plan")
         mcp_plan = mcp_plan if isinstance(mcp_plan, dict) else {}
-        contract_lookup = mcp_plan.get("contract_lookup") if isinstance(mcp_plan.get("contract_lookup"), dict) else {}
+        contract_lookup = (
+            mcp_plan.get("contract_lookup")
+            if isinstance(mcp_plan.get("contract_lookup"), dict)
+            else {}
+        )
         mcp_review_status = (
             "ready"
             if (
@@ -8286,44 +9351,52 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
                 and mcp_plan.get("requires_explicit_user_confirmation_before_place")
                 and not mcp_plan.get("script_submits_live_orders")
             )
-            else "missing" if not mcp_plan else "review"
+            else "missing"
+            if not mcp_plan
+            else "review"
         )
         for check in preflight["checks"]:
-            preflight_rows.append({
+            preflight_rows.append(
+                {
+                    "contract": _clean_value(ticket.get("contract")),
+                    "level": check.get("level"),
+                    "check": check.get("label"),
+                    "detail": check.get("detail"),
+                }
+            )
+        ticket_rows.append(
+            {
+                "status": status,
+                "symbol": _clean_value(ticket.get("symbol")),
                 "contract": _clean_value(ticket.get("contract")),
-                "level": check.get("level"),
-                "check": check.get("label"),
-                "detail": check.get("detail"),
-            })
-        ticket_rows.append({
-            "status": status,
-            "symbol": _clean_value(ticket.get("symbol")),
-            "contract": _clean_value(ticket.get("contract")),
-            "option_side": _clean_value(ticket.get("option_side")),
-            "strike": _clean_value(ticket.get("strike")),
-            "expiry": _clean_value(ticket.get("expiry")),
-            "quantity": _clean_value(ticket.get("quantity")),
-            "limit_price": _clean_value(ticket.get("limit_price")),
-            "estimated_premium_dollars": _clean_value(ticket.get("estimated_premium_dollars")),
-            "entry_gate_status": _clean_value(ticket.get("entry_gate_status")),
-            "confirmation_required": bool(ticket.get("confirmation_required", True)),
-            "paper_tracked": paper_tracked,
-            "optedge_duplicate": optedge_duplicate,
-            "preflight_status": preflight["status"],
-            "preflight_blocks": preflight["block_count"],
-            "preflight_warnings": preflight["warn_count"],
-            "freshness": ticket_freshness,
-            "age": _short_age_label(ticket_age),
-            "swing_fit_label": _clean_value(ticket.get("swing_fit_label")),
-            "confidence": _clean_value(ticket.get("confidence")),
-            "rank_score": _clean_value(ticket.get("rank_score")),
-            "mcp_review_status": mcp_review_status,
-            "mcp_review_tool": _clean_value(mcp_plan.get("review_tool")),
-            "mcp_place_tool": _clean_value(mcp_plan.get("place_tool_after_explicit_confirmation")),
-            "mcp_lookup_symbol": _clean_value(contract_lookup.get("chain_symbol")),
-            "mcp_lookup_expiry": _clean_value(contract_lookup.get("expiration_date")),
-            "mcp_lookup_type": _clean_value(contract_lookup.get("type")),
-        })
+                "option_side": _clean_value(ticket.get("option_side")),
+                "strike": _clean_value(ticket.get("strike")),
+                "expiry": _clean_value(ticket.get("expiry")),
+                "quantity": _clean_value(ticket.get("quantity")),
+                "limit_price": _clean_value(ticket.get("limit_price")),
+                "estimated_premium_dollars": _clean_value(ticket.get("estimated_premium_dollars")),
+                "entry_gate_status": _clean_value(ticket.get("entry_gate_status")),
+                "confirmation_required": bool(ticket.get("confirmation_required", True)),
+                "paper_tracked": paper_tracked,
+                "optedge_duplicate": optedge_duplicate,
+                "preflight_status": preflight["status"],
+                "preflight_blocks": preflight["block_count"],
+                "preflight_warnings": preflight["warn_count"],
+                "freshness": ticket_freshness,
+                "age": _short_age_label(ticket_age),
+                "swing_fit_label": _clean_value(ticket.get("swing_fit_label")),
+                "confidence": _clean_value(ticket.get("confidence")),
+                "rank_score": _clean_value(ticket.get("rank_score")),
+                "mcp_review_status": mcp_review_status,
+                "mcp_review_tool": _clean_value(mcp_plan.get("review_tool")),
+                "mcp_place_tool": _clean_value(
+                    mcp_plan.get("place_tool_after_explicit_confirmation")
+                ),
+                "mcp_lookup_symbol": _clean_value(contract_lookup.get("chain_symbol")),
+                "mcp_lookup_expiry": _clean_value(contract_lookup.get("expiration_date")),
+                "mcp_lookup_type": _clean_value(contract_lookup.get("type")),
+            }
+        )
 
     ticket_preflight_blocks = sum(1 for row in preflight_rows if row.get("level") == "block")
     ticket_preflight_warnings = sum(1 for row in preflight_rows if row.get("level") == "warn")
@@ -8356,7 +9429,9 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         status = "queue_ready"
         tone = "review"
         label = "Manual shortlist ready"
-        detail = "Research candidates exist; choose one and rebuild it in Trade Desk after live checks."
+        detail = (
+            "Research candidates exist; choose one and rebuild it in Trade Desk after live checks."
+        )
     else:
         status = "idle"
         tone = "neutral"
@@ -8391,58 +9466,74 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
 
     next_actions = []
     if status == "disabled":
-        next_actions.append({
-            "label": "Review kill switch",
-            "action": "review_kill_switch",
-            "detail": "Remove agentic_trading_disabled.flag only after you intentionally want local paper/review flow back on.",
-        })
+        next_actions.append(
+            {
+                "label": "Review kill switch",
+                "action": "review_kill_switch",
+                "detail": "Remove agentic_trading_disabled.flag only after you intentionally want local paper/review flow back on.",
+            }
+        )
     if status == "stale":
-        next_actions.append({
-            "label": "Refresh manual review packet",
-            "action": "refresh_autopilot_packet",
-            "detail": "Rebuild the research-only queue and cycle packet from the latest Optedge scan.",
-        })
+        next_actions.append(
+            {
+                "label": "Refresh manual review packet",
+                "action": "refresh_autopilot_packet",
+                "detail": "Rebuild the research-only queue and cycle packet from the latest Optedge scan.",
+            }
+        )
     if status in {"idle", "queue_ready"}:
-        next_actions.append({
-            "label": "Refresh manual shortlist",
-            "action": "build_autopilot_packet",
-            "detail": "Write the research-only queue/cycle, then choose one candidate for Trade Desk.",
-        })
+        next_actions.append(
+            {
+                "label": "Refresh manual shortlist",
+                "action": "build_autopilot_packet",
+                "detail": "Write the research-only queue/cycle, then choose one candidate for Trade Desk.",
+            }
+        )
     if str(entry_gate.get("status") or "").lower() == "blocked":
-        next_actions.append({
-            "label": "Review validation blockers",
-            "action": "review_validation",
-            "detail": "Keep fresh entries blocked until drawdown, win-rate, and guardrail warnings improve.",
-        })
+        next_actions.append(
+            {
+                "label": "Review validation blockers",
+                "action": "review_validation",
+                "detail": "Keep fresh entries blocked until drawdown, win-rate, and guardrail warnings improve.",
+            }
+        )
     if broker_status in {"missing_snapshot", "mismatch", "review"}:
-        next_actions.append({
-            "label": "Review broker sync",
-            "action": "review_broker_sync",
-            "detail": "Compare broker positions with Optedge/local paper before any new entry or exit action.",
-        })
+        next_actions.append(
+            {
+                "label": "Review broker sync",
+                "action": "review_broker_sync",
+                "detail": "Compare broker positions with Optedge/local paper before any new entry or exit action.",
+            }
+        )
     if decision_log_needed:
-        next_actions.append({
-            "label": "Log local decision",
-            "action": "log_decision",
-            "detail": "Record reviewed, skipped, held, or closed so the next cycle knows what actually happened.",
-        })
+        next_actions.append(
+            {
+                "label": "Log local decision",
+                "action": "log_decision",
+                "detail": "Record reviewed, skipped, held, or closed so the next cycle knows what actually happened.",
+            }
+        )
     if ticket_rows:
-        next_actions.append({
-            "label": "Remove legacy ticket",
-            "action": "review_ticket",
-            "detail": "Treat the staged file as inspection-only and rebuild from Trade Desk; never execute it.",
-        })
+        next_actions.append(
+            {
+                "label": "Remove legacy ticket",
+                "action": "review_ticket",
+                "detail": "Treat the staged file as inspection-only and rebuild from Trade Desk; never execute it.",
+            }
+        )
     if active_paper:
-        next_actions.append({
-            "label": "Review paper position",
-            "action": "review_paper_book",
-            "detail": "Compare local paper entry against latest exit pressure and decide hold/skip/close in the journal.",
-        })
+        next_actions.append(
+            {
+                "label": "Review paper position",
+                "action": "review_paper_book",
+                "detail": "Compare local paper entry against latest exit pressure and decide hold/skip/close in the journal.",
+            }
+        )
 
     paper_book_rows, paper_book_summary = _agentic_paper_book(active_paper, open_positions)
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": status,
         "tone": tone,
         "label": label,
@@ -8452,7 +9543,9 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "cycle_generated_at": _clean_value(cycle.get("generated_at")),
         "queue_age_minutes": round(queue_age, 1) if queue_age is not None else None,
         "cycle_age_minutes": round(cycle_age, 1) if cycle_age is not None else None,
-        "ticket_packet_age_minutes": round(ticket_packet_age, 1) if ticket_packet_age is not None else None,
+        "ticket_packet_age_minutes": round(ticket_packet_age, 1)
+        if ticket_packet_age is not None
+        else None,
         "queue_freshness": queue_freshness,
         "cycle_freshness": cycle_freshness,
         "ticket_packet_freshness": ticket_packet_freshness,
@@ -8462,8 +9555,7 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "entry_gate_status": _clean_value(entry_gate.get("status")),
         "entry_gate_label": _clean_value(entry_gate.get("label")),
         "fresh_entries_allowed": (
-            entry_gate.get("new_entries_allowed_after_live_checks") is True
-            and not blockers
+            entry_gate.get("new_entries_allowed_after_live_checks") is True and not blockers
         ),
         "auto_submit_allowed": bool(cycle.get("auto_submit_allowed")),
         "hard_pause": bool(cycle.get("hard_pause")),
@@ -8482,13 +9574,21 @@ def build_agentic_autopilot_status(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "broker_matched_count": broker_reconciliation.get("matched_count"),
         "broker_only_count": broker_reconciliation.get("broker_only_count"),
         "local_only_count": broker_reconciliation.get("local_only_count"),
-        "research_lifecycle_option_count": broker_reconciliation.get("research_lifecycle_option_count"),
-        "research_lifecycle_active_count": broker_reconciliation.get("research_lifecycle_active_count"),
-        "research_lifecycle_expired_count": broker_reconciliation.get("research_lifecycle_expired_count"),
+        "research_lifecycle_option_count": broker_reconciliation.get(
+            "research_lifecycle_option_count"
+        ),
+        "research_lifecycle_active_count": broker_reconciliation.get(
+            "research_lifecycle_active_count"
+        ),
+        "research_lifecycle_expired_count": broker_reconciliation.get(
+            "research_lifecycle_expired_count"
+        ),
         "paper_only_count": broker_reconciliation.get("paper_only_count"),
         "local_expired_count": broker_reconciliation.get("local_expired_count"),
         "paper_expired_count": broker_reconciliation.get("paper_expired_count"),
-        "broker_missing_contract_fields_count": broker_reconciliation.get("missing_contract_fields_count"),
+        "broker_missing_contract_fields_count": broker_reconciliation.get(
+            "missing_contract_fields_count"
+        ),
         "agentic_option_ready": broker_reconciliation.get("agentic_option_ready"),
         "agentic_readiness_status": broker_reconciliation.get("agentic_readiness_status"),
         "agentic_readiness_label": broker_reconciliation.get("agentic_readiness_label"),
@@ -8531,14 +9631,15 @@ def build_agentic_decision_journal(data_dir: Path = DATA_DIR, limit: int = 25) -
     summary = decision_log_summary(data_dir, limit=limit)
     rows = summary.get("latest") if isinstance(summary.get("latest"), list) else []
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "path": summary.get("path"),
         "exists": summary.get("exists"),
         "recent_count": summary.get("recent_count"),
         "action_counts": summary.get("action_counts") or {},
         "allowed_decisions": summary.get("allowed_decisions") or [],
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
-        "notes": summary.get("notes") or [
+        "notes": summary.get("notes")
+        or [
             "This journal records local review outcomes only.",
             "It is not broker confirmation and does not place trades.",
         ],
@@ -8549,7 +9650,9 @@ def record_agentic_decision(decision: dict[str, Any], data_dir: Path = DATA_DIR)
     """Append one local Robinhood/Codex review decision and return the refreshed journal."""
     decision = decision if isinstance(decision, dict) else {}
     try:
-        queue = build_robinhood_queue(data_dir=data_dir, account_budget=500, min_dte=MIN_SWING_OPTION_DTE)
+        queue = build_robinhood_queue(
+            data_dir=data_dir, account_budget=500, min_dte=MIN_SWING_OPTION_DTE
+        )
         packet = build_agentic_cycle_packet(queue, data_dir)
         gate = packet.get("entry_gate") if isinstance(packet.get("entry_gate"), dict) else {}
     except Exception:
@@ -8592,18 +9695,28 @@ def build_opportunities(
         out["actionable"] = out.apply(_is_actionable, axis=1)
         out["_opportunity_score"] = out.apply(_opportunity_score, axis=1)
         if "confidence" in out.columns:
-            out = out[pd.to_numeric(out["confidence"], errors="coerce").fillna(0.0) >= min_confidence]
+            out = out[
+                pd.to_numeric(out["confidence"], errors="coerce").fillna(0.0) >= min_confidence
+            ]
         elif min_confidence > 0:
             out = out.iloc[0:0]
         if query_norm:
             symbol_col = str(spec["symbol_col"])
             symbol_match = (
-                out[symbol_col].astype(str).str.upper().str.contains(query_norm, na=False, regex=False)
-                if symbol_col in out.columns else pd.Series(False, index=out.index)
+                out[symbol_col]
+                .astype(str)
+                .str.upper()
+                .str.contains(query_norm, na=False, regex=False)
+                if symbol_col in out.columns
+                else pd.Series(False, index=out.index)
             )
             headline_match = (
-                out["top_headline"].astype(str).str.upper().str.contains(query_norm, na=False, regex=False)
-                if "top_headline" in out.columns else pd.Series(False, index=out.index)
+                out["top_headline"]
+                .astype(str)
+                .str.upper()
+                .str.contains(query_norm, na=False, regex=False)
+                if "top_headline" in out.columns
+                else pd.Series(False, index=out.index)
             )
             out = out[symbol_match | headline_match]
         if status_norm == "actionable":
@@ -8620,11 +9733,24 @@ def build_opportunities(
 
     records = []
     for asset_name in OPPORTUNITY_SPECS:
-        part = combined[combined["asset"] == asset_name] if "asset" in combined.columns else pd.DataFrame()
+        part = (
+            combined[combined["asset"] == asset_name]
+            if "asset" in combined.columns
+            else pd.DataFrame()
+        )
         records.extend(_opportunity_records(part, asset_name, limit))
-    records = sorted(records, key=lambda r: _float_value(r.get("rank_score") or r.get("fused_score") or r.get("futures_score") or r.get("value_score")), reverse=True)
+    records = sorted(
+        records,
+        key=lambda r: _float_value(
+            r.get("rank_score")
+            or r.get("fused_score")
+            or r.get("futures_score")
+            or r.get("value_score")
+        ),
+        reverse=True,
+    )
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "asset": asset,
         "query": query,
         "status": status,
@@ -8670,7 +9796,8 @@ def build_positions(
     rows = _dedupe_position_rows(rows)
     if query_norm:
         rows = [
-            row for row in rows
+            row
+            for row in rows
             if query_norm in str(row.get("ticker_or_symbol") or "").upper()
             or query_norm in str(row.get("position_label") or "").upper()
         ]
@@ -8680,14 +9807,15 @@ def build_positions(
         rows = [row for row in rows if row.get("lifecycle_state") == status_norm]
     elif status_norm != "all":
         rows = [
-            row for row in rows
+            row
+            for row in rows
             if str(row.get("trade_status") or "").strip().lower() == status_norm
             or str(row.get("latest_exit_action") or "").strip().lower() == status_norm
         ]
     rows = sorted(rows, key=_position_sort_key, reverse=True)
     limited = rows[:limit]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "asset": asset,
         "query": query,
         "status": status,
@@ -8723,59 +9851,67 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
             continue
         status = str(raw.get("status") or "")
         if status == "local_expired":
-            add({
-                "status": "local_expired",
-                "severity": "cleanup",
-                "action": "close_or_archive_expired_local_record",
-                "contract": raw.get("contract"),
-                "symbol": raw.get("symbol"),
-                "expiry": raw.get("expiry"),
-                "dte": raw.get("dte"),
-                "reason": "Option is past expiry but still appears in open_positions.json.",
-                "safe_next_step": "Run a fresh scan/reprice or review then move to closed history; do not treat as live exposure.",
-                "source": "open_positions.json",
-            })
+            add(
+                {
+                    "status": "local_expired",
+                    "severity": "cleanup",
+                    "action": "close_or_archive_expired_local_record",
+                    "contract": raw.get("contract"),
+                    "symbol": raw.get("symbol"),
+                    "expiry": raw.get("expiry"),
+                    "dte": raw.get("dte"),
+                    "reason": "Option is past expiry but still appears in open_positions.json.",
+                    "safe_next_step": "Run a fresh scan/reprice or review then move to closed history; do not treat as live exposure.",
+                    "source": "open_positions.json",
+                }
+            )
         elif status == "broker_only":
-            add({
-                "status": "broker_only",
-                "severity": "broker_review",
-                "action": "import_or_mark_unmanaged_broker_position",
-                "contract": raw.get("contract"),
-                "symbol": raw.get("symbol"),
-                "expiry": raw.get("expiry"),
-                "quantity": raw.get("quantity"),
-                "reason": "Broker snapshot has an option position not tracked by Optedge or local paper.",
-                "safe_next_step": "Decide whether to import into local tracking or mark as unmanaged before new entries.",
-                "source": "robinhood_broker_snapshot.json",
-            })
+            add(
+                {
+                    "status": "broker_only",
+                    "severity": "broker_review",
+                    "action": "import_or_mark_unmanaged_broker_position",
+                    "contract": raw.get("contract"),
+                    "symbol": raw.get("symbol"),
+                    "expiry": raw.get("expiry"),
+                    "quantity": raw.get("quantity"),
+                    "reason": "Broker snapshot has an option position not tracked by Optedge or local paper.",
+                    "safe_next_step": "Decide whether to import into local tracking or mark as unmanaged before new entries.",
+                    "source": "robinhood_broker_snapshot.json",
+                }
+            )
         elif status == "local_only":
-            add({
-                "status": "local_only",
-                "severity": "sync_review",
-                "action": "verify_local_position_against_broker",
-                "contract": raw.get("contract"),
-                "symbol": raw.get("symbol"),
-                "expiry": raw.get("expiry"),
-                "dte": raw.get("dte"),
-                "latest_exit_action": raw.get("latest_exit_action"),
-                "latest_exit_pressure": raw.get("latest_exit_pressure"),
-                "reason": "Optedge says this is open, but the broker snapshot does not show it.",
-                "safe_next_step": "Confirm whether this was only a research recommendation, paper-only, or missing from broker snapshot.",
-                "source": "open_positions.json",
-            })
+            add(
+                {
+                    "status": "local_only",
+                    "severity": "sync_review",
+                    "action": "verify_local_position_against_broker",
+                    "contract": raw.get("contract"),
+                    "symbol": raw.get("symbol"),
+                    "expiry": raw.get("expiry"),
+                    "dte": raw.get("dte"),
+                    "latest_exit_action": raw.get("latest_exit_action"),
+                    "latest_exit_pressure": raw.get("latest_exit_pressure"),
+                    "reason": "Optedge says this is open, but the broker snapshot does not show it.",
+                    "safe_next_step": "Confirm whether this was only a research recommendation, paper-only, or missing from broker snapshot.",
+                    "source": "open_positions.json",
+                }
+            )
         elif status == "paper_only":
-            add({
-                "status": "paper_only",
-                "severity": "paper_review",
-                "action": "review_local_paper_position",
-                "contract": raw.get("contract"),
-                "symbol": raw.get("symbol"),
-                "expiry": raw.get("expiry"),
-                "dte": raw.get("dte"),
-                "reason": "Local paper book has a position that is not in the broker snapshot.",
-                "safe_next_step": "Log held/closed/skipped in the local decision journal.",
-                "source": "agentic_paper_positions.json",
-            })
+            add(
+                {
+                    "status": "paper_only",
+                    "severity": "paper_review",
+                    "action": "review_local_paper_position",
+                    "contract": raw.get("contract"),
+                    "symbol": raw.get("symbol"),
+                    "expiry": raw.get("expiry"),
+                    "dte": raw.get("dte"),
+                    "reason": "Local paper book has a position that is not in the broker snapshot.",
+                    "safe_next_step": "Log held/closed/skipped in the local decision journal.",
+                    "source": "agentic_paper_positions.json",
+                }
+            )
 
     existing_contracts = {str(row.get("contract") or "") for row in rows}
     for pos in open_positions:
@@ -8786,18 +9922,20 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
         dte = _float_value(local_record.get("dte"), default=math.nan)
         if math.isfinite(dte) and dte < 0:
             if str(contract or "") not in existing_contracts:
-                add({
-                    "status": "local_expired",
-                    "severity": "cleanup",
-                    "action": "close_or_archive_expired_local_record",
-                    "contract": contract,
-                    "symbol": local_record.get("symbol"),
-                    "expiry": local_record.get("expiry"),
-                    "dte": dte,
-                    "reason": "Research lifecycle option is past expiry but still appears in open_positions.json.",
-                    "safe_next_step": "Move it to closed research history; do not treat it as live broker exposure.",
-                    "source": "open_positions.json",
-                })
+                add(
+                    {
+                        "status": "local_expired",
+                        "severity": "cleanup",
+                        "action": "close_or_archive_expired_local_record",
+                        "contract": contract,
+                        "symbol": local_record.get("symbol"),
+                        "expiry": local_record.get("expiry"),
+                        "dte": dte,
+                        "reason": "Research lifecycle option is past expiry but still appears in open_positions.json.",
+                        "safe_next_step": "Move it to closed research history; do not treat it as live broker exposure.",
+                        "source": "open_positions.json",
+                    }
+                )
                 existing_contracts.add(str(contract or ""))
             continue
         if str(contract or "") in existing_contracts:
@@ -8805,22 +9943,30 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
         fail_count = int(_float_value(pos.get("reprice_failed_count"), default=0.0))
         latest_pressure = _float_value(pos.get("latest_exit_pressure"), default=0.0)
         if fail_count >= 20 or latest_pressure >= 60:
-            add({
-                "status": "repricing_or_exit_pressure",
-                "severity": "review",
-                "action": "refresh_quote_or_exit_review",
-                "contract": contract,
-                "symbol": pos.get("ticker") or pos.get("symbol"),
-                "expiry": pos.get("expiry"),
-                "reprice_failed_count": fail_count,
-                "latest_exit_action": pos.get("latest_exit_action"),
-                "latest_exit_pressure": _clean_value(pos.get("latest_exit_pressure")),
-                "reason": "Open position has repeated repricing trouble or elevated exit pressure.",
-                "safe_next_step": "Refresh quote/chain and log a hold, close, or stop update decision.",
-                "source": "open_positions.json",
-            })
+            add(
+                {
+                    "status": "repricing_or_exit_pressure",
+                    "severity": "review",
+                    "action": "refresh_quote_or_exit_review",
+                    "contract": contract,
+                    "symbol": pos.get("ticker") or pos.get("symbol"),
+                    "expiry": pos.get("expiry"),
+                    "reprice_failed_count": fail_count,
+                    "latest_exit_action": pos.get("latest_exit_action"),
+                    "latest_exit_pressure": _clean_value(pos.get("latest_exit_pressure")),
+                    "reason": "Open position has repeated repricing trouble or elevated exit pressure.",
+                    "safe_next_step": "Refresh quote/chain and log a hold, close, or stop update decision.",
+                    "source": "open_positions.json",
+                }
+            )
 
-    severity_rank = {"broker_review": 5, "cleanup": 4, "sync_review": 3, "paper_review": 2, "review": 1}
+    severity_rank = {
+        "broker_review": 5,
+        "cleanup": 4,
+        "sync_review": 3,
+        "paper_review": 2,
+        "review": 1,
+    }
     rows = sorted(
         rows,
         key=lambda row: (
@@ -8832,7 +9978,7 @@ def build_position_hygiene(data_dir: Path = DATA_DIR, limit: int = 120) -> dict[
     )
     plan_path = data_dir / "position_hygiene_plan.json"
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": "needs_review" if rows else "clean",
         "plan_path": str(plan_path),
         "open_option_count": len(open_positions),
@@ -8897,18 +10043,20 @@ def _option_hygiene_close_row(
 
     closed = build_expired_close_row(position, asof, expiry_valuations)
     contract = _agentic_local_option_record(position, "optedge").get("contract")
-    closed.update({
-        "asset": position.get("asset") or "option",
-        "hygiene_applied_at": asof.isoformat(),
-        "hygiene_source": "position_hygiene",
-        "hygiene_contract": contract,
-        "hygiene_exit_price_source": closed.get("expiry_close_price_source"),
-        "hygiene_note": (
-            "Moved from open_positions.json by local hygiene because the option expiry "
-            "date is in the past. Expiration value is source-labeled and unresolved "
-            "outcomes do not receive fabricated P&L."
-        ),
-    })
+    closed.update(
+        {
+            "asset": position.get("asset") or "option",
+            "hygiene_applied_at": asof.isoformat(),
+            "hygiene_source": "position_hygiene",
+            "hygiene_contract": contract,
+            "hygiene_exit_price_source": closed.get("expiry_close_price_source"),
+            "hygiene_note": (
+                "Moved from open_positions.json by local hygiene because the option expiry "
+                "date is in the past. Expiration value is source-labeled and unresolved "
+                "outcomes do not receive fabricated P&L."
+            ),
+        }
+    )
     return {k: _clean_value(v) for k, v in closed.items()}
 
 
@@ -8941,7 +10089,7 @@ def apply_position_hygiene(
     """Preview or apply safe local cleanup for expired option records."""
     data_dir = Path(data_dir)
     limit = max(1, min(int(limit or 120), 500))
-    asof = datetime.now(timezone.utc)
+    asof = datetime.now(UTC)
     open_path = data_dir / "open_positions.json"
     closed_path = data_dir / "closed_positions.json"
     open_rows_raw = _read_json(open_path)
@@ -8962,7 +10110,9 @@ def apply_position_hygiene(
             "backup_paths": [],
             "error": "; ".join(invalid_state),
             "rows": [],
-            "notes": ["Repair or restore the malformed lifecycle file before hygiene can continue."],
+            "notes": [
+                "Repair or restore the malformed lifecycle file before hygiene can continue."
+            ],
         }
     open_rows = open_rows_raw if isinstance(open_rows_raw, list) else []
     closed_rows = closed_rows_raw if isinstance(closed_rows_raw, list) else []
@@ -8994,30 +10144,35 @@ def apply_position_hygiene(
         for position in expired_positions
     ]
     preview_rows: list[dict[str, Any]] = []
-    for position, closed in zip(expired_positions, expired_rows):
+    for position, closed in zip(expired_positions, expired_rows, strict=False):
         record = _agentic_local_option_record(position, "optedge")
-        preview_rows.append({
-            "contract": record.get("contract"),
-            "symbol": record.get("symbol"),
-            "expiry": record.get("expiry"),
-            "dte": record.get("dte"),
-            "entry_price": _clean_value(position.get("entry_price")),
-            "exit_price": closed.get("exit_price"),
-            "pnl_pct": closed.get("pnl_pct"),
-            "exit_reason": closed.get("exit_reason"),
-            "price_source": closed.get("expiry_close_price_source"),
-            "underlying_price": closed.get("expiry_underlying_price"),
-            "underlying_price_date": closed.get("expiry_underlying_price_date"),
-            "outcome_quality": closed.get("outcome_quality"),
-            "validation_eligible": closed.get("validation_eligible"),
-            "action": "move_to_closed_positions" if apply else "preview_move_to_closed_positions",
-            "note": closed.get("hygiene_note"),
-        })
+        preview_rows.append(
+            {
+                "contract": record.get("contract"),
+                "symbol": record.get("symbol"),
+                "expiry": record.get("expiry"),
+                "dte": record.get("dte"),
+                "entry_price": _clean_value(position.get("entry_price")),
+                "exit_price": closed.get("exit_price"),
+                "pnl_pct": closed.get("pnl_pct"),
+                "exit_reason": closed.get("exit_reason"),
+                "price_source": closed.get("expiry_close_price_source"),
+                "underlying_price": closed.get("expiry_underlying_price"),
+                "underlying_price_date": closed.get("expiry_underlying_price_date"),
+                "outcome_quality": closed.get("outcome_quality"),
+                "validation_eligible": closed.get("validation_eligible"),
+                "action": "move_to_closed_positions"
+                if apply
+                else "preview_move_to_closed_positions",
+                "note": closed.get("hygiene_note"),
+            }
+        )
 
     from backtest.positions import merge_closed_rows
 
     merged_closed, added_closed, duplicate_count = merge_closed_rows(
-        closed_rows, expired_rows,
+        closed_rows,
+        expired_rows,
     )
     source_counts: dict[str, int] = {}
     for row in expired_rows:
@@ -9071,9 +10226,12 @@ def apply_position_hygiene(
     report = {
         "generated_at": asof.isoformat(),
         "status": (
-            "applied" if wrote_files
-            else "failed" if apply_error
-            else "preview" if expired_rows
+            "applied"
+            if wrote_files
+            else "failed"
+            if apply_error
+            else "preview"
+            if expired_rows
             else "clean"
         ),
         "apply": bool(apply),
@@ -9104,7 +10262,9 @@ def apply_position_hygiene(
         ],
     }
     if apply and not expired_rows:
-        report["notes"].append("No expired local option records were found, so no files were changed.")
+        report["notes"].append(
+            "No expired local option records were found, so no files were changed."
+        )
     return report
 
 
@@ -9224,15 +10384,18 @@ def build_exit_review_summary(
             pressures.append(pressure)
             if pressure >= 80:
                 high_pressure_count += 1
-        sym = symbol_rollup.setdefault(symbol, {
-            "ticker_or_symbol": symbol,
-            "asset": row_asset,
-            "review_count": 0,
-            "latest_action": action,
-            "latest_timestamp": row.get("timestamp"),
-            "max_exit_pressure": None,
-            "latest_reasons": row.get("reasons_text"),
-        })
+        sym = symbol_rollup.setdefault(
+            symbol,
+            {
+                "ticker_or_symbol": symbol,
+                "asset": row_asset,
+                "review_count": 0,
+                "latest_action": action,
+                "latest_timestamp": row.get("timestamp"),
+                "max_exit_pressure": None,
+                "latest_reasons": row.get("reasons_text"),
+            },
+        )
         sym["review_count"] += 1
         current_max = _float_value(sym.get("max_exit_pressure"), default=math.nan)
         if math.isfinite(pressure) and (not math.isfinite(current_max) or pressure > current_max):
@@ -9244,7 +10407,9 @@ def build_exit_review_summary(
             sym["asset"] = row_asset
         position_key = _exit_review_position_key(row)
         current = latest_by_position.get(position_key)
-        if current is None or str(row.get("timestamp") or "") >= str(current.get("timestamp") or ""):
+        if current is None or str(row.get("timestamp") or "") >= str(
+            current.get("timestamp") or ""
+        ):
             latest_by_position[position_key] = dict(row, decision_key=position_key)
 
     by_symbol = sorted(
@@ -9293,10 +10458,12 @@ def build_exit_review_summary(
         current_action_counts[action] = current_action_counts.get(action, 0) + 1
     avg_pressure = (sum(pressures) / len(pressures)) if pressures else None
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "asset": asset_norm,
         "query": query,
-        "source": "exit_reviews.jsonl" if (Path(data_dir) / "exit_reviews.jsonl").exists() else None,
+        "source": "exit_reviews.jsonl"
+        if (Path(data_dir) / "exit_reviews.jsonl").exists()
+        else None,
         "count": len(rows[:limit]),
         "total_before_limit": len(rows),
         "action_counts": action_counts,
@@ -9308,10 +10475,14 @@ def build_exit_review_summary(
             _float_value(row.get("exit_pressure"), default=0.0) >= 80 for row in current_decisions
         ),
         "current_action_counts": current_action_counts,
-        "avg_exit_pressure": _clean_value(round(avg_pressure, 2) if avg_pressure is not None else None),
+        "avg_exit_pressure": _clean_value(
+            round(avg_pressure, 2) if avg_pressure is not None else None
+        ),
         "latest_timestamp": rows[0].get("timestamp") if rows else None,
         "by_symbol": [{k: _clean_value(v) for k, v in row.items()} for row in by_symbol],
-        "current_decisions": [{k: _clean_value(v) for k, v in row.items()} for row in current_decisions[:25]],
+        "current_decisions": [
+            {k: _clean_value(v) for k, v in row.items()} for row in current_decisions[:25]
+        ],
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows[:limit]],
         "notes": [
             "Exit reviews are local lifecycle decisions logged after every scan.",
@@ -9541,7 +10712,9 @@ def _breadth_regime_label(score: float, rows: list[dict[str, Any]]) -> str:
 
 def _parse_cboe_put_call_csv(text: str, source: dict[str, Any]) -> dict[str, Any]:
     lines = [line for line in str(text or "").splitlines() if line.strip()]
-    header_idx = next((idx for idx, line in enumerate(lines) if line.upper().startswith("DATE,")), None)
+    header_idx = next(
+        (idx for idx, line in enumerate(lines) if line.upper().startswith("DATE,")), None
+    )
     if header_idx is None:
         return {
             "key": source.get("key"),
@@ -9572,9 +10745,19 @@ def _parse_cboe_put_call_csv(text: str, source: dict[str, Any]) -> dict[str, Any
     put_col = "PUTS" if "PUTS" in df.columns else "PUT" if "PUT" in df.columns else ""
     date = pd.to_datetime(df["DATE"], errors="coerce")
     ratio = pd.to_numeric(df["P/C Ratio"], errors="coerce")
-    calls = pd.to_numeric(df[call_col], errors="coerce") if call_col else pd.Series(index=df.index, dtype="float64")
-    puts = pd.to_numeric(df[put_col], errors="coerce") if put_col else pd.Series(index=df.index, dtype="float64")
-    clean = pd.DataFrame({"date": date, "pc_ratio": ratio, "calls": calls, "puts": puts}).dropna(subset=["date", "pc_ratio"])
+    calls = (
+        pd.to_numeric(df[call_col], errors="coerce")
+        if call_col
+        else pd.Series(index=df.index, dtype="float64")
+    )
+    puts = (
+        pd.to_numeric(df[put_col], errors="coerce")
+        if put_col
+        else pd.Series(index=df.index, dtype="float64")
+    )
+    clean = pd.DataFrame({"date": date, "pc_ratio": ratio, "calls": calls, "puts": puts}).dropna(
+        subset=["date", "pc_ratio"]
+    )
     clean = clean[clean["pc_ratio"] > 0].sort_values("date")
     if clean.empty:
         return {
@@ -9601,8 +10784,16 @@ def _parse_cboe_put_call_csv(text: str, source: dict[str, Any]) -> dict[str, Any
         "avg_5d": _clean_value(round(avg_5d, 4) if avg_5d is not None else None),
         "avg_20d": _clean_value(round(avg_20d, 4) if avg_20d is not None else None),
         "pct_vs_20d": _clean_value(round(pct_vs_20d, 4) if pct_vs_20d is not None else None),
-        "calls": _clean_value(int(latest["calls"]) if math.isfinite(_float_value(latest["calls"], default=math.nan)) else None),
-        "puts": _clean_value(int(latest["puts"]) if math.isfinite(_float_value(latest["puts"], default=math.nan)) else None),
+        "calls": _clean_value(
+            int(latest["calls"])
+            if math.isfinite(_float_value(latest["calls"], default=math.nan))
+            else None
+        ),
+        "puts": _clean_value(
+            int(latest["puts"])
+            if math.isfinite(_float_value(latest["puts"], default=math.nan))
+            else None
+        ),
         "rows": int(len(clean)),
         "source": "cboe_put_call_ratio_csv",
         "quality": "informational_delayed",
@@ -9626,7 +10817,9 @@ def _cboe_put_call_signal(key: str, ratio: float, avg_20d: float | None) -> str:
     return "balanced"
 
 
-def _fetch_cboe_put_call_snapshot(source: dict[str, Any], cache_age: int = 6 * 3600) -> dict[str, Any]:
+def _fetch_cboe_put_call_snapshot(
+    source: dict[str, Any], cache_age: int = 6 * 3600
+) -> dict[str, Any]:
     key = f"cboe_put_call_ratio:{source.get('key')}"
     cached = data_provider.cache_get(key, cache_age)
     if isinstance(cached, dict) and cached:
@@ -9653,7 +10846,7 @@ def _cboe_put_call_stale(row: dict[str, Any], max_age_days: int = 10) -> bool:
         latest = pd.to_datetime(date_text, utc=True).date()
     except Exception:
         return True
-    age_days = (datetime.now(timezone.utc).date() - latest).days
+    age_days = (datetime.now(UTC).date() - latest).days
     return age_days > max_age_days
 
 
@@ -9700,7 +10893,7 @@ def _daily_put_call_row(source: dict[str, Any], ratio: float, note: str) -> dict
         "label": source.get("label"),
         "status": "ok",
         "signal": _cboe_put_call_signal(str(source.get("key") or ""), ratio, None),
-        "latest_date": str(datetime.now(timezone.utc).date()),
+        "latest_date": str(datetime.now(UTC).date()),
         "pc_ratio": _clean_value(round(ratio, 4)),
         "avg_5d": None,
         "avg_20d": None,
@@ -9718,8 +10911,12 @@ def _options_sentiment_regime(rows: list[dict[str, Any]]) -> str:
     ok_rows = [row for row in rows if row.get("status") == "ok"]
     if not ok_rows:
         return "unknown"
-    defensive = sum(str(row.get("signal")) in {"defensive_hedging", "hedging_rising"} for row in ok_rows)
-    call_demand = sum(str(row.get("signal")) in {"call_demand_high", "call_demand_rising"} for row in ok_rows)
+    defensive = sum(
+        str(row.get("signal")) in {"defensive_hedging", "hedging_rising"} for row in ok_rows
+    )
+    call_demand = sum(
+        str(row.get("signal")) in {"call_demand_high", "call_demand_rising"} for row in ok_rows
+    )
     if defensive >= 2:
         return "defensive_hedging"
     if call_demand >= 2:
@@ -9761,17 +10958,25 @@ def build_options_sentiment(data_dir: Path = DATA_DIR) -> dict[str, Any]:
                     )
                 else:
                     row["status"] = "stale" if row.get("status") == "ok" else row.get("status")
-                    row["note"] = f"{row.get('note') or 'Archive snapshot stale'}; daily fallback unavailable."[:220]
+                    row["note"] = (
+                        f"{row.get('note') or 'Archive snapshot stale'}; daily fallback unavailable."[
+                            :220
+                        ]
+                    )
             except Exception as exc:
                 row["status"] = "stale" if row.get("status") == "ok" else row.get("status")
-                row["note"] = f"{row.get('note') or 'Archive snapshot stale'}; daily fallback failed: {exc}"[:220]
+                row["note"] = (
+                    f"{row.get('note') or 'Archive snapshot stale'}; daily fallback failed: {exc}"[
+                        :220
+                    ]
+                )
         rows.append({k: _clean_value(v) for k, v in row.items()})
         if row.get("status") != "ok":
             warnings.append(f"{source.get('label')} put/call unavailable.")
     ok_count = sum(1 for row in rows if row.get("status") == "ok")
     by_key = {str(row.get("key")): row for row in rows}
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "source": "Cboe market statistics and put/call ratio CSV",
         "status": "ok" if ok_count else "missing",
         "regime": _options_sentiment_regime(rows),
@@ -9791,7 +10996,10 @@ def build_options_sentiment(data_dir: Path = DATA_DIR) -> dict[str, Any]:
 def _risk_score_from_market_rows(rows: list[dict[str, Any]]) -> float:
     total_weight = 0.0
     score = 0.0
-    weights = {str(item["symbol"]).upper(): _float_value(item.get("risk_weight")) for item in MARKET_PULSE_SYMBOLS}
+    weights = {
+        str(item["symbol"]).upper(): _float_value(item.get("risk_weight"))
+        for item in MARKET_PULSE_SYMBOLS
+    }
     for row in rows:
         if row.get("status") != "ok":
             continue
@@ -9826,7 +11034,9 @@ def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
     warnings: list[str] = []
     for spec in MARKET_PULSE_SYMBOLS:
         try:
-            history = data_provider.get_history(spec["symbol"], period=period, interval="1d", cache_age=1800)
+            history = data_provider.get_history(
+                spec["symbol"], period=period, interval="1d", cache_age=1800
+            )
             row = _market_pulse_row(spec, history)
         except Exception as exc:
             row = {
@@ -9855,7 +11065,7 @@ def build_market_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
     options_sentiment = build_options_sentiment(data_dir)
     warnings.extend(options_sentiment.get("warnings") or [])
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "period": period,
         "regime": regime,
         "risk_score": _clean_value(round(risk_score, 4)),
@@ -9880,7 +11090,9 @@ def build_sector_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
     warnings: list[str] = []
     for spec in SECTOR_PULSE_SYMBOLS:
         try:
-            history = data_provider.get_history(spec["symbol"], period=period, interval="1d", cache_age=1800)
+            history = data_provider.get_history(
+                spec["symbol"], period=period, interval="1d", cache_age=1800
+            )
             row = _sector_pulse_row(spec, history)
         except Exception as exc:
             row = {
@@ -9906,7 +11118,7 @@ def build_sector_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
         key=lambda row: _float_value(row.get("strength_score"), default=999.0),
     )[:5]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "period": period,
         "coverage": f"{len(ok_rows)}/{len(rows)}",
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
@@ -9924,16 +11136,17 @@ def build_sector_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[s
 def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[str, Any]:
     """Build free ETF-pair breadth confirmation for swing-trade context."""
     del data_dir  # reserved for future persisted pulse snapshots
-    symbols = sorted({
-        str(spec["numerator"]) for spec in BREADTH_PULSE_PAIRS
-    } | {
-        str(spec["denominator"]) for spec in BREADTH_PULSE_PAIRS
-    })
+    symbols = sorted(
+        {str(spec["numerator"]) for spec in BREADTH_PULSE_PAIRS}
+        | {str(spec["denominator"]) for spec in BREADTH_PULSE_PAIRS}
+    )
     histories: dict[str, pd.DataFrame] = {}
     warnings: list[str] = []
     for symbol in symbols:
         try:
-            histories[symbol] = data_provider.get_history(symbol, period=period, interval="1d", cache_age=1800)
+            histories[symbol] = data_provider.get_history(
+                symbol, period=period, interval="1d", cache_age=1800
+            )
         except Exception as exc:
             histories[symbol] = pd.DataFrame()
             warnings.append(f"{symbol} history unavailable: {str(exc)[:80]}")
@@ -9954,7 +11167,7 @@ def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
     warning_count = sum(row.get("signal") == "warning" for row in ok_rows)
     neutral = sum(row.get("signal") == "neutral" for row in ok_rows)
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "period": period,
         "coverage": f"{len(ok_rows)}/{len(rows)}",
         "regime": regime,
@@ -9965,7 +11178,9 @@ def build_breadth_pulse(data_dir: Path = DATA_DIR, period: str = "6mo") -> dict[
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
         "supportive": [
             {k: _clean_value(v) for k, v in row.items()}
-            for row in sorted(ok_rows, key=lambda item: _float_value(item.get("breadth_score")), reverse=True)
+            for row in sorted(
+                ok_rows, key=lambda item: _float_value(item.get("breadth_score")), reverse=True
+            )
             if row.get("signal") == "supportive"
         ][:5],
         "warnings_list": [
@@ -9992,7 +11207,9 @@ def _fred_series_values(series_id: str, days: int) -> list[dict[str, Any]]:
 
 def _series_latest(rows: list[dict[str, Any]]) -> tuple[float, str | None]:
     for row in rows:
-        value = _float_value(row.get("value"), default=math.nan) if isinstance(row, dict) else math.nan
+        value = (
+            _float_value(row.get("value"), default=math.nan) if isinstance(row, dict) else math.nan
+        )
         if math.isfinite(value):
             return value, str(row.get("date") or "") or None
     return math.nan, None
@@ -10017,7 +11234,9 @@ def _series_yoy(rows: list[dict[str, Any]]) -> float:
     return (latest / prior) - 1.0
 
 
-def _macro_signal_for_series(series_id: str, latest: float, change_4: float, yoy: float) -> tuple[str, int, str]:
+def _macro_signal_for_series(
+    series_id: str, latest: float, change_4: float, yoy: float
+) -> tuple[str, int, str]:
     if not math.isfinite(latest):
         return "missing", 6, "No recent FRED observation."
     if series_id == "BAMLH0A0HYM2":
@@ -10113,7 +11332,9 @@ def build_macro_stress_pulse(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         raw_rows = _fred_series_values(series_id, int(spec.get("days") or 180))
         latest, latest_date = _series_latest(raw_rows)
         prior_4 = _series_prior(raw_rows, 4)
-        change_4 = latest - prior_4 if math.isfinite(latest) and math.isfinite(prior_4) else math.nan
+        change_4 = (
+            latest - prior_4 if math.isfinite(latest) and math.isfinite(prior_4) else math.nan
+        )
         yoy = _series_yoy(raw_rows) if int(spec.get("days") or 0) >= 365 else math.nan
         signal, points, note = _macro_signal_for_series(series_id, latest, change_4, yoy)
         max_points += 18
@@ -10136,14 +11357,16 @@ def build_macro_stress_pulse(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         rows.append(row)
         if signal in {"missing", "stress", "warning"}:
             warnings.append(f"{spec.get('label')}: {note}")
-    stress_score = int(round(_clamp((total_points / max_points) * 100.0 if max_points else 0.0, 0.0, 100.0)))
+    stress_score = int(
+        round(_clamp((total_points / max_points) * 100.0 if max_points else 0.0, 0.0, 100.0))
+    )
     regime, posture = _macro_stress_label(stress_score)
     counts: dict[str, int] = {}
     for row in rows:
         signal = str(row.get("signal") or "unknown")
         counts[signal] = counts.get(signal, 0) + 1
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "source": "FRED public CSV",
         "status": "ok" if any(row.get("signal") != "missing" for row in rows) else "missing",
         "regime": regime,
@@ -10171,8 +11394,14 @@ def _swing_climate_label(score: int) -> tuple[str, str]:
     if score >= 60:
         return "constructive_selective", "Constructive, but stay selective and respect stops."
     if score >= 45:
-        return "mixed_selective", "Mixed tape; prefer smaller size, cleaner liquidity, and stronger sectors."
-    return "defensive_wait", "Defensive tape; wait for cleaner breadth or use only exceptional setups."
+        return (
+            "mixed_selective",
+            "Mixed tape; prefer smaller size, cleaner liquidity, and stronger sectors.",
+        )
+    return (
+        "defensive_wait",
+        "Defensive tape; wait for cleaner breadth or use only exceptional setups.",
+    )
 
 
 def _swing_playbook(label: str) -> dict[str, Any]:
@@ -10217,26 +11446,74 @@ def _swing_asset_bias(label: str, top_sector: dict[str, Any]) -> list[dict[str, 
     top_name = str(top_sector.get("sector") or "leading groups")
     if label == "aggressive_swing":
         return [
-            {"asset": "options", "bias": "allowed", "rule": "Favor 90+ DTE calls/puts only when contract readiness is clean."},
-            {"asset": "shares", "bias": "allowed", "rule": f"Favor strong setups tied to {top_name} when factor thesis agrees."},
-            {"asset": "futures", "bias": "selective", "rule": "Use only futures rows with clear macro/risk confirmation and defined stops."},
+            {
+                "asset": "options",
+                "bias": "allowed",
+                "rule": "Favor 90+ DTE calls/puts only when contract readiness is clean.",
+            },
+            {
+                "asset": "shares",
+                "bias": "allowed",
+                "rule": f"Favor strong setups tied to {top_name} when factor thesis agrees.",
+            },
+            {
+                "asset": "futures",
+                "bias": "selective",
+                "rule": "Use only futures rows with clear macro/risk confirmation and defined stops.",
+            },
         ]
     if label == "constructive_selective":
         return [
-            {"asset": "options", "bias": "selective", "rule": "Prefer 90+ DTE, tighter spreads, and smaller candidate count."},
-            {"asset": "shares", "bias": "allowed", "rule": f"Prefer leading-sector shares, especially {top_name}, with trend support."},
-            {"asset": "futures", "bias": "selective", "rule": "Require clean reward/risk and no macro conflict."},
+            {
+                "asset": "options",
+                "bias": "selective",
+                "rule": "Prefer 90+ DTE, tighter spreads, and smaller candidate count.",
+            },
+            {
+                "asset": "shares",
+                "bias": "allowed",
+                "rule": f"Prefer leading-sector shares, especially {top_name}, with trend support.",
+            },
+            {
+                "asset": "futures",
+                "bias": "selective",
+                "rule": "Require clean reward/risk and no macro conflict.",
+            },
         ]
     if label == "mixed_selective":
         return [
-            {"asset": "options", "bias": "strict", "rule": "Use 120+ DTE and tight spreads; skip marginal review rows."},
-            {"asset": "shares", "bias": "selective", "rule": "Favor smaller, cleaner share ideas over wide option contracts."},
-            {"asset": "futures", "bias": "strict", "rule": "Only take strongest macro-aligned futures setups."},
+            {
+                "asset": "options",
+                "bias": "strict",
+                "rule": "Use 120+ DTE and tight spreads; skip marginal review rows.",
+            },
+            {
+                "asset": "shares",
+                "bias": "selective",
+                "rule": "Favor smaller, cleaner share ideas over wide option contracts.",
+            },
+            {
+                "asset": "futures",
+                "bias": "strict",
+                "rule": "Only take strongest macro-aligned futures setups.",
+            },
         ]
     return [
-        {"asset": "options", "bias": "mostly wait", "rule": "Use 180+ DTE only for exceptional ready setups; otherwise skip."},
-        {"asset": "shares", "bias": "mostly wait", "rule": "Preserve capital unless thesis, trend, and guardrails are unusually strong."},
-        {"asset": "futures", "bias": "mostly wait", "rule": "Avoid forcing futures trades while breadth or market regime is defensive."},
+        {
+            "asset": "options",
+            "bias": "mostly wait",
+            "rule": "Use 180+ DTE only for exceptional ready setups; otherwise skip.",
+        },
+        {
+            "asset": "shares",
+            "bias": "mostly wait",
+            "rule": "Preserve capital unless thesis, trend, and guardrails are unusually strong.",
+        },
+        {
+            "asset": "futures",
+            "bias": "mostly wait",
+            "rule": "Avoid forcing futures trades while breadth or market regime is defensive.",
+        },
     ]
 
 
@@ -10249,7 +11526,9 @@ def _swing_climate_from_pulses(
     macro = macro if isinstance(macro, dict) else {}
     market_score = _float_value(market.get("risk_score"), default=0.0)
     breadth_score = _float_value(breadth.get("breadth_score"), default=0.0)
-    options_sentiment = market.get("options_sentiment") if isinstance(market.get("options_sentiment"), dict) else {}
+    options_sentiment = (
+        market.get("options_sentiment") if isinstance(market.get("options_sentiment"), dict) else {}
+    )
     options_regime = str(options_sentiment.get("regime") or "unknown")
     options_component = {
         "defensive_hedging": -8.0,
@@ -10266,7 +11545,8 @@ def _swing_climate_from_pulses(
     leader_scores = [
         _float_value(row.get("strength_score"), default=math.nan)
         for row in sector_leaders[:3]
-        if isinstance(row, dict) and math.isfinite(_float_value(row.get("strength_score"), default=math.nan))
+        if isinstance(row, dict)
+        and math.isfinite(_float_value(row.get("strength_score"), default=math.nan))
     ]
     top_sector_score = sum(leader_scores) / len(leader_scores) if leader_scores else 0.0
 
@@ -10316,7 +11596,9 @@ def _swing_climate_from_pulses(
     if options_regime in {"call_demand_high", "call_demand_rising"}:
         positives.append(f"Cboe options sentiment is {options_regime}.")
         if options_regime == "call_demand_high":
-            warnings_out.append("Call demand is hot; avoid chasing wide or illiquid option contracts.")
+            warnings_out.append(
+                "Call demand is hot; avoid chasing wide or illiquid option contracts."
+            )
     elif options_regime in {"defensive_hedging", "hedging_rising"}:
         warnings_out.append(f"Cboe options sentiment is {options_regime}.")
     if macro_regime == "macro_supportive":
@@ -10325,11 +11607,15 @@ def _swing_climate_from_pulses(
         warnings_out.append(f"FRED macro stress pulse is {macro_regime}.")
 
     top_sector = sector_leaders[0] if sector_leaders and isinstance(sector_leaders[0], dict) else {}
-    weak_sector = sector_laggards[0] if sector_laggards and isinstance(sector_laggards[0], dict) else {}
+    weak_sector = (
+        sector_laggards[0] if sector_laggards and isinstance(sector_laggards[0], dict) else {}
+    )
     if top_sector:
         positives.append(f"Strongest group: {top_sector.get('symbol')} {top_sector.get('sector')}.")
     if weak_sector:
-        warnings_out.append(f"Weakest group: {weak_sector.get('symbol')} {weak_sector.get('sector')}.")
+        warnings_out.append(
+            f"Weakest group: {weak_sector.get('symbol')} {weak_sector.get('sector')}."
+        )
     warnings_out.extend(str(item) for item in (market.get("warnings") or [])[:2])
     warnings_out.extend(str(item) for item in (breadth.get("warnings") or [])[:2])
     warnings_out.extend(str(item) for item in (sector.get("warnings") or [])[:2])
@@ -10345,20 +11631,25 @@ def _swing_climate_from_pulses(
         },
     ]
     if top_sector:
-        focus.insert(0, {
-            "label": "Leading group",
-            "detail": f"Prioritize tickers tied to {top_sector.get('sector')} when their own thesis confirms.",
-        })
+        focus.insert(
+            0,
+            {
+                "label": "Leading group",
+                "detail": f"Prioritize tickers tied to {top_sector.get('sector')} when their own thesis confirms.",
+            },
+        )
     if label in {"mixed_selective", "defensive_wait"}:
-        focus.append({
-            "label": "Risk control",
-            "detail": "Avoid forcing marginal Watch rows; require cleaner contract readiness before acting.",
-        })
+        focus.append(
+            {
+                "label": "Risk control",
+                "detail": "Avoid forcing marginal Watch rows; require cleaner contract readiness before acting.",
+            }
+        )
     playbook = _swing_playbook(label)
     asset_bias = _swing_asset_bias(label, top_sector)
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "period": market.get("period") or breadth.get("period") or sector.get("period"),
         "climate_score": score,
         "climate_label": label,
@@ -10407,7 +11698,10 @@ def _swing_climate_from_pulses(
         "trade_gates": [
             {"gate": "Minimum readiness", "value": f"{playbook['min_readiness_score']}/100"},
             {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
-            {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
+            {
+                "gate": "Options max spread",
+                "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%",
+            },
             {"gate": "Options sentiment", "value": options_regime},
             {"gate": "Macro stress", "value": f"{macro_regime} ({macro_stress_score}/100)"},
             {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
@@ -10455,7 +11749,7 @@ def _local_first_load_climate(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     policy_label = "defensive_wait"
     playbook = _swing_playbook(policy_label)
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "climate_label": label,
         "climate_score": 0,
         "posture": (
@@ -10467,7 +11761,10 @@ def _local_first_load_climate(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             {"gate": "Context source", "value": "local artifacts only"},
             {"gate": "Minimum readiness", "value": f"{playbook['min_readiness_score']}/100"},
             {"gate": "Options DTE floor", "value": f"{playbook['option_min_dte']}+ days"},
-            {"gate": "Options max spread", "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%"},
+            {
+                "gate": "Options max spread",
+                "value": f"{playbook['option_max_spread_pct'] * 100:.0f}%",
+            },
             {"gate": "Max new candidates", "value": str(playbook["max_new_candidates"])},
         ],
         "asset_bias": _swing_asset_bias(policy_label, {}),
@@ -10475,11 +11772,18 @@ def _local_first_load_climate(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "warnings": [
             "Live market, breadth, sector, and macro context was intentionally not fetched on first load."
         ],
-        "focus": [{
-            "label": "Refresh when needed",
-            "detail": "Use Deep research to request a current Swing Climate snapshot before relying on regime context.",
-        }],
-        "coverage": {"market": "not fetched", "breadth": "not fetched", "sector": "not fetched", "macro": "not fetched"},
+        "focus": [
+            {
+                "label": "Refresh when needed",
+                "detail": "Use Deep research to request a current Swing Climate snapshot before relying on regime context.",
+            }
+        ],
+        "coverage": {
+            "market": "not fetched",
+            "breadth": "not fetched",
+            "sector": "not fetched",
+            "macro": "not fetched",
+        },
         "context_source": "local_first_load_defensive_fallback",
         "context_age_minutes": None,
         "live_fetch_performed": False,
@@ -10490,7 +11794,9 @@ def _local_first_load_climate(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     }
 
 
-def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_score: int) -> dict[str, Any]:
+def _climate_gate_review(
+    row: dict[str, Any], playbook: dict[str, Any], climate_score: int
+) -> dict[str, Any]:
     asset = str(row.get("asset") or "").strip().lower()
     blockers: list[str] = []
     confirmations: list[str] = []
@@ -10521,7 +11827,9 @@ def _climate_gate_review(row: dict[str, Any], playbook: dict[str, Any], climate_
             confirmations.append(f"DTE {dte:g}+ fits swing window")
         if math.isfinite(spread):
             if spread > max_spread:
-                blockers.append(f"spread {spread * 100:.1f}% above climate max {max_spread * 100:.0f}%")
+                blockers.append(
+                    f"spread {spread * 100:.1f}% above climate max {max_spread * 100:.0f}%"
+                )
             else:
                 confirmations.append(f"spread {spread * 100:.1f}% inside climate max")
         else:
@@ -10576,7 +11884,11 @@ def build_climate_gated_setups(
     per_asset = max(1, min(int(per_asset or 4), 10))
     limit = max(1, min(int(limit or 12), 40))
     climate = dict(climate) if isinstance(climate, dict) else build_swing_climate(data_dir)
-    playbook = climate.get("playbook") if isinstance(climate.get("playbook"), dict) else _swing_playbook("")
+    playbook = (
+        climate.get("playbook")
+        if isinstance(climate.get("playbook"), dict)
+        else _swing_playbook("")
+    )
     climate_score = int(_float_value(climate.get("climate_score"), default=50.0))
     setup_report = build_best_setups(data_dir, per_asset=per_asset, limit=40)
 
@@ -10631,9 +11943,11 @@ def build_climate_gated_setups(
         asset_counts.setdefault(asset, {"pass": 0, "hold": 0})["hold"] += 1
 
     clean_selected = [{k: _clean_value(v) for k, v in row.items()} for row in selected]
-    clean_held = [{k: _clean_value(v) for k, v in row.items()} for row in held[:25]] if include_held else []
+    clean_held = (
+        [{k: _clean_value(v) for k, v in row.items()} for row in held[:25]] if include_held else []
+    )
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "climate_label": climate.get("climate_label"),
         "climate_score": climate.get("climate_score"),
         "posture": climate.get("posture"),
@@ -10666,10 +11980,14 @@ def _avg(values: list[float]) -> float | None:
 @_memoized_report
 def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Summarize current open-position risk from local lifecycle state."""
-    lifecycle_rows = build_positions(data_dir, asset="all", status="all", limit=2000).get("rows", [])
+    lifecycle_rows = build_positions(data_dir, asset="all", status="all", limit=2000).get(
+        "rows", []
+    )
     expired_positions = [row for row in lifecycle_rows if row.get("lifecycle_state") == "expired"]
     positions = [row for row in lifecycle_rows if row.get("lifecycle_state") != "expired"]
-    broker_linked_positions = [row for row in positions if row.get("tracking_scope") == "broker_linked"]
+    broker_linked_positions = [
+        row for row in positions if row.get("tracking_scope") == "broker_linked"
+    ]
     research_positions = [row for row in positions if row.get("tracking_scope") != "broker_linked"]
     by_asset: dict[str, dict[str, Any]] = {}
     by_symbol: dict[str, dict[str, Any]] = {}
@@ -10698,10 +12016,17 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         if reprice_failed >= 2:
             reprice_trouble += 1
 
-        asset_row = by_asset.setdefault(asset, {
-            "asset": asset, "count": 0, "attention_count": 0, "high_pressure_count": 0,
-            "avg_pnl_pct": None, "_pnls": [],
-        })
+        asset_row = by_asset.setdefault(
+            asset,
+            {
+                "asset": asset,
+                "count": 0,
+                "attention_count": 0,
+                "high_pressure_count": 0,
+                "avg_pnl_pct": None,
+                "_pnls": [],
+            },
+        )
         asset_row["count"] += 1
         if row.get("attention"):
             asset_row["attention_count"] += 1
@@ -10710,11 +12035,16 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         if has_pnl:
             asset_row["_pnls"].append(pnl)
 
-        sym_row = by_symbol.setdefault(symbol, {
-            "symbol": symbol, "count": 0, "attention_count": 0,
-            "worst_pnl_pct": pnl if has_pnl else None,
-            "max_exit_pressure": pressure if has_pressure else None,
-        })
+        sym_row = by_symbol.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "count": 0,
+                "attention_count": 0,
+                "worst_pnl_pct": pnl if has_pnl else None,
+                "max_exit_pressure": pressure if has_pressure else None,
+            },
+        )
         sym_row["count"] += 1
         if row.get("attention"):
             sym_row["attention_count"] += 1
@@ -10723,14 +12053,20 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             sym_row["worst_pnl_pct"] = pnl if current_worst is None else min(current_worst, pnl)
         if has_pressure:
             current_max = sym_row.get("max_exit_pressure")
-            sym_row["max_exit_pressure"] = pressure if current_max is None else max(current_max, pressure)
+            sym_row["max_exit_pressure"] = (
+                pressure if current_max is None else max(current_max, pressure)
+            )
 
     asset_rows = []
     for row in by_asset.values():
         pnls = row.pop("_pnls", [])
         row["avg_pnl_pct"] = _avg(pnls)
         asset_rows.append({k: _clean_value(v) for k, v in row.items()})
-    asset_rows = sorted(asset_rows, key=lambda r: (int(r.get("attention_count") or 0), int(r.get("count") or 0)), reverse=True)
+    asset_rows = sorted(
+        asset_rows,
+        key=lambda r: (int(r.get("attention_count") or 0), int(r.get("count") or 0)),
+        reverse=True,
+    )
 
     total = len(positions)
     concentration = []
@@ -10782,7 +12118,7 @@ def build_risk_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         )
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "risk_level": risk_level,
         "total_open": total,
         "research_lifecycle_open": len(research_positions),
@@ -10846,11 +12182,13 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Summarize local speed, cache, and engine health telemetry for the cockpit."""
     try:
         from telemetry import cache_stats as _cache_stats
+
         cache_prefixes = _cache_stats.summary()
     except Exception:
         cache_prefixes = {}
     try:
         from telemetry import perf as _perf
+
         latest = _perf.latest_run_summary()
         rolling = _perf.summary(last_n=20)
     except Exception:
@@ -10858,6 +12196,7 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         rolling = {}
     try:
         from telemetry import engine_health as _engine_health
+
         health = _engine_health.load_summary()
     except Exception:
         health = {"engines": []}
@@ -10872,7 +12211,9 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         }
         item["tip"] = _performance_tip(item)
         latest_rows.append(item)
-    latest_rows = sorted(latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True)
+    latest_rows = sorted(
+        latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True
+    )
 
     rolling_rows = []
     for engine, row in (rolling or {}).items():
@@ -10890,13 +12231,15 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
 
     cache_rows = []
     for prefix, row in (cache_prefixes or {}).items():
-        cache_rows.append({
-            "prefix": prefix,
-            "hits": int(_float_value(row.get("hits"))),
-            "misses": int(_float_value(row.get("misses"))),
-            "hit_rate": _clean_value(row.get("hit_rate")),
-            "total": int(_float_value(row.get("total"))),
-        })
+        cache_rows.append(
+            {
+                "prefix": prefix,
+                "hits": int(_float_value(row.get("hits"))),
+                "misses": int(_float_value(row.get("misses"))),
+                "hit_rate": _clean_value(row.get("hit_rate")),
+                "total": int(_float_value(row.get("total"))),
+            }
+        )
     cache_rows = sorted(cache_rows, key=lambda r: int(r.get("total") or 0), reverse=True)[:12]
 
     engine_health_rows = (health or {}).get("engines", []) if isinstance(health, dict) else []
@@ -10911,17 +12254,24 @@ def build_performance_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             }
             item["tip"] = _performance_tip(item)
             latest_rows.append(item)
-        latest_rows = sorted(latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True)
+        latest_rows = sorted(
+            latest_rows, key=lambda r: _float_value(r.get("elapsed_sec")), reverse=True
+        )
     worst_health = sorted(
         engine_health_rows,
-        key=lambda r: (_float_value(r.get("health_score"), default=100.0), str(r.get("engine") or "")),
+        key=lambda r: (
+            _float_value(r.get("health_score"), default=100.0),
+            str(r.get("engine") or ""),
+        ),
     )[:12]
     ram_stats = data_provider.cache_stats()
     finbert = _latest_finbert_device(data_dir)
     total_latest_sec = sum(_float_value(row.get("elapsed_sec")) for row in latest_rows)
     warnings = []
     if latest_rows and _float_value(latest_rows[0].get("elapsed_sec")) >= 90:
-        warnings.append(f"{latest_rows[0]['engine']} was the slowest recent engine at {latest_rows[0]['elapsed_sec']}s.")
+        warnings.append(
+            f"{latest_rows[0]['engine']} was the slowest recent engine at {latest_rows[0]['elapsed_sec']}s."
+        )
     if not ram_stats.get("ram_cache_enabled"):
         warnings.append("RAM cache is disabled; --turbo enables it for loop scans.")
     if finbert.get("status") != "gpu":
@@ -10994,7 +12344,12 @@ def _snapshot_freshness_rollup(snapshots: dict[str, Any]) -> dict[str, Any]:
         status = "fresh"
     else:
         status = "missing"
-    detail_parts = [f"{counts['fresh']} fresh", f"{counts['aging']} aging", f"{counts['stale']} stale", f"{counts['missing']} missing"]
+    detail_parts = [
+        f"{counts['fresh']} fresh",
+        f"{counts['aging']} aging",
+        f"{counts['stale']} stale",
+        f"{counts['missing']} missing",
+    ]
     if oldest_asset is not None and oldest_age >= 0:
         detail_parts.append(f"oldest {oldest_asset} {oldest_age:.0f}m")
     return {"status": status, "counts": counts, "detail": " / ".join(detail_parts)}
@@ -11017,17 +12372,25 @@ def _build_trust_ribbon(
     snapshot_rollup = _snapshot_freshness_rollup(
         health.get("snapshots") if isinstance(health.get("snapshots"), dict) else {}
     )
-    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    chain_quality = (
+        chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    )
     chain_status = chain_quality.get("status") or chain.get("status") or "missing"
     chain_score = _float_value(chain_quality.get("score"), default=0.0)
-    source_counts = chain.get("source_counts") if isinstance(chain.get("source_counts"), dict) else {}
+    source_counts = (
+        chain.get("source_counts") if isinstance(chain.get("source_counts"), dict) else {}
+    )
     if chain.get("status") == "ready":
         scan_counts = ""
         if chain.get("successful_scans") is not None and chain.get("symbols_scanned") is not None:
-            scan_counts = f", {chain.get('successful_scans')}/{chain.get('symbols_scanned')} symbols"
+            scan_counts = (
+                f", {chain.get('successful_scans')}/{chain.get('symbols_scanned')} symbols"
+            )
         source_note = ""
         if source_counts:
-            source_note = ", sources " + ", ".join(f"{k}:{v}" for k, v in list(source_counts.items())[:3])
+            source_note = ", sources " + ", ".join(
+                f"{k}:{v}" for k, v in list(source_counts.items())[:3]
+            )
         chain_detail = (
             f"{int(_float_value(chain.get('count')))} saved{scan_counts}, "
             f"{int(_float_value(chain_quality.get('primary_review_count')))} primary, "
@@ -11037,14 +12400,20 @@ def _build_trust_ribbon(
     else:
         chain_detail = "Run a 3m+ chain scan before choosing contracts."
     validation_level = str((validation_check or {}).get("level") or "warn")
-    validation_detail = str((validation_check or {}).get("detail") or "Validation summary has not been refreshed yet.")
+    validation_detail = str(
+        (validation_check or {}).get("detail") or "Validation summary has not been refreshed yet."
+    )
     aging_level = str((aging_check or {}).get("level") or "warn")
-    aging_detail = str((aging_check or {}).get("detail") or "Position aging summary has not been refreshed yet.")
+    aging_detail = str(
+        (aging_check or {}).get("detail") or "Position aging summary has not been refreshed yet."
+    )
     source_count = int(_float_value(sources.get("source_count")))
     no_key_count = int(_float_value(sources.get("no_key_count")))
     primary_count = int(_float_value(sources.get("primary_count")))
     perf_warnings = len(performance.get("warnings") or [])
-    ram_cache = performance.get("ram_cache") if isinstance(performance.get("ram_cache"), dict) else {}
+    ram_cache = (
+        performance.get("ram_cache") if isinstance(performance.get("ram_cache"), dict) else {}
+    )
     finbert = performance.get("finbert") if isinstance(performance.get("finbert"), dict) else {}
     rows = [
         {
@@ -11233,11 +12602,13 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
     attempts = blob.get("source_attempts") if isinstance(blob, dict) else None
     attempts = attempts if isinstance(attempts, list) else []
     usable_attempts = [
-        row for row in attempts
+        row
+        for row in attempts
         if isinstance(row, dict) and str(row.get("status") or "").lower() == "ok"
     ]
     failed_attempts = [
-        row for row in attempts
+        row
+        for row in attempts
         if isinstance(row, dict) and str(row.get("status") or "").lower() != "ok"
     ]
     attempt_names = [
@@ -11273,7 +12644,8 @@ def _chain_probe_result(blob: dict[str, Any]) -> dict[str, Any]:
         "ok": total > 0,
         "rows": total,
         "source": blob.get("source"),
-        "quote_quality": blob.get("quote_quality") or ("free_or_delayed" if blob.get("source") else None),
+        "quote_quality": blob.get("quote_quality")
+        or ("free_or_delayed" if blob.get("source") else None),
         "data_delay": blob.get("data_delay"),
         "providers_checked": len(attempts),
         "usable_provider_count": len(usable_attempts),
@@ -11345,7 +12717,7 @@ def build_cboe_option_activity(
     limit = max(1, min(int(limit or 60), 250))
     if not symbol or not _can_scan_option_chain_symbol(symbol, "option"):
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "status": "skipped",
             "query": query,
             "symbol": symbol,
@@ -11359,7 +12731,7 @@ def build_cboe_option_activity(
         df = cboe_symbol_data_engine.run([symbol], min_volume=min_volume)
     except Exception as exc:
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "status": "warn",
             "query": query,
             "symbol": symbol,
@@ -11374,7 +12746,7 @@ def build_cboe_option_activity(
 
     if df is None or df.empty:
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "status": "empty",
             "query": query,
             "symbol": symbol,
@@ -11410,15 +12782,21 @@ def build_cboe_option_activity(
             "strike": _clean_value(raw.get("strike")),
             "contract": raw.get("cboe_activity_contract"),
             "cboe_activity_volume": int(_float_value(raw.get("cboe_activity_volume"), default=0.0)),
-            "cboe_activity_matched": int(_float_value(raw.get("cboe_activity_matched"), default=0.0)),
+            "cboe_activity_matched": int(
+                _float_value(raw.get("cboe_activity_matched"), default=0.0)
+            ),
             "cboe_activity_routed": int(_float_value(raw.get("cboe_activity_routed"), default=0.0)),
             "cboe_activity_bid": _clean_value(round(bid, 4) if math.isfinite(bid) else None),
             "cboe_activity_ask": _clean_value(round(ask, 4) if math.isfinite(ask) else None),
             "cboe_activity_mid": _clean_value(round(mid, 4) if math.isfinite(mid) else None),
-            "cboe_activity_spread_pct": _clean_value(round(spread_pct, 4) if math.isfinite(spread_pct) else None),
+            "cboe_activity_spread_pct": _clean_value(
+                round(spread_pct, 4) if math.isfinite(spread_pct) else None
+            ),
             "premium_dollars": _clean_value(round(mid * 100, 2) if math.isfinite(mid) else None),
             "cboe_activity_last": _clean_value(round(last, 4) if math.isfinite(last) else None),
-            "last_premium_dollars": _clean_value(round(last * 100, 2) if math.isfinite(last) else None),
+            "last_premium_dollars": _clean_value(
+                round(last * 100, 2) if math.isfinite(last) else None
+            ),
             "cboe_activity_venues": raw.get("cboe_activity_venues"),
             "cboe_activity_source": raw.get("cboe_activity_source") or "cboe_symbol_data",
         }
@@ -11448,7 +12826,7 @@ def build_cboe_option_activity(
                 venues.add(venue.strip())
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": "ready" if rows else "empty",
         "query": query,
         "symbol": symbol,
@@ -11591,129 +12969,145 @@ def build_provider_status(
     ]
 
     if include_chain and not symbol.endswith("=F") and not symbol.startswith("^"):
-        rows.append(_provider_probe(
-            "Option chain stack",
-            "options",
-            lambda: _chain_probe_result(_fetch_option_chain_for_provider_status(symbol)),
-        ))
+        rows.append(
+            _provider_probe(
+                "Option chain stack",
+                "options",
+                lambda: _chain_probe_result(_fetch_option_chain_for_provider_status(symbol)),
+            )
+        )
     elif include_chain:
-        rows.append({
-            "provider": "Option chain stack",
-            "category": "options",
-            "status": "warn",
-            "latency_ms": 0,
-            "rows": 0,
-            "note": "Skipped because this symbol is not an equity/ETF option-chain request.",
-        })
+        rows.append(
+            {
+                "provider": "Option chain stack",
+                "category": "options",
+                "status": "warn",
+                "latency_ms": 0,
+                "rows": 0,
+                "note": "Skipped because this symbol is not an equity/ETF option-chain request.",
+            }
+        )
 
     if not symbol.endswith("=F") and not symbol.startswith("^"):
-        rows.append(_provider_probe(
-            "SEC company facts",
-            "fundamentals",
-            lambda: _companyfacts_probe_result(companyfacts_for_symbol(symbol, limit=8)),
-        ))
+        rows.append(
+            _provider_probe(
+                "SEC company facts",
+                "fundamentals",
+                lambda: _companyfacts_probe_result(companyfacts_for_symbol(symbol, limit=8)),
+            )
+        )
     else:
-        rows.append({
-            "provider": "SEC company facts",
-            "category": "fundamentals",
-            "status": "warn",
-            "latency_ms": 0,
-            "rows": 0,
-            "note": "Skipped because this symbol is not a company equity fundamentals request.",
-        })
+        rows.append(
+            {
+                "provider": "SEC company facts",
+                "category": "fundamentals",
+                "status": "warn",
+                "latency_ms": 0,
+                "rows": 0,
+                "note": "Skipped because this symbol is not a company equity fundamentals request.",
+            }
+        )
 
     sec_meta = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
-    rows.append({
-        "provider": "SEC company ticker cache",
-        "category": "symbol_search",
-        "status": "ok" if sec_meta.get("status") in {"fresh", "stale"} else "warn",
-        "latency_ms": 0,
-        "rows": sec_meta.get("row_count"),
-        "source": sec_meta.get("status"),
-        "note": "Local free company-name search cache.",
-    })
+    rows.append(
+        {
+            "provider": "SEC company ticker cache",
+            "category": "symbol_search",
+            "status": "ok" if sec_meta.get("status") in {"fresh", "stale"} else "warn",
+            "latency_ms": 0,
+            "rows": sec_meta.get("row_count"),
+            "source": sec_meta.get("status"),
+            "note": "Local free company-name search cache.",
+        }
+    )
     nasdaq_meta = nasdaq_symbol_cache_meta(data_dir / "nasdaq_symbol_directory.json")
-    rows.append({
-        "provider": "Nasdaq symbol directory cache",
-        "category": "symbol_search",
-        "status": "ok" if nasdaq_meta.get("status") in {"fresh", "stale"} else "warn",
-        "latency_ms": 0,
-        "rows": nasdaq_meta.get("row_count"),
-        "source": nasdaq_meta.get("status"),
-        "note": "Official no-key symbol directory for broader ticker search and ETF flags.",
-    })
+    rows.append(
+        {
+            "provider": "Nasdaq symbol directory cache",
+            "category": "symbol_search",
+            "status": "ok" if nasdaq_meta.get("status") in {"fresh", "stale"} else "warn",
+            "latency_ms": 0,
+            "rows": nasdaq_meta.get("row_count"),
+            "source": nasdaq_meta.get("status"),
+            "note": "Official no-key symbol directory for broader ticker search and ETF flags.",
+        }
+    )
 
     if not symbol.endswith("=F") and not symbol.startswith("^"):
-        rows.extend([
-            _provider_probe(
-                "Nasdaq Trader trade halt RSS",
-                "market_structure",
-                lambda: _market_structure_probe_result(
-                    halt_rows_for_symbols([symbol], cache_age=60),
-                    symbol=symbol,
-                    source_label="trade halt",
-                    clear_note="No current Nasdaq Trader halt/pause row for this symbol.",
-                    flag_key="active_halt",
-                    score_key="halt_risk_score",
-                    active_key="active_halt",
-                    risk_note=(
-                        f"{symbol} has an active or recent Nasdaq Trader halt/pause row; "
-                        "review before any swing action."
+        rows.extend(
+            [
+                _provider_probe(
+                    "Nasdaq Trader trade halt RSS",
+                    "market_structure",
+                    lambda: _market_structure_probe_result(
+                        halt_rows_for_symbols([symbol], cache_age=60),
+                        symbol=symbol,
+                        source_label="trade halt",
+                        clear_note="No current Nasdaq Trader halt/pause row for this symbol.",
+                        flag_key="active_halt",
+                        score_key="halt_risk_score",
+                        active_key="active_halt",
+                        risk_note=(
+                            f"{symbol} has an active or recent Nasdaq Trader halt/pause row; "
+                            "review before any swing action."
+                        ),
                     ),
                 ),
-            ),
-            _provider_probe(
-                "Nasdaq Trader Reg SHO threshold list",
-                "market_structure",
-                lambda: _market_structure_probe_result(
-                    threshold_rows_for_symbols([symbol], cache_age=6 * 3600),
-                    symbol=symbol,
-                    source_label="Reg SHO threshold",
-                    clear_note="Symbol is not on the current Nasdaq Trader threshold list.",
-                    flag_key="regsho_threshold",
-                    score_key="settlement_risk_score",
-                    risk_note=(
-                        f"{symbol} is on the Reg SHO or Rule 3210 threshold list; "
-                        "treat this as settlement-risk context."
+                _provider_probe(
+                    "Nasdaq Trader Reg SHO threshold list",
+                    "market_structure",
+                    lambda: _market_structure_probe_result(
+                        threshold_rows_for_symbols([symbol], cache_age=6 * 3600),
+                        symbol=symbol,
+                        source_label="Reg SHO threshold",
+                        clear_note="Symbol is not on the current Nasdaq Trader threshold list.",
+                        flag_key="regsho_threshold",
+                        score_key="settlement_risk_score",
+                        risk_note=(
+                            f"{symbol} is on the Reg SHO or Rule 3210 threshold list; "
+                            "treat this as settlement-risk context."
+                        ),
                     ),
                 ),
-            ),
-            _provider_probe(
-                "Nasdaq Trader short-sale circuit breaker",
-                "market_structure",
-                lambda: _market_structure_probe_result(
-                    circuit_rows_for_symbols([symbol], cache_age=30 * 60),
-                    symbol=symbol,
-                    source_label="short-sale circuit breaker",
-                    clear_note="Symbol is not on the current Nasdaq Trader short-sale circuit list.",
-                    flag_key="short_sale_restricted",
-                    score_key="ssr_risk_score",
-                    risk_note=(
-                        f"{symbol} is under SEC Rule 201 short-sale restriction; "
-                        "review downside stress before swing action."
+                _provider_probe(
+                    "Nasdaq Trader short-sale circuit breaker",
+                    "market_structure",
+                    lambda: _market_structure_probe_result(
+                        circuit_rows_for_symbols([symbol], cache_age=30 * 60),
+                        symbol=symbol,
+                        source_label="short-sale circuit breaker",
+                        clear_note="Symbol is not on the current Nasdaq Trader short-sale circuit list.",
+                        flag_key="short_sale_restricted",
+                        score_key="ssr_risk_score",
+                        risk_note=(
+                            f"{symbol} is under SEC Rule 201 short-sale restriction; "
+                            "review downside stress before swing action."
+                        ),
                     ),
                 ),
-            ),
-            _provider_probe(
-                "SEC fails-to-deliver",
-                "market_structure",
-                lambda: _sec_ftd_probe_result(
-                    sec_ftd_engine.run([symbol], max_files=1),
-                    symbol=symbol,
+                _provider_probe(
+                    "SEC fails-to-deliver",
+                    "market_structure",
+                    lambda: _sec_ftd_probe_result(
+                        sec_ftd_engine.run([symbol], max_files=1),
+                        symbol=symbol,
+                    ),
                 ),
-            ),
-        ])
+            ]
+        )
     else:
-        rows.append({
-            "provider": "Equity market-structure checks",
-            "category": "market_structure",
-            "status": "ok",
-            "latency_ms": 0,
-            "rows": 0,
-            "market_structure_flag": False,
-            "risk_flag": False,
-            "note": "Skipped because this symbol is not a US equity ticker.",
-        })
+        rows.append(
+            {
+                "provider": "Equity market-structure checks",
+                "category": "market_structure",
+                "status": "ok",
+                "latency_ms": 0,
+                "rows": 0,
+                "market_structure_flag": False,
+                "risk_flag": False,
+                "note": "Skipped because this symbol is not a US equity ticker.",
+            }
+        )
 
     history_rows = [row for row in rows if row.get("category") == "history"]
     working_history = [row for row in history_rows if row.get("status") == "ok"]
@@ -11743,7 +13137,9 @@ def build_provider_status(
         row.get("risk_flag_name") == "active_halt" and bool(row.get("active_halt"))
         for row in market_structure_rows
     )
-    symbol_cache_ok = sum(1 for row in rows if row.get("category") == "symbol_search" and row.get("status") == "ok")
+    symbol_cache_ok = sum(
+        1 for row in rows if row.get("category") == "symbol_search" and row.get("status") == "ok"
+    )
     history_sources = [
         str(row.get("history_source") or row.get("provider") or "").strip()
         for row in working_history
@@ -11768,7 +13164,9 @@ def build_provider_status(
     if include_chain and not chain_ok:
         chain_warning = "option chain did not return usable rows"
     elif include_chain and chain_quote_quality and chain_quote_quality != "live_or_broker":
-        chain_warning = "option chain is delayed/research-grade; verify live quotes before manual paper entry"
+        chain_warning = (
+            "option chain is delayed/research-grade; verify live quotes before manual paper entry"
+        )
     if not working_history and not stack_ok:
         trust_label = "blocked"
     elif active_halt_flagged:
@@ -11816,13 +13214,23 @@ def build_provider_status(
             "option_chain_rows": chain_rows_count,
             "option_chain_quote_quality": _clean_value(chain_quote_quality),
             "option_chain_data_delay": _clean_value(chain_probe.get("data_delay")),
-            "option_chain_providers_checked": int(_float_value(chain_probe.get("providers_checked"), default=0.0)),
-            "option_chain_usable_provider_count": int(_float_value(chain_probe.get("usable_provider_count"), default=0.0)),
-            "option_chain_failed_provider_count": int(_float_value(chain_probe.get("failed_provider_count"), default=0.0)),
-            "option_chain_provider_summary": _clean_value(chain_probe.get("provider_attempt_summary")),
+            "option_chain_providers_checked": int(
+                _float_value(chain_probe.get("providers_checked"), default=0.0)
+            ),
+            "option_chain_usable_provider_count": int(
+                _float_value(chain_probe.get("usable_provider_count"), default=0.0)
+            ),
+            "option_chain_failed_provider_count": int(
+                _float_value(chain_probe.get("failed_provider_count"), default=0.0)
+            ),
+            "option_chain_provider_summary": _clean_value(
+                chain_probe.get("provider_attempt_summary")
+            ),
             "option_chain_warning": chain_warning,
             "sec_companyfacts_status": "ok" if facts_ok else "warn",
-            "sec_companyfacts_rows": sum(int(_float_value(row.get("rows"), default=0.0)) for row in facts_rows),
+            "sec_companyfacts_rows": sum(
+                int(_float_value(row.get("rows"), default=0.0)) for row in facts_rows
+            ),
             "symbol_cache_ok_count": symbol_cache_ok,
             "market_structure_status": "risk_review" if market_structure_flags else "clear",
             "market_structure_flags": market_structure_flags,
@@ -11845,8 +13253,15 @@ def build_provider_status(
     }
 
 
-def _queue_item(priority: int, category: str, label: str, detail: str,
-                action: str, symbol: Any = None, query: Any = None) -> dict[str, Any]:
+def _queue_item(
+    priority: int,
+    category: str,
+    label: str,
+    detail: str,
+    action: str,
+    symbol: Any = None,
+    query: Any = None,
+) -> dict[str, Any]:
     return {
         "priority": int(priority),
         "category": category,
@@ -11867,7 +13282,9 @@ def _best_setup_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     gate_label = str(row.get("setup_gate_label") or gate_status or "Review setup").strip()
     setup = str(row.get("setup") or symbol or "Best setup").strip()
     score = _float_value(row.get("score"), default=math.nan)
-    next_step = str(row.get("setup_gate_next_step") or "Open research and verify current data.").strip()
+    next_step = str(
+        row.get("setup_gate_next_step") or "Open research and verify current data."
+    ).strip()
     reasons = row.get("setup_gate_reasons")
     if isinstance(reasons, list):
         reason_text = "; ".join(str(reason) for reason in reasons[:3] if str(reason).strip())
@@ -11903,15 +13320,19 @@ def _best_setup_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
         symbol=symbol,
         query=symbol,
     )
-    item.update({
-        "asset": _clean_value(asset),
-        "source": "best_setups_decision_row",
-        "setup_gate_status": _clean_value(gate_status),
-        "setup_gate_label": _clean_value(gate_label),
-        "setup_gate_next_step": _clean_value(next_step),
-        "setup_gate_reasons": _clean_value(reasons if isinstance(reasons, list) else [reason_text] if reason_text else []),
-        "score": _clean_value(score if math.isfinite(score) else None),
-    })
+    item.update(
+        {
+            "asset": _clean_value(asset),
+            "source": "best_setups_decision_row",
+            "setup_gate_status": _clean_value(gate_status),
+            "setup_gate_label": _clean_value(gate_label),
+            "setup_gate_next_step": _clean_value(next_step),
+            "setup_gate_reasons": _clean_value(
+                reasons if isinstance(reasons, list) else [reason_text] if reason_text else []
+            ),
+            "score": _clean_value(score if math.isfinite(score) else None),
+        }
+    )
     return item
 
 
@@ -11955,7 +13376,11 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     elif decision == "scan_chain":
         priority = max(58, min(74, 54 + int(swing_score / 5.0)))
         label = "Scan watchlist option chain"
-        action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, "option") else "run_focused_scan"
+        action = (
+            "scan_swing_chain"
+            if _can_scan_option_chain_symbol(symbol, "option")
+            else "run_focused_scan"
+        )
     elif decision == "manage_existing":
         priority = max(60, min(78, 55 + int(swing_score / 5.0)))
         label = "Manage watchlist exposure"
@@ -11981,7 +13406,11 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
     else:
         return None
 
-    if pick_winner == "alternative" and action in {"preview_paper_candidate", "scan_swing_chain", "open_research"}:
+    if pick_winner == "alternative" and action in {
+        "preview_paper_candidate",
+        "scan_swing_chain",
+        "open_research",
+    }:
         priority = min(84, priority + 5)
     elif alt_count and action in {"preview_paper_candidate", "scan_swing_chain", "open_research"}:
         priority = min(82, priority + 3)
@@ -12006,25 +13435,31 @@ def _watchlist_queue_item(row: dict[str, Any]) -> dict[str, Any] | None:
         query=query,
     )
     action_query = query
-    if pick_winner == "alternative" and alt_best and action in {"preview_paper_candidate", "open_research"}:
+    if (
+        pick_winner == "alternative"
+        and alt_best
+        and action in {"preview_paper_candidate", "open_research"}
+    ):
         action_query = alt_best
-    item.update({
-        "source": "watchlist_swing_verdict",
-        "action_query": _clean_value(action_query),
-        "preferred_contract": _clean_value(alt_best if pick_winner == "alternative" else ""),
-        "swing_verdict_score": _clean_value(swing_score),
-        "swing_verdict_decision": _clean_value(decision),
-        "swing_verdict_label": _clean_value(swing_label),
-        "paper_readiness_score": _clean_value(readiness_score),
-        "paper_readiness_status": _clean_value(readiness),
-        "option_alt_count": _clean_value(alt_count),
-        "option_alt_best": _clean_value(alt_best),
-        "option_alt_reason": _clean_value(alt_reason),
-        "option_alt_score": _clean_value(alt_score),
-        "contract_pick_label": _clean_value(pick_label),
-        "contract_pick_winner": _clean_value(pick_winner),
-        "contract_pick_score": _clean_value(pick_score),
-    })
+    item.update(
+        {
+            "source": "watchlist_swing_verdict",
+            "action_query": _clean_value(action_query),
+            "preferred_contract": _clean_value(alt_best if pick_winner == "alternative" else ""),
+            "swing_verdict_score": _clean_value(swing_score),
+            "swing_verdict_decision": _clean_value(decision),
+            "swing_verdict_label": _clean_value(swing_label),
+            "paper_readiness_score": _clean_value(readiness_score),
+            "paper_readiness_status": _clean_value(readiness),
+            "option_alt_count": _clean_value(alt_count),
+            "option_alt_best": _clean_value(alt_best),
+            "option_alt_reason": _clean_value(alt_reason),
+            "option_alt_score": _clean_value(alt_score),
+            "contract_pick_label": _clean_value(pick_label),
+            "contract_pick_winner": _clean_value(pick_winner),
+            "contract_pick_score": _clean_value(pick_score),
+        }
+    )
     if action == "scan_swing_chain":
         item["route"] = "chains"
     elif action == "preview_paper_candidate":
@@ -12085,7 +13520,11 @@ def _sec_queue_detail(row: dict[str, Any]) -> str:
 
 def _queue_attention_symbols(data_dir: Path) -> list[str]:
     symbols: set[str] = set()
-    for filename in ("open_positions.json", "open_share_positions.json", "open_futures_positions.json"):
+    for filename in (
+        "open_positions.json",
+        "open_share_positions.json",
+        "open_futures_positions.json",
+    ):
         rows = _read_json(data_dir / filename)
         if not isinstance(rows, list):
             continue
@@ -12205,12 +13644,15 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 if label == "Expired local option records"
                 else "refresh_or_fix_artifact"
             )
-            items.append(_queue_item(
-                98 if action == "preview_position_hygiene_cleanup" else 100,
-                "data_health", check.get("label") or "Data health issue",
-                check.get("detail") or "A dashboard data-health check failed.",
-                action,
-            ))
+            items.append(
+                _queue_item(
+                    98 if action == "preview_position_hygiene_cleanup" else 100,
+                    "data_health",
+                    check.get("label") or "Data health issue",
+                    check.get("detail") or "A dashboard data-health check failed.",
+                    action,
+                )
+            )
         elif level == "warn":
             if _is_refreshable_market_warning(label):
                 refresh_warnings.append(label)
@@ -12222,25 +13664,32 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 if label == "Expired local option records"
                 else "review_data_health"
             )
-            items.append(_queue_item(
-                85 if action == "preview_position_hygiene_cleanup"
-                else 75 if action == "warm_symbol_caches"
-                else 70,
-                "data_health", check.get("label") or "Data health warning",
-                check.get("detail") or "A dashboard data-health warning is active.",
-                action,
-            ))
+            items.append(
+                _queue_item(
+                    85
+                    if action == "preview_position_hygiene_cleanup"
+                    else 75
+                    if action == "warm_symbol_caches"
+                    else 70,
+                    "data_health",
+                    check.get("label") or "Data health warning",
+                    check.get("detail") or "A dashboard data-health warning is active.",
+                    action,
+                )
+            )
     if refresh_warnings:
         preview = ", ".join(refresh_warnings[:4])
         if len(refresh_warnings) > 4:
             preview += f", +{len(refresh_warnings) - 4} more"
-        items.append(_queue_item(
-            82,
-            "data_health",
-            "Refresh stale market snapshots",
-            f"{len(refresh_warnings)} freshness warning(s): {preview}.",
-            "run_refresh_scan",
-        ))
+        items.append(
+            _queue_item(
+                82,
+                "data_health",
+                "Refresh stale market snapshots",
+                f"{len(refresh_warnings)} freshness warning(s): {preview}.",
+                "run_refresh_scan",
+            )
+        )
 
     try:
         sec_monitor = _cached_watchlist_sec_filings(data_dir)
@@ -12253,40 +13702,48 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             if priority < 78:
                 continue
             symbol = row.get("ticker")
-            items.append(_queue_item(
-                priority,
-                "sec_filing",
-                _sec_queue_label(row),
-                _sec_queue_detail(row),
-                "review_sec_filing_risk",
-                symbol=symbol,
-                query=symbol,
-            ))
+            items.append(
+                _queue_item(
+                    priority,
+                    "sec_filing",
+                    _sec_queue_label(row),
+                    _sec_queue_detail(row),
+                    "review_sec_filing_risk",
+                    symbol=symbol,
+                    query=symbol,
+                )
+            )
             promoted += 1
             if promoted >= 4:
                 break
         if not promoted:
             entries = load_watchlist(data_dir, enrich=False).get("entries", [])
             age_min = _float_value(sec_monitor.get("cache_age_minutes"), default=math.inf)
-            if entries and (
-                sec_monitor.get("status") == "missing" or age_min > 12 * 60
-            ):
-                stale_text = "missing" if sec_monitor.get("status") == "missing" else f"{age_min / 60:.1f}h old"
-                items.append(_queue_item(
-                    52,
-                    "sec_filing",
-                    "Refresh SEC filing monitor",
-                    f"Saved research targets exist, but SEC filing cache is {stale_text}.",
-                    "review_sec_filings",
-                ))
+            if entries and (sec_monitor.get("status") == "missing" or age_min > 12 * 60):
+                stale_text = (
+                    "missing"
+                    if sec_monitor.get("status") == "missing"
+                    else f"{age_min / 60:.1f}h old"
+                )
+                items.append(
+                    _queue_item(
+                        52,
+                        "sec_filing",
+                        "Refresh SEC filing monitor",
+                        f"Saved research targets exist, but SEC filing cache is {stale_text}.",
+                        "review_sec_filings",
+                    )
+                )
     except Exception as exc:
-        items.append(_queue_item(
-            42,
-            "sec_filing",
-            "SEC filing monitor unavailable",
-            f"Could not read cached SEC filing monitor: {str(exc)[:160]}",
-            "review_sec_filings",
-        ))
+        items.append(
+            _queue_item(
+                42,
+                "sec_filing",
+                "SEC filing monitor unavailable",
+                f"Could not read cached SEC filing monitor: {str(exc)[:160]}",
+                "review_sec_filings",
+            )
+        )
 
     try:
         halt_symbols = _queue_attention_symbols(data_dir)
@@ -12300,23 +13757,27 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                     priority = max(priority, 96)
                 else:
                     priority = max(priority, 78)
-                items.append(_queue_item(
-                    priority,
-                    "trading_halt",
-                    _halt_queue_label(row),
-                    _halt_queue_detail(row),
-                    "review_trading_halt",
-                    symbol=symbol,
-                    query=symbol,
-                ))
+                items.append(
+                    _queue_item(
+                        priority,
+                        "trading_halt",
+                        _halt_queue_label(row),
+                        _halt_queue_detail(row),
+                        "review_trading_halt",
+                        symbol=symbol,
+                        query=symbol,
+                    )
+                )
     except Exception as exc:
-        items.append(_queue_item(
-            38,
-            "trading_halt",
-            "Trade halt monitor unavailable",
-            f"Could not read Nasdaq Trader halt RSS context: {str(exc)[:160]}",
-            "review_data_health",
-        ))
+        items.append(
+            _queue_item(
+                38,
+                "trading_halt",
+                "Trade halt monitor unavailable",
+                f"Could not read Nasdaq Trader halt RSS context: {str(exc)[:160]}",
+                "review_data_health",
+            )
+        )
 
     try:
         threshold_symbols = _queue_attention_symbols(data_dir)
@@ -12325,24 +13786,30 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             for _, threshold_row in threshold_df.head(5).iterrows():
                 row = threshold_row.to_dict()
                 symbol = row.get("symbol")
-                priority = max(82, int(_float_value(row.get("settlement_risk_score"), default=82.0)))
-                items.append(_queue_item(
-                    priority,
-                    "regsho_threshold",
-                    "Reg SHO threshold risk",
-                    _threshold_queue_detail(row),
-                    "review_regsho_threshold",
-                    symbol=symbol,
-                    query=symbol,
-                ))
+                priority = max(
+                    82, int(_float_value(row.get("settlement_risk_score"), default=82.0))
+                )
+                items.append(
+                    _queue_item(
+                        priority,
+                        "regsho_threshold",
+                        "Reg SHO threshold risk",
+                        _threshold_queue_detail(row),
+                        "review_regsho_threshold",
+                        symbol=symbol,
+                        query=symbol,
+                    )
+                )
     except Exception as exc:
-        items.append(_queue_item(
-            36,
-            "regsho_threshold",
-            "Reg SHO monitor unavailable",
-            f"Could not read Nasdaq Trader threshold-list context: {str(exc)[:160]}",
-            "review_data_health",
-        ))
+        items.append(
+            _queue_item(
+                36,
+                "regsho_threshold",
+                "Reg SHO monitor unavailable",
+                f"Could not read Nasdaq Trader threshold-list context: {str(exc)[:160]}",
+                "review_data_health",
+            )
+        )
 
     try:
         circuit_symbols = _queue_attention_symbols(data_dir)
@@ -12352,23 +13819,27 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 row = circuit_row.to_dict()
                 symbol = row.get("symbol")
                 priority = max(80, int(_float_value(row.get("ssr_risk_score"), default=80.0)))
-                items.append(_queue_item(
-                    priority,
-                    "short_sale_circuit",
-                    "Short-sale circuit breaker",
-                    _circuit_queue_detail(row),
-                    "review_short_sale_circuit",
-                    symbol=symbol,
-                    query=symbol,
-                ))
+                items.append(
+                    _queue_item(
+                        priority,
+                        "short_sale_circuit",
+                        "Short-sale circuit breaker",
+                        _circuit_queue_detail(row),
+                        "review_short_sale_circuit",
+                        symbol=symbol,
+                        query=symbol,
+                    )
+                )
     except Exception as exc:
-        items.append(_queue_item(
-            34,
-            "short_sale_circuit",
-            "Short-sale circuit monitor unavailable",
-            f"Could not read Nasdaq Trader short-sale circuit context: {str(exc)[:160]}",
-            "review_data_health",
-        ))
+        items.append(
+            _queue_item(
+                34,
+                "short_sale_circuit",
+                "Short-sale circuit monitor unavailable",
+                f"Could not read Nasdaq Trader short-sale circuit context: {str(exc)[:160]}",
+                "review_data_health",
+            )
+        )
 
     attention = build_positions(data_dir, status="attention", limit=8).get("rows", [])
     for row in attention:
@@ -12382,10 +13853,17 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             f"{row.get('position_label')} has exit pressure "
             f"{row.get('latest_exit_pressure') or 0} and open P&L {pnl * 100:+.1f}%."
         )
-        items.append(_queue_item(
-            priority, "open_position", "Review open position",
-            detail, "open_position_monitor", symbol=symbol, query=symbol,
-        ))
+        items.append(
+            _queue_item(
+                priority,
+                "open_position",
+                "Review open position",
+                detail,
+                "open_position_monitor",
+                symbol=symbol,
+                query=symbol,
+            )
+        )
 
     try:
         setups = build_best_setups(data_dir, per_asset=3, limit=12)
@@ -12393,13 +13871,15 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
         if setup_item is not None:
             items.append(setup_item)
     except Exception as exc:
-        items.append(_queue_item(
-            42,
-            "best_setup",
-            "Best setup review unavailable",
-            f"Could not build gated best setup review: {str(exc)[:160]}",
-            "review_data_health",
-        ))
+        items.append(
+            _queue_item(
+                42,
+                "best_setup",
+                "Best setup review unavailable",
+                f"Could not build gated best setup review: {str(exc)[:160]}",
+                "review_data_health",
+            )
+        )
 
     try:
         paper = build_paper_candidates(data_dir, max_new=5, dry_run=False)
@@ -12411,16 +13891,27 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             if confidence not in (None, ""):
                 detail += f" at confidence {confidence}"
             detail += "."
-            items.append(_queue_item(
-                55, "paper_candidate", "Review paper candidate",
-                detail, "preview_paper_candidate", symbol=symbol, query=symbol,
-            ))
+            items.append(
+                _queue_item(
+                    55,
+                    "paper_candidate",
+                    "Review paper candidate",
+                    detail,
+                    "preview_paper_candidate",
+                    symbol=symbol,
+                    query=symbol,
+                )
+            )
     except Exception as exc:
-        items.append(_queue_item(
-            65, "paper_candidate", "Paper candidate build failed",
-            f"Could not build paper candidates: {str(exc)[:160]}",
-            "review_paper_export",
-        ))
+        items.append(
+            _queue_item(
+                65,
+                "paper_candidate",
+                "Paper candidate build failed",
+                f"Could not build paper candidates: {str(exc)[:160]}",
+                "review_paper_export",
+            )
+        )
 
     try:
         scout = build_swing_scout(data_dir, limit=8, include_wait=False, include_nasdaq_movers=True)
@@ -12430,7 +13921,11 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 continue
             symbol = row.get("ticker_or_symbol")
             asset = str(row.get("asset") or "")
-            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "run_focused_scan"
+            action = (
+                "scan_swing_chain"
+                if _can_scan_option_chain_symbol(symbol, asset)
+                else "run_focused_scan"
+            )
             priority = 68 if review_action == "review_now" else 57
             priority += int(_float_value(row.get("conviction_score"), default=0.0) / 20.0)
             detail = (
@@ -12438,23 +13933,27 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
                 f"from Swing Scout at conviction {row.get('conviction_score')}; "
                 f"{', '.join(str(x) for x in (row.get('reasons') or [])[:3]) or row.get('lane') or 'swing candidate'}."
             )
-            items.append(_queue_item(
-                priority,
-                "swing_scout",
-                "Review swing-scout candidate",
-                detail,
-                action,
-                symbol=symbol,
-                query=symbol,
-            ))
+            items.append(
+                _queue_item(
+                    priority,
+                    "swing_scout",
+                    "Review swing-scout candidate",
+                    detail,
+                    action,
+                    symbol=symbol,
+                    query=symbol,
+                )
+            )
     except Exception as exc:
-        items.append(_queue_item(
-            45,
-            "swing_scout",
-            "Swing scout unavailable",
-            f"Could not build swing scout actions: {str(exc)[:160]}",
-            "open_research",
-        ))
+        items.append(
+            _queue_item(
+                45,
+                "swing_scout",
+                "Swing scout unavailable",
+                f"Could not build swing scout actions: {str(exc)[:160]}",
+                "open_research",
+            )
+        )
 
     try:
         watchlist = load_watchlist(data_dir, enrich=True).get("entries", [])
@@ -12463,23 +13962,33 @@ def build_action_queue(data_dir: Path = DATA_DIR, limit: int = 20) -> dict[str, 
             if item is not None:
                 items.append(item)
     except Exception as exc:
-        items.append(_queue_item(
-            40, "watchlist", "Watchlist enrichment failed",
-            f"Could not enrich watchlist: {str(exc)[:160]}",
-            "review_watchlist",
-        ))
+        items.append(
+            _queue_item(
+                40,
+                "watchlist",
+                "Watchlist enrichment failed",
+                f"Could not enrich watchlist: {str(exc)[:160]}",
+                "review_watchlist",
+            )
+        )
 
     if not items:
-        items.append(_queue_item(
-            10, "system", "No urgent local actions",
-            "Data health is clean and no high-priority open-position or paper-candidate items surfaced.",
-            "continue_monitoring",
-        ))
+        items.append(
+            _queue_item(
+                10,
+                "system",
+                "No urgent local actions",
+                "Data health is clean and no high-priority open-position or paper-candidate items surfaced.",
+                "continue_monitoring",
+            )
+        )
 
     items = _guard_entry_action_rows(items, validation_guard)
-    items = sorted(_dedupe_queue_items(items), key=lambda item: item["priority"], reverse=True)[:limit]
+    items = sorted(_dedupe_queue_items(items), key=lambda item: item["priority"], reverse=True)[
+        :limit
+    ]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(items),
         "rows": items,
         "validation_guardrail": {k: _clean_value(v) for k, v in validation_guard.items()},
@@ -12526,7 +14035,8 @@ def _today_review_item(
         "source": source or category,
         "planner_candidate": (
             {k: _clean_value(v) for k, v in planner_candidate.items()}
-            if isinstance(planner_candidate, dict) else None
+            if isinstance(planner_candidate, dict)
+            else None
         ),
     }
 
@@ -12535,11 +14045,21 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
     """Compact first-screen summary for the manual/Robinhood review queue."""
     readiness = queue.get("readiness") if isinstance(queue.get("readiness"), dict) else {}
     diagnostics = queue.get("diagnostics") if isinstance(queue.get("diagnostics"), dict) else {}
-    chain_refresh = queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
-    sec_risks = queue.get("sec_offering_risks") if isinstance(queue.get("sec_offering_risks"), dict) else {}
+    chain_refresh = (
+        queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
+    )
+    sec_risks = (
+        queue.get("sec_offering_risks") if isinstance(queue.get("sec_offering_risks"), dict) else {}
+    )
     orders = queue.get("orders") if isinstance(queue.get("orders"), list) else []
-    top_rejects = queue.get("top_rejection_reasons") if isinstance(queue.get("top_rejection_reasons"), list) else []
-    remediation = diagnostics.get("remediation") if isinstance(diagnostics.get("remediation"), list) else []
+    top_rejects = (
+        queue.get("top_rejection_reasons")
+        if isinstance(queue.get("top_rejection_reasons"), list)
+        else []
+    )
+    remediation = (
+        diagnostics.get("remediation") if isinstance(diagnostics.get("remediation"), list) else []
+    )
     entry_gate = queue.get("entry_gate") if isinstance(queue.get("entry_gate"), dict) else {}
     decision_log = queue.get("decision_log") if isinstance(queue.get("decision_log"), dict) else {}
 
@@ -12548,11 +14068,15 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
     diagnosis = str(diagnostics.get("label") or "").strip()
     candidates = int(_float_value(queue.get("candidate_count"), default=0.0))
     rejected = int(_float_value(queue.get("rejected_count"), default=0.0))
-    ready_to_submit = int(_float_value(
-        queue.get("gated_ready_to_submit_count"),
-        default=_float_value(readiness.get("ready_to_submit_count"), default=candidates),
-    ))
-    review_only_count = int(_float_value(queue.get("review_only_entry_candidate_count"), default=0.0))
+    ready_to_submit = int(
+        _float_value(
+            queue.get("gated_ready_to_submit_count"),
+            default=_float_value(readiness.get("ready_to_submit_count"), default=candidates),
+        )
+    )
+    review_only_count = int(
+        _float_value(queue.get("review_only_entry_candidate_count"), default=0.0)
+    )
     premium_left = readiness.get("premium_cap_remaining")
     max_premium = queue.get("max_total_premium") or queue.get("max_premium_per_order")
     first_order = orders[0] if orders else {}
@@ -12567,11 +14091,16 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
     if gate_status == "blocked":
         tone = "bad"
         label = entry_gate.get("label") or "Fresh entries blocked"
-        detail = entry_gate.get("detail") or "Entry candidates are review-only until blockers clear."
+        detail = (
+            entry_gate.get("detail") or "Entry candidates are review-only until blockers clear."
+        )
     elif gate_status == "review_only":
         tone = "warn"
         label = f"Review-only: {review_only_count or candidates} candidate(s)"
-        detail = entry_gate.get("detail") or "Fresh entries require manual approval and validation review."
+        detail = (
+            entry_gate.get("detail")
+            or "Fresh entries require manual approval and validation review."
+        )
     elif candidates > 0 and status in {"ready", "queued", "review"}:
         tone = "good"
         label = f"Ready: {candidates} candidate(s)"
@@ -12590,7 +14119,11 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
     else:
         tone = "warn"
         label = "No clean candidate"
-        detail = remediation[0] if remediation else f"No order cleared filters; top reject: {top_reject}."
+        detail = (
+            remediation[0]
+            if remediation
+            else f"No order cleared filters; top reject: {top_reject}."
+        )
 
     chain_label = "not refreshed"
     if chain_refresh.get("attempted"):
@@ -12606,7 +14139,9 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
     if entry_gate:
         checks.insert(0, f"Entry gate: {entry_gate.get('label') or gate_status or 'unknown'}")
     if premium_left not in (None, "", "-"):
-        checks.append(f"${_fmt_compact_number(premium_left, precision=0) or premium_left} premium room")
+        checks.append(
+            f"${_fmt_compact_number(premium_left, precision=0) or premium_left} premium room"
+        )
 
     return {
         "status": queue.get("status") or "unknown",
@@ -12620,7 +14155,9 @@ def _command_manual_review_summary(queue: dict[str, Any]) -> dict[str, Any]:
         "entry_gate": entry_gate,
         "entry_gate_status": gate_status or None,
         "entry_gate_label": entry_gate.get("label"),
-        "decision_log_recent_count": int(_float_value(decision_log.get("recent_count"), default=0.0)),
+        "decision_log_recent_count": int(
+            _float_value(decision_log.get("recent_count"), default=0.0)
+        ),
         "decision_log_path": decision_log.get("path"),
         "top_reject": top_reject,
         "diagnosis": diagnosis or queue.get("status") or "unknown",
@@ -12657,25 +14194,31 @@ def _guard_manual_review_summary(
         validation_guard.get("detail")
         or "Validation is blocking fresh entries until risk improves."
     )
-    guarded.update({
-        "label": "Blocked by validation",
-        "detail": guard_detail,
-        "tone": "bad",
-        "ready_to_submit_count": 0,
-        "guarded_candidate_count": manual.get("candidate_count"),
-        "action": "review_data_health",
-        "route": "data_health",
-        "checks": [
-            "Validation guardrail blocked fresh entries",
-            *raw_checks,
-        ][:6],
-    })
+    guarded.update(
+        {
+            "label": "Blocked by validation",
+            "detail": guard_detail,
+            "tone": "bad",
+            "ready_to_submit_count": 0,
+            "guarded_candidate_count": manual.get("candidate_count"),
+            "action": "review_data_health",
+            "route": "data_health",
+            "checks": [
+                "Validation guardrail blocked fresh entries",
+                *raw_checks,
+            ][:6],
+        }
+    )
     return guarded
 
 
 def _command_position_triage(risk: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
     """Build first-screen open-position risk cards from the current risk summary."""
-    rows = risk.get("highest_exit_pressure") if isinstance(risk.get("highest_exit_pressure"), list) else []
+    rows = (
+        risk.get("highest_exit_pressure")
+        if isinstance(risk.get("highest_exit_pressure"), list)
+        else []
+    )
     if not rows:
         rows = risk.get("worst_positions") if isinstance(risk.get("worst_positions"), list) else []
     out: list[dict[str, Any]] = []
@@ -12683,7 +14226,11 @@ def _command_position_triage(risk: dict[str, Any], limit: int = 4) -> list[dict[
     for row in rows:
         if not isinstance(row, dict):
             continue
-        symbol = str(row.get("ticker_or_symbol") or row.get("ticker") or row.get("symbol") or "").strip().upper()
+        symbol = (
+            str(row.get("ticker_or_symbol") or row.get("ticker") or row.get("symbol") or "")
+            .strip()
+            .upper()
+        )
         label = str(row.get("position_label") or symbol or "Open position").strip()
         key = str(row.get("position_id") or label)
         if not key or key in seen:
@@ -12708,20 +14255,22 @@ def _command_position_triage(risk: dict[str, Any], limit: int = 4) -> list[dict[
         detail = f"Exit pressure {pressure:.0f}; open P&L {pnl_text}."
         if reprice_failed:
             detail += f" Reprice failures {reprice_failed}."
-        out.append({
-            "symbol": _clean_value(symbol),
-            "label": _clean_value(label),
-            "asset": _clean_value(row.get("asset")),
-            "detail": detail,
-            "tone": tone,
-            "action_label": action_label,
-            "exit_pressure": _clean_value(pressure),
-            "pnl_pct": _clean_value(pnl if math.isfinite(pnl) else None),
-            "reprice_failed_count": reprice_failed,
-            "action": "open_position_monitor",
-            "route": "positions",
-            "query": _clean_value(symbol),
-        })
+        out.append(
+            {
+                "symbol": _clean_value(symbol),
+                "label": _clean_value(label),
+                "asset": _clean_value(row.get("asset")),
+                "detail": detail,
+                "tone": tone,
+                "action_label": action_label,
+                "exit_pressure": _clean_value(pressure),
+                "pnl_pct": _clean_value(pnl if math.isfinite(pnl) else None),
+                "reprice_failed_count": reprice_failed,
+                "action": "open_position_monitor",
+                "route": "positions",
+                "query": _clean_value(symbol),
+            }
+        )
         if len(out) >= max(1, int(limit or 4)):
             break
     return out
@@ -12772,8 +14321,7 @@ def _guard_entry_action_rows(
         guarded_row["original_label"] = row.get("label")
         guarded_row["label"] = "Validation-blocked candidate"
         guarded_row["detail"] = (
-            f"{detail} Original setup context: {original_detail}"
-            if original_detail else detail
+            f"{detail} Original setup context: {original_detail}" if original_detail else detail
         )
         guarded.append(guarded_row)
     return guarded
@@ -12793,14 +14341,17 @@ def _command_next_action(
     validation_guard = validation_guard if isinstance(validation_guard, dict) else {}
     guard_level = str(validation_guard.get("level") or "").strip().lower()
     guarded_entry = guard_level == "bad" and _is_entry_review_action(action, route)
-    session_blocked_entry = session_status in {"post_window", "research_only"} and _is_entry_review_action(action, route)
+    session_blocked_entry = session_status in {
+        "post_window",
+        "research_only",
+    } and _is_entry_review_action(action, route)
     if guarded_entry or session_blocked_entry:
         gate_source = "validation_guard" if guarded_entry else "session_gate"
-        gate_label = "Review validation/risk first" if guarded_entry else "Review open-position risk"
+        gate_label = (
+            "Review validation/risk first" if guarded_entry else "Review open-position risk"
+        )
         gate_detail = (
-            validation_guard.get("detail")
-            if guarded_entry
-            else session_plan.get("next_step")
+            validation_guard.get("detail") if guarded_entry else session_plan.get("next_step")
         ) or status_detail
         if position_triage:
             top = position_triage[0]
@@ -12860,15 +14411,22 @@ def _today_route_for_queue_action(action: Any) -> str:
     if clean in {"scan_swing_chain"}:
         return "chains"
     if clean in {
-        "review_data_health", "refresh_or_fix_artifact", "warm_sec_ticker_cache",
-        "warm_symbol_caches", "run_refresh_scan",
+        "review_data_health",
+        "refresh_or_fix_artifact",
+        "warm_sec_ticker_cache",
+        "warm_symbol_caches",
+        "run_refresh_scan",
     }:
         return "data_health"
     if clean in {"preview_position_hygiene_cleanup"}:
         return "positions"
     if clean in {
-        "run_focused_scan", "review_watchlist", "review_sec_filings",
-        "review_sec_filing_risk", "review_trading_halt", "review_regsho_threshold",
+        "run_focused_scan",
+        "review_watchlist",
+        "review_sec_filings",
+        "review_sec_filing_risk",
+        "review_trading_halt",
+        "review_regsho_threshold",
         "review_short_sale_circuit",
     }:
         return "research"
@@ -12904,7 +14462,11 @@ def build_today_review(
         for idx, row in enumerate((gated.get("rows") or [])[:8]):
             symbol = row.get("ticker_or_symbol")
             asset = row.get("asset")
-            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "open_research"
+            action = (
+                "scan_swing_chain"
+                if _can_scan_option_chain_symbol(symbol, asset)
+                else "open_research"
+            )
             route = "chains" if action == "scan_swing_chain" else "research"
             reasons = row.get("climate_gate_reasons")
             if isinstance(reasons, list):
@@ -12916,47 +14478,57 @@ def build_today_review(
                 f"{row.get('climate_gate_score')} with readiness {row.get('readiness_score')}. "
                 f"{reason_text}"
             )
-            items.append(_today_review_item(
-                94 - idx,
-                "setup",
-                "Review climate-cleared setup",
-                detail,
-                action,
-                route,
-                symbol=symbol,
-                query=symbol,
-                source="climate_gated_setups",
-                asset=asset,
-                planner_candidate=row.get("planner_candidate"),
-            ))
+            items.append(
+                _today_review_item(
+                    94 - idx,
+                    "setup",
+                    "Review climate-cleared setup",
+                    detail,
+                    action,
+                    route,
+                    symbol=symbol,
+                    query=symbol,
+                    source="climate_gated_setups",
+                    asset=asset,
+                    planner_candidate=row.get("planner_candidate"),
+                )
+            )
         if not gated.get("rows") and gated.get("held"):
             held = gated.get("held", [])[0]
             symbol = held.get("ticker_or_symbol")
             reasons = held.get("climate_gate_reasons")
-            reason_text = ", ".join(str(x) for x in reasons[:3]) if isinstance(reasons, list) else str(reasons or "")
-            items.append(_today_review_item(
-                66,
-                "setup",
-                "Best setup is held",
-                f"{held.get('setup') or symbol} is closest, but held by: {reason_text or 'current gates'}.",
-                "open_research",
-                "research",
-                symbol=symbol,
-                query=symbol,
-                source="climate_gated_setups",
-                asset=held.get("asset"),
-            ))
+            reason_text = (
+                ", ".join(str(x) for x in reasons[:3])
+                if isinstance(reasons, list)
+                else str(reasons or "")
+            )
+            items.append(
+                _today_review_item(
+                    66,
+                    "setup",
+                    "Best setup is held",
+                    f"{held.get('setup') or symbol} is closest, but held by: {reason_text or 'current gates'}.",
+                    "open_research",
+                    "research",
+                    symbol=symbol,
+                    query=symbol,
+                    source="climate_gated_setups",
+                    asset=held.get("asset"),
+                )
+            )
     except Exception as exc:
         notes.append(f"Climate-gated setup review failed: {str(exc)[:160]}")
-        items.append(_today_review_item(
-            60,
-            "setup",
-            "Setup review unavailable",
-            f"Could not build climate-gated setup review: {str(exc)[:160]}",
-            "review_data_health",
-            "data_health",
-            source="climate_gated_setups",
-        ))
+        items.append(
+            _today_review_item(
+                60,
+                "setup",
+                "Setup review unavailable",
+                f"Could not build climate-gated setup review: {str(exc)[:160]}",
+                "review_data_health",
+                "data_health",
+                source="climate_gated_setups",
+            )
+        )
 
     try:
         saved = build_saved_option_contracts(data_dir, enrich=True, limit=40, refresh_quotes=False)
@@ -12982,24 +14554,30 @@ def build_today_review(
                 continue
             query = row.get("query") or row.get("symbol")
             reasons = row.get("review_reasons")
-            reason_text = ", ".join(str(x) for x in reasons[:4]) if isinstance(reasons, list) else str(reasons or "")
+            reason_text = (
+                ", ".join(str(x) for x in reasons[:4])
+                if isinstance(reasons, list)
+                else str(reasons or "")
+            )
             detail = (
                 f"{row.get('symbol')} {row.get('expiry')} {row.get('side_code') or row.get('side')} "
                 f"{row.get('strike')} has review score {row.get('review_score')}. "
                 f"{reason_text or row.get('status') or 'saved for review'}"
             )
-            items.append(_today_review_item(
-                priority,
-                "saved_contract",
-                label,
-                detail,
-                action,
-                route,
-                symbol=row.get("symbol"),
-                query=query,
-                source="saved_option_contracts",
-                asset="option",
-            ))
+            items.append(
+                _today_review_item(
+                    priority,
+                    "saved_contract",
+                    label,
+                    detail,
+                    action,
+                    route,
+                    symbol=row.get("symbol"),
+                    query=query,
+                    source="saved_option_contracts",
+                    asset="option",
+                )
+            )
     except Exception as exc:
         notes.append(f"Saved-contract review failed: {str(exc)[:160]}")
 
@@ -13015,28 +14593,32 @@ def build_today_review(
                 f"{row.get('position_label') or symbol} has exit pressure {row.get('latest_exit_pressure')} "
                 f"and open P&L {row.get('pnl_pct')}."
             )
-            items.append(_today_review_item(
-                priority - idx,
-                "position_risk",
-                "Review open-position exit risk",
-                detail,
-                "open_position_monitor",
-                "positions",
-                symbol=symbol,
-                query=symbol,
-                source="risk_summary",
-                asset=row.get("asset"),
-            ))
+            items.append(
+                _today_review_item(
+                    priority - idx,
+                    "position_risk",
+                    "Review open-position exit risk",
+                    detail,
+                    "open_position_monitor",
+                    "positions",
+                    symbol=symbol,
+                    query=symbol,
+                    source="risk_summary",
+                    asset=row.get("asset"),
+                )
+            )
         for warning in (risk.get("warnings") or [])[:3]:
-            items.append(_today_review_item(
-                76,
-                "position_risk",
-                "Portfolio risk warning",
-                str(warning),
-                "open_position_monitor",
-                "positions",
-                source="risk_summary",
-            ))
+            items.append(
+                _today_review_item(
+                    76,
+                    "position_risk",
+                    "Portfolio risk warning",
+                    str(warning),
+                    "open_position_monitor",
+                    "positions",
+                    source="risk_summary",
+                )
+            )
     except Exception as exc:
         notes.append(f"Risk review failed: {str(exc)[:160]}")
 
@@ -13048,7 +14630,11 @@ def build_today_review(
                 continue
             symbol = row.get("ticker_or_symbol")
             asset = row.get("asset")
-            action = "scan_swing_chain" if _can_scan_option_chain_symbol(symbol, asset) else "open_research"
+            action = (
+                "scan_swing_chain"
+                if _can_scan_option_chain_symbol(symbol, asset)
+                else "open_research"
+            )
             route = "chains" if action == "scan_swing_chain" else "research"
             reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
             detail = (
@@ -13057,18 +14643,20 @@ def build_today_review(
                 f"{', '.join(str(x) for x in reasons[:3]) or row.get('lane') or 'swing scout'}"
             )
             base_priority = 91 if review_action == "review_now" else 78
-            items.append(_today_review_item(
-                base_priority - idx,
-                "swing_scout",
-                "Review swing-scout candidate",
-                detail,
-                action,
-                route,
-                symbol=symbol,
-                query=symbol,
-                source="swing_scout",
-                asset=asset,
-            ))
+            items.append(
+                _today_review_item(
+                    base_priority - idx,
+                    "swing_scout",
+                    "Review swing-scout candidate",
+                    detail,
+                    action,
+                    route,
+                    symbol=symbol,
+                    query=symbol,
+                    source="swing_scout",
+                    asset=asset,
+                )
+            )
     except Exception as exc:
         notes.append(f"Swing-scout review failed: {str(exc)[:160]}")
 
@@ -13076,17 +14664,19 @@ def build_today_review(
         queue = build_action_queue(data_dir, limit=12)
         for row in (queue.get("rows") or [])[:10]:
             priority = min(_float_value(row.get("priority"), default=0.0), 82.0)
-            items.append(_today_review_item(
-                priority,
-                str(row.get("category") or "action_item"),
-                str(row.get("label") or "Review action item"),
-                str(row.get("detail") or ""),
-                str(row.get("action") or "open_research"),
-                _today_route_for_queue_action(row.get("action")),
-                symbol=row.get("symbol"),
-                query=row.get("query"),
-                source="action_queue",
-            ))
+            items.append(
+                _today_review_item(
+                    priority,
+                    str(row.get("category") or "action_item"),
+                    str(row.get("label") or "Review action item"),
+                    str(row.get("detail") or ""),
+                    str(row.get("action") or "open_research"),
+                    _today_route_for_queue_action(row.get("action")),
+                    symbol=row.get("symbol"),
+                    query=row.get("query"),
+                    source="action_queue",
+                )
+            )
     except Exception as exc:
         notes.append(f"Action queue merge failed: {str(exc)[:160]}")
 
@@ -13102,7 +14692,9 @@ def build_today_review(
         notes.append(f"Validation guardrail check failed: {str(exc)[:160]}")
 
     items = _guard_entry_action_rows(items, validation_guard)
-    items = sorted(_dedupe_queue_items(items), key=lambda item: int(item.get("priority") or 0), reverse=True)
+    items = sorted(
+        _dedupe_queue_items(items), key=lambda item: int(item.get("priority") or 0), reverse=True
+    )
     rows = [{k: _clean_value(v) for k, v in item.items()} for item in items[:limit]]
     category_counts: dict[str, int] = {}
     action_counts: dict[str, int] = {}
@@ -13112,28 +14704,33 @@ def build_today_review(
         category_counts[category] = category_counts.get(category, 0) + 1
         action_counts[action] = action_counts.get(action, 0) + 1
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(rows),
         "climate_label": _clean_value(climate_label),
         "climate_score": _clean_value(climate_score),
         "climate_posture": _clean_value(climate_posture),
         "category_counts": category_counts,
         "action_counts": action_counts,
-        "review_now_count": sum(1 for row in rows if row.get("action") in {"scan_swing_chain", "refresh_saved_quote"}),
+        "review_now_count": sum(
+            1 for row in rows if row.get("action") in {"scan_swing_chain", "refresh_saved_quote"}
+        ),
         "risk_count": category_counts.get("position_risk", 0),
         "setup_count": category_counts.get("setup", 0),
         "saved_contract_count": category_counts.get("saved_contract", 0),
         "swing_scout_count": category_counts.get("swing_scout", 0),
         "validation_guardrail": {k: _clean_value(v) for k, v in validation_guard.items()},
         "rows": rows,
-        "notes": notes + [
+        "notes": notes
+        + [
             "Today Review merges local setup gates, saved contracts, open-position risk, and action queue items.",
             "Open moves are routing actions only; no broker execution is performed.",
         ],
     }
 
 
-def _command_center_status(health_status: str, risk_level: str, review_count: int) -> tuple[str, str]:
+def _command_center_status(
+    health_status: str, risk_level: str, review_count: int
+) -> tuple[str, str]:
     health = str(health_status or "unknown").lower()
     risk = str(risk_level or "unknown").lower()
     if health == "bad" or risk in {"high", "critical"}:
@@ -13147,7 +14744,7 @@ def _command_center_status(health_status: str, risk_level: str, review_count: in
 
 def _build_session_plan(now: datetime | None = None) -> dict[str, Any]:
     """Return a plain-English plan for the preferred Optedge review window."""
-    tz = ZoneInfo("America/Los_Angeles") if ZoneInfo else timezone.utc
+    tz = ZoneInfo("America/Los_Angeles") if ZoneInfo else UTC
     local_now = now.astimezone(tz) if now else datetime.now(tz)
     minute = local_now.hour * 60 + local_now.minute
     start = 7 * 60 + 30
@@ -13210,11 +14807,17 @@ def _command_swing_action(row: dict[str, Any]) -> dict[str, Any]:
     route = "chains" if action == "scan_swing_chain" else "research"
     reasons = row.get("reasons") if isinstance(row.get("reasons"), list) else []
     warnings = row.get("warnings") if isinstance(row.get("warnings"), list) else []
-    factor_breakdown = row.get("factor_breakdown") if isinstance(row.get("factor_breakdown"), list) else []
+    factor_breakdown = (
+        row.get("factor_breakdown") if isinstance(row.get("factor_breakdown"), list) else []
+    )
     factor_summary = row.get("factor_summary") or _swing_factor_summary(factor_breakdown)
-    reason_text = ", ".join(str(item) for item in reasons[:3]) or str(row.get("lane") or "swing radar")
+    reason_text = ", ".join(str(item) for item in reasons[:3]) or str(
+        row.get("lane") or "swing radar"
+    )
     factor_text = f" Factors: {factor_summary}." if factor_summary else ""
-    warning_text = f" Warnings: {', '.join(str(item) for item in warnings[:2])}." if warnings else ""
+    warning_text = (
+        f" Warnings: {', '.join(str(item) for item in warnings[:2])}." if warnings else ""
+    )
     score = _float_value(row.get("swing_scout_score"), default=0.0)
     review_text = str(row.get("review_label") or review_action or "Review").replace("_", " ")
     detail = (
@@ -13259,17 +14862,23 @@ def _cached_robinhood_queue_report(data_dir: Path) -> dict[str, Any]:
     orders = queue.get("orders") if isinstance(queue.get("orders"), list) else []
     rejected = queue.get("rejected") if isinstance(queue.get("rejected"), list) else []
     report = dict(queue)
-    report.update({
-        "source": "saved_local_snapshot",
-        "entry_gate": cycle.get("entry_gate") if isinstance(cycle.get("entry_gate"), dict) else {},
-        "gated_ready_to_submit_count": summary.get("gated_ready_to_submit_count"),
-        "review_only_entry_candidate_count": len(entry_candidates),
-        "decision_log": cycle.get("decision_log") if isinstance(cycle.get("decision_log"), dict) else {},
-        "candidate_count": len(orders),
-        "rejected_count": len(rejected),
-        "orders": orders,
-        "rejected": rejected[:25],
-    })
+    report.update(
+        {
+            "source": "saved_local_snapshot",
+            "entry_gate": cycle.get("entry_gate")
+            if isinstance(cycle.get("entry_gate"), dict)
+            else {},
+            "gated_ready_to_submit_count": summary.get("gated_ready_to_submit_count"),
+            "review_only_entry_candidate_count": len(entry_candidates),
+            "decision_log": cycle.get("decision_log")
+            if isinstance(cycle.get("decision_log"), dict)
+            else {},
+            "candidate_count": len(orders),
+            "rejected_count": len(rejected),
+            "orders": orders,
+            "rejected": rejected[:25],
+        }
+    )
     return report
 
 
@@ -13370,8 +14979,11 @@ def build_command_center(
         {
             "label": "Market posture",
             "value": today.get("climate_label") or "-",
-            "detail": today.get("climate_posture") or "Use the swing climate panel for the full playbook.",
-            "tone": "good" if _float_value(today.get("climate_score"), default=50.0) >= 60 else "warn",
+            "detail": today.get("climate_posture")
+            or "Use the swing climate panel for the full playbook.",
+            "tone": "good"
+            if _float_value(today.get("climate_score"), default=50.0) >= 60
+            else "warn",
         },
         {
             "label": "Review window",
@@ -13389,7 +15001,11 @@ def build_command_center(
             "label": "Open risk",
             "value": risk.get("risk_level") or "-",
             "detail": f"{risk.get('attention_count', 0)} attention item(s), {risk.get('high_exit_pressure_count', 0)} high-pressure exit(s).",
-            "tone": "bad" if str(risk.get("risk_level") or "").lower() in {"high", "critical"} else "warn" if risk.get("attention_count") else "good",
+            "tone": "bad"
+            if str(risk.get("risk_level") or "").lower() in {"high", "critical"}
+            else "warn"
+            if risk.get("attention_count")
+            else "good",
         },
         {
             "label": "Free source stack",
@@ -13408,7 +15024,8 @@ def build_command_center(
             "value": len(swing_actions),
             "detail": (
                 f"Top local candidate: {swing_actions[0].get('label')}"
-                if swing_actions else "No local swing-radar candidates cleared the current filters."
+                if swing_actions
+                else "No local swing-radar candidates cleared the current filters."
             ),
             "tone": "good" if swing_actions else "warn",
         },
@@ -13427,7 +15044,7 @@ def build_command_center(
         validation_guard=validation_guard,
     )
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": status,
         "status_detail": status_detail,
         "climate_label": today.get("climate_label"),
@@ -13445,7 +15062,9 @@ def build_command_center(
         "trust_ribbon": _build_trust_ribbon(health, sources, performance, chain),
         "session_plan": {k: _clean_value(v) for k, v in session_plan.items()},
         "manual_review": {k: _clean_value(v) for k, v in manual_review.items()},
-        "position_triage": [{k: _clean_value(v) for k, v in row.items()} for row in position_triage],
+        "position_triage": [
+            {k: _clean_value(v) for k, v in row.items()} for row in position_triage
+        ],
         "next_action": {k: _clean_value(v) for k, v in next_action.items()},
         "cards": [{k: _clean_value(v) for k, v in row.items()} for row in cards],
         "top_queue": top_queue,
@@ -13511,9 +15130,7 @@ def build_model_trust_report() -> dict[str, Any]:
             "outcome_age_days": _clean_value(row.get("outcome_age_days")),
             "active_mode": "trusted_champion" if row.get("usable") is True else fallback,
             "reasons": [
-                str(reason)
-                for reason in (row.get("reasons") or [])[:5]
-                if str(reason).strip()
+                str(reason) for reason in (row.get("reasons") or [])[:5] if str(reason).strip()
             ],
         }
 
@@ -13542,11 +15159,13 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
     snapshot = _read_json(data_dir / "robinhood_broker_snapshot.json")
     snapshot = snapshot if isinstance(snapshot, dict) else {}
     accounts = snapshot.get("accounts") if isinstance(snapshot.get("accounts"), list) else []
-    account_keys = list(dict.fromkeys(
-        str(row.get("account_key") or "").strip()
-        for row in accounts
-        if isinstance(row, dict) and str(row.get("account_key") or "").strip()
-    ))
+    account_keys = list(
+        dict.fromkeys(
+            str(row.get("account_key") or "").strip()
+            for row in accounts
+            if isinstance(row, dict) and str(row.get("account_key") or "").strip()
+        )
+    )
     rows: list[dict[str, Any]] = []
     for account_key in account_keys:
         ledger_path = account_equity_ledger_path(
@@ -13569,10 +15188,14 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
             result["review_ready"] = False
             result["allowed"] = False
             result["risk_multiplier"] = 0.0
-            result["blockers"] = list(dict.fromkeys([
-                f"Durable equity ledger is unsafe: {ledger_error}",
-                *(result.get("blockers") or []),
-            ]))
+            result["blockers"] = list(
+                dict.fromkeys(
+                    [
+                        f"Durable equity ledger is unsafe: {ledger_error}",
+                        *(result.get("blockers") or []),
+                    ]
+                )
+            )
         rows.append({key: _clean_value(value) for key, value in result.items()})
 
     allowed_rows = [row for row in rows if row.get("allowed") is True]
@@ -13581,13 +15204,9 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
     else:
         status = "blocked"
     drawdowns = [
-        _float_value(row.get("high_water_drawdown_fraction"), default=math.nan)
-        for row in rows
+        _float_value(row.get("high_water_drawdown_fraction"), default=math.nan) for row in rows
     ]
-    multipliers = [
-        _float_value(row.get("risk_multiplier"), default=math.nan)
-        for row in rows
-    ]
+    multipliers = [_float_value(row.get("risk_multiplier"), default=math.nan) for row in rows]
     return {
         "schema": "optedge_account_drawdown_overview_v1",
         "policy_version": ACCOUNT_DRAWDOWN_POLICY_VERSION,
@@ -13602,12 +15221,14 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
         ),
         "base_risk_fraction": MANUAL_REVIEW_BASE_RISK_FRACTION,
         "rows": rows,
-        "blockers": list(dict.fromkeys(
-            str(blocker)
-            for row in rows
-            for blocker in (row.get("blockers") or [])
-            if str(blocker).strip()
-        ))[:8],
+        "blockers": list(
+            dict.fromkeys(
+                str(blocker)
+                for row in rows
+                for blocker in (row.get("blockers") or [])
+                if str(blocker).strip()
+            )
+        )[:8],
         "does_not_place_orders": True,
     }
 
@@ -13636,7 +15257,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "schema": "optedge_trade_desk_v2",
         "snapshot_id": _local_snapshot_id(data_dir),
         "strategy_version": SWING_EXECUTION_PROFILE.strategy_version,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "execution_mode": "manual_review_only",
         "automation_enabled": False,
         "command": command,
@@ -13696,7 +15317,9 @@ def _option_candidate_review_attestation(
     if queue_schema != OPTION_QUEUE_SCHEMA:
         blockers.append(f"Option review requires source queue schema {OPTION_QUEUE_SCHEMA}.")
     if cycle_age is None or queue_age is None:
-        blockers.append("Fresh option queue and entry-gate timestamps are required for manual review.")
+        blockers.append(
+            "Fresh option queue and entry-gate timestamps are required for manual review."
+        )
     elif cycle_age > AGENTIC_FRESH_MINUTES or queue_age > AGENTIC_FRESH_MINUTES:
         blockers.append(
             f"Option queue/entry gate is older than the {AGENTIC_FRESH_MINUTES:g}-minute review limit."
@@ -13710,7 +15333,9 @@ def _option_candidate_review_attestation(
     queue_execution_enabled = queue.get("execution_enabled")
     queue_max_orders = queue.get("max_orders_to_submit")
     if entry_allowed is not True:
-        blockers.append("The current Optedge option-entry gate does not allow a fresh broker review.")
+        blockers.append(
+            "The current Optedge option-entry gate does not allow a fresh broker review."
+        )
     if cycle_auto_submit is not False:
         blockers.append("The option cycle must explicitly keep auto_submit_allowed=false.")
     if cycle_no_orders is not True:
@@ -13719,15 +15344,21 @@ def _option_candidate_review_attestation(
         blockers.append("The option queue must explicitly declare does_not_place_orders=true.")
     if queue_execution_enabled is not False:
         blockers.append("The option queue must explicitly keep execution_enabled=false.")
-    if isinstance(queue_max_orders, bool) or not isinstance(queue_max_orders, int) or queue_max_orders != 0:
+    if (
+        isinstance(queue_max_orders, bool)
+        or not isinstance(queue_max_orders, int)
+        or queue_max_orders != 0
+    ):
         blockers.append("The option queue must explicitly keep max_orders_to_submit=0.")
 
-    plan_candidate_key = _agentic_contract_key({
-        "symbol": order.get("symbol"),
-        "option_side": order.get("option_type"),
-        "strike": order.get("strike"),
-        "expiry": order.get("expiry"),
-    })
+    plan_candidate_key = _agentic_contract_key(
+        {
+            "symbol": order.get("symbol"),
+            "option_side": order.get("option_type"),
+            "strike": order.get("strike"),
+            "expiry": order.get("expiry"),
+        }
+    )
     if not all(plan_candidate_key.split("|")):
         blockers.append("The planned option contract identity is incomplete.")
     cycle_rows = (
@@ -13764,15 +15395,17 @@ def _option_candidate_review_attestation(
     )
     if cycle_count == 1 and queue_count == 1 and not candidate_rows_match:
         blockers.append("The exact option candidate rows in the cycle and queue do not match.")
-    candidate = cycle_row if isinstance(cycle_row, dict) else (
-        queue_row if isinstance(queue_row, dict) else {}
+    candidate = (
+        cycle_row
+        if isinstance(cycle_row, dict)
+        else (queue_row if isinstance(queue_row, dict) else {})
     )
-    plan_execution_profile = str(
-        plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name
-    ).strip().lower()
-    candidate_execution_profile = str(
-        candidate.get("execution_profile") or SWING_EXECUTION_PROFILE.name
-    ).strip().lower()
+    plan_execution_profile = (
+        str(plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name).strip().lower()
+    )
+    candidate_execution_profile = (
+        str(candidate.get("execution_profile") or SWING_EXECUTION_PROFILE.name).strip().lower()
+    )
     is_leaps_swing = plan_execution_profile == LEAPS_SWING_PROFILE.name
     if candidate and candidate_execution_profile != plan_execution_profile:
         blockers.append("Candidate and planner execution profiles do not match exactly.")
@@ -13788,28 +15421,26 @@ def _option_candidate_review_attestation(
             blockers.append("The LEAPS candidate is research-only or blocked, not execution-ready.")
         if candidate.get("leaps_hard_blockers") != [] or candidate.get("leaps_data_blockers") != []:
             blockers.append("The LEAPS candidate still contains policy or live-data blockers.")
-    candidate_row_digest = (
-        _canonical_json_sha256(candidate) if candidate_rows_match else None
-    )
-    candidate_fingerprint = (
-        candidate_row_digest[:24] if candidate_row_digest is not None else None
-    )
+    candidate_row_digest = _canonical_json_sha256(candidate) if candidate_rows_match else None
+    candidate_fingerprint = candidate_row_digest[:24] if candidate_row_digest is not None else None
 
     candidate_asset = str(candidate.get("asset") or "").strip().lower()
     candidate_action = str(candidate.get("action") or "").strip().upper()
     candidate_order_type = str(candidate.get("order_type") or "").strip().lower()
     candidate_time_in_force = str(candidate.get("time_in_force") or "").strip().lower()
     candidate_underlying_type = str(candidate.get("underlying_type") or "").strip().lower()
-    candidate_symbol = str(
-        candidate.get("symbol")
-        or candidate.get("ticker")
-        or candidate.get("ticker_or_symbol")
-        or ""
-    ).strip().upper()
+    candidate_symbol = (
+        str(
+            candidate.get("symbol")
+            or candidate.get("ticker")
+            or candidate.get("ticker_or_symbol")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     candidate_option_type = _agentic_option_side(
-        candidate.get("option_side")
-        or candidate.get("option_type")
-        or candidate.get("right")
+        candidate.get("option_side") or candidate.get("option_type") or candidate.get("right")
     )
     candidate_strike = _float_value(
         candidate.get("strike") or candidate.get("strike_price"),
@@ -13845,26 +15476,21 @@ def _option_candidate_review_attestation(
         if candidate_time_in_force != "day":
             blockers.append("The current option candidate must declare time_in_force=day.")
         if candidate_underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
-            blockers.append("The current option candidate is not explicitly an equity/ETF underlying.")
+            blockers.append(
+                "The current option candidate is not explicitly an equity/ETF underlying."
+            )
         if candidate_underlying_type != str(order.get("underlying_type") or "").strip().lower():
             blockers.append("Candidate and planner underlying_type do not match exactly.")
         if is_known_index_option_symbol(candidate_symbol):
             blockers.append("The current candidate uses an unsupported index option root.")
         candidate_min_dte = (
-            LEAPS_SWING_PROFILE.option_min_dte
-            if is_leaps_swing
-            else MIN_SWING_OPTION_DTE
+            LEAPS_SWING_PROFILE.option_min_dte if is_leaps_swing else MIN_SWING_OPTION_DTE
         )
-        candidate_max_dte = (
-            LEAPS_SWING_PROFILE.option_max_dte if is_leaps_swing else None
-        )
+        candidate_max_dte = LEAPS_SWING_PROFILE.option_max_dte if is_leaps_swing else None
         if (
             candidate_dte is None
             or candidate_dte < candidate_min_dte
-            or (
-                candidate_max_dte is not None
-                and candidate_dte > candidate_max_dte
-            )
+            or (candidate_max_dte is not None and candidate_dte > candidate_max_dte)
             or candidate_dte != expected_candidate_dte
         ):
             dte_rule = (
@@ -13899,14 +15525,21 @@ def _option_candidate_review_attestation(
         else 0
     )
     if candidate:
-        if not math.isfinite(candidate_limit) or candidate_limit <= 0 or not math.isfinite(plan_limit) or plan_limit <= 0:
+        if (
+            not math.isfinite(candidate_limit)
+            or candidate_limit <= 0
+            or not math.isfinite(plan_limit)
+            or plan_limit <= 0
+        ):
             blockers.append("Candidate and planner limit prices must both be finite and positive.")
         elif plan_limit > candidate_limit + 1e-9:
             blockers.append(
                 f"Planner limit ${plan_limit:.2f} exceeds the candidate cap of ${candidate_limit:.2f}."
             )
         if candidate_quantity <= 0 or plan_quantity <= 0 or plan_quantity > candidate_quantity:
-            blockers.append("Planner quantity exceeds the current candidate's approved quantity cap.")
+            blockers.append(
+                "Planner quantity exceeds the current candidate's approved quantity cap."
+            )
 
     source_quote_at = str(candidate.get("source_quote_at") or "").strip()
     source_quote_time_basis = str(candidate.get("source_quote_time_basis") or "").strip()
@@ -13959,8 +15592,7 @@ def _option_candidate_review_attestation(
             and source_quote_age * 60.0 > LEAPS_SWING_PROFILE.max_quote_age_seconds
         ):
             blockers.append(
-                "The LEAPS candidate source quote is older than the 120-second "
-                "profile limit."
+                "The LEAPS candidate source quote is older than the 120-second profile limit."
             )
         for reason in manual_review_quote_provenance_reasons(candidate):
             blockers.append(f"The candidate {reason}.")
@@ -13995,15 +15627,19 @@ def _option_candidate_review_attestation(
         "strike": _clean_value(candidate_strike if math.isfinite(candidate_strike) else None),
         "expiry": candidate_expiry or None,
         "dte": candidate_dte,
-        **({
-            "execution_profile": candidate_execution_profile,
-            "strategy_evidence_lane": candidate.get("strategy_evidence_lane"),
-            "profile_policy_version": candidate.get("profile_policy_version"),
-            "leaps_swing_status": candidate.get("leaps_swing_status"),
-            "leaps_execution_ready": candidate.get("leaps_execution_ready"),
-            "leaps_hard_blockers": candidate.get("leaps_hard_blockers"),
-            "leaps_data_blockers": candidate.get("leaps_data_blockers"),
-        } if is_leaps_swing else {}),
+        **(
+            {
+                "execution_profile": candidate_execution_profile,
+                "strategy_evidence_lane": candidate.get("strategy_evidence_lane"),
+                "profile_policy_version": candidate.get("profile_policy_version"),
+                "leaps_swing_status": candidate.get("leaps_swing_status"),
+                "leaps_execution_ready": candidate.get("leaps_execution_ready"),
+                "leaps_hard_blockers": candidate.get("leaps_hard_blockers"),
+                "leaps_data_blockers": candidate.get("leaps_data_blockers"),
+            }
+            if is_leaps_swing
+            else {}
+        ),
         "candidate_fingerprint": candidate_fingerprint,
         "candidate_row_digest_sha256": candidate_row_digest,
         "source_cycle_schema": cycle_schema or None,
@@ -14065,9 +15701,7 @@ def _share_candidate_review_attestation(
     data_dir = Path(data_dir)
     order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
     request = (
-        plan.get("candidate_request")
-        if isinstance(plan.get("candidate_request"), dict)
-        else {}
+        plan.get("candidate_request") if isinstance(plan.get("candidate_request"), dict) else {}
     )
     source_path = _latest_file(data_dir, OPPORTUNITY_SPECS["share"]["pattern"])
     source_meta = _file_meta(source_path)
@@ -14083,18 +15717,26 @@ def _share_candidate_review_attestation(
             "Load the share from the current freshness-gated candidate board; a valid candidate fingerprint is required."
         )
     if source_path is None or source_meta is None:
-        blockers.append("The latest top_shares artifact is missing; share broker review is unavailable.")
+        blockers.append(
+            "The latest top_shares artifact is missing; share broker review is unavailable."
+        )
     elif requested_source != source_path.name:
-        blockers.append("The loaded share candidate is not bound to the latest top_shares artifact.")
+        blockers.append(
+            "The loaded share candidate is not bound to the latest top_shares artifact."
+        )
     if direction != "long" or order.get("intent") != "open_long" or order.get("side") != "buy":
-        blockers.append("Share candidate review is limited to the exact long buy setup in the current artifact.")
+        blockers.append(
+            "Share candidate review is limited to the exact long buy setup in the current artifact."
+        )
 
     artifact_digest: str | None = None
     if source_path is not None:
         try:
             artifact_digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         except OSError:
-            blockers.append("The latest top_shares artifact could not be read for digest attestation.")
+            blockers.append(
+                "The latest top_shares artifact could not be read for digest attestation."
+            )
 
     artifact_at = source_meta.get("modified_at") if source_meta else None
     artifact_age = _iso_age_minutes(artifact_at)
@@ -14124,7 +15766,9 @@ def _share_candidate_review_attestation(
                 for _, row in actionable.iterrows()
             ]
             if not records:
-                blockers.append("No actionable share candidate exists in the latest top_shares artifact.")
+                blockers.append(
+                    "No actionable share candidate exists in the latest top_shares artifact."
+                )
 
     match: dict[str, Any] | None = None
     for record in records:
@@ -14154,25 +15798,32 @@ def _share_candidate_review_attestation(
         if str(match.get("setup_gate_status") or "").strip().lower() != "ready":
             blockers.append("The exact share candidate has not cleared its setup gate.")
         if str(match.get("research_guard_status") or "").strip().lower() not in {
-            "pass", "passed", "ok", "ready", "allowed", "validated",
+            "pass",
+            "passed",
+            "ok",
+            "ready",
+            "allowed",
+            "validated",
         }:
             blockers.append("The exact share candidate has not passed the research guard.")
         if source_state.get("source_gate_pass") is not True:
-            for reason in source_state.get("blockers") or ["candidate source freshness is not proven"]:
+            for reason in source_state.get("blockers") or [
+                "candidate source freshness is not proven"
+            ]:
                 blockers.append(f"The share candidate {reason}.")
 
     candidate_generated_at = str(candidate.get("source_generated_at") or "").strip()
     if requested_generated_at and requested_generated_at != candidate_generated_at:
-        blockers.append("The loaded share candidate generation timestamp no longer matches the artifact.")
+        blockers.append(
+            "The loaded share candidate generation timestamp no longer matches the artifact."
+        )
     price_session_text = str(candidate.get("source_price_session") or "").strip()
     try:
         price_session = datetime.fromisoformat(price_session_text).date()
     except ValueError:
         price_session = None
     session_age_days = (
-        (datetime.now(timezone.utc).date() - price_session).days
-        if price_session is not None
-        else None
+        (datetime.now(UTC).date() - price_session).days if price_session is not None else None
     )
     if session_age_days is None or session_age_days < 0 or session_age_days > 4:
         blockers.append(
@@ -14235,7 +15886,9 @@ def _share_candidate_review_attestation(
         for value in (candidate.get("source_quote_at"), candidate.get("bid"), candidate.get("ask"))
     ):
         if quote_age is None or quote_age > AGENTIC_FRESH_MINUTES:
-            blockers.append("The supplied share candidate source quote timestamp is stale or invalid.")
+            blockers.append(
+                "The supplied share candidate source quote timestamp is stale or invalid."
+            )
         if not math.isfinite(spread):
             blockers.append("The supplied share candidate source bid/ask is invalid.")
         elif spread > EQUITY_REVIEW_MAX_SPREAD_PCT + 1e-12:
@@ -14246,23 +15899,52 @@ def _share_candidate_review_attestation(
     stable_candidate = {
         key: candidate.get(key)
         for key in (
-            "asset", "symbol", "direction", "entry_price", "stop_price",
-            "target_price", "max_units", "source_file", "source_generated_at",
-            "source_artifact_at", "source_artifact_time_basis", "source_quote_at",
-            "source_quote_time_basis", "source_price_session", "source_price_basis",
-            "quote_quality", "data_delay", "bid", "ask", "mid",
+            "asset",
+            "symbol",
+            "direction",
+            "entry_price",
+            "stop_price",
+            "target_price",
+            "max_units",
+            "source_file",
+            "source_generated_at",
+            "source_artifact_at",
+            "source_artifact_time_basis",
+            "source_quote_at",
+            "source_quote_time_basis",
+            "source_price_session",
+            "source_price_basis",
+            "quote_quality",
+            "data_delay",
+            "bid",
+            "ask",
+            "mid",
             "candidate_fingerprint",
         )
     }
-    stable_candidate.update({
-        "trade_status": match.get("trade_status") if isinstance(match, dict) else None,
-        "setup_gate_status": match.get("setup_gate_status") if isinstance(match, dict) else None,
-        "research_guard_status": match.get("research_guard_status") if isinstance(match, dict) else None,
-        "suggested_dollars": match.get("suggested_dollars") if isinstance(match, dict) else None,
-    })
-    row_digest = hashlib.sha256(
-        json.dumps(stable_candidate, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest() if match is not None else None
+    stable_candidate.update(
+        {
+            "trade_status": match.get("trade_status") if isinstance(match, dict) else None,
+            "setup_gate_status": match.get("setup_gate_status")
+            if isinstance(match, dict)
+            else None,
+            "research_guard_status": match.get("research_guard_status")
+            if isinstance(match, dict)
+            else None,
+            "suggested_dollars": match.get("suggested_dollars")
+            if isinstance(match, dict)
+            else None,
+        }
+    )
+    row_digest = (
+        hashlib.sha256(
+            json.dumps(stable_candidate, sort_keys=True, separators=(",", ":"), default=str).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        if match is not None
+        else None
+    )
 
     unique_blockers = list(dict.fromkeys(value for value in blockers if value))
     return {
@@ -14296,7 +15978,9 @@ def _share_candidate_review_attestation(
         "candidate_quote_quality": candidate.get("quote_quality"),
         "trade_status": match.get("trade_status") if isinstance(match, dict) else None,
         "setup_gate_status": match.get("setup_gate_status") if isinstance(match, dict) else None,
-        "research_guard_status": match.get("research_guard_status") if isinstance(match, dict) else None,
+        "research_guard_status": match.get("research_guard_status")
+        if isinstance(match, dict)
+        else None,
         "entry_price": candidate.get("entry_price"),
         "stop_price": candidate.get("stop_price"),
         "target_price": candidate.get("target_price"),
@@ -14340,12 +16024,20 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         blockers.append("The local trading kill switch is active.")
 
     health = build_data_health(data_dir)
-    guard = health.get("validation_guardrail") if isinstance(health.get("validation_guardrail"), dict) else {}
+    guard = (
+        health.get("validation_guardrail")
+        if isinstance(health.get("validation_guardrail"), dict)
+        else {}
+    )
     guard_level = str(guard.get("level") or "warn").lower()
     if guard_level != "ok":
-        blockers.append(str(guard.get("detail") or "Validation evidence is not cleared for fresh entries."))
+        blockers.append(
+            str(guard.get("detail") or "Validation evidence is not cleared for fresh entries.")
+        )
     if str(health.get("status") or "warn").lower() == "bad":
-        blockers.append("Local data health has a blocking failure; refresh and reconcile artifacts first.")
+        blockers.append(
+            "Local data health has a blocking failure; refresh and reconcile artifacts first."
+        )
 
     edge = build_edge_lab_report(data_dir)
     edge_digest = hashlib.sha256(
@@ -14356,40 +16048,38 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             default=str,
         ).encode("utf-8")
     ).hexdigest()
-    execution_profile = str(
-        plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name
-    ).strip().lower()
+    execution_profile = (
+        str(plan.get("execution_profile") or SWING_EXECUTION_PROFILE.name).strip().lower()
+    )
     is_leaps_swing = asset == "option" and execution_profile == LEAPS_SWING_PROFILE.name
     edge_status = str(edge.get("status") or "unavailable").strip().lower()
     edge_rows = edge.get("asset_rows") if isinstance(edge.get("asset_rows"), list) else []
     edge_asset = "share" if asset == "share" else asset
     if is_leaps_swing:
         edge_asset_row = (
-            edge.get("leaps_swing")
-            if isinstance(edge.get("leaps_swing"), dict)
-            else None
+            edge.get("leaps_swing") if isinstance(edge.get("leaps_swing"), dict) else None
         )
-        edge_status = str(
-            edge_asset_row.get("status") if isinstance(edge_asset_row, dict) else "unavailable"
-        ).strip().lower()
+        edge_status = (
+            str(edge_asset_row.get("status") if isinstance(edge_asset_row, dict) else "unavailable")
+            .strip()
+            .lower()
+        )
     else:
         edge_asset_row = next(
             (
-                row for row in edge_rows
+                row
+                for row in edge_rows
                 if isinstance(row, dict)
                 and str(row.get("asset") or "").strip().lower() == edge_asset
             ),
             None,
         )
     edge_asset_eligible = bool(
-        isinstance(edge_asset_row, dict)
-        and edge_asset_row.get("live_capital_eligible") is True
+        isinstance(edge_asset_row, dict) and edge_asset_row.get("live_capital_eligible") is True
     )
     if not edge_asset_eligible:
         edge_asset_blocker = (
-            edge_asset_row.get("primary_blocker")
-            if isinstance(edge_asset_row, dict)
-            else None
+            edge_asset_row.get("primary_blocker") if isinstance(edge_asset_row, dict) else None
         )
         lane_label = "LEAPS swing" if is_leaps_swing else edge_asset.title()
         blockers.append(
@@ -14414,9 +16104,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     normalized_source_snapshot_digest = source_snapshot_digest(snapshot)
     broker_age = broker.get("snapshot_age_minutes")
     broker_normalization_blockers = [
-        str(value)
-        for value in (broker.get("normalization_blockers") or [])
-        if str(value).strip()
+        str(value) for value in (broker.get("normalization_blockers") or []) if str(value).strip()
     ]
     if broker.get("snapshot_exists") is not True:
         blockers.append("A normalized read-only Robinhood broker snapshot is required.")
@@ -14426,9 +16114,10 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         blockers.append(
             f"The Robinhood broker snapshot is {_short_age_label(float(broker_age))} old; refresh it before review."
         )
-    if broker_normalization_blockers or int(
-        _float_value(broker.get("normalization_blocker_count"), default=0.0)
-    ) > 0:
+    if (
+        broker_normalization_blockers
+        or int(_float_value(broker.get("normalization_blocker_count"), default=0.0)) > 0
+    ):
         blockers.append(
             "The Robinhood read capture is incomplete or account scope is untrusted; rebuild the v2 snapshot."
         )
@@ -14438,14 +16127,20 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             f"{RAW_BUNDLE_SCHEMA} capture."
         )
 
-    account_rows = broker.get("account_readiness_rows") if isinstance(broker.get("account_readiness_rows"), list) else []
+    account_rows = (
+        broker.get("account_readiness_rows")
+        if isinstance(broker.get("account_readiness_rows"), list)
+        else []
+    )
     order = plan.get("order") if isinstance(plan.get("order"), dict) else {}
     risk = plan.get("risk") if isinstance(plan.get("risk"), dict) else {}
-    assumptions = plan.get("account_assumptions") if isinstance(plan.get("account_assumptions"), dict) else {}
+    assumptions = (
+        plan.get("account_assumptions") if isinstance(plan.get("account_assumptions"), dict) else {}
+    )
     candidate_constraints: dict[str, Any] = {}
     if asset == "share":
-        candidate_constraints, share_candidate_blockers = (
-            _share_candidate_review_attestation(data_dir, plan)
+        candidate_constraints, share_candidate_blockers = _share_candidate_review_attestation(
+            data_dir, plan
         )
         blockers.extend(share_candidate_blockers)
     assumed_equity = _float_value(assumptions.get("account_equity_dollars"), default=math.nan)
@@ -14479,29 +16174,33 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 "Option review requires an explicit equity underlying; index options are not supported."
             )
         if is_known_index_option_symbol(order.get("symbol")):
-            blockers.append("Known index option roots and ^ symbols are blocked from Trade Desk review.")
+            blockers.append(
+                "Known index option roots and ^ symbols are blocked from Trade Desk review."
+            )
         if re.search(r"\d", planned_chain_symbol):
             blockers.append(
                 "Numeric option roots are treated as adjusted/close-only contracts and are blocked from new-entry review."
             )
-        quote_constraints.update({
-            "expected_underlying_type": SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
-            "expected_chain_symbol": planned_chain_symbol,
-            "expected_contract_multiplier": 100,
-            "require_active_instrument": True,
-            "require_buy_to_open_tradable": True,
-            "require_exact_chain_symbol": True,
-            "require_exact_instrument_chain_id_match": True,
-            "require_unique_chain_record": True,
-            "require_unique_instrument_across_all_expiry_chains": True,
-            "require_chain_can_open_position": True,
-            "require_chain_cash_component_null": True,
-            "require_chain_underlying_instrument_match": True,
-            "require_complete_instrument_and_chain_lookup": True,
-            "reject_numeric_adjusted_roots": True,
-            "require_standard_contract_proof": True,
-            "block_adjusted_or_nonstandard_deliverables": True,
-        })
+        quote_constraints.update(
+            {
+                "expected_underlying_type": SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
+                "expected_chain_symbol": planned_chain_symbol,
+                "expected_contract_multiplier": 100,
+                "require_active_instrument": True,
+                "require_buy_to_open_tradable": True,
+                "require_exact_chain_symbol": True,
+                "require_exact_instrument_chain_id_match": True,
+                "require_unique_chain_record": True,
+                "require_unique_instrument_across_all_expiry_chains": True,
+                "require_chain_can_open_position": True,
+                "require_chain_cash_component_null": True,
+                "require_chain_underlying_instrument_match": True,
+                "require_complete_instrument_and_chain_lookup": True,
+                "reject_numeric_adjusted_roots": True,
+                "require_standard_contract_proof": True,
+                "block_adjusted_or_nonstandard_deliverables": True,
+            }
+        )
         if str(broker.get("agentic_readiness_status") or "").lower() != "ready":
             blockers.append(
                 str(
@@ -14530,20 +16229,21 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         blockers.extend(option_candidate_blockers)
         warnings.extend(option_candidate_warnings)
         quote_constraints.update(option_quote_constraints)
-        quote_constraints.update({
-            "direct_finalist_check_applied": finalist_binding.get("applied") is True,
-            "direct_finalist_check_schema": finalist_binding.get("schema"),
-            "direct_finalist_check_generated_at": finalist_binding.get("generated_at"),
-            "direct_finalist_check_digest_sha256": finalist_binding.get(
-                "artifact_digest_sha256"
-            ),
-            "direct_finalist_check_option_id": finalist_binding.get("option_id"),
-            "direct_finalist_check_quote_updated_at": finalist_binding.get(
-                "quote_updated_at"
-            ),
-        })
+        quote_constraints.update(
+            {
+                "direct_finalist_check_applied": finalist_binding.get("applied") is True,
+                "direct_finalist_check_schema": finalist_binding.get("schema"),
+                "direct_finalist_check_generated_at": finalist_binding.get("generated_at"),
+                "direct_finalist_check_digest_sha256": finalist_binding.get(
+                    "artifact_digest_sha256"
+                ),
+                "direct_finalist_check_option_id": finalist_binding.get("option_id"),
+                "direct_finalist_check_quote_updated_at": finalist_binding.get("quote_updated_at"),
+            }
+        )
         eligible_rows = [
-            row for row in account_rows
+            row
+            for row in account_rows
             if isinstance(row, dict)
             and row.get("active") is True
             and row.get("agentic_allowed") is True
@@ -14552,30 +16252,48 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         ]
     else:
         eligible_rows = [
-            row for row in account_rows
+            row
+            for row in account_rows
             if isinstance(row, dict)
             and row.get("active") is True
             and row.get("agentic_allowed") is True
             and row.get("funded") is True
         ]
         if not eligible_rows:
-            blockers.append("No active, funded, agentic-accessible equity account appears in the fresh broker snapshot.")
+            blockers.append(
+                "No active, funded, agentic-accessible equity account appears in the fresh broker snapshot."
+            )
 
     if not (
-        math.isfinite(assumed_equity) and assumed_equity > 0
-        and math.isfinite(risk_fraction) and 0 < risk_fraction <= 1
-        and math.isfinite(allocation_fraction) and 0 < allocation_fraction <= 1
+        math.isfinite(assumed_equity)
+        and assumed_equity > 0
+        and math.isfinite(risk_fraction)
+        and 0 < risk_fraction <= 1
+        and math.isfinite(allocation_fraction)
+        and 0 < allocation_fraction <= 1
     ):
-        blockers.append("Valid account-equity, risk-fraction, and allocation-fraction assumptions are required.")
+        blockers.append(
+            "Valid account-equity, risk-fraction, and allocation-fraction assumptions are required."
+        )
 
     terminal_order_states = {
-        "filled", "cancelled", "canceled", "rejected", "failed", "voided",
-        "expired", "partially_filled_rest_cancelled",
+        "filled",
+        "cancelled",
+        "canceled",
+        "rejected",
+        "failed",
+        "voided",
+        "expired",
+        "partially_filled_rest_cancelled",
     }
     # Positions can legitimately carry an order-like state such as ``filled``.
     # Only unambiguous closed-position states suppress non-zero exposure.
     terminal_position_states = {
-        "closed", "exited", "sold", "inactive", "voided",
+        "closed",
+        "exited",
+        "sold",
+        "inactive",
+        "voided",
     }
 
     def active_position(
@@ -14592,28 +16310,31 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
         )
         if not has_quantity and not has_notional:
             return False
-        state = str(
-            row.get("state")
-            or row.get("status")
-            or row.get("trade_status")
-            or row.get("position_status")
-            or ""
-        ).strip().lower()
+        state = (
+            str(
+                row.get("state")
+                or row.get("status")
+                or row.get("trade_status")
+                or row.get("position_status")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
         if state in terminal_position_states:
             return False
         if local_option:
-            expiry_text = str(
-                row.get("expiry") or row.get("expiration_date") or ""
-            ).strip()
+            expiry_text = str(row.get("expiry") or row.get("expiration_date") or "").strip()
             if expiry_text:
                 try:
-                    if datetime.fromisoformat(expiry_text[:10]).date() < datetime.now(timezone.utc).date():
+                    if datetime.fromisoformat(expiry_text[:10]).date() < datetime.now(UTC).date():
                         return False
                 except ValueError:
                     # An invalid expiry cannot prove that broker-linked local
                     # exposure ended, so it remains active for fail-closed review.
                     pass
         return True
+
     matching_account_rows: list[dict[str, Any]] = []
     overlap_account_keys: set[str] = set()
     portfolio_attestations: list[dict[str, Any]] = []
@@ -14658,10 +16379,14 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 drawdown_result["review_ready"] = False
                 drawdown_result["allowed"] = False
                 drawdown_result["risk_multiplier"] = 0.0
-                drawdown_result["blockers"] = list(dict.fromkeys([
-                    f"Durable equity ledger is unsafe: {ledger_error}",
-                    *(drawdown_result.get("blockers") or []),
-                ]))
+                drawdown_result["blockers"] = list(
+                    dict.fromkeys(
+                        [
+                            f"Durable equity ledger is unsafe: {ledger_error}",
+                            *(drawdown_result.get("blockers") or []),
+                        ]
+                    )
+                )
             risk_multiplier = _float_value(
                 drawdown_result.get("risk_multiplier"),
                 default=0.0,
@@ -14691,9 +16416,13 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             equity_tolerance = max(1.0, live_equity * ACCOUNT_EQUITY_OVERSTATEMENT_TOLERANCE_PCT)
             if assumed_equity > live_equity + equity_tolerance:
                 failures.add("equity_overstated")
-            live_risk_cap = live_equity * risk_fraction if math.isfinite(risk_fraction) else math.nan
+            live_risk_cap = (
+                live_equity * risk_fraction if math.isfinite(risk_fraction) else math.nan
+            )
             live_allocation_cap = (
-                live_equity * allocation_fraction if math.isfinite(allocation_fraction) else math.nan
+                live_equity * allocation_fraction
+                if math.isfinite(allocation_fraction)
+                else math.nan
             )
             if asset == "option":
                 if not math.isfinite(option_debit) or option_debit > live_risk_cap + 0.01:
@@ -14736,9 +16465,10 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 )
                 if asset == "option" and any(
                     str(broker_order.get("account_key") or "").strip() == account_key
-                    and str(
-                        broker_order.get("state") or broker_order.get("status") or ""
-                    ).strip().lower() not in terminal_order_states
+                    and str(broker_order.get("state") or broker_order.get("status") or "")
+                    .strip()
+                    .lower()
+                    not in terminal_order_states
                     and str(broker_order.get("contract_identity_status") or "").strip()
                     == "unresolved_multi_leg"
                     for broker_order in (snapshot.get("option_orders") or [])
@@ -14758,9 +16488,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                     for value in (portfolio_attestation.get("blockers") or [])
                     if str(value).strip()
                 )
-        if account_key and not (
-            failures - {"portfolio_exposure", "portfolio_allocation_cap"}
-        ):
+        if account_key and not (failures - {"portfolio_exposure", "portfolio_allocation_cap"}):
             # Preserve an account for duplicate/concentration diagnostics when
             # its existing exposure is itself the only portfolio failure.
             overlap_account_keys.add(account_key)
@@ -14770,10 +16498,12 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             matching_account_rows.append(row)
             assert portfolio_attestation is not None
             assert drawdown_attestation is not None
-            portfolio_attestations.append({
-                **portfolio_attestation,
-                "account_mask": _clean_value(row.get("account_mask")),
-            })
+            portfolio_attestations.append(
+                {
+                    **portfolio_attestation,
+                    "account_mask": _clean_value(row.get("account_mask")),
+                }
+            )
             drawdown_attestations.append(drawdown_attestation)
 
     if eligible_rows and not matching_account_rows:
@@ -14781,15 +16511,28 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             "No single eligible Robinhood account simultaneously satisfies live equity, risk, allocation, and buying-power checks."
         )
         if "missing_equity" in account_failure_codes:
-            blockers.append("Eligible-account portfolio total value is missing from the broker snapshot.")
+            blockers.append(
+                "Eligible-account portfolio total value is missing from the broker snapshot."
+            )
         if "equity_overstated" in account_failure_codes:
-            blockers.append("Planner account equity is materially above the live eligible-account portfolio value.")
+            blockers.append(
+                "Planner account equity is materially above the live eligible-account portfolio value."
+            )
         if "risk_cap" in account_failure_codes:
-            blockers.append("The planned loss exceeds the live account-equity risk fraction on every eligible account.")
+            blockers.append(
+                "The planned loss exceeds the live account-equity risk fraction on every eligible account."
+            )
         if "allocation_cap" in account_failure_codes:
-            blockers.append("The proposed debit/notional exceeds the live total-open allocation fraction.")
-        if "buying_power" in account_failure_codes or "missing_buying_power" in account_failure_codes:
-            blockers.append("The planned cost does not fit verified buying power on the same eligible account.")
+            blockers.append(
+                "The proposed debit/notional exceeds the live total-open allocation fraction."
+            )
+        if (
+            "buying_power" in account_failure_codes
+            or "missing_buying_power" in account_failure_codes
+        ):
+            blockers.append(
+                "The planned cost does not fit verified buying power on the same eligible account."
+            )
         if "missing_account_key" in account_failure_codes:
             blockers.append("An eligible account is missing its pseudonymous broker account key.")
         if "portfolio_exposure" in account_failure_codes:
@@ -14841,17 +16584,23 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 else edge.get("headline_horizon_sessions")
             ),
             "require_current_method_executable": True,
-            **({
-                "execution_profile": LEAPS_SWING_PROFILE.name,
-                "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
-                "required_horizons_sessions": list(
-                    LEAPS_SWING_PROFILE.evidence_horizons_sessions
-                ),
-                "require_broker_market_observed": True,
-            } if is_leaps_swing else {}),
+            **(
+                {
+                    "execution_profile": LEAPS_SWING_PROFILE.name,
+                    "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+                    "required_horizons_sessions": list(
+                        LEAPS_SWING_PROFILE.evidence_horizons_sessions
+                    ),
+                    "require_broker_market_observed": True,
+                }
+                if is_leaps_swing
+                else {}
+            ),
         },
         "account": {
-            "assumed_equity_dollars": _clean_value(assumed_equity if math.isfinite(assumed_equity) else None),
+            "assumed_equity_dollars": _clean_value(
+                assumed_equity if math.isfinite(assumed_equity) else None
+            ),
             "risk_fraction": _clean_value(risk_fraction if math.isfinite(risk_fraction) else None),
             "allocation_fraction": _clean_value(
                 allocation_fraction if math.isfinite(allocation_fraction) else None
@@ -14916,12 +16665,14 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
     # failed identity, permission, equity, drawdown, or buying-power gates.
     symbol = str(order.get("symbol") or "").strip().upper()
     if asset == "option":
-        plan_key = _agentic_contract_key({
-            "symbol": symbol,
-            "option_side": order.get("option_type"),
-            "strike": order.get("strike"),
-            "expiry": order.get("expiry"),
-        })
+        plan_key = _agentic_contract_key(
+            {
+                "symbol": symbol,
+                "option_side": order.get("option_type"),
+                "strike": order.get("strike"),
+                "expiry": order.get("expiry"),
+            }
+        )
         active_broker_option_positions = [
             row
             for row in (snapshot.get("option_positions") or [])
@@ -14980,11 +16731,13 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             for row in [*broker_share_rows, *broker_linked_local_share_rows]
             if str(row.get("symbol") or row.get("ticker") or "").strip()
         }
-        plan_direction = _agentic_direction_key({
-            "symbol": symbol,
-            "option_side": order.get("option_type"),
-            "direction": plan.get("direction"),
-        })
+        plan_direction = _agentic_direction_key(
+            {
+                "symbol": symbol,
+                "option_side": order.get("option_type"),
+                "direction": plan.get("direction"),
+            }
+        )
         if plan_key in broker_position_keys:
             blockers.append("Robinhood already holds this exact option contract.")
         elif plan_direction in broker_position_direction_keys:
@@ -14992,13 +16745,16 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 "Robinhood already has same-symbol, same-direction option exposure at another contract."
             )
         if plan_key in local_contract_keys or plan_direction in local_direction_keys:
-            blockers.append("Local lifecycle state already has matching contract or same-direction option exposure.")
+            blockers.append(
+                "Local lifecycle state already has matching contract or same-direction option exposure."
+            )
         if symbol in cross_asset_share_symbols:
             blockers.append(
                 f"Existing {symbol} share exposure blocks a new {symbol} option entry until cross-asset concentration is reviewed."
             )
         nonterminal_option_orders = [
-            row for row in (snapshot.get("option_orders") or [])
+            row
+            for row in (snapshot.get("option_orders") or [])
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
@@ -15018,10 +16774,7 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             for row in nonterminal_option_orders
             if all(_agentic_direction_key(row).split("|"))
         }
-        if any(
-            not all(_agentic_contract_key(row).split("|"))
-            for row in nonterminal_option_orders
-        ):
+        if any(not all(_agentic_contract_key(row).split("|")) for row in nonterminal_option_orders):
             if any(
                 str(row.get("contract_identity_status") or "") == "unresolved_multi_leg"
                 for row in nonterminal_option_orders
@@ -15062,7 +16815,8 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             and active_position(row, allow_notional=True)
         }
         nonterminal_equity_orders = [
-            row for row in (snapshot.get("equity_orders") or [])
+            row
+            for row in (snapshot.get("equity_orders") or [])
             if isinstance(row, dict)
             and (
                 not str(row.get("account_key") or "").strip()
@@ -15108,7 +16862,9 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
             if str(row.get("symbol") or row.get("ticker") or row.get("chain_symbol") or "").strip()
         }
         if any(not str(row.get("symbol") or "").strip() for row in nonterminal_equity_orders):
-            blockers.append("Robinhood has a nonterminal equity order whose symbol cannot be verified.")
+            blockers.append(
+                "Robinhood has a nonterminal equity order whose symbol cannot be verified."
+            )
         if symbol in broker_share_symbols or symbol in local_share_symbols:
             blockers.append(
                 f"Existing long or short {symbol} share exposure must be reviewed before an open-long buy; "
@@ -15167,9 +16923,9 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
 
     asset = str(payload.get("asset") or "share").strip().lower()
     direction = str(payload.get("direction") or "long").strip().lower()
-    execution_profile = str(
-        payload.get("execution_profile") or SWING_EXECUTION_PROFILE.name
-    ).strip().lower()
+    execution_profile = (
+        str(payload.get("execution_profile") or SWING_EXECUTION_PROFILE.name).strip().lower()
+    )
     requested_underlying_type = str(payload.get("underlying_type") or "").strip().lower()
     entry = number(payload.get("entry_price"))
     requested_multiplier = number(payload.get("contract_multiplier"))
@@ -15179,9 +16935,7 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
     buying_power = number(payload.get("buying_power"))
     raw_unit_cap = payload.get("max_units")
     unit_cap_supplied = (
-        "max_units" in payload
-        and raw_unit_cap is not None
-        and str(raw_unit_cap).strip() != ""
+        "max_units" in payload and raw_unit_cap is not None and str(raw_unit_cap).strip() != ""
     )
     unit_cap = number(raw_unit_cap)
     unit_cap_invalid = bool(
@@ -15237,44 +16991,54 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             underlying_type=requested_underlying_type or SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
         )
         if direction != "long":
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "unsupported_short_option",
-                "field": "direction",
-                "message": "The manual Robinhood review planner supports long calls and puts only.",
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "unsupported_short_option",
+                    "field": "direction",
+                    "message": "The manual Robinhood review planner supports long calls and puts only.",
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
         if requested_underlying_type != SWING_EXECUTION_OPTION_UNDERLYING_TYPE:
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "unsupported_review_underlying_type",
-                "field": "underlying_type",
-                "message": "Trade Desk manual review requires explicit underlying_type=equity; index options are not supported in this release.",
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "unsupported_review_underlying_type",
+                    "field": "underlying_type",
+                    "message": "Trade Desk manual review requires explicit underlying_type=equity; index options are not supported in this release.",
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
         if is_known_index_option_symbol(payload.get("symbol")):
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "unsupported_index_option_root",
-                "field": "symbol",
-                "message": "Known index option roots and ^ symbols are not supported by Trade Desk.",
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "unsupported_index_option_root",
+                    "field": "symbol",
+                    "message": "Known index option roots and ^ symbols are not supported by Trade Desk.",
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
         if requested_multiplier is not None and requested_multiplier != 100:
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "unsupported_contract_multiplier",
-                "field": "contract_multiplier",
-                "message": "Manual review is limited to standard 100x option contracts.",
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "unsupported_contract_multiplier",
+                    "field": "contract_multiplier",
+                    "message": "Manual review is limited to standard 100x option contracts.",
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
         expiry_value = str(payload.get("expiry") or "").strip()
         try:
-            option_dte = (datetime.fromisoformat(expiry_value).date() - datetime.now(timezone.utc).date()).days
+            option_dte = (
+                datetime.fromisoformat(expiry_value).date() - datetime.now(UTC).date()
+            ).days
         except (TypeError, ValueError):
             option_dte = None
         plan["option_dte"] = option_dte
@@ -15289,19 +17053,20 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             else None
         )
         if option_dte is not None and (
-            option_dte < dte_floor
-            or (dte_ceiling is not None and option_dte > dte_ceiling)
+            option_dte < dte_floor or (dte_ceiling is not None and option_dte > dte_ceiling)
         ):
             dte_message = (
                 f"between {dte_floor} and {dte_ceiling} DTE"
                 if dte_ceiling is not None
                 else f"at least {dte_floor} DTE"
             )
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "below_swing_dte_floor",
-                "field": "expiry",
-                "message": f"The {execution_profile} review requires {dte_message}; this contract has {option_dte}.",
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "below_swing_dte_floor",
+                    "field": "expiry",
+                    "message": f"The {execution_profile} review requires {dte_message}; this contract has {option_dte}.",
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
@@ -15327,21 +17092,25 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             "risk": {},
             "validation": {
                 "ok": False,
-                "errors": [{
-                    "code": "unsupported_asset",
-                    "field": "asset",
-                    "message": "Only shares/ETFs and long options are supported.",
-                }],
+                "errors": [
+                    {
+                        "code": "unsupported_asset",
+                        "field": "asset",
+                        "message": "Only shares/ETFs and long options are supported.",
+                    }
+                ],
                 "warnings": [],
             },
         }
 
     if unit_cap_invalid:
-        plan.setdefault("validation", {}).setdefault("errors", []).append({
-            "code": "invalid_max_units",
-            "field": "max_units",
-            "message": "When supplied, max_units must be a positive whole number.",
-        })
+        plan.setdefault("validation", {}).setdefault("errors", []).append(
+            {
+                "code": "invalid_max_units",
+                "field": "max_units",
+                "message": "When supplied, max_units must be a positive whole number.",
+            }
+        )
         plan["status"] = "invalid"
         plan["is_actionable"] = False
         plan["validation"]["ok"] = False
@@ -15350,20 +17119,24 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         SWING_EXECUTION_PROFILE.name,
         LEAPS_SWING_PROFILE.name,
     }:
-        plan.setdefault("validation", {}).setdefault("errors", []).append({
-            "code": "unsupported_execution_profile",
-            "field": "execution_profile",
-            "message": "Choose the ordinary swing or the explicit LEAPS swing profile.",
-        })
+        plan.setdefault("validation", {}).setdefault("errors", []).append(
+            {
+                "code": "unsupported_execution_profile",
+                "field": "execution_profile",
+                "message": "Choose the ordinary swing or the explicit LEAPS swing profile.",
+            }
+        )
         plan["status"] = "invalid"
         plan["is_actionable"] = False
         plan["validation"]["ok"] = False
     if asset != "option" and execution_profile != SWING_EXECUTION_PROFILE.name:
-        plan.setdefault("validation", {}).setdefault("errors", []).append({
-            "code": "execution_profile_asset_mismatch",
-            "field": "execution_profile",
-            "message": "The LEAPS swing profile applies only to long equity options.",
-        })
+        plan.setdefault("validation", {}).setdefault("errors", []).append(
+            {
+                "code": "execution_profile_asset_mismatch",
+                "field": "execution_profile",
+                "message": "The LEAPS swing profile applies only to long equity options.",
+            }
+        )
         plan["status"] = "invalid"
         plan["is_actionable"] = False
         plan["validation"]["ok"] = False
@@ -15373,8 +17146,7 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
         planned_hold_value = number(payload.get("planned_hold_sessions"))
         planned_hold = (
             int(planned_hold_value)
-            if planned_hold_value is not None
-            and planned_hold_value.is_integer()
+            if planned_hold_value is not None and planned_hold_value.is_integer()
             else LEAPS_SWING_PROFILE.default_hold_sessions
         )
         plan["profile_policy_version"] = LEAPS_SWING_PROFILE.policy_version
@@ -15394,19 +17166,23 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             "manual_management_only": True,
         }
         if planned_hold <= 0 or planned_hold > LEAPS_SWING_PROFILE.max_hold_sessions:
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "invalid_leaps_hold_sessions",
-                "field": "planned_hold_sessions",
-                "message": (
-                    "LEAPS swing plans must use a whole planned hold from 1 to "
-                    f"{LEAPS_SWING_PROFILE.max_hold_sessions} sessions."
-                ),
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "invalid_leaps_hold_sessions",
+                    "field": "planned_hold_sessions",
+                    "message": (
+                        "LEAPS swing plans must use a whole planned hold from 1 to "
+                        f"{LEAPS_SWING_PROFILE.max_hold_sessions} sessions."
+                    ),
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
         expected_stop = round((entry or 0.0) * (1.0 - LEAPS_SWING_PROFILE.stop_loss_fraction), 2)
-        expected_target = round((entry or 0.0) * (1.0 + LEAPS_SWING_PROFILE.target_gain_fraction), 2)
+        expected_target = round(
+            (entry or 0.0) * (1.0 + LEAPS_SWING_PROFILE.target_gain_fraction), 2
+        )
         supplied_stop = number(payload.get("stop_price"))
         supplied_target = number(payload.get("target_price"))
         if (
@@ -15417,14 +17193,16 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
             or abs(supplied_stop - expected_stop) > 0.011
             or abs(supplied_target - expected_target) > 0.011
         ):
-            plan.setdefault("validation", {}).setdefault("errors", []).append({
-                "code": "leaps_management_geometry_mismatch",
-                "field": "stop_price",
-                "message": (
-                    "LEAPS entry planning must retain the canonical -25% loss and "
-                    "+35% target references from the selected candidate."
-                ),
-            })
+            plan.setdefault("validation", {}).setdefault("errors", []).append(
+                {
+                    "code": "leaps_management_geometry_mismatch",
+                    "field": "stop_price",
+                    "message": (
+                        "LEAPS entry planning must retain the canonical -25% loss and "
+                        "+35% target references from the selected candidate."
+                    ),
+                }
+            )
             plan["status"] = "invalid"
             plan["is_actionable"] = False
             plan["validation"]["ok"] = False
@@ -15444,7 +17222,7 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
     }
     review_gate = _manual_review_gate(asset, Path(data_dir), plan)
     plan["review_constraints"] = review_gate.get("review_constraints") or {}
-    issued_at = datetime.now(timezone.utc)
+    issued_at = datetime.now(UTC)
     expires_at = issued_at + timedelta(minutes=MANUAL_REVIEW_PACKET_TTL_MINUTES)
     packet = build_manual_robinhood_review_packet(
         plan,
@@ -15456,7 +17234,7 @@ def build_trade_plan_report(payload: dict[str, Any], data_dir: Path = DATA_DIR) 
     calculation_ok = plan.get("is_actionable") is True
     return {
         "schema": "optedge_trade_plan_report_v1",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "snapshot_id": packet.get("snapshot_id"),
         "strategy_version": SWING_EXECUTION_PROFILE.strategy_version,
         "execution_profile": execution_profile,
@@ -15555,7 +17333,7 @@ def _lookup_followup(row: dict[str, Any]) -> dict[str, Any]:
     generated_at = _parse_iso_utc(row.get("generated_at") or row.get("lookup_price_date"))
     age_days = None
     if generated_at is not None:
-        age_days = max(0, (datetime.now(timezone.utc) - generated_at).days)
+        age_days = max(0, (datetime.now(UTC) - generated_at).days)
     try:
         hist = data_provider.get_history(symbol, period="6mo", interval="1d", cache_age=1800)
     except Exception as exc:
@@ -15618,7 +17396,7 @@ def _lookup_review_age(row: dict[str, Any]) -> dict[str, Any]:
     if not math.isfinite(age):
         generated_at = _parse_iso_utc(row.get("generated_at"))
         if generated_at is not None:
-            age = max(0.0, float((datetime.now(timezone.utc) - generated_at).days))
+            age = max(0.0, float((datetime.now(UTC) - generated_at).days))
     if not math.isfinite(age):
         return {"review_age_days": None, "review_age_label": "unknown", "review_stale": False}
     if age >= 14:
@@ -15635,7 +17413,9 @@ def _lookup_review_age(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
-    archive_html = str(raw.get("archive_html_path") or raw.get("html_path") or raw.get("latest_html_path") or "")
+    archive_html = str(
+        raw.get("archive_html_path") or raw.get("html_path") or raw.get("latest_html_path") or ""
+    )
     latest_html = str(raw.get("latest_html_path") or "")
     html_rel = archive_html or latest_html
     row = {
@@ -15675,18 +17455,29 @@ def _lookup_history_row(raw: dict[str, Any], data_dir: Path) -> dict[str, Any]:
 def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(rows)
     priced_rows = [
-        row for row in rows
+        row
+        for row in rows
         if math.isfinite(_float_value(row.get("follow_return_pct"), default=math.nan))
     ]
     returns = [_float_value(row.get("follow_return_pct"), default=math.nan) for row in priced_rows]
     returns = [ret for ret in returns if math.isfinite(ret)]
     green_statuses = {"green", "strong_green"}
     red_statuses = {"red", "strong_red"}
-    green_rows = [row for row in priced_rows if str(row.get("follow_status") or "") in green_statuses]
+    green_rows = [
+        row for row in priced_rows if str(row.get("follow_status") or "") in green_statuses
+    ]
     red_rows = [row for row in priced_rows if str(row.get("follow_status") or "") in red_statuses]
     flat_rows = [row for row in priced_rows if str(row.get("follow_status") or "") == "flat"]
-    best = max(priced_rows, key=lambda row: _float_value(row.get("follow_return_pct"), default=-math.inf), default={})
-    worst = min(priced_rows, key=lambda row: _float_value(row.get("follow_return_pct"), default=math.inf), default={})
+    best = max(
+        priced_rows,
+        key=lambda row: _float_value(row.get("follow_return_pct"), default=-math.inf),
+        default={},
+    )
+    worst = min(
+        priced_rows,
+        key=lambda row: _float_value(row.get("follow_return_pct"), default=math.inf),
+        default={},
+    )
 
     def pick(row: dict[str, Any]) -> dict[str, Any] | None:
         if not row:
@@ -15728,13 +17519,16 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def group_stats(key: str, fallback_key: str | None = None) -> list[dict[str, Any]]:
         buckets: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            label = str(row.get(key) or (row.get(fallback_key) if fallback_key else "") or "unknown").strip()
+            label = str(
+                row.get(key) or (row.get(fallback_key) if fallback_key else "") or "unknown"
+            ).strip()
             label = label or "unknown"
             buckets.setdefault(label, []).append(row)
         out: list[dict[str, Any]] = []
         for label, bucket_rows in buckets.items():
             bucket_priced = [
-                row for row in bucket_rows
+                row
+                for row in bucket_rows
                 if math.isfinite(_float_value(row.get("follow_return_pct"), default=math.nan))
             ]
             bucket_returns = [
@@ -15743,12 +17537,12 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ]
             bucket_returns = [ret for ret in bucket_returns if math.isfinite(ret)]
             bucket_green = [
-                row for row in bucket_priced
+                row
+                for row in bucket_priced
                 if str(row.get("follow_status") or "") in green_statuses
             ]
             bucket_red = [
-                row for row in bucket_priced
-                if str(row.get("follow_status") or "") in red_statuses
+                row for row in bucket_priced if str(row.get("follow_status") or "") in red_statuses
             ]
             bucket_best = max(
                 bucket_priced,
@@ -15757,20 +17551,29 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             )
             bucket_priced_count = len(bucket_priced)
             bucket_avg = sum(bucket_returns) / len(bucket_returns) if bucket_returns else None
-            out.append({
-                "group": _clean_value(label),
-                "total": len(bucket_rows),
-                "priced": bucket_priced_count,
-                "avg_thesis_return": _clean_value(round(bucket_avg, 4)) if bucket_avg is not None else None,
-                "green_rate": (
-                    _clean_value(round(len(bucket_green) / bucket_priced_count, 4))
-                    if bucket_priced_count else None
-                ),
-                "green": len(bucket_green),
-                "red": len(bucket_red),
-                "best_symbol": _clean_value(bucket_best.get("lookup_symbol") or bucket_best.get("query")),
-                "best_return": _clean_value(bucket_best.get("follow_return_pct")) if bucket_best else None,
-            })
+            out.append(
+                {
+                    "group": _clean_value(label),
+                    "total": len(bucket_rows),
+                    "priced": bucket_priced_count,
+                    "avg_thesis_return": _clean_value(round(bucket_avg, 4))
+                    if bucket_avg is not None
+                    else None,
+                    "green_rate": (
+                        _clean_value(round(len(bucket_green) / bucket_priced_count, 4))
+                        if bucket_priced_count
+                        else None
+                    ),
+                    "green": len(bucket_green),
+                    "red": len(bucket_red),
+                    "best_symbol": _clean_value(
+                        bucket_best.get("lookup_symbol") or bucket_best.get("query")
+                    ),
+                    "best_return": _clean_value(bucket_best.get("follow_return_pct"))
+                    if bucket_best
+                    else None,
+                }
+            )
         return sorted(
             out,
             key=lambda row: (
@@ -15829,15 +17632,27 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "green_count": len(green_rows),
         "red_count": len(red_rows),
         "flat_count": len(flat_rows),
-        "strong_green_count": sum(1 for row in priced_rows if row.get("follow_status") == "strong_green"),
-        "strong_red_count": sum(1 for row in priced_rows if row.get("follow_status") == "strong_red"),
-        "green_rate": _clean_value(round(len(green_rows) / priced_count, 4)) if priced_count else None,
-        "avg_follow_return_pct": _clean_value(round(avg_return, 4)) if avg_return is not None else None,
-        "paper_eligible_count": sum(1 for row in rows if bool(row.get("can_export_paper_candidate"))),
+        "strong_green_count": sum(
+            1 for row in priced_rows if row.get("follow_status") == "strong_green"
+        ),
+        "strong_red_count": sum(
+            1 for row in priced_rows if row.get("follow_status") == "strong_red"
+        ),
+        "green_rate": _clean_value(round(len(green_rows) / priced_count, 4))
+        if priced_count
+        else None,
+        "avg_follow_return_pct": _clean_value(round(avg_return, 4))
+        if avg_return is not None
+        else None,
+        "paper_eligible_count": sum(
+            1 for row in rows if bool(row.get("can_export_paper_candidate"))
+        ),
         "chain_ready_count": sum(1 for row in rows if str(row.get("chain_symbol") or "").strip()),
         "stale_review_count": sum(1 for row in rows if bool(row.get("review_stale"))),
         "no_baseline_count": sum(1 for row in rows if row.get("follow_status") == "no_baseline"),
-        "price_unavailable_count": sum(1 for row in rows if row.get("follow_status") == "price_unavailable"),
+        "price_unavailable_count": sum(
+            1 for row in rows if row.get("follow_status") == "price_unavailable"
+        ),
         "by_direction": group_stats("follow_direction"),
         "by_action": group_stats("research_action", "action"),
         "by_route": group_stats("research_route"),
@@ -15850,7 +17665,8 @@ def _lookup_history_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "worst": pick(worst),
         "sample_warning": (
             "Need more priced lookups before trusting this search feedback loop."
-            if priced_count < 10 else ""
+            if priced_count < 10
+            else ""
         ),
     }
 
@@ -15872,7 +17688,8 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
 
     if not rows:
         candidates = sorted(
-            list((data_dir / "lookup_reports").glob("lookup_*.json")) + list(data_dir.glob("lookup_*.json")),
+            list((data_dir / "lookup_reports").glob("lookup_*.json"))
+            + list(data_dir.glob("lookup_*.json")),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -15881,47 +17698,64 @@ def build_lookup_history(data_dir: Path = DATA_DIR, limit: int = 25) -> dict[str
             if not isinstance(report, dict):
                 continue
             brief = report.get("brief") if isinstance(report.get("brief"), dict) else {}
-            action = brief.get("research_action") if isinstance(brief.get("research_action"), dict) else {}
-            swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
-            comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
-            price = brief.get("price_snapshot") if isinstance(brief.get("price_snapshot"), dict) else {}
+            action = (
+                brief.get("research_action")
+                if isinstance(brief.get("research_action"), dict)
+                else {}
+            )
+            swing = (
+                brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
+            )
+            comparison = (
+                brief.get("contract_comparison")
+                if isinstance(brief.get("contract_comparison"), dict)
+                else {}
+            )
+            price = (
+                brief.get("price_snapshot") if isinstance(brief.get("price_snapshot"), dict) else {}
+            )
             html_path = path.with_suffix(".html")
             try:
                 html_rel = str(html_path.relative_to(data_dir))
             except Exception:
                 html_rel = ""
-            rows.append(_lookup_history_row({
-                "generated_at": report.get("generated_at"),
-                "query": report.get("query"),
-                "lookup_symbol": report.get("lookup_symbol"),
-                "total_hits": report.get("total_hits"),
-                "lookup_price": price.get("last_price"),
-                "lookup_price_date": price.get("last_date"),
-                "lookup_price_source": price.get("history_source"),
-                "lookup_price_trend": price.get("trend_label"),
-                "swing_bias": swing.get("bias"),
-                "research_action": action.get("action"),
-                "research_label": action.get("label"),
-                "research_route": action.get("route"),
-                "risk_level": action.get("risk_level"),
-                "can_export_paper_candidate": action.get("can_export_paper_candidate"),
-                "chain_symbol": action.get("chain_symbol"),
-                "chain_side": action.get("chain_side"),
-                "chain_target_expiry": action.get("chain_target_expiry"),
-                "chain_min_dte": action.get("chain_min_dte"),
-                "chain_max_dte": action.get("chain_max_dte"),
-                "swing_decision": swing.get("decision"),
-                "swing_label": swing.get("label"),
-                "swing_score": swing.get("score"),
-                "contract_pick": comparison.get("label"),
-                "contract_winner": comparison.get("winner"),
-                "archive_html_path": html_rel,
-            }, data_dir))
+            rows.append(
+                _lookup_history_row(
+                    {
+                        "generated_at": report.get("generated_at"),
+                        "query": report.get("query"),
+                        "lookup_symbol": report.get("lookup_symbol"),
+                        "total_hits": report.get("total_hits"),
+                        "lookup_price": price.get("last_price"),
+                        "lookup_price_date": price.get("last_date"),
+                        "lookup_price_source": price.get("history_source"),
+                        "lookup_price_trend": price.get("trend_label"),
+                        "swing_bias": swing.get("bias"),
+                        "research_action": action.get("action"),
+                        "research_label": action.get("label"),
+                        "research_route": action.get("route"),
+                        "risk_level": action.get("risk_level"),
+                        "can_export_paper_candidate": action.get("can_export_paper_candidate"),
+                        "chain_symbol": action.get("chain_symbol"),
+                        "chain_side": action.get("chain_side"),
+                        "chain_target_expiry": action.get("chain_target_expiry"),
+                        "chain_min_dte": action.get("chain_min_dte"),
+                        "chain_max_dte": action.get("chain_max_dte"),
+                        "swing_decision": swing.get("decision"),
+                        "swing_label": swing.get("label"),
+                        "swing_score": swing.get("score"),
+                        "contract_pick": comparison.get("label"),
+                        "contract_winner": comparison.get("winner"),
+                        "archive_html_path": html_rel,
+                    },
+                    data_dir,
+                )
+            )
 
     rows = list(reversed(rows)) if history_path.exists() else rows
     trimmed = rows[: max(1, min(int(limit or 25), 100))]
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "history_path": str(history_path),
         "count": len(rows),
         "returned": len(trimmed),
@@ -15978,7 +17812,9 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
             "csv_path": str(csv_path) if csv_path else None,
             "json_path": str(json_path) if json_path else None,
             "rows": [],
-            "notes": ["Run the shortlist chain sweep, then write shortlist files to feed this packet."],
+            "notes": [
+                "Run the shortlist chain sweep, then write shortlist files to feed this packet."
+            ],
         }
     top = df.copy()
     sort_cols = [col for col in ("rank_score", "confidence", "dte") if col in top.columns]
@@ -15990,38 +17826,90 @@ def _build_chain_shortlist_summary(data_dir: Path) -> dict[str, Any]:
             continue
         counts = df[col].fillna("").astype(str).str.strip()
         quality_counts[col] = int((counts != "").sum())
-    quality_summary = payload.get("quality_summary") if isinstance(payload.get("quality_summary"), dict) else None
+    quality_summary = (
+        payload.get("quality_summary") if isinstance(payload.get("quality_summary"), dict) else None
+    )
     if not quality_summary:
         quality_summary = _chain_shortlist_quality_summary(top)
-    provider_summary = payload.get("provider_summary") if isinstance(payload.get("provider_summary"), dict) else {}
+    provider_summary = (
+        payload.get("provider_summary") if isinstance(payload.get("provider_summary"), dict) else {}
+    )
     return {
         "status": "ready",
         "count": int(len(df)),
         "csv_path": str(csv_path) if csv_path else None,
         "json_path": str(json_path) if json_path else None,
-        "source_file": _clean_value(df["_source_file"].iloc[0]) if "_source_file" in df.columns else None,
-        "source_mtime": _clean_value(df["_source_mtime"].iloc[0]) if "_source_mtime" in df.columns else None,
+        "source_file": _clean_value(df["_source_file"].iloc[0])
+        if "_source_file" in df.columns
+        else None,
+        "source_mtime": _clean_value(df["_source_mtime"].iloc[0])
+        if "_source_mtime" in df.columns
+        else None,
         "field_coverage": quality_counts,
         "quality_summary": quality_summary,
         "provider_summary": provider_summary,
-        "source_counts": payload.get("source_counts") or provider_summary.get("source_counts") or {},
-        "symbols_scanned": payload.get("symbols_scanned") or provider_summary.get("symbols_scanned"),
-        "successful_scans": payload.get("successful_scans") or provider_summary.get("successful_scans"),
-        "rows": _records_from_frame(top[[
-            col for col in [
-                "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "actual_dollars",
-                "bid", "ask", "confidence", "rank_score", "spread_pct", "openInterest", "volume",
-                "impliedVolatility", "delta", "breakeven_price", "breakeven_move_pct",
-                "breakeven_direction", "budget_usage_pct", "contracts_for_budget",
-                "stop_price", "target_price", "risk_dollars_reference", "reward_dollars_reference",
-                "reward_risk_reference", "budget_fit", "contract_grade", "review_lane",
-                "readiness_label", "readiness_score", "swing_fit_label", "swing_fit_score",
-                "swing_fit_reasons", "swing_fit_warnings", "breakeven_move_label",
-                "liquidity_label", "review_thesis", "grade_reasons", "risk_flags", "chain_source",
-                "quote_quality", "data_delay",
-            ]
-            if col in top.columns
-        ]], limit=8),
+        "source_counts": payload.get("source_counts")
+        or provider_summary.get("source_counts")
+        or {},
+        "symbols_scanned": payload.get("symbols_scanned")
+        or provider_summary.get("symbols_scanned"),
+        "successful_scans": payload.get("successful_scans")
+        or provider_summary.get("successful_scans"),
+        "rows": _records_from_frame(
+            top[
+                [
+                    col
+                    for col in [
+                        "ticker",
+                        "contract",
+                        "side",
+                        "strike",
+                        "expiry",
+                        "dte",
+                        "mid",
+                        "actual_dollars",
+                        "bid",
+                        "ask",
+                        "confidence",
+                        "rank_score",
+                        "spread_pct",
+                        "openInterest",
+                        "volume",
+                        "impliedVolatility",
+                        "delta",
+                        "breakeven_price",
+                        "breakeven_move_pct",
+                        "breakeven_direction",
+                        "budget_usage_pct",
+                        "contracts_for_budget",
+                        "stop_price",
+                        "target_price",
+                        "risk_dollars_reference",
+                        "reward_dollars_reference",
+                        "reward_risk_reference",
+                        "budget_fit",
+                        "contract_grade",
+                        "review_lane",
+                        "readiness_label",
+                        "readiness_score",
+                        "swing_fit_label",
+                        "swing_fit_score",
+                        "swing_fit_reasons",
+                        "swing_fit_warnings",
+                        "breakeven_move_label",
+                        "liquidity_label",
+                        "review_thesis",
+                        "grade_reasons",
+                        "risk_flags",
+                        "chain_source",
+                        "quote_quality",
+                        "data_delay",
+                    ]
+                    if col in top.columns
+                ]
+            ],
+            limit=8,
+        ),
         "notes": [
             "Shortlist rows come from the saved 3m+ option-chain sweep.",
             "Free chain quotes can be delayed or incomplete; refresh before manual paper entry.",
@@ -16039,16 +17927,37 @@ def _chain_shortlist_quality_summary(df: pd.DataFrame) -> dict[str, Any]:
             "confirmations": [],
         }
     out = df.copy()
-    grade = out.get("contract_grade", pd.Series("", index=out.index)).fillna("").astype(str).str.upper()
+    grade = (
+        out.get("contract_grade", pd.Series("", index=out.index)).fillna("").astype(str).str.upper()
+    )
     lane = out.get("review_lane", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
-    swing = out.get("swing_fit_label", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
-    budget = out.get("budget_fit", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
-    readiness = pd.to_numeric(out.get("readiness_score", pd.Series(float("nan"), index=out.index)), errors="coerce")
-    spread = pd.to_numeric(out.get("spread_pct", pd.Series(float("nan"), index=out.index)), errors="coerce")
-    oi = pd.to_numeric(out.get("openInterest", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
-    volume = pd.to_numeric(out.get("volume", pd.Series(0, index=out.index)), errors="coerce").fillna(0)
+    swing = (
+        out.get("swing_fit_label", pd.Series("", index=out.index))
+        .fillna("")
+        .astype(str)
+        .str.lower()
+    )
+    budget = (
+        out.get("budget_fit", pd.Series("", index=out.index)).fillna("").astype(str).str.lower()
+    )
+    readiness = pd.to_numeric(
+        out.get("readiness_score", pd.Series(float("nan"), index=out.index)), errors="coerce"
+    )
+    spread = pd.to_numeric(
+        out.get("spread_pct", pd.Series(float("nan"), index=out.index)), errors="coerce"
+    )
+    oi = pd.to_numeric(
+        out.get("openInterest", pd.Series(0, index=out.index)), errors="coerce"
+    ).fillna(0)
+    volume = pd.to_numeric(
+        out.get("volume", pd.Series(0, index=out.index)), errors="coerce"
+    ).fillna(0)
 
-    grade_counts = {label: int((grade == label).sum()) for label in ("A", "B", "C", "D") if int((grade == label).sum())}
+    grade_counts = {
+        label: int((grade == label).sum())
+        for label in ("A", "B", "C", "D")
+        if int((grade == label).sum())
+    }
     primary_count = int((lane == "primary_review").sum())
     clean_swing_count = int((swing == "clean_swing").sum())
     reviewable_swing_count = int(swing.isin({"clean_swing", "reviewable_swing"}).sum())
@@ -16058,7 +17967,9 @@ def _chain_shortlist_quality_summary(df: pd.DataFrame) -> dict[str, Any]:
     tight_spread_count = int((spread <= 0.12).fillna(False).sum())
     liquid_count = int(((oi >= 100) & (spread <= 0.15)).fillna(False).sum())
     active_volume_count = int((volume > 0).sum())
-    avg_readiness = _clean_value(readiness.dropna().mean() if not readiness.dropna().empty else None)
+    avg_readiness = _clean_value(
+        readiness.dropna().mean() if not readiness.dropna().empty else None
+    )
     median_spread = _clean_value(spread.dropna().median() if not spread.dropna().empty else None)
 
     score = 35
@@ -16166,18 +18077,20 @@ def _build_sec_dilution_risk_summary(data_dir: Path, limit: int = 12) -> dict[st
             risk_action = "review_before_new_bullish_options"
         else:
             risk_action = "monitor_only"
-        risk_rows.append({
-            "priority": raw.get("priority"),
-            "ticker": raw.get("ticker"),
-            "company_name": raw.get("company_name"),
-            "form": raw.get("form"),
-            "filing_date": raw.get("filing_date"),
-            "days_old": raw.get("days_old"),
-            "signal": raw.get("signal"),
-            "risk_action": risk_action,
-            "description": raw.get("description"),
-            "url": raw.get("url"),
-        })
+        risk_rows.append(
+            {
+                "priority": raw.get("priority"),
+                "ticker": raw.get("ticker"),
+                "company_name": raw.get("company_name"),
+                "form": raw.get("form"),
+                "filing_date": raw.get("filing_date"),
+                "days_old": raw.get("days_old"),
+                "signal": raw.get("signal"),
+                "risk_action": risk_action,
+                "description": raw.get("description"),
+                "url": raw.get("url"),
+            }
+        )
     risk_rows = sorted(
         risk_rows,
         key=lambda row: (
@@ -16186,16 +18099,20 @@ def _build_sec_dilution_risk_summary(data_dir: Path, limit: int = 12) -> dict[st
         ),
         reverse=True,
     )[:limit]
-    fresh_symbols = sorted({
-        str(row.get("ticker") or "").upper()
-        for row in risk_rows
-        if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 14
-    })
-    watch_symbols = sorted({
-        str(row.get("ticker") or "").upper()
-        for row in risk_rows
-        if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 45
-    })
+    fresh_symbols = sorted(
+        {
+            str(row.get("ticker") or "").upper()
+            for row in risk_rows
+            if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 14
+        }
+    )
+    watch_symbols = sorted(
+        {
+            str(row.get("ticker") or "").upper()
+            for row in risk_rows
+            if row.get("ticker") and _float_value(row.get("days_old"), default=9999.0) <= 45
+        }
+    )
     if fresh_symbols:
         status = "block_new_bullish_options"
     elif risk_rows:
@@ -16237,7 +18154,10 @@ def _packet_focus_query(
     ]
     for block, fields in (
         (paper.get("rows") if isinstance(paper, dict) else [], ["ticker_or_symbol", "contract"]),
-        (gated.get("rows") if isinstance(gated, dict) else [], ["ticker_or_symbol", "ticker", "symbol"]),
+        (
+            gated.get("rows") if isinstance(gated, dict) else [],
+            ["ticker_or_symbol", "ticker", "symbol"],
+        ),
         (today.get("rows") if isinstance(today, dict) else [], ["symbol", "query"]),
         (chain.get("rows") if isinstance(chain, dict) else [], ["ticker", "symbol", "contract"]),
     ):
@@ -16262,7 +18182,9 @@ def _build_packet_data_trust_summary(data_dir: Path, query: str | None) -> dict[
             "data_trust": {"label": "unknown", "score": 0, "history_source_summary": "none"},
             "rows": [],
             "warnings": ["No focus symbol was available for a data-trust probe."],
-            "notes": ["The packet can show source trust once a setup, saved contract, or next action has a symbol."],
+            "notes": [
+                "The packet can show source trust once a setup, saved contract, or next action has a symbol."
+            ],
         }
     report = build_provider_status(data_dir, query=query, include_chain=False)
     trust = report.get("data_trust") if isinstance(report.get("data_trust"), dict) else {}
@@ -16287,10 +18209,23 @@ def _build_packet_data_trust_summary(data_dir: Path, query: str | None) -> dict[
             "market_structure_warning_count": trust.get("market_structure_warning_count", 0),
             "market_structure_risk_score": trust.get("market_structure_risk_score"),
         },
-        "rows": _packet_rows(report.get("rows"), [
-            "provider", "category", "status", "latency_ms", "rows",
-            "history_source", "history_quality", "last_close", "risk_flag_name", "risk_score", "note",
-        ], limit=6),
+        "rows": _packet_rows(
+            report.get("rows"),
+            [
+                "provider",
+                "category",
+                "status",
+                "latency_ms",
+                "rows",
+                "history_source",
+                "history_quality",
+                "last_close",
+                "risk_flag_name",
+                "risk_score",
+                "note",
+            ],
+            limit=6,
+        ),
         "warnings": report.get("warnings") or [],
         "notes": [
             "This quick check probes no-key/free history and symbol-search sources for the packet focus.",
@@ -16322,7 +18257,10 @@ def _packet_event_symbols(
     raw_values: list[Any] = [focus_query, action.get("symbol"), action.get("query")]
     for block, fields in (
         (paper.get("rows") if isinstance(paper, dict) else [], ["ticker_or_symbol", "contract"]),
-        (gated.get("rows") if isinstance(gated, dict) else [], ["ticker_or_symbol", "ticker", "symbol"]),
+        (
+            gated.get("rows") if isinstance(gated, dict) else [],
+            ["ticker_or_symbol", "ticker", "symbol"],
+        ),
         (today.get("rows") if isinstance(today, dict) else [], ["symbol", "query"]),
         (chain.get("rows") if isinstance(chain, dict) else [], ["ticker", "symbol", "contract"]),
     ):
@@ -16344,11 +18282,13 @@ def _packet_event_symbols(
 def _days_until_date(value: Any, fallback: Any = None) -> float:
     parsed = pd.to_datetime(str(value or ""), errors="coerce", utc=True)
     if not pd.isna(parsed):
-        return float((parsed.date() - datetime.now(timezone.utc).date()).days)
+        return float((parsed.date() - datetime.now(UTC).date()).days)
     return _float_value(fallback, default=math.nan)
 
 
-def _event_risk_level(days_to_earnings: float, days_to_catalyst: float, whisper_gap: float) -> tuple[str, str]:
+def _event_risk_level(
+    days_to_earnings: float, days_to_catalyst: float, whisper_gap: float
+) -> tuple[str, str]:
     has_earnings = math.isfinite(days_to_earnings)
     has_catalyst = math.isfinite(days_to_catalyst)
     if has_earnings and 0 <= days_to_earnings <= 5:
@@ -16372,7 +18312,12 @@ def _event_risk_level(days_to_earnings: float, days_to_catalyst: float, whisper_
 
 def _event_sort_distance(row: pd.Series) -> float:
     distances = [
-        abs(_days_until_date(row.get("next_earnings_date") or row.get("earnings_date"), row.get("days_to_earnings"))),
+        abs(
+            _days_until_date(
+                row.get("next_earnings_date") or row.get("earnings_date"),
+                row.get("days_to_earnings"),
+            )
+        ),
         abs(_days_until_date(row.get("next_catalyst_date"), row.get("days_to_catalyst"))),
     ]
     clean = [value for value in distances if math.isfinite(value)]
@@ -16399,12 +18344,16 @@ def _event_record(row: pd.Series, asset: str) -> dict[str, Any] | None:
         "event_risk": risk_level,
         "action": action,
         "next_earnings_date": _clean_value(earnings_date),
-        "days_to_earnings": _clean_value(days_to_earnings if math.isfinite(days_to_earnings) else None),
+        "days_to_earnings": _clean_value(
+            days_to_earnings if math.isfinite(days_to_earnings) else None
+        ),
         "earnings_score": _clean_value(row.get("earnings_score")),
         "whisper_score": _clean_value(row.get("whisper_score")),
         "whisper_gap_pct": _clean_value(whisper_gap if math.isfinite(whisper_gap) else None),
         "next_catalyst_date": _clean_value(catalyst_date),
-        "days_to_catalyst": _clean_value(days_to_catalyst if math.isfinite(days_to_catalyst) else None),
+        "days_to_catalyst": _clean_value(
+            days_to_catalyst if math.isfinite(days_to_catalyst) else None
+        ),
         "catalyst_type": _clean_value(row.get("catalyst_type")),
         "contract": _clean_value(row.get("contract")),
         "dte": _clean_value(row.get("dte")),
@@ -16427,7 +18376,9 @@ def _build_packet_event_risk_summary(data_dir: Path, symbols: list[str]) -> dict
             "count": 0,
             "rows": [],
             "warnings": ["No packet symbols were available for event-risk review."],
-            "notes": ["Event risk uses existing local scan snapshots; run a scan to populate earnings context."],
+            "notes": [
+                "Event risk uses existing local scan snapshots; run a scan to populate earnings context."
+            ],
         }
     records: list[dict[str, Any]] = []
     for asset, pattern in (("option", "top_options_*.parquet"), ("share", "top_shares_*.parquet")):
@@ -16439,7 +18390,9 @@ def _build_packet_event_risk_summary(data_dir: Path, symbols: list[str]) -> dict
             continue
         out["_event_sort"] = out.apply(_event_sort_distance, axis=1)
         out = out.sort_values(["ticker", "_event_sort"], kind="mergesort")
-        for _, row in out.groupby(out["ticker"].astype(str).str.upper(), sort=False).head(1).iterrows():
+        for _, row in (
+            out.groupby(out["ticker"].astype(str).str.upper(), sort=False).head(1).iterrows()
+        ):
             record = _event_record(row, asset)
             if record:
                 records.append(record)
@@ -16468,9 +18421,13 @@ def _build_packet_event_risk_summary(data_dir: Path, symbols: list[str]) -> dict
         status = "missing"
     warnings: list[str] = []
     if high_count:
-        warnings.append(f"{high_count} packet symbol(s) have earnings/catalyst risk inside the high-risk window.")
+        warnings.append(
+            f"{high_count} packet symbol(s) have earnings/catalyst risk inside the high-risk window."
+        )
     if any(str(row.get("snapshot_freshness") or "") == "stale" for row in records):
-        warnings.append("Some event-risk rows came from stale scan snapshots; refresh before acting.")
+        warnings.append(
+            "Some event-risk rows came from stale scan snapshots; refresh before acting."
+        )
     return {
         "generated_at": _now_iso(),
         "status": status,
@@ -16506,20 +18463,29 @@ def _build_packet_decision_gate(
     command_status = str(command.get("status") or "").lower()
     data_health = str(command.get("data_health_status") or "").lower()
     risk_level = str(command.get("risk_level") or "").lower()
-    climate_score = _float_value(climate.get("climate_score") or command.get("climate_score"), default=50.0)
+    climate_score = _float_value(
+        climate.get("climate_score") or command.get("climate_score"), default=50.0
+    )
     trust = data_trust.get("data_trust") if isinstance(data_trust.get("data_trust"), dict) else {}
     trust_label = str(trust.get("label") or "unknown").lower()
     event_status = str(event_risk.get("status") or "unknown").lower()
     sec_status = str(sec_risk.get("status") or "unknown").lower()
     chain_status = str(chain.get("status") or "missing").lower()
     chain_count = int(_float_value(chain.get("count")))
-    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    chain_quality = (
+        chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    )
     chain_quality_status = str(chain_quality.get("status") or "unknown").lower()
     chain_quality_score = _float_value(chain_quality.get("score"), default=0.0)
     paper_count = int(_float_value(paper.get("selected_count")))
 
     if command_status == "fix_first":
-        blockers.append(str(command.get("status_detail") or "Command center says fix first before adding new ideas."))
+        blockers.append(
+            str(
+                command.get("status_detail")
+                or "Command center says fix first before adding new ideas."
+            )
+        )
         next_steps.append("Resolve command-center fix-first item before considering a new entry.")
     elif command_status:
         confirmations.append(f"Command status is {command_status.replace('_', ' ')}.")
@@ -16548,7 +18514,9 @@ def _build_packet_decision_gate(
 
     if trust_label in {"blocked", "missing", "unknown"}:
         blockers.append("Focus data trust is not ready.")
-        next_steps.append("Run Provider Status or refresh the focused scan before reviewing the setup.")
+        next_steps.append(
+            "Run Provider Status or refresh the focused scan before reviewing the setup."
+        )
     elif trust_label == "partial":
         warnings.append("Focus data trust is partial.")
     elif trust_label == "ready":
@@ -16580,7 +18548,9 @@ def _build_packet_decision_gate(
             warnings.append(
                 f"Saved chain candidates need quality review ({chain_quality_score:g}/100)."
             )
-            next_steps.append("Review spread, budget fit, and liquidity before choosing a contract.")
+            next_steps.append(
+                "Review spread, budget fit, and liquidity before choosing a contract."
+            )
         elif chain_quality_status == "weak":
             blockers.append(
                 "Saved chain shortlist exists but lacks a clean liquid/budget-fit contract."
@@ -16603,7 +18573,9 @@ def _build_packet_decision_gate(
     if blockers:
         status = "wait"
         label = "Wait"
-        primary_action = next_steps[0] if next_steps else "Clear blockers before reviewing a new entry."
+        primary_action = (
+            next_steps[0] if next_steps else "Clear blockers before reviewing a new entry."
+        )
     elif score >= 85:
         status = "ready_to_review"
         label = "Ready to review"
@@ -16611,11 +18583,15 @@ def _build_packet_decision_gate(
     elif score >= 65:
         status = "selective_review"
         label = "Selective review"
-        primary_action = next_steps[0] if next_steps else "Review warnings before choosing a contract."
+        primary_action = (
+            next_steps[0] if next_steps else "Review warnings before choosing a contract."
+        )
     else:
         status = "caution"
         label = "Caution"
-        primary_action = next_steps[0] if next_steps else "Refresh data and reduce risk before reviewing."
+        primary_action = (
+            next_steps[0] if next_steps else "Refresh data and reduce risk before reviewing."
+        )
 
     return {
         "status": status,
@@ -16641,7 +18617,9 @@ def _build_packet_decision_gate(
 def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> str:
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
     label = str(action.get("label") or "Review local research").strip()
-    climate = str(command.get("climate_label") or today.get("climate_label") or "unknown climate").strip()
+    climate = str(
+        command.get("climate_label") or today.get("climate_label") or "unknown climate"
+    ).strip()
     status = str(command.get("status") or "review").strip().replace("_", " ")
     return f"{label} under {climate} ({status})."
 
@@ -16649,13 +18627,21 @@ def _swing_packet_headline(command: dict[str, Any], today: dict[str, Any]) -> st
 def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
     command = packet.get("command_center") if isinstance(packet.get("command_center"), dict) else {}
     action = command.get("next_action") if isinstance(command.get("next_action"), dict) else {}
-    decision_gate = packet.get("decision_gate") if isinstance(packet.get("decision_gate"), dict) else {}
+    decision_gate = (
+        packet.get("decision_gate") if isinstance(packet.get("decision_gate"), dict) else {}
+    )
     climate = packet.get("swing_climate") if isinstance(packet.get("swing_climate"), dict) else {}
     chain = packet.get("chain_shortlist") if isinstance(packet.get("chain_shortlist"), dict) else {}
-    chain_quality = chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
-    sec_risk = packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
+    chain_quality = (
+        chain.get("quality_summary") if isinstance(chain.get("quality_summary"), dict) else {}
+    )
+    sec_risk = (
+        packet.get("sec_dilution_risk") if isinstance(packet.get("sec_dilution_risk"), dict) else {}
+    )
     event_risk = packet.get("event_risk") if isinstance(packet.get("event_risk"), dict) else {}
-    data_trust = packet.get("data_trust_check") if isinstance(packet.get("data_trust_check"), dict) else {}
+    data_trust = (
+        packet.get("data_trust_check") if isinstance(packet.get("data_trust_check"), dict) else {}
+    )
     trust = data_trust.get("data_trust") if isinstance(data_trust.get("data_trust"), dict) else {}
     lines = [
         "# Optedge Swing Packet",
@@ -16687,15 +18673,17 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
         lines.append(f"- Warning: {row}")
     for row in decision_gate.get("confirmations", [])[:6]:
         lines.append(f"- Confirmed: {row}")
-    lines.extend([
-        "",
-        "## Next Review",
-        f"- Action: {action.get('label') or '-'}",
-        f"- Symbol/query: {action.get('query') or action.get('symbol') or '-'}",
-        f"- Why: {action.get('detail') or command.get('status_detail') or '-'}",
-        "",
-        "## Today Review",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Next Review",
+            f"- Action: {action.get('label') or '-'}",
+            f"- Symbol/query: {action.get('query') or action.get('symbol') or '-'}",
+            f"- Why: {action.get('detail') or command.get('status_detail') or '-'}",
+            "",
+            "## Today Review",
+        ]
+    )
     for row in packet.get("today_review", {}).get("rows", [])[:8]:
         lines.append(
             f"- {row.get('priority', '-')}: {row.get('label', '-')} "
@@ -16713,46 +18701,52 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
             f"- {row.get('asset', '-')}: {row.get('ticker_or_symbol', '-')} "
             f"{row.get('action', '')} qty {row.get('quantity', '-')}"
         )
-    lines.extend([
-        "",
-        "## Focus Data Trust",
-        f"- Symbol: {data_trust.get('symbol') or data_trust.get('query') or '-'}",
-        f"- Status: {data_trust.get('status') or '-'}",
-        f"- Trust: {trust.get('label') or '-'} ({trust.get('score') or 0}/100)",
-        f"- History sources: {trust.get('history_source_summary') or '-'}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Focus Data Trust",
+            f"- Symbol: {data_trust.get('symbol') or data_trust.get('query') or '-'}",
+            f"- Status: {data_trust.get('status') or '-'}",
+            f"- Trust: {trust.get('label') or '-'} ({trust.get('score') or 0}/100)",
+            f"- History sources: {trust.get('history_source_summary') or '-'}",
+        ]
+    )
     for row in data_trust.get("rows", [])[:6]:
         lines.append(
             f"- {row.get('provider', '-')}: {row.get('status', '-')} "
             f"{row.get('history_source') or row.get('note') or ''}"
         )
-    lines.extend([
-        "",
-        "## Earnings / Catalyst Event Risk",
-        f"- Status: {event_risk.get('status') or '-'}",
-        f"- Symbols reviewed: {', '.join(event_risk.get('symbols') or []) or '-'}",
-        f"- High / medium / watch: {event_risk.get('high_count') or 0} / "
-        f"{event_risk.get('medium_count') or 0} / {event_risk.get('watch_count') or 0}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Earnings / Catalyst Event Risk",
+            f"- Status: {event_risk.get('status') or '-'}",
+            f"- Symbols reviewed: {', '.join(event_risk.get('symbols') or []) or '-'}",
+            f"- High / medium / watch: {event_risk.get('high_count') or 0} / "
+            f"{event_risk.get('medium_count') or 0} / {event_risk.get('watch_count') or 0}",
+        ]
+    )
     for row in event_risk.get("rows", [])[:8]:
         lines.append(
             f"- {row.get('symbol', '-')}: {row.get('event_risk', '-')} "
             f"earnings {row.get('next_earnings_date') or '-'} "
             f"({row.get('days_to_earnings', '-')}d), action {row.get('action', '-')}"
         )
-    lines.extend([
-        "",
-        "## Chain Shortlist",
-        f"- Status: {chain.get('status') or '-'}",
-        f"- Rows: {chain.get('count') or 0}",
-        f"- Quality: {chain_quality.get('status') or '-'} ({chain_quality.get('score') or 0}/100)",
-        f"- Best: {chain_quality.get('best_contract') or '-'} "
-        f"{chain_quality.get('best_grade') or '-'} / {chain_quality.get('best_review_lane') or '-'}",
-        f"- Primary / clean / budget / liquid: {chain_quality.get('primary_review_count') or 0} / "
-        f"{chain_quality.get('clean_swing_count') or 0} / "
-        f"{chain_quality.get('inside_budget_count') or 0} / "
-        f"{chain_quality.get('liquid_count') or 0}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## Chain Shortlist",
+            f"- Status: {chain.get('status') or '-'}",
+            f"- Rows: {chain.get('count') or 0}",
+            f"- Quality: {chain_quality.get('status') or '-'} ({chain_quality.get('score') or 0}/100)",
+            f"- Best: {chain_quality.get('best_contract') or '-'} "
+            f"{chain_quality.get('best_grade') or '-'} / {chain_quality.get('best_review_lane') or '-'}",
+            f"- Primary / clean / budget / liquid: {chain_quality.get('primary_review_count') or 0} / "
+            f"{chain_quality.get('clean_swing_count') or 0} / "
+            f"{chain_quality.get('inside_budget_count') or 0} / "
+            f"{chain_quality.get('liquid_count') or 0}",
+        ]
+    )
     for row in chain_quality.get("warnings", [])[:5]:
         lines.append(f"- Chain warning: {row}")
     for row in chain.get("rows", [])[:8]:
@@ -16760,13 +18754,15 @@ def render_swing_packet_markdown(packet: dict[str, Any]) -> str:
             f"- {row.get('contract', '-')} mid {row.get('mid', '-')} "
             f"DTE {row.get('dte', '-')} fit {row.get('swing_fit_label', '-')}"
         )
-    lines.extend([
-        "",
-        "## SEC Dilution / Offering Risk",
-        f"- Status: {sec_risk.get('status') or '-'}",
-        f"- Symbols checked: {sec_risk.get('symbols_checked') or 0}",
-        f"- Risk rows: {sec_risk.get('count') or 0}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## SEC Dilution / Offering Risk",
+            f"- Status: {sec_risk.get('status') or '-'}",
+            f"- Symbols checked: {sec_risk.get('symbols_checked') or 0}",
+            f"- Risk rows: {sec_risk.get('count') or 0}",
+        ]
+    )
     for row in sec_risk.get("rows", [])[:8]:
         lines.append(
             f"- {row.get('ticker', '-')}: {row.get('form', '-')} "
@@ -16896,9 +18892,19 @@ def build_swing_packet(
             symbols_limit=chain_symbols_limit,
             contracts_per_symbol=chain_contracts_per_symbol,
         )
-        if chain_refresh.get("attempted") and not chain_refresh.get("ok") and chain_refresh.get("error"):
+        if (
+            chain_refresh.get("attempted")
+            and not chain_refresh.get("ok")
+            and chain_refresh.get("error")
+        ):
             notes.append(f"3m+ chain refresh warning: {chain_refresh.get('error')}")
-    chain = _packet_call(notes, "Chain shortlist", {"status": "missing", "rows": []}, _build_chain_shortlist_summary, data_dir)
+    chain = _packet_call(
+        notes,
+        "Chain shortlist",
+        {"status": "missing", "rows": []},
+        _build_chain_shortlist_summary,
+        data_dir,
+    )
     focus_query = _packet_focus_query(command, today, gated, paper, chain)
     data_trust = _packet_call(
         notes,
@@ -16928,13 +18934,21 @@ def build_swing_packet(
         paper,
     )
     artifacts = {
-        "dashboard": str(artifact_path("latest-dashboard", data_dir)) if artifact_path("latest-dashboard", data_dir) else None,
-        "validation_report": str(artifact_path("validation-report", data_dir)) if artifact_path("validation-report", data_dir) else None,
-        "chain_shortlist": str(artifact_path("option-chain-shortlist", data_dir)) if artifact_path("option-chain-shortlist", data_dir) else None,
-        "paper_orders": str(artifact_path("external-paper-orders", data_dir)) if artifact_path("external-paper-orders", data_dir) else None,
+        "dashboard": str(artifact_path("latest-dashboard", data_dir))
+        if artifact_path("latest-dashboard", data_dir)
+        else None,
+        "validation_report": str(artifact_path("validation-report", data_dir))
+        if artifact_path("validation-report", data_dir)
+        else None,
+        "chain_shortlist": str(artifact_path("option-chain-shortlist", data_dir))
+        if artifact_path("option-chain-shortlist", data_dir)
+        else None,
+        "paper_orders": str(artifact_path("external-paper-orders", data_dir))
+        if artifact_path("external-paper-orders", data_dir)
+        else None,
     }
     packet = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "does_not_place_orders": True,
         "status": command.get("status") or "review",
         "headline": _swing_packet_headline(command, today),
@@ -16955,9 +18969,22 @@ def build_swing_packet(
         "today_review": {
             "count": today.get("count", 0),
             "review_now_count": today.get("review_now_count", 0),
-            "rows": _packet_rows(today.get("rows"), [
-                "priority", "category", "label", "detail", "action", "route", "symbol", "query", "source", "asset",
-            ], limit=10),
+            "rows": _packet_rows(
+                today.get("rows"),
+                [
+                    "priority",
+                    "category",
+                    "label",
+                    "detail",
+                    "action",
+                    "route",
+                    "symbol",
+                    "query",
+                    "source",
+                    "asset",
+                ],
+                limit=10,
+            ),
         },
         "swing_climate": {
             "climate_label": climate.get("climate_label"),
@@ -16970,25 +18997,63 @@ def build_swing_packet(
         "climate_gated_setups": {
             "selected_count": gated.get("selected_count", len(gated.get("rows") or [])),
             "held_count": gated.get("held_count", len(gated.get("held") or [])),
-            "rows": _packet_rows(gated.get("rows"), [
-                "asset", "ticker_or_symbol", "setup", "readiness_score", "climate_gate_score",
-                "climate_gate_status", "climate_gate_reasons", "trade_status", "confidence",
-                "rank_score", "dte", "spread_pct",
-            ], limit=10),
-            "held": _packet_rows(gated.get("held"), [
-                "asset", "ticker_or_symbol", "setup", "readiness_score", "climate_gate_score",
-                "climate_gate_reasons",
-            ], limit=5),
+            "rows": _packet_rows(
+                gated.get("rows"),
+                [
+                    "asset",
+                    "ticker_or_symbol",
+                    "setup",
+                    "readiness_score",
+                    "climate_gate_score",
+                    "climate_gate_status",
+                    "climate_gate_reasons",
+                    "trade_status",
+                    "confidence",
+                    "rank_score",
+                    "dte",
+                    "spread_pct",
+                ],
+                limit=10,
+            ),
+            "held": _packet_rows(
+                gated.get("held"),
+                [
+                    "asset",
+                    "ticker_or_symbol",
+                    "setup",
+                    "readiness_score",
+                    "climate_gate_score",
+                    "climate_gate_reasons",
+                ],
+                limit=5,
+            ),
         },
         "paper_candidates": {
             "selected_count": paper.get("selected_count", 0),
             "excluded_count": paper.get("excluded_count", 0),
             "top_rejection_reasons": paper.get("top_rejection_reasons") or [],
-            "rows": _packet_rows(paper.get("rows"), [
-                "asset", "ticker_or_symbol", "action", "direction", "quantity", "contract",
-                "option_side", "strike", "expiry", "entry_price", "stop_price", "target_price",
-                "confidence", "rank_score", "trade_status", "reason_selected",
-            ], limit=8),
+            "rows": _packet_rows(
+                paper.get("rows"),
+                [
+                    "asset",
+                    "ticker_or_symbol",
+                    "action",
+                    "direction",
+                    "quantity",
+                    "contract",
+                    "option_side",
+                    "strike",
+                    "expiry",
+                    "entry_price",
+                    "stop_price",
+                    "target_price",
+                    "confidence",
+                    "rank_score",
+                    "trade_status",
+                    "reason_selected",
+                ],
+                limit=8,
+            ),
         },
         "data_trust_check": data_trust,
         "event_risk": event_risk,
@@ -17060,7 +19125,9 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
     overall = (
         swing_overall
         if uses_swing_sample
-        else (validation.get("overall") if isinstance(validation.get("overall"), dict) else validation)
+        else (
+            validation.get("overall") if isinstance(validation.get("overall"), dict) else validation
+        )
     )
     top_level_closed = (
         validation.get("swing_eligible_closed_positions")
@@ -17071,50 +19138,71 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
             else None
         )
     )
-    closed = int(_float_value(
-        top_level_closed,
-        default=_float_value(
-            overall.get("closed_positions"),
-            default=_float_value(overall.get("n"), default=0.0),
-        ),
-    ))
+    closed = int(
+        _float_value(
+            top_level_closed,
+            default=_float_value(
+                overall.get("closed_positions"),
+                default=_float_value(overall.get("n"), default=0.0),
+            ),
+        )
+    )
     raw_closed = int(_float_value(validation.get("closed_positions"), default=closed))
-    excluded_closed = int(_float_value(
-        validation.get("swing_excluded_closed_positions"),
-        default=max(0, raw_closed - closed),
-    )) if uses_swing_sample else 0
+    excluded_closed = (
+        int(
+            _float_value(
+                validation.get("swing_excluded_closed_positions"),
+                default=max(0, raw_closed - closed),
+            )
+        )
+        if uses_swing_sample
+        else 0
+    )
     win_rate = _float_value(overall.get("win_rate"), default=math.nan)
     max_dd = _float_value(overall.get("max_drawdown"), default=math.nan)
     profit_factor = _float_value(overall.get("profit_factor"), default=math.nan)
-    fixed = validation.get("fixed_horizon") if isinstance(validation.get("fixed_horizon"), dict) else {}
-    fixed_shadow = fixed.get("headline_shadow") if isinstance(fixed.get("headline_shadow"), dict) else {}
+    fixed = (
+        validation.get("fixed_horizon") if isinstance(validation.get("fixed_horizon"), dict) else {}
+    )
+    fixed_shadow = (
+        fixed.get("headline_shadow") if isinstance(fixed.get("headline_shadow"), dict) else {}
+    )
     fixed_shadow_n = int(_float_value(fixed_shadow.get("n"), default=0.0))
     fixed_shadow_days = int(_float_value(fixed_shadow.get("unique_entry_days"), default=0.0))
     fixed_shadow_win = _float_value(fixed_shadow.get("win_rate"), default=math.nan)
     fixed_shadow_avg = _float_value(fixed_shadow.get("avg_return"), default=math.nan)
     fixed_shadow_excess = _float_value(fixed_shadow.get("avg_excess_vs_spy"), default=math.nan)
     option_market_data = (
-        fixed.get("option_market_data")
-        if isinstance(fixed.get("option_market_data"), dict)
-        else {}
+        fixed.get("option_market_data") if isinstance(fixed.get("option_market_data"), dict) else {}
     )
-    option_observed = int(_float_value(
-        option_market_data.get("broker_observed_outcomes"), default=0.0,
-    ))
-    option_total = int(_float_value(
-        option_market_data.get("total_scored_option_outcomes"), default=0.0,
-    ))
+    option_observed = int(
+        _float_value(
+            option_market_data.get("broker_observed_outcomes"),
+            default=0.0,
+        )
+    )
+    option_total = int(
+        _float_value(
+            option_market_data.get("total_scored_option_outcomes"),
+            default=0.0,
+        )
+    )
     option_observed_coverage = _float_value(
-        option_market_data.get("broker_observed_coverage_pct"), default=math.nan,
+        option_market_data.get("broker_observed_coverage_pct"),
+        default=math.nan,
     )
-    raw_warnings = validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+    raw_warnings = (
+        validation.get("warnings") if isinstance(validation.get("warnings"), list) else []
+    )
     warnings = [str(item) for item in raw_warnings if str(item).strip()]
     validation_basis = "executable_swing_after_slippage" if uses_swing_sample else "all_closures"
     blocker_reasons: list[str] = []
     review_reasons: list[str] = []
 
     if closed < 500:
-        review_reasons.append(f"Only {closed} validation outcome(s); require 500+ before trusting entries.")
+        review_reasons.append(
+            f"Only {closed} validation outcome(s); require 500+ before trusting entries."
+        )
     if fixed:
         if fixed_shadow_n < 100 or fixed_shadow_days < 10:
             review_reasons.append(
@@ -17144,7 +19232,9 @@ def _validation_guardrail(validation: Any) -> dict[str, Any]:
         if "max drawdown" in text or "win rate" in text:
             if warning not in blocker_reasons and warning not in review_reasons:
                 review_reasons.append(warning)
-        elif ("sample size" in text or "sample too small" in text) and warning not in review_reasons:
+        elif (
+            "sample size" in text or "sample too small" in text
+        ) and warning not in review_reasons:
             review_reasons.append(warning)
 
     if blocker_reasons:
@@ -17207,7 +19297,7 @@ def _count_duplicate_open_positions(data_dir: Path) -> tuple[int, int]:
 def _expired_local_option_position_summary(data_dir: Path) -> dict[str, Any]:
     rows = _read_json(data_dir / "open_positions.json")
     open_rows = rows if isinstance(rows, list) else []
-    asof = datetime.now(timezone.utc)
+    asof = datetime.now(UTC)
     expired: list[dict[str, Any]] = []
     for row in open_rows:
         if not isinstance(row, dict):
@@ -17215,12 +19305,14 @@ def _expired_local_option_position_summary(data_dir: Path) -> dict[str, Any]:
         if not _option_is_expired_for_hygiene(row, asof):
             continue
         record = _agentic_local_option_record(row, "optedge")
-        expired.append({
-            "contract": record.get("contract"),
-            "symbol": record.get("symbol"),
-            "expiry": record.get("expiry"),
-            "dte": record.get("dte"),
-        })
+        expired.append(
+            {
+                "contract": record.get("contract"),
+                "symbol": record.get("symbol"),
+                "expiry": record.get("expiry"),
+                "dte": record.get("dte"),
+            }
+        )
     return {
         "count": len(expired),
         "examples": [row.get("contract") for row in expired[:5] if row.get("contract")],
@@ -17290,7 +19382,12 @@ def _opportunity_quality_audit(data_dir: Path) -> dict[str, Any]:
         if not df.empty and "quote_quality" in df.columns:
             quote_quality_counts = {
                 str(key): int(value)
-                for key, value in df["quote_quality"].fillna("unknown").astype(str).value_counts().to_dict().items()
+                for key, value in df["quote_quality"]
+                .fillna("unknown")
+                .astype(str)
+                .value_counts()
+                .to_dict()
+                .items()
             }
         rows[asset] = {
             "asset": asset,
@@ -17306,36 +19403,54 @@ def _opportunity_quality_audit(data_dir: Path) -> dict[str, Any]:
         if path is None:
             continue
         if df.empty:
-            checks.append(_health_check(
-                "warn", f"{asset} opportunity snapshot empty",
-                f"{spec['pattern']} exists but has no rows for search/explorer/paper review.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    f"{asset} opportunity snapshot empty",
+                    f"{spec['pattern']} exists but has no rows for search/explorer/paper review.",
+                )
+            )
             continue
         if missing:
-            checks.append(_health_check(
-                "bad", f"{asset} opportunity columns",
-                f"Latest {asset} snapshot is missing required column(s): {', '.join(missing)}.",
-            ))
+            checks.append(
+                _health_check(
+                    "bad",
+                    f"{asset} opportunity columns",
+                    f"Latest {asset} snapshot is missing required column(s): {', '.join(missing)}.",
+                )
+            )
         if missing_price:
-            checks.append(_health_check(
-                "warn", f"{asset} opportunity pricing",
-                f"Latest {asset} snapshot has no usable price/score column for ranking or paper readiness.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    f"{asset} opportunity pricing",
+                    f"Latest {asset} snapshot has no usable price/score column for ranking or paper readiness.",
+                )
+            )
         if duplicate_rows:
-            checks.append(_health_check(
-                "warn", f"{asset} opportunity duplicates",
-                f"Latest {asset} snapshot has {duplicate_rows} duplicate row(s) by trade identity.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    f"{asset} opportunity duplicates",
+                    f"Latest {asset} snapshot has {duplicate_rows} duplicate row(s) by trade identity.",
+                )
+            )
         elif not missing:
-            checks.append(_health_check(
-                "ok", f"{asset} opportunity duplicates",
-                f"Latest {asset} snapshot has no duplicate trade identities across {row_count} row(s).",
-            ))
+            checks.append(
+                _health_check(
+                    "ok",
+                    f"{asset} opportunity duplicates",
+                    f"Latest {asset} snapshot has no duplicate trade identities across {row_count} row(s).",
+                )
+            )
         if asset in {"option", "share", "futures"} and row_count and actionable_count == 0:
-            checks.append(_health_check(
-                "warn", f"{asset} actionable opportunities",
-                f"Latest {asset} snapshot has 0 actionable row(s) after Watch/Skip and sizing checks.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    f"{asset} actionable opportunities",
+                    f"Latest {asset} snapshot has 0 actionable row(s) after Watch/Skip and sizing checks.",
+                )
+            )
 
     return {
         "rows": rows,
@@ -17355,38 +19470,57 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     if isinstance(validation, dict):
         reported_open = int(_float_value(validation.get("open_positions")))
         if reported_open == total_open:
-            checks.append(_health_check(
-                "ok", "Validation open count",
-                f"Validation and current open files both show {total_open} open position(s).",
-            ))
+            checks.append(
+                _health_check(
+                    "ok",
+                    "Validation open count",
+                    f"Validation and current open files both show {total_open} open position(s).",
+                )
+            )
         else:
-            checks.append(_health_check(
-                "bad", "Validation open count mismatch",
-                f"Validation shows {reported_open}, but current open files show {total_open}.",
-            ))
+            checks.append(
+                _health_check(
+                    "bad",
+                    "Validation open count mismatch",
+                    f"Validation shows {reported_open}, but current open files show {total_open}.",
+                )
+            )
         asset_map = {"option": "options", "share": "shares", "futures": "futures"}
         assets = validation.get("assets") if isinstance(validation.get("assets"), dict) else {}
         for asset_name, count_key in asset_map.items():
-            reported = assets.get(asset_name, {}) if isinstance(assets.get(asset_name), dict) else {}
+            reported = (
+                assets.get(asset_name, {}) if isinstance(assets.get(asset_name), dict) else {}
+            )
             reported_count = int(_float_value(reported.get("open_positions")))
             direct_count = open_counts[count_key]
             if reported_count != direct_count:
-                checks.append(_health_check(
-                    "warn", f"{asset_name} open count mismatch",
-                    f"Validation shows {reported_count}; current {count_key} state shows {direct_count}.",
-                ))
+                checks.append(
+                    _health_check(
+                        "warn",
+                        f"{asset_name} open count mismatch",
+                        f"Validation shows {reported_count}; current {count_key} state shows {direct_count}.",
+                    )
+                )
         validation_guard = _validation_guardrail(validation)
-        checks.append(_health_check(
-            str(validation_guard.get("level") or "warn"),
-            str(validation_guard.get("label") or "Validation guardrail"),
-            str(validation_guard.get("detail") or "Review validation before considering new entries."),
-        ))
+        checks.append(
+            _health_check(
+                str(validation_guard.get("level") or "warn"),
+                str(validation_guard.get("label") or "Validation guardrail"),
+                str(
+                    validation_guard.get("detail")
+                    or "Review validation before considering new entries."
+                ),
+            )
+        )
     else:
         validation_guard = _validation_guardrail(validation)
-        checks.append(_health_check(
-            "warn", "Validation summary missing",
-            "Run python run.py --validation-report to refresh validation_summary.json.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Validation summary missing",
+                "Run python run.py --validation-report to refresh validation_summary.json.",
+            )
+        )
 
     if isinstance(aging, dict):
         aging_open = int(_float_value(aging.get("open_count")))
@@ -17398,47 +19532,76 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         )
         checks.append(_health_check(level, "Position aging count", detail))
     else:
-        checks.append(_health_check(
-            "warn", "Position aging missing",
-            "position_aging_summary.json was not found or could not be read.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Position aging missing",
+                "position_aging_summary.json was not found or could not be read.",
+            )
+        )
 
     raw_open, deduped_open = _count_duplicate_open_positions(data_dir)
     duplicate_count = max(0, raw_open - deduped_open)
     if duplicate_count:
-        checks.append(_health_check(
-            "warn", "Duplicate open positions",
-            f"{duplicate_count} duplicate open position row(s) were detected across lifecycle files.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Duplicate open positions",
+                f"{duplicate_count} duplicate open position row(s) were detected across lifecycle files.",
+            )
+        )
     else:
-        checks.append(_health_check(
-            "ok", "Duplicate open positions",
-            f"No duplicate open rows detected across {raw_open} current position row(s).",
-        ))
+        checks.append(
+            _health_check(
+                "ok",
+                "Duplicate open positions",
+                f"No duplicate open rows detected across {raw_open} current position row(s).",
+            )
+        )
 
     expired_local_options = _expired_local_option_position_summary(data_dir)
     expired_count = int(_float_value(expired_local_options.get("count"), default=0.0))
     if expired_count:
         examples = ", ".join(str(item) for item in expired_local_options.get("examples", [])[:3])
         suffix = f" Example: {examples}." if examples else ""
-        checks.append(_health_check(
-            "bad", "Expired local option records",
-            f"{expired_count} expired option record(s) are still in open_positions.json.{suffix}",
-        ))
+        checks.append(
+            _health_check(
+                "bad",
+                "Expired local option records",
+                f"{expired_count} expired option record(s) are still in open_positions.json.{suffix}",
+            )
+        )
     else:
-        checks.append(_health_check(
-            "ok", "Expired local option records",
-            "No expired options are currently sitting in open_positions.json.",
-        ))
+        checks.append(
+            _health_check(
+                "ok",
+                "Expired local option records",
+                "No expired options are currently sitting in open_positions.json.",
+            )
+        )
 
     equity_curve = artifact_path("equity-curve", data_dir)
     png_error = _png_validation_error(equity_curve)
     if png_error is None:
-        checks.append(_health_check("ok", "Equity curve image", "equity_curve.png passed PNG integrity checks."))
+        checks.append(
+            _health_check(
+                "ok", "Equity curve image", "equity_curve.png passed PNG integrity checks."
+            )
+        )
     elif png_error == "missing":
-        checks.append(_health_check("warn", "Equity curve image missing", "No equity curve image is available yet."))
+        checks.append(
+            _health_check(
+                "warn", "Equity curve image missing", "No equity curve image is available yet."
+            )
+        )
     else:
-        checks.append(_health_check("bad", "Equity curve image corrupt", f"equity_curve.png appears invalid: {png_error}."))
+        checks.append(
+            _health_check(
+                "bad",
+                "Equity curve image corrupt",
+                f"equity_curve.png appears invalid: {png_error}.",
+            )
+        )
 
     latest_dashboard = artifact_path("latest-dashboard", data_dir)
     validation_path = artifact_path("validation-summary", data_dir)
@@ -17446,23 +19609,35 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     validation_meta = _file_meta(validation_path)
     if dashboard_meta:
         if _float_value(dashboard_meta.get("age_minutes")) > 24 * 60:
-            checks.append(_health_check(
-                "warn", "Dashboard is old",
-                f"Latest dashboard is {dashboard_meta['age_minutes']} minutes old.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    "Dashboard is old",
+                    f"Latest dashboard is {dashboard_meta['age_minutes']} minutes old.",
+                )
+            )
         else:
-            checks.append(_health_check("ok", "Dashboard freshness", f"Latest dashboard: {dashboard_meta['name']}."))
+            checks.append(
+                _health_check(
+                    "ok", "Dashboard freshness", f"Latest dashboard: {dashboard_meta['name']}."
+                )
+            )
     else:
-        checks.append(_health_check("warn", "Dashboard missing", "No dashboard_*.html file was found."))
+        checks.append(
+            _health_check("warn", "Dashboard missing", "No dashboard_*.html file was found.")
+        )
 
     if dashboard_meta and validation_meta:
         dash_mtime = Path(dashboard_meta["path"]).stat().st_mtime
         val_mtime = Path(validation_meta["path"]).stat().st_mtime
         if dash_mtime - val_mtime > 3600:
-            checks.append(_health_check(
-                "warn", "Validation older than dashboard",
-                "validation_summary.json is more than 60 minutes older than the latest dashboard.",
-            ))
+            checks.append(
+                _health_check(
+                    "warn",
+                    "Validation older than dashboard",
+                    "validation_summary.json is more than 60 minutes older than the latest dashboard.",
+                )
+            )
 
     snapshot_meta: dict[str, Any] = {}
     for asset_name, pattern in {
@@ -17474,9 +19649,19 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         meta = _file_meta(_latest_file(data_dir, pattern))
         snapshot_meta[asset_name] = meta
         if meta is None:
-            checks.append(_health_check("warn", f"{asset_name} snapshot missing", f"No {pattern} file was found."))
+            checks.append(
+                _health_check(
+                    "warn", f"{asset_name} snapshot missing", f"No {pattern} file was found."
+                )
+            )
         elif _float_value(meta.get("age_minutes")) > 24 * 60:
-            checks.append(_health_check("warn", f"{asset_name} snapshot old", f"{meta['name']} is more than 24 hours old."))
+            checks.append(
+                _health_check(
+                    "warn",
+                    f"{asset_name} snapshot old",
+                    f"{meta['name']} is more than 24 hours old.",
+                )
+            )
 
     opportunity_quality = _opportunity_quality_audit(data_dir)
     checks.extend(opportunity_quality["checks"])
@@ -17484,53 +19669,77 @@ def build_data_health(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     sec_cache = sec_company_cache_meta(data_dir / "sec_company_tickers.json")
     nasdaq_cache = nasdaq_symbol_cache_meta(data_dir / "nasdaq_symbol_directory.json")
     if sec_cache.get("status") == "fresh":
-        checks.append(_health_check(
-            "ok", "SEC ticker cache",
-            f"Free SEC company-name search cache has {sec_cache.get('row_count', 0)} ticker row(s).",
-        ))
+        checks.append(
+            _health_check(
+                "ok",
+                "SEC ticker cache",
+                f"Free SEC company-name search cache has {sec_cache.get('row_count', 0)} ticker row(s).",
+            )
+        )
     elif sec_cache.get("status") == "stale":
-        checks.append(_health_check(
-            "warn", "SEC ticker cache stale",
-            f"Free SEC ticker cache is {sec_cache.get('age_days')} days old; run any company lookup to refresh it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "SEC ticker cache stale",
+                f"Free SEC ticker cache is {sec_cache.get('age_days')} days old; run any company lookup to refresh it.",
+            )
+        )
     elif sec_cache.get("status") == "corrupt":
-        checks.append(_health_check(
-            "warn", "SEC ticker cache corrupt",
-            "Free SEC ticker cache could not be read; run a company lookup to rebuild it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "SEC ticker cache corrupt",
+                "Free SEC ticker cache could not be read; run a company lookup to rebuild it.",
+            )
+        )
     else:
-        checks.append(_health_check(
-            "warn", "SEC ticker cache missing",
-            "Company-name autocomplete uses the free SEC ticker cache after the first company lookup warms it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "SEC ticker cache missing",
+                "Company-name autocomplete uses the free SEC ticker cache after the first company lookup warms it.",
+            )
+        )
 
     if nasdaq_cache.get("status") == "fresh":
-        checks.append(_health_check(
-            "ok", "Nasdaq symbol directory",
-            f"Official Nasdaq Trader symbol directory has {nasdaq_cache.get('row_count', 0)} row(s).",
-        ))
+        checks.append(
+            _health_check(
+                "ok",
+                "Nasdaq symbol directory",
+                f"Official Nasdaq Trader symbol directory has {nasdaq_cache.get('row_count', 0)} row(s).",
+            )
+        )
     elif nasdaq_cache.get("status") == "stale":
-        checks.append(_health_check(
-            "warn", "Nasdaq symbol directory stale",
-            f"Nasdaq symbol directory cache is {nasdaq_cache.get('age_days')} days old; run any company lookup to refresh it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Nasdaq symbol directory stale",
+                f"Nasdaq symbol directory cache is {nasdaq_cache.get('age_days')} days old; run any company lookup to refresh it.",
+            )
+        )
     elif nasdaq_cache.get("status") == "corrupt":
-        checks.append(_health_check(
-            "warn", "Nasdaq symbol directory corrupt",
-            "Nasdaq symbol directory cache could not be read; run a company lookup to rebuild it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Nasdaq symbol directory corrupt",
+                "Nasdaq symbol directory cache could not be read; run a company lookup to rebuild it.",
+            )
+        )
     else:
-        checks.append(_health_check(
-            "warn", "Nasdaq symbol directory missing",
-            "Autocomplete can use Nasdaq Trader's free symbol directory after the first company lookup warms it.",
-        ))
+        checks.append(
+            _health_check(
+                "warn",
+                "Nasdaq symbol directory missing",
+                "Autocomplete can use Nasdaq Trader's free symbol directory after the first company lookup warms it.",
+            )
+        )
 
     active_open_counts = dict(open_counts)
     active_open_counts["options"] = max(0, open_counts["options"] - expired_count)
     expired_open_counts = {"options": expired_count, "shares": 0, "futures": 0}
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "status": _health_status(checks),
         "open_counts": open_counts,
         "total_open": total_open,
@@ -17595,12 +19804,14 @@ def build_summary(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "futures": _latest_file(data_dir, "top_futures_*.parquet"),
     }
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "data_dir": str(data_dir),
         "open_counts": open_counts,
         "total_open": sum(open_counts.values()),
         "active_open_counts": active_open_counts,
-        "active_total_open": sum(int(active_open_counts.get(key, 0)) for key in ("options", "shares", "futures")),
+        "active_total_open": sum(
+            int(active_open_counts.get(key, 0)) for key in ("options", "shares", "futures")
+        ),
         "expired_open_counts": expired_open_counts,
         "validation": validation if isinstance(validation, dict) else {},
         "position_aging": aging if isinstance(aging, dict) else {},
@@ -23238,7 +25449,9 @@ def _robinhood_connection_unavailable_status() -> dict[str, Any]:
 
 def _robinhood_oauth_page(*, accepted: bool, detail: str) -> bytes:
     """Build a static callback page that never echoes OAuth query material."""
-    title = "Robinhood authorization received" if accepted else "Robinhood authorization not accepted"
+    title = (
+        "Robinhood authorization received" if accepted else "Robinhood authorization not accepted"
+    )
     tone = "#20c997" if accepted else "#ffb84d"
     safe_detail = html_escape(str(detail or ""))
     return f"""<!doctype html>
@@ -23246,7 +25459,7 @@ def _robinhood_oauth_page(*, accepted: bool, detail: str) -> bytes:
 <meta name="referrer" content="no-referrer"><title>{title}</title>
 <style>body{{margin:0;background:#090b0b;color:#eef4f1;font:16px/1.5 system-ui,sans-serif}}main{{max-width:680px;margin:10vh auto;padding:30px;border:1px solid #26302d;border-radius:18px;background:#111514}}h1{{color:{tone};font-size:26px}}a{{display:inline-block;margin-top:18px;padding:10px 14px;border-radius:9px;background:#20c997;color:#07100d;text-decoration:none;font-weight:700}}p{{color:#bac7c1}}</style>
 </head><body><main><h1>{title}</h1><p>{safe_detail}</p><p>No order was reviewed, submitted, or placed.</p><a href="/">Return to Optedge</a></main>
-<script>history.replaceState({{}}, '', '/oauth/robinhood/callback');</script></body></html>""".encode("utf-8")
+<script>history.replaceState({{}}, '', '/oauth/robinhood/callback');</script></body></html>""".encode()
 
 
 class CockpitHandler(BaseHTTPRequestHandler):
@@ -23355,7 +25568,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/robinhood-connection":
             manager = self.robinhood_connection_manager
             self._send_json(
-                manager.status() if manager is not None else _robinhood_connection_unavailable_status()
+                manager.status()
+                if manager is not None
+                else _robinhood_connection_unavailable_status()
             )
             return
         if parsed.path == "/api/summary":
@@ -23422,9 +25637,13 @@ class CockpitHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             query = params.get("query", ["AAPL"])[0]
             include_chain = _bool_param(params.get("include_chain", ["true"])[0], True)
-            self._send_json(build_provider_status(
-                self.data_dir, query=query, include_chain=include_chain,
-            ))
+            self._send_json(
+                build_provider_status(
+                    self.data_dir,
+                    query=query,
+                    include_chain=include_chain,
+                )
+            )
             return
         if parsed.path == "/api/cboe-option-activity":
             params = parse_qs(parsed.query)
@@ -23438,14 +25657,16 @@ class CockpitHandler(BaseHTTPRequestHandler):
             max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
             min_volume = _int_param(params.get("min_volume", ["1"])[0], 1, 0, 1_000_000)
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
-            self._send_json(build_cboe_option_activity(
-                self.data_dir,
-                query=query,
-                min_dte=min_dte,
-                max_dte=max_dte,
-                min_volume=min_volume,
-                limit=limit,
-            ))
+            self._send_json(
+                build_cboe_option_activity(
+                    self.data_dir,
+                    query=query,
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                    min_volume=min_volume,
+                    limit=limit,
+                )
+            )
             return
         if parsed.path == "/api/lookup-history":
             params = parse_qs(parsed.query)
@@ -23472,17 +25693,21 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             min_score = _float_param(params.get("min_score", ["45"])[0], 45.0, 0.0, 100.0)
             include_wait = _bool_param(params.get("include_wait", ["true"])[0], True)
-            include_nasdaq_movers = _bool_param(params.get("include_nasdaq_movers", ["true"])[0], True)
-            self._send_json(build_swing_scout(
-                self.data_dir,
-                limit=limit,
-                asset=asset,
-                query=query,
-                lane=lane,
-                min_score=min_score,
-                include_wait=include_wait,
-                include_nasdaq_movers=include_nasdaq_movers,
-            ))
+            include_nasdaq_movers = _bool_param(
+                params.get("include_nasdaq_movers", ["true"])[0], True
+            )
+            self._send_json(
+                build_swing_scout(
+                    self.data_dir,
+                    limit=limit,
+                    asset=asset,
+                    query=query,
+                    lane=lane,
+                    min_score=min_score,
+                    include_wait=include_wait,
+                    include_nasdaq_movers=include_nasdaq_movers,
+                )
+            )
             return
         if parsed.path == "/api/option-chain-batch":
             params = parse_qs(parsed.query)
@@ -23497,34 +25722,45 @@ class CockpitHandler(BaseHTTPRequestHandler):
             )
             max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
             max_spread = _float_param(params.get("max_spread_pct", ["0.25"])[0], 0.25, 0.0, 5.0)
-            max_premium = _float_param(params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0)
+            max_premium = _float_param(
+                params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0
+            )
             min_oi = _int_param(params.get("min_open_interest", ["0"])[0], 0, 0, 1_000_000)
             symbols_limit = _int_param(params.get("symbols_limit", ["6"])[0], 6, 1, 20)
-            contracts_per_symbol = _int_param(params.get("contracts_per_symbol", ["4"])[0], 4, 1, 12)
+            contracts_per_symbol = _int_param(
+                params.get("contracts_per_symbol", ["4"])[0], 4, 1, 12
+            )
             limit = _int_param(params.get("limit", ["18"])[0], 18, 1, 80)
-            self._send_json(build_option_chain_batch(
-                self.data_dir,
-                query=query,
-                side=side,
-                min_dte=min_dte,
-                max_dte=max_dte,
-                max_spread_pct=max_spread,
-                max_premium=max_premium,
-                min_open_interest=min_oi,
-                preset=preset,
-                symbols_limit=symbols_limit,
-                contracts_per_symbol=contracts_per_symbol,
-                limit=limit,
-            ))
+            self._send_json(
+                build_option_chain_batch(
+                    self.data_dir,
+                    query=query,
+                    side=side,
+                    min_dte=min_dte,
+                    max_dte=max_dte,
+                    max_spread_pct=max_spread,
+                    max_premium=max_premium,
+                    min_open_interest=min_oi,
+                    preset=preset,
+                    symbols_limit=symbols_limit,
+                    contracts_per_symbol=contracts_per_symbol,
+                    limit=limit,
+                )
+            )
             return
         if parsed.path == "/api/climate-gated-setups":
             params = parse_qs(parsed.query)
             per_asset = _int_param(params.get("per_asset", ["4"])[0], 4, 1, 10)
             limit = _int_param(params.get("limit", ["12"])[0], 12, 1, 40)
             include_held = _bool_param(params.get("include_held", ["true"])[0], True)
-            self._send_json(build_climate_gated_setups(
-                self.data_dir, per_asset=per_asset, limit=limit, include_held=include_held,
-            ))
+            self._send_json(
+                build_climate_gated_setups(
+                    self.data_dir,
+                    per_asset=per_asset,
+                    limit=limit,
+                    include_held=include_held,
+                )
+            )
             return
         if parsed.path == "/api/opportunities":
             params = parse_qs(parsed.query)
@@ -23536,10 +25772,16 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             min_conf = _float_param(params.get("min_confidence", ["0"])[0], 0.0, 0.0, 100.0)
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
-            self._send_json(build_opportunities(
-                self.data_dir, asset=asset, query=query, status=status,
-                min_confidence=min_conf, limit=limit,
-            ))
+            self._send_json(
+                build_opportunities(
+                    self.data_dir,
+                    asset=asset,
+                    query=query,
+                    status=status,
+                    min_confidence=min_conf,
+                    limit=limit,
+                )
+            )
             return
         if parsed.path == "/api/positions":
             params = parse_qs(parsed.query)
@@ -23550,9 +25792,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             status = params.get("status", ["all"])[0].strip().lower()
             query = params.get("query", [""])[0]
             limit = _int_param(params.get("limit", ["250"])[0], 250, 1, 500)
-            self._send_json(build_positions(
-                self.data_dir, asset=asset, query=query, status=status, limit=limit,
-            ))
+            self._send_json(
+                build_positions(
+                    self.data_dir,
+                    asset=asset,
+                    query=query,
+                    status=status,
+                    limit=limit,
+                )
+            )
             return
         if parsed.path == "/api/exit-reviews":
             params = parse_qs(parsed.query)
@@ -23562,9 +25810,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 return
             query = params.get("query", [""])[0]
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 500)
-            self._send_json(build_exit_review_summary(
-                self.data_dir, asset=asset, query=query, limit=limit,
-            ))
+            self._send_json(
+                build_exit_review_summary(
+                    self.data_dir,
+                    asset=asset,
+                    query=query,
+                    limit=limit,
+                )
+            )
             return
         if parsed.path == "/api/paper-candidates":
             params = parse_qs(parsed.query)
@@ -23578,21 +25831,25 @@ class CockpitHandler(BaseHTTPRequestHandler):
             allow_zero = _bool_param(params.get("allow_zero_size_placeholder", ["false"])[0])
             dry_run = _bool_param(params.get("dry_run", ["false"])[0])
             query = params.get("query", [""])[0]
-            self._send_json(build_paper_candidates(
-                self.data_dir,
-                max_new=max_new,
-                max_open=max_open,
-                include_watch=include_watch,
-                allow_zero_size_placeholder=allow_zero,
-                asset=asset,
-                dry_run=dry_run,
-                write=False,
-                query=query,
-            ))
+            self._send_json(
+                build_paper_candidates(
+                    self.data_dir,
+                    max_new=max_new,
+                    max_open=max_open,
+                    include_watch=include_watch,
+                    allow_zero_size_placeholder=allow_zero,
+                    asset=asset,
+                    dry_run=dry_run,
+                    write=False,
+                    query=query,
+                )
+            )
             return
         if parsed.path == "/api/robinhood-queue":
             params = parse_qs(parsed.query)
-            account_budget = _float_param(params.get("account_budget", ["500"])[0], 500.0, 1.0, 1_000_000.0)
+            account_budget = _float_param(
+                params.get("account_budget", ["500"])[0], 500.0, 1.0, 1_000_000.0
+            )
             max_candidates = _int_param(params.get("max_candidates", ["5"])[0], 5, 1, 20)
             max_orders = _int_param(params.get("max_orders", ["2"])[0], 2, 1, 10)
             min_dte = _int_param(
@@ -23605,18 +25862,20 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             refresh_chain = _bool_param(params.get("refresh_chain", ["false"])[0])
             chain_preset = params.get("chain_preset", ["auto"])[0]
-            self._send_json(build_robinhood_agentic_queue_report(
-                self.data_dir,
-                account_budget=account_budget,
-                max_candidates=max_candidates,
-                max_orders=max_orders,
-                min_dte=min_dte,
-                min_confidence=min_conf,
-                query=query,
-                refresh_chain=refresh_chain,
-                chain_preset=chain_preset,
-                write=False,
-            ))
+            self._send_json(
+                build_robinhood_agentic_queue_report(
+                    self.data_dir,
+                    account_budget=account_budget,
+                    max_candidates=max_candidates,
+                    max_orders=max_orders,
+                    min_dte=min_dte,
+                    min_confidence=min_conf,
+                    query=query,
+                    refresh_chain=refresh_chain,
+                    chain_preset=chain_preset,
+                    write=False,
+                )
+            )
             return
         if parsed.path == "/api/agentic-decision-journal":
             params = parse_qs(parsed.query)
@@ -23649,7 +25908,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             )
             max_dte = _int_param(params.get("max_dte", ["900"])[0], 900, 1, 1600)
             max_spread = _float_param(params.get("max_spread_pct", ["0.25"])[0], 0.25, 0.0, 5.0)
-            max_premium = _float_param(params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0)
+            max_premium = _float_param(
+                params.get("max_premium", ["500"])[0], 500.0, 0.0, 1_000_000.0
+            )
             min_oi = _int_param(params.get("min_open_interest", ["0"])[0], 0, 0, 1_000_000)
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 500)
             report = build_option_chain_scan(
@@ -23682,13 +25943,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
             refresh_quotes = _bool_param(params.get("refresh_quotes", ["false"])[0], False)
             quote_limit = _int_param(params.get("quote_limit", ["20"])[0], 20, 0, 80)
-            self._send_json(build_saved_option_contracts(
-                self.data_dir,
-                enrich=enrich,
-                limit=limit,
-                refresh_quotes=refresh_quotes,
-                quote_limit=quote_limit,
-            ))
+            self._send_json(
+                build_saved_option_contracts(
+                    self.data_dir,
+                    enrich=enrich,
+                    limit=limit,
+                    refresh_quotes=refresh_quotes,
+                    quote_limit=quote_limit,
+                )
+            )
             return
         if parsed.path == "/api/jobs":
             self._send_json({"jobs": list_jobs(self.data_dir)})
@@ -23747,14 +26010,25 @@ class CockpitHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path not in {
             "/api/lookup",
-            "/api/run-symbol", "/api/export-paper", "/api/build-robinhood-queue",
-            "/api/export-chain-shortlist", "/api/build-swing-packet",
-            "/api/agentic-decision", "/api/normalize-broker-snapshot",
+            "/api/run-symbol",
+            "/api/export-paper",
+            "/api/build-robinhood-queue",
+            "/api/export-chain-shortlist",
+            "/api/build-swing-packet",
+            "/api/agentic-decision",
+            "/api/normalize-broker-snapshot",
             "/api/trade-plan",
-            "/api/write-position-hygiene-plan", "/api/apply-position-hygiene",
-            "/api/watchlist-add", "/api/watchlist-add-many", "/api/watchlist-remove", "/api/watchlist-run",
-            "/api/warm-sec-cache", "/api/warm-symbol-caches", "/api/run-refresh-scan",
-            "/api/robinhood-connect", "/api/robinhood-disconnect",
+            "/api/write-position-hygiene-plan",
+            "/api/apply-position-hygiene",
+            "/api/watchlist-add",
+            "/api/watchlist-add-many",
+            "/api/watchlist-remove",
+            "/api/watchlist-run",
+            "/api/warm-sec-cache",
+            "/api/warm-symbol-caches",
+            "/api/run-refresh-scan",
+            "/api/robinhood-connect",
+            "/api/robinhood-disconnect",
             "/api/robinhood-sync-snapshot",
             "/api/robinhood-check-finalist",
         }:
@@ -23920,7 +26194,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/watchlist-add":
             context = body.get("context") if isinstance(body.get("context"), dict) else None
-            result = add_watchlist_query(str(body.get("query") or ""), self.data_dir, context=context)
+            result = add_watchlist_query(
+                str(body.get("query") or ""), self.data_dir, context=context
+            )
             self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/watchlist-add-many":
@@ -23972,7 +26248,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 max_new=_int_param(str(body.get("max_new") or "5"), 5, 1, 30),
                 max_open=_int_param(str(body.get("max_open") or "30"), 30, 1, 200),
                 include_watch=_bool_param(body.get("include_watch"), False),
-                allow_zero_size_placeholder=_bool_param(body.get("allow_zero_size_placeholder"), False),
+                allow_zero_size_placeholder=_bool_param(
+                    body.get("allow_zero_size_placeholder"), False
+                ),
                 asset=asset,
                 dry_run=dry_run,
                 write=not dry_run,
@@ -23986,18 +26264,26 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._send_json(result, status=200 if result.get("ok") else 400)
             return
         if parsed.path == "/api/build-swing-packet":
-            self._send_json(build_swing_packet(
-                self.data_dir,
-                write=True,
-                refresh_chains=_bool_param(body.get("refresh_chains"), False),
-                chain_symbols_limit=_int_param(str(body.get("chain_symbols_limit") or "6"), 6, 1, 12),
-                chain_contracts_per_symbol=_int_param(str(body.get("chain_contracts_per_symbol") or "4"), 4, 1, 8),
-            ))
+            self._send_json(
+                build_swing_packet(
+                    self.data_dir,
+                    write=True,
+                    refresh_chains=_bool_param(body.get("refresh_chains"), False),
+                    chain_symbols_limit=_int_param(
+                        str(body.get("chain_symbols_limit") or "6"), 6, 1, 12
+                    ),
+                    chain_contracts_per_symbol=_int_param(
+                        str(body.get("chain_contracts_per_symbol") or "4"), 4, 1, 8
+                    ),
+                )
+            )
             return
         if parsed.path == "/api/build-robinhood-queue":
             report = build_robinhood_agentic_queue_report(
                 self.data_dir,
-                account_budget=_float_param(str(body.get("account_budget") or "500"), 500.0, 1.0, 1_000_000.0),
+                account_budget=_float_param(
+                    str(body.get("account_budget") or "500"), 500.0, 1.0, 1_000_000.0
+                ),
                 max_candidates=_int_param(str(body.get("max_candidates") or "5"), 5, 1, 20),
                 max_orders=_int_param(str(body.get("max_orders") or "2"), 2, 1, 10),
                 min_dte=_int_param(
@@ -24006,7 +26292,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     0,
                     1200,
                 ),
-                min_confidence=_float_param(str(body.get("min_confidence") or "55"), 55.0, 0.0, 100.0),
+                min_confidence=_float_param(
+                    str(body.get("min_confidence") or "55"), 55.0, 0.0, 100.0
+                ),
                 query=str(body.get("query") or ""),
                 refresh_chain=_bool_param(body.get("refresh_chain"), False),
                 chain_preset=str(body.get("chain_preset") or "auto"),
@@ -24034,16 +26322,18 @@ class CockpitHandler(BaseHTTPRequestHandler):
             body.get("bankroll"),
             _bool_param(body.get("aggressive"), False),
         )
-        result = create_job(query, self.data_dir, launch=True,
-                            extra_scan_args=scan_args, scan_mode=mode or "full")
+        result = create_job(
+            query, self.data_dir, launch=True, extra_scan_args=scan_args, scan_mode=mode or "full"
+        )
         self._send_json(result, status=200 if result.get("ok") else 400)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8765,
-               data_dir: Path = DATA_DIR, open_browser: bool = True) -> None:
+def run_server(
+    host: str = "127.0.0.1", port: int = 8765, data_dir: Path = DATA_DIR, open_browser: bool = True
+) -> None:
     if str(host or "").strip().lower() not in {"127.0.0.1", "localhost"}:
         raise ValueError("The cockpit is local-only; bind to 127.0.0.1 or localhost.")
     handler = type(

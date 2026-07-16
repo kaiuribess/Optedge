@@ -13,13 +13,15 @@ Layout:
   - TradingView watchlist export
   - Methodology appendix
 """
+
 from __future__ import annotations
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+
 import html
 import logging
 import math
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -32,8 +34,10 @@ from optedge.strategy_profile import (
 try:
     from fusion.attribution import attribution_chip as _attrib_chip
 except Exception:
+
     def _attrib_chip(row, top_k=3):
         return ""
+
 
 log = logging.getLogger("optedge.dashboard")
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,7 +61,7 @@ def _safe_int(v, default: int = 0) -> int:
 def _fmt_pct(x, digits=1):
     if x is None or pd.isna(x):
         return "-"
-    return f"{x*100:+.{digits}f}%"
+    return f"{x * 100:+.{digits}f}%"
 
 
 def _fmt_num(x, digits=2):
@@ -70,11 +74,11 @@ def _fmt_money(x):
     if x is None or pd.isna(x) or x == 0:
         return "-"
     if x >= 1e9:
-        return f"${x/1e9:.2f}B"
+        return f"${x / 1e9:.2f}B"
     if x >= 1e6:
-        return f"${x/1e6:.1f}M"
+        return f"${x / 1e6:.1f}M"
     if x >= 1e3:
-        return f"${x/1e3:.0f}K"
+        return f"${x / 1e3:.0f}K"
     return f"${x:.0f}"
 
 
@@ -92,9 +96,11 @@ def _badge(label: str, color: str) -> str:
 def _confidence_bar(conf: int) -> str:
     width = max(0, min(100, conf))
     color = "#10b981" if conf >= 70 else "#f59e0b" if conf >= 55 else "#94a3b8"
-    return (f'<div class="conf-bar"><div class="conf-fill" '
-            f'style="width:{width}%;background:{color}"></div>'
-            f'<span class="conf-text">{conf}</span></div>')
+    return (
+        f'<div class="conf-bar"><div class="conf-fill" '
+        f'style="width:{width}%;background:{color}"></div>'
+        f'<span class="conf-text">{conf}</span></div>'
+    )
 
 
 def _trade_status_chip(row: pd.Series) -> str:
@@ -109,9 +115,11 @@ def _trade_status_chip(row: pd.Series) -> str:
     title = ""
     if score is not None and not pd.isna(score):
         title = f' title="Trade score {float(score):.2f}"'
-    return (f'<span class="chip trade-status {html.escape(str(status).lower())}"{title} '
-            f'style="background:{color}22;color:{color};border-color:{color}55">'
-            f'{label}</span>')
+    return (
+        f'<span class="chip trade-status {html.escape(str(status).lower())}"{title} '
+        f'style="background:{color}22;color:{color};border-color:{color}55">'
+        f"{label}</span>"
+    )
 
 
 def _quote_quality_chip(row: pd.Series) -> str:
@@ -147,11 +155,11 @@ def _quote_quality_chip(row: pd.Series) -> str:
     return (
         f'<span class="chip quote-source" title="{html.escape(title)}" '
         f'style="background:{color}20;color:{color};border:1px solid {color}55">'
-        f'{html.escape(label)}</span>'
+        f"{html.escape(label)}</span>"
     )
 
 
-def _position_identity(row: Dict[str, Any]) -> tuple:
+def _position_identity(row: dict[str, Any]) -> tuple:
     """Stable identity for lifecycle rows that may not have a position_id."""
     pid = row.get("position_id")
     if pid:
@@ -167,7 +175,7 @@ def _position_identity(row: Dict[str, Any]) -> tuple:
     )
 
 
-def _dedupe_position_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedupe_position_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen = set()
     out = []
     for row in rows:
@@ -199,7 +207,7 @@ def _exit_bucket(row: pd.Series) -> str:
     return reason
 
 
-def _open_position_label(row: Dict[str, Any]) -> str:
+def _open_position_label(row: dict[str, Any]) -> str:
     ticker = str(row.get("ticker") or row.get("symbol") or "-").upper()
     side = str(row.get("side") or row.get("direction") or "").upper()
     strike = row.get("strike")
@@ -235,15 +243,19 @@ def _option_card(row: pd.Series) -> str:
     pred_opt = row.get("pred_option_return_pct")
     if pred_opt is not None and not pd.isna(pred_opt) and abs(pred_opt) > 0.005:
         color = "#10b981" if pred_opt > 0 else "#ef4444"
-        pred_html = (f'<span class="chip" style="background:{color}20;color:{color};font-weight:600">'
-                     f'pred {pred_opt*100:+.1f}%</span>')
+        pred_html = (
+            f'<span class="chip" style="background:{color}20;color:{color};font-weight:600">'
+            f"pred {pred_opt * 100:+.1f}%</span>"
+        )
     # EV chip
     ev_html = ""
     ev_pct = row.get("ev_pct")
     if ev_pct is not None and not pd.isna(ev_pct):
         ev_color = "#10b981" if ev_pct > 0 else "#ef4444"
-        ev_html = (f'<span class="chip" style="background:{ev_color}20;color:{ev_color}">'
-                   f'EV {ev_pct*100:+.0f}%</span>')
+        ev_html = (
+            f'<span class="chip" style="background:{ev_color}20;color:{ev_color}">'
+            f"EV {ev_pct * 100:+.0f}%</span>"
+        )
     buyer_edge_html = ""
     buyer_edge = row.get("buyer_edge_pct")
     if buyer_edge is not None and not pd.isna(buyer_edge):
@@ -251,7 +263,7 @@ def _option_card(row: pd.Series) -> str:
         buyer_edge_html = (
             f'<span class="chip" style="background:{edge_color}20;color:{edge_color}" '
             f'title="Model value advantage for a long buyer after round-trip spread">'
-            f'buyer edge {buyer_edge*100:+.1f}%</span>'
+            f"buyer edge {buyer_edge * 100:+.1f}%</span>"
         )
     # Congress chip
     congress_html = ""
@@ -259,8 +271,10 @@ def _option_card(row: pd.Series) -> str:
     if cong_score and not pd.isna(cong_score) and abs(cong_score) > 0.3:
         c = "#10b981" if cong_score > 0 else "#ef4444"
         n_buys = _safe_int(row.get("congress_buys_n"))
-        congress_html = (f'<span class="chip" style="background:{c}20;color:{c}">'
-                         f' Cong {cong_score:+.1f} ({n_buys}P)</span>')
+        congress_html = (
+            f'<span class="chip" style="background:{c}20;color:{c}">'
+            f" Cong {cong_score:+.1f} ({n_buys}P)</span>"
+        )
     # Analyst chip
     analyst_html = ""
     analyst_score = row.get("analyst_score") or 0
@@ -269,8 +283,10 @@ def _option_card(row: pd.Series) -> str:
         sb = _safe_int(row.get("analyst_strong_buy"))
         bs = _safe_int(row.get("analyst_buy"))
         ss = _safe_int(row.get("analyst_strong_sell")) + _safe_int(row.get("analyst_sell"))
-        analyst_html = (f'<span class="chip" style="background:{ac}20;color:{ac}">'
-                        f'Analyst {sb}SB/{bs}B/{ss}S ({analyst_score:+.1f})</span>')
+        analyst_html = (
+            f'<span class="chip" style="background:{ac}20;color:{ac}">'
+            f"Analyst {sb}SB/{bs}B/{ss}S ({analyst_score:+.1f})</span>"
+        )
     # Technicals - context chip (RSI + MACD direction + 52w distance)
     tech_html = ""
     rsi = row.get("rsi")
@@ -279,10 +295,12 @@ def _option_card(row: pd.Series) -> str:
         dist_hi = row.get("dist_52w_high") or 0
         rsi_color = "#ef4444" if rsi > 70 else "#10b981" if rsi < 30 else "#94a3b8"
         macd_glyph = "^" if macd_h > 0 else "v"
-        tech_html = (f'<span class="chip" title="RSI {rsi:.0f}  -  MACD hist {macd_h:+.2f} '
-                     f' -  52w high {dist_hi*100:+.0f}%" '
-                     f'style="background:{rsi_color}20;color:{rsi_color}">'
-                     f'Trend RSI {rsi:.0f} MACD{macd_glyph}</span>')
+        tech_html = (
+            f'<span class="chip" title="RSI {rsi:.0f}  -  MACD hist {macd_h:+.2f} '
+            f' -  52w high {dist_hi * 100:+.0f}%" '
+            f'style="background:{rsi_color}20;color:{rsi_color}">'
+            f"Trend RSI {rsi:.0f} MACD{macd_glyph}</span>"
+        )
     # Short interest chip (squeeze setup awareness)
     short_int_html = ""
     spof = row.get("short_pct_of_float")
@@ -290,18 +308,22 @@ def _option_card(row: pd.Series) -> str:
         si_color = "#f59e0b" if spof > 0.20 else "#3b82f6"
         chg = row.get("short_int_change_pct") or 0
         chg_glyph = "^" if chg > 0.05 else "v" if chg < -0.05 else "->"
-        short_int_html = (f'<span class="chip" title="Short % of float; change vs prior month: {chg*100:+.1f}%" '
-                          f'style="background:{si_color}20;color:{si_color}">'
-                          f'SI SI {spof*100:.0f}% {chg_glyph}</span>')
+        short_int_html = (
+            f'<span class="chip" title="Short % of float; change vs prior month: {chg * 100:+.1f}%" '
+            f'style="background:{si_color}20;color:{si_color}">'
+            f"SI SI {spof * 100:.0f}% {chg_glyph}</span>"
+        )
     # Put/Call ratio chip (contrarian)
     pc_html = ""
     pc_vol = row.get("pc_vol_ratio")
     if pc_vol is not None and not pd.isna(pc_vol) and (pc_vol > 1.5 or pc_vol < 0.5):
         # extreme P/C
         pc_color = "#10b981" if pc_vol > 1.5 else "#ef4444"
-        pc_html = (f'<span class="chip" title="Crowd positioning - extreme is contrarian" '
-                   f'style="background:{pc_color}20;color:{pc_color}">'
-                   f'P/C P/C {pc_vol:.2f}</span>')
+        pc_html = (
+            f'<span class="chip" title="Crowd positioning - extreme is contrarian" '
+            f'style="background:{pc_color}20;color:{pc_color}">'
+            f"P/C P/C {pc_vol:.2f}</span>"
+        )
     # IV surface anomaly chip
     iv_anom_html = ""
     iv_z = row.get("iv_anomaly_max_z")
@@ -309,10 +331,16 @@ def _option_card(row: pd.Series) -> str:
         ivc = "#a78bfa"
         top_strike = row.get("iv_anomaly_top_strike")
         top_side = row.get("iv_anomaly_top_side") or ""
-        title = f"IV anomaly: {top_side} {top_strike:g} is {iv_z:+.1f}sigma off the smile" if top_strike else ""
-        iv_anom_html = (f'<span class="chip" title="{title}" '
-                        f'style="background:{ivc}20;color:{ivc}">'
-                        f'IV IV {iv_z:+.1f}sigma</span>')
+        title = (
+            f"IV anomaly: {top_side} {top_strike:g} is {iv_z:+.1f}sigma off the smile"
+            if top_strike
+            else ""
+        )
+        iv_anom_html = (
+            f'<span class="chip" title="{title}" '
+            f'style="background:{ivc}20;color:{ivc}">'
+            f"IV IV {iv_z:+.1f}sigma</span>"
+        )
     # Kelly + sizing
     kelly_pct = row.get("kelly_pct") or 0
     sized_dollars = row.get("actual_dollars") or 0
@@ -321,8 +349,10 @@ def _option_card(row: pd.Series) -> str:
     actionable_size = trade_status == "trade" and sized_contracts > 0
     kelly_html = ""
     if kelly_pct and not pd.isna(kelly_pct) and kelly_pct > 0:
-        kelly_html = (f'<span class="chip" style="background:#3b82f620;color:#3b82f6">'
-                      f'1/4Kelly {kelly_pct*100:.1f}%</span>')
+        kelly_html = (
+            f'<span class="chip" style="background:#3b82f620;color:#3b82f6">'
+            f"1/4Kelly {kelly_pct * 100:.1f}%</span>"
+        )
     # Exit triggers (option-specific)
     stop_p = row.get("stop_price")
     target_p = row.get("target_price")
@@ -343,20 +373,20 @@ def _option_card(row: pd.Series) -> str:
   <div class="sizing-block">
     <h4>Position size <span class="muted">(Kelly)</span></h4>
     <div class="sizing-row">
-      <span><strong>{sized_contracts}</strong> contract{'s' if sized_contracts != 1 else ''}</span>
+      <span><strong>{sized_contracts}</strong> contract{"s" if sized_contracts != 1 else ""}</span>
       <span class="muted">~= ${sized_dollars:,.0f}</span>
-      <span class="muted">{kelly_pct*100:.1f}% of bankroll</span>
+      <span class="muted">{kelly_pct * 100:.1f}% of bankroll</span>
     </div>
   </div>"""
     else:
         gate_reason = str(row.get("trade_gate_reason") or "not_actionable").replace("_", " ")
-        sizing_block = """<div class="sizing-block warn">
+        sizing_block = f"""<div class="sizing-block warn">
     <h4>Position size</h4>
-    <p>Not executable: %s.</p>
-  </div>""" % html.escape(gate_reason)
+    <p>Not executable: {html.escape(gate_reason)}.</p>
+  </div>"""
 
     return f"""
-<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="{row["side"]}" data-status="{html.escape(str(row.get('trade_status') or 'Watch')).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_opt or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}" data-dte="{_safe_int(row.get('dte'))}">
+<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="{row["side"]}" data-status="{html.escape(str(row.get("trade_status") or "Watch")).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_opt or 0) * 100:.2f}" data-ev="{(ev_pct or 0) * 100:.2f}" data-kelly="{(kelly_pct or 0) * 100:.2f}" data-dte="{_safe_int(row.get("dte"))}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -379,31 +409,31 @@ def _option_card(row: pd.Series) -> str:
   </header>
   <div class="contract">
     <span class="contract-line">{html.escape(row["contract"])}</span>
-    <span class="muted">@ ${_fmt_num(row['mid'])}  -  spot ${_fmt_num(row['spot'])}  -  {moneyness:+.1f}%  -  {_safe_int(row.get('dte'))}d</span>
+    <span class="muted">@ ${_fmt_num(row["mid"])}  -  spot ${_fmt_num(row["spot"])}  -  {moneyness:+.1f}%  -  {_safe_int(row.get("dte"))}d</span>
   </div>
   <div class="grid">
-    <div><span class="lab">IV</span><span class="val">{_fmt_pct(row['iv_market'])}</span></div>
-    <div><span class="lab">HV30</span><span class="val">{_fmt_pct(row['fair_vol'])}</span></div>
-    <div><span class="lab">Vol prem</span><span class="val">{_fmt_pct(row['vol_premium'])}</span></div>
-    <div><span class="lab">Delta</span><span class="val">{_fmt_num(row['delta'])}</span></div>
-    <div><span class="lab">OI</span><span class="val">{_safe_int(row.get('open_interest')):,}</span></div>
-    <div><span class="lab">Spread</span><span class="val">{_fmt_pct(row['spread_pct'])}</span></div>
-    <div><span class="lab">Buyer edge</span><span class="val">{_fmt_pct(row.get('buyer_edge_pct'))}</span></div>
-    <div><span class="lab">Pricing</span><span class="val">{html.escape(str(row.get('pricing_direction') or '-')).replace('_', ' ')}</span></div>
+    <div><span class="lab">IV</span><span class="val">{_fmt_pct(row["iv_market"])}</span></div>
+    <div><span class="lab">HV30</span><span class="val">{_fmt_pct(row["fair_vol"])}</span></div>
+    <div><span class="lab">Vol prem</span><span class="val">{_fmt_pct(row["vol_premium"])}</span></div>
+    <div><span class="lab">Delta</span><span class="val">{_fmt_num(row["delta"])}</span></div>
+    <div><span class="lab">OI</span><span class="val">{_safe_int(row.get("open_interest")):,}</span></div>
+    <div><span class="lab">Spread</span><span class="val">{_fmt_pct(row["spread_pct"])}</span></div>
+    <div><span class="lab">Buyer edge</span><span class="val">{_fmt_pct(row.get("buyer_edge_pct"))}</span></div>
+    <div><span class="lab">Pricing</span><span class="val">{html.escape(str(row.get("pricing_direction") or "-")).replace("_", " ")}</span></div>
   </div>
   {headline_html}
   {sizing_block}
   {exit_block}
   <div class="reason">
     <h4>Why</h4>
-    <p>{html.escape(row.get("reasoning",""))}</p>
+    <p>{html.escape(row.get("reasoning", ""))}</p>
   </div>
   <div class="attribution muted" style="font-size:11px;margin-top:6px;font-family:monospace;">
     Target drivers: {html.escape(_attrib_chip(row))}
   </div>
   <div class="risks">
     <h4>Risks</h4>
-    <p>{html.escape(row.get("risks",""))}</p>
+    <p>{html.escape(row.get("risks", ""))}</p>
   </div>
 </article>
 """
@@ -412,8 +442,12 @@ def _option_card(row: pd.Series) -> str:
 def _value_card(row: pd.Series) -> str:
     """Card for a "good value" play."""
     bucket = row.get("value_bucket") or "-"
-    bucket_color = {"deep value": "#10b981", "value": "#3b82f6",
-                    "fair": "#94a3b8", "expensive": "#ef4444"}.get(bucket, "#94a3b8")
+    bucket_color = {
+        "deep value": "#10b981",
+        "value": "#3b82f6",
+        "fair": "#94a3b8",
+        "expensive": "#ef4444",
+    }.get(bucket, "#94a3b8")
     pe = row.get("pe")
     pe_str = f"{pe:.1f}" if pe is not None and not pd.isna(pe) and pe > 0 else "-"
     fcf_y = row.get("fcf_yield")
@@ -421,17 +455,20 @@ def _value_card(row: pd.Series) -> str:
     insider = row.get("insider_score") or 0
     _h = row.get("top_headline")
     headline = _h.strip() if isinstance(_h, str) else ""
-    headline_html = (f'<div class="headline">News {html.escape(headline[:90])}</div>'
-                     if headline else "")
+    headline_html = (
+        f'<div class="headline">News {html.escape(headline[:90])}</div>' if headline else ""
+    )
     insider_chip = ""
     if insider and not pd.isna(insider) and abs(insider) > 0.5:
         ins_color = "#10b981" if insider > 0 else "#ef4444"
         n_buys = _safe_int(row.get("n_buys"))
         n_sells = _safe_int(row.get("n_sells"))
-        insider_chip = (f'<span class="chip" style="background:{ins_color}20;color:{ins_color}">'
-                        f'Insider {insider:+.1f} ({n_buys}P/{n_sells}S)</span>')
+        insider_chip = (
+            f'<span class="chip" style="background:{ins_color}20;color:{ins_color}">'
+            f"Insider {insider:+.1f} ({n_buys}P/{n_sells}S)</span>"
+        )
     return f"""
-<article class="card" data-ticker="{html.escape(str(row['ticker'])).upper()}" data-side="value" data-status="watch" data-conf="0" data-pred="0" data-ev="0" data-kelly="0">
+<article class="card" data-ticker="{html.escape(str(row["ticker"])).upper()}" data-side="value" data-status="watch" data-conf="0" data-pred="0" data-ev="0" data-kelly="0">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -439,16 +476,16 @@ def _value_card(row: pd.Series) -> str:
       <span class="chip" style="background:{bucket_color}20;color:{bucket_color}">{html.escape(bucket)}</span>
     </div>
     <div class="muted" style="font-family:'JetBrains Mono', monospace; font-size:13px;">
-      score <strong>{row['value_score']:+.2f}</strong>
+      score <strong>{row["value_score"]:+.2f}</strong>
     </div>
   </header>
   <div class="grid">
     <div><span class="lab">P/E</span><span class="val">{pe_str}</span></div>
-    <div><span class="lab">FCF yld</span><span class="val">{_fmt_pct(fcf_y) if fcf_y is not None else '-'}</span></div>
-    <div><span class="lab">EY</span><span class="val">{_fmt_pct(ey) if ey is not None else '-'}</span></div>
-    <div><span class="lab">EV/EBITDA</span><span class="val">{_fmt_num(row.get('ev_ebitda'),1)}</span></div>
-    <div><span class="lab">Op margin</span><span class="val">{_fmt_pct(row.get('roic_proxy')) if row.get('roic_proxy') is not None else '-'}</span></div>
-    <div><span class="lab">Graham</span><span class="val">{_safe_int(row.get('graham_score'))}/6</span></div>
+    <div><span class="lab">FCF yld</span><span class="val">{_fmt_pct(fcf_y) if fcf_y is not None else "-"}</span></div>
+    <div><span class="lab">EY</span><span class="val">{_fmt_pct(ey) if ey is not None else "-"}</span></div>
+    <div><span class="lab">EV/EBITDA</span><span class="val">{_fmt_num(row.get("ev_ebitda"), 1)}</span></div>
+    <div><span class="lab">Op margin</span><span class="val">{_fmt_pct(row.get("roic_proxy")) if row.get("roic_proxy") is not None else "-"}</span></div>
+    <div><span class="lab">Graham</span><span class="val">{_safe_int(row.get("graham_score"))}/6</span></div>
   </div>
   <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
     {insider_chip}
@@ -467,39 +504,43 @@ def _futures_card(row: pd.Series) -> str:
     micro = "micro" if row.get("using_micro") else "full"
     context = row.get("futures_context_score")
     rank_score = row.get("rank_score")
-    rank_html = f" - rank {float(rank_score):+.2f}" if rank_score is not None and not pd.isna(rank_score) else ""
+    rank_html = (
+        f" - rank {float(rank_score):+.2f}"
+        if rank_score is not None and not pd.isna(rank_score)
+        else ""
+    )
     atr = row.get("atr20") if row.get("atr20") is not None else row.get("atr_estimate")
     trade_status = row.get("trade_status") or "Watch"
     return f"""
-<article class="card" data-ticker="{html.escape(str(row['symbol'])).upper()}" data-side="futures" data-status="{html.escape(str(trade_status)).lower()}" data-conf="0" data-pred="{float(row.get('futures_score') or 0) * 100:.2f}" data-ev="0" data-kelly="{float(row.get('kelly_pct') or 0) * 100:.2f}">
+<article class="card" data-ticker="{html.escape(str(row["symbol"])).upper()}" data-side="futures" data-status="{html.escape(str(trade_status)).lower()}" data-conf="0" data-pred="{float(row.get("futures_score") or 0) * 100:.2f}" data-ev="0" data-kelly="{float(row.get("kelly_pct") or 0) * 100:.2f}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["symbol"])}</span>
       {_badge(side_label, side_color)}
-      <span class="chip">{html.escape(_fmt_text(row.get('kind'), ''))}</span>
+      <span class="chip">{html.escape(_fmt_text(row.get("kind"), ""))}</span>
       <span class="chip">{html.escape(str(trade_status))}</span>
     </div>
     <div class="muted" style="font-family:'JetBrains Mono', monospace; font-size:13px;">
-      score <strong>{row['futures_score']:+.2f}</strong>{rank_html}
+      score <strong>{row["futures_score"]:+.2f}</strong>{rank_html}
     </div>
   </header>
   <div class="contract">
-    <span class="contract-line">{html.escape(_fmt_text(row.get('name'), ''))}</span>
-    <span class="muted">spot ${_fmt_num(row.get('spot'))} · ETF proxy {html.escape(proxy)} · {html.escape(str(contract))} ({micro})</span>
+    <span class="contract-line">{html.escape(_fmt_text(row.get("name"), ""))}</span>
+    <span class="muted">spot ${_fmt_num(row.get("spot"))} · ETF proxy {html.escape(proxy)} · {html.escape(str(contract))} ({micro})</span>
   </div>
   <div class="grid">
-    <div><span class="lab">5d</span><span class="val">{_fmt_pct(row.get('ret_5d')) if row.get('ret_5d') is not None else '-'}</span></div>
-    <div><span class="lab">20d</span><span class="val">{_fmt_pct(row.get('ret_20d')) if row.get('ret_20d') is not None else '-'}</span></div>
-    <div><span class="lab">60d</span><span class="val">{_fmt_pct(row.get('ret_60d')) if row.get('ret_60d') is not None else '-'}</span></div>
-    <div><span class="lab">HV20</span><span class="val">{_fmt_pct(row.get('hv20')) if row.get('hv20') is not None else '-'}</span></div>
-    <div><span class="lab">ATR20</span><span class="val">{_fmt_num(atr, 2) if atr is not None else '-'}</span></div>
-    <div><span class="lab">52w pos</span><span class="val">{_fmt_num((row.get('range_pos') or 0)*100, 0)}%</span></div>
-    <div><span class="lab">Context</span><span class="val">{_fmt_num(context, 2) if context is not None else '-'}</span></div>
-    <div><span class="lab">Contracts</span><span class="val">{_safe_int(row.get('suggested_contracts'))}</span></div>
-    <div><span class="lab">Stop</span><span class="val">{_fmt_num(row.get('stop_price'), 2)}</span></div>
-    <div><span class="lab">Target</span><span class="val">{_fmt_num(row.get('target_price'), 2)}</span></div>
-    <div><span class="lab">Risk</span><span class="val">${_fmt_num(row.get('suggested_dollars_risk'), 0)}</span></div>
-    <div><span class="lab">R:R</span><span class="val">{_fmt_num(row.get('reward_risk_ratio'), 2)}</span></div>
+    <div><span class="lab">5d</span><span class="val">{_fmt_pct(row.get("ret_5d")) if row.get("ret_5d") is not None else "-"}</span></div>
+    <div><span class="lab">20d</span><span class="val">{_fmt_pct(row.get("ret_20d")) if row.get("ret_20d") is not None else "-"}</span></div>
+    <div><span class="lab">60d</span><span class="val">{_fmt_pct(row.get("ret_60d")) if row.get("ret_60d") is not None else "-"}</span></div>
+    <div><span class="lab">HV20</span><span class="val">{_fmt_pct(row.get("hv20")) if row.get("hv20") is not None else "-"}</span></div>
+    <div><span class="lab">ATR20</span><span class="val">{_fmt_num(atr, 2) if atr is not None else "-"}</span></div>
+    <div><span class="lab">52w pos</span><span class="val">{_fmt_num((row.get("range_pos") or 0) * 100, 0)}%</span></div>
+    <div><span class="lab">Context</span><span class="val">{_fmt_num(context, 2) if context is not None else "-"}</span></div>
+    <div><span class="lab">Contracts</span><span class="val">{_safe_int(row.get("suggested_contracts"))}</span></div>
+    <div><span class="lab">Stop</span><span class="val">{_fmt_num(row.get("stop_price"), 2)}</span></div>
+    <div><span class="lab">Target</span><span class="val">{_fmt_num(row.get("target_price"), 2)}</span></div>
+    <div><span class="lab">Risk</span><span class="val">${_fmt_num(row.get("suggested_dollars_risk"), 0)}</span></div>
+    <div><span class="lab">R:R</span><span class="val">{_fmt_num(row.get("reward_risk_ratio"), 2)}</span></div>
   </div>
 </article>
 """
@@ -522,19 +563,25 @@ def _share_card(row: pd.Series) -> str:
     pred_stk = row.get("pred_stock_return_pct")
     if pred_stk is not None and not pd.isna(pred_stk) and abs(pred_stk) > 0.002:
         color = "#10b981" if pred_stk > 0 else "#ef4444"
-        pred_html = (f'<span class="chip" style="background:{color}20;color:{color};font-weight:600">'
-                     f'pred {pred_stk*100:+.1f}%</span>')
+        pred_html = (
+            f'<span class="chip" style="background:{color}20;color:{color};font-weight:600">'
+            f"pred {pred_stk * 100:+.1f}%</span>"
+        )
     ev_pct = row.get("ev_pct")
     ev_html = ""
     if ev_pct is not None and not pd.isna(ev_pct) and abs(ev_pct) > 0.002:
         c = "#10b981" if ev_pct > 0 else "#ef4444"
-        ev_html = f'<span class="chip" style="background:{c}20;color:{c}">EV {ev_pct*100:+.1f}%</span>'
+        ev_html = (
+            f'<span class="chip" style="background:{c}20;color:{c}">EV {ev_pct * 100:+.1f}%</span>'
+        )
     kelly_pct = row.get("kelly_pct") or 0
     sized_dollars = row.get("suggested_dollars") or 0
     kelly_html = ""
     if kelly_pct and not pd.isna(kelly_pct) and kelly_pct > 0:
-        kelly_html = (f'<span class="chip" style="background:#3b82f620;color:#3b82f6">'
-                      f'1/4Kelly {kelly_pct*100:.1f}%</span>')
+        kelly_html = (
+            f'<span class="chip" style="background:#3b82f620;color:#3b82f6">'
+            f"1/4Kelly {kelly_pct * 100:.1f}%</span>"
+        )
     # Exit triggers for shares
     stop_pct_v = row.get("stop_pct")
     target_pct_v = row.get("target_pct")
@@ -544,8 +591,8 @@ def _share_card(row: pd.Series) -> str:
   <div class="exit-block">
     <h4>Exit triggers</h4>
     <div class="exit-row">
-      <span class="exit-stop">Cong Stop @ {stop_pct_v*100:+.0f}%</span>
-      <span class="exit-target">Target Target @ {target_pct_v*100:+.0f}%</span>
+      <span class="exit-stop">Cong Stop @ {stop_pct_v * 100:+.0f}%</span>
+      <span class="exit-target">Target Target @ {target_pct_v * 100:+.0f}%</span>
     </div>
   </div>"""
 
@@ -556,12 +603,12 @@ def _share_card(row: pd.Series) -> str:
     <h4>Position size <span class="muted">(Kelly)</span></h4>
     <div class="sizing-row">
       <span><strong>${sized_dollars:,.0f}</strong></span>
-      <span class="muted">{kelly_pct*100:.1f}% of bankroll</span>
+      <span class="muted">{kelly_pct * 100:.1f}% of bankroll</span>
     </div>
   </div>"""
 
     return f"""
-<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="shares" data-status="{html.escape(str(row.get('trade_status') or 'Watch')).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_stk or 0)*100:.2f}" data-ev="{(ev_pct or 0)*100:.2f}" data-kelly="{(kelly_pct or 0)*100:.2f}">
+<article class="card" data-ticker="{html.escape(row["ticker"]).upper()}" data-side="shares" data-status="{html.escape(str(row.get("trade_status") or "Watch")).lower()}" data-conf="{_safe_int(row.get("confidence"))}" data-pred="{(pred_stk or 0) * 100:.2f}" data-ev="{(ev_pct or 0) * 100:.2f}" data-kelly="{(kelly_pct or 0) * 100:.2f}">
   <header class="card-head">
     <div class="ticker-block">
       <span class="ticker">{html.escape(row["ticker"])}</span>
@@ -576,33 +623,33 @@ def _share_card(row: pd.Series) -> str:
   </header>
   <div class="contract">
     <span class="contract-line">{html.escape(cls.upper())}  -  mcap {mcap_str}</span>
-    <span class="muted">share score {row['share_score']:+.2f}</span>
+    <span class="muted">share score {row["share_score"]:+.2f}</span>
   </div>
   <div class="grid">
-    <div><span class="lab">Delta Sent</span><span class="val">{_fmt_num(row.get('sentiment_delta'),2)}</span></div>
-    <div><span class="lab">Mentions</span><span class="val">{_safe_int(row.get('mentions'))}</span></div>
-    <div><span class="lab">Fund</span><span class="val">{_fmt_num(row.get('fund_score'),2)}</span></div>
-    <div><span class="lab">Insider</span><span class="val">{_fmt_num(row.get('insider_score'),2)}</span></div>
-    <div><span class="lab">News 24h</span><span class="val">{_safe_int(row.get('n_24h'))}</span></div>
-    <div><span class="lab">Velocity</span><span class="val">{_safe_int(row.get('velocity')):+d}</span></div>
+    <div><span class="lab">Delta Sent</span><span class="val">{_fmt_num(row.get("sentiment_delta"), 2)}</span></div>
+    <div><span class="lab">Mentions</span><span class="val">{_safe_int(row.get("mentions"))}</span></div>
+    <div><span class="lab">Fund</span><span class="val">{_fmt_num(row.get("fund_score"), 2)}</span></div>
+    <div><span class="lab">Insider</span><span class="val">{_fmt_num(row.get("insider_score"), 2)}</span></div>
+    <div><span class="lab">News 24h</span><span class="val">{_safe_int(row.get("n_24h"))}</span></div>
+    <div><span class="lab">Velocity</span><span class="val">{_safe_int(row.get("velocity")):+d}</span></div>
   </div>
   {headline_html}
   {sizing_block}
   {exit_block}
   <div class="reason">
     <h4>Why</h4>
-    <p>{html.escape(row.get("reasoning",""))}</p>
+    <p>{html.escape(row.get("reasoning", ""))}</p>
   </div>
   <div class="risks">
     <h4>Risks</h4>
-    <p>{html.escape(row.get("risks",""))}</p>
+    <p>{html.escape(row.get("risks", ""))}</p>
   </div>
 </article>
 """
 
 
 # -------- Macro / stats banner ----------------------------------------
-def _macro_banner(macro: Dict[str, Any]) -> str:
+def _macro_banner(macro: dict[str, Any]) -> str:
     regime = macro.get("regime", "neutral")
     tilt = macro.get("macro_tilt", 0.0)
     color = {"risk_on": "#10b981", "risk_off": "#ef4444"}.get(regime, "#94a3b8")
@@ -618,39 +665,54 @@ def _macro_banner(macro: Dict[str, Any]) -> str:
     # Second row only renders if FRED data is available
     fred_row = ""
     if any(v is not None for v in (cpi_yoy, unrate, hy_spread, fed_funds, t10y3m)):
-        cpi_color = "#ef4444" if (cpi_yoy or 0) > 0.04 else "#10b981" if (cpi_yoy or 0) < 0.025 else "#94a3b8"
-        hy_color = "#ef4444" if (hy_spread or 0) > 5 else "#10b981" if (hy_spread or 0) < 3 else "#94a3b8"
+        cpi_color = (
+            "#ef4444"
+            if (cpi_yoy or 0) > 0.04
+            else "#10b981"
+            if (cpi_yoy or 0) < 0.025
+            else "#94a3b8"
+        )
+        hy_color = (
+            "#ef4444" if (hy_spread or 0) > 5 else "#10b981" if (hy_spread or 0) < 3 else "#94a3b8"
+        )
         curve_color = "#ef4444" if (t10y3m or 0) < 0 else "#10b981"
         fred_row = f"""
   <div class="macro-grid" style="margin-top:10px;">
-    <div><span class="lab">CPI YoY</span><span class="val" style="color:{cpi_color}">{_fmt_pct(cpi_yoy) if cpi_yoy is not None else '-'}</span></div>
-    <div><span class="lab">Unemp</span><span class="val">{_fmt_num(unrate, 1) if unrate is not None else '-'}%</span></div>
-    <div><span class="lab">Fed Funds</span><span class="val">{_fmt_num(fed_funds, 2) if fed_funds is not None else '-'}%</span></div>
-    <div><span class="lab">HY spread</span><span class="val" style="color:{hy_color}">{_fmt_num(hy_spread, 2) if hy_spread is not None else '-'}%</span></div>
-    <div><span class="lab">10Y-3M</span><span class="val" style="color:{curve_color}">{_fmt_num(t10y3m, 2) if t10y3m is not None else '-'}%</span></div>
+    <div><span class="lab">CPI YoY</span><span class="val" style="color:{cpi_color}">{_fmt_pct(cpi_yoy) if cpi_yoy is not None else "-"}</span></div>
+    <div><span class="lab">Unemp</span><span class="val">{_fmt_num(unrate, 1) if unrate is not None else "-"}%</span></div>
+    <div><span class="lab">Fed Funds</span><span class="val">{_fmt_num(fed_funds, 2) if fed_funds is not None else "-"}%</span></div>
+    <div><span class="lab">HY spread</span><span class="val" style="color:{hy_color}">{_fmt_num(hy_spread, 2) if hy_spread is not None else "-"}%</span></div>
+    <div><span class="lab">10Y-3M</span><span class="val" style="color:{curve_color}">{_fmt_num(t10y3m, 2) if t10y3m is not None else "-"}%</span></div>
   </div>"""
 
     return f"""
 <section class="macro" style="border-left-color:{color}">
   <div class="macro-head">
     <span class="regime-dot" style="background:{color}"></span>
-    <h2>Macro: <strong>{regime.replace('_',' ').upper()}</strong></h2>
+    <h2>Macro: <strong>{regime.replace("_", " ").upper()}</strong></h2>
     <span class="muted">tilt {tilt:+.2f}</span>
   </div>
   <div class="macro-grid">
-    <div><span class="lab">VIX</span><span class="val">{_fmt_num(vix, 1) if vix else '-'}</span></div>
-    <div><span class="lab">10Y</span><span class="val">{_fmt_num(macro.get('yield_10y'), 2) if macro.get('yield_10y') else '-'}%</span></div>
-    <div><span class="lab">3M</span><span class="val">{_fmt_num(macro.get('yield_3m'), 2) if macro.get('yield_3m') else '-'}%</span></div>
-    <div><span class="lab">10Y-3M</span><span class="val">{_fmt_num(slope, 2) if slope is not None else '-'}%</span></div>
-    <div><span class="lab">SPY 3m</span><span class="val">{_fmt_pct(spy3m) if spy3m is not None else '-'}</span></div>
+    <div><span class="lab">VIX</span><span class="val">{_fmt_num(vix, 1) if vix else "-"}</span></div>
+    <div><span class="lab">10Y</span><span class="val">{_fmt_num(macro.get("yield_10y"), 2) if macro.get("yield_10y") else "-"}%</span></div>
+    <div><span class="lab">3M</span><span class="val">{_fmt_num(macro.get("yield_3m"), 2) if macro.get("yield_3m") else "-"}%</span></div>
+    <div><span class="lab">10Y-3M</span><span class="val">{_fmt_num(slope, 2) if slope is not None else "-"}%</span></div>
+    <div><span class="lab">SPY 3m</span><span class="val">{_fmt_pct(spy3m) if spy3m is not None else "-"}</span></div>
   </div>{fred_row}
 </section>
 """
 
 
-def _stats_panel(elapsed: float, universe_size: int, n_calls: int, n_puts: int,
-                 n_shares: int, n_news: int, n_earnings: int,
-                 trending_count: int) -> str:
+def _stats_panel(
+    elapsed: float,
+    universe_size: int,
+    n_calls: int,
+    n_puts: int,
+    n_shares: int,
+    n_news: int,
+    n_earnings: int,
+    trending_count: int,
+) -> str:
     return f"""
 <section class="stats-panel">
   <div class="stat"><span class="stat-val">{elapsed:.1f}s</span><span class="stat-lab">runtime</span></div>
@@ -681,20 +743,20 @@ def _news_flow_panel(news_df: pd.DataFrame, top_n: int = 10) -> str:
         sent_color = "#10b981" if sent > 0.05 else "#ef4444" if sent < -0.05 else "#94a3b8"
         rows.append(f"""
 <div class="news-row">
-  <div class="news-tk"><strong>{html.escape(r['ticker'])}</strong></div>
+  <div class="news-tk"><strong>{html.escape(r["ticker"])}</strong></div>
   <div class="news-counts">
-    <span class="chip">{int(r['n_24h'])} / 24h</span>
-    <span class="chip">{int(r['n_7d'])} / 7d</span>
+    <span class="chip">{int(r["n_24h"])} / 24h</span>
+    <span class="chip">{int(r["n_7d"])} / 7d</span>
     <span class="chip" style="background:{sent_color}20;color:{sent_color}">Delta {sent:+.2f}</span>
   </div>
-  <div class="news-headline">{html.escape((r.get('top_headline') or '')[:110])}</div>
+  <div class="news-headline">{html.escape((r.get("top_headline") or "")[:110])}</div>
 </div>""")
     if not rows:
         return ""
     return f"""
 <section class="panel">
   <h3>News News Flow <span class="muted">(top by velocity x Deltasentiment)</span></h3>
-  <div class="news-list">{''.join(rows)}</div>
+  <div class="news-list">{"".join(rows)}</div>
 </section>
 """
 
@@ -703,26 +765,32 @@ def _earnings_calendar(earnings_df: pd.DataFrame, days: int = 14) -> str:
     if earnings_df is None or earnings_df.empty:
         return ""
     df = earnings_df.copy()
-    df = df[df["days_to_earnings"].notna() & (df["days_to_earnings"] >= 0) & (df["days_to_earnings"] <= days)]
+    df = df[
+        df["days_to_earnings"].notna()
+        & (df["days_to_earnings"] >= 0)
+        & (df["days_to_earnings"] <= days)
+    ]
     if df.empty:
         return ""
     df = df.sort_values("days_to_earnings")
     rows = []
     for _, r in df.iterrows():
         sup = r.get("last_eps_surprise_pct")
-        sup_color = "#10b981" if (sup or 0) > 0.02 else "#ef4444" if (sup or 0) < -0.02 else "#94a3b8"
-        sup_str = f"{sup*100:+.1f}%" if sup is not None else "-"
+        sup_color = (
+            "#10b981" if (sup or 0) > 0.02 else "#ef4444" if (sup or 0) < -0.02 else "#94a3b8"
+        )
+        sup_str = f"{sup * 100:+.1f}%" if sup is not None else "-"
         rows.append(f"""
 <div class="earn-row">
-  <div class="earn-tk"><strong>{html.escape(r['ticker'])}</strong></div>
-  <div class="earn-date">{html.escape(r.get('next_earnings_date') or '-')}</div>
-  <div class="earn-dte"><span class="chip">in {int(r['days_to_earnings'])}d</span></div>
+  <div class="earn-tk"><strong>{html.escape(r["ticker"])}</strong></div>
+  <div class="earn-date">{html.escape(r.get("next_earnings_date") or "-")}</div>
+  <div class="earn-dte"><span class="chip">in {int(r["days_to_earnings"])}d</span></div>
   <div class="earn-sup" style="color:{sup_color}">last surprise {sup_str}</div>
 </div>""")
     return f"""
 <section class="panel">
   <h3>EPS Earnings Calendar <span class="muted">(next {days}d)</span></h3>
-  <div class="earn-list">{''.join(rows)}</div>
+  <div class="earn-list">{"".join(rows)}</div>
 </section>
 """
 
@@ -743,13 +811,20 @@ def _insider_heatmap(insider_df: pd.DataFrame, n_each: int = 8) -> str:
         val = max(r.get("buys_value", 0) or 0, r.get("sells_value", 0) or 0)
         return f"""
 <div class="ins-row">
-  <div class="ins-tk"><strong>{html.escape(r['ticker'])}</strong></div>
-  <div class="ins-score" style="color:{color}">{r['insider_score']:+.2f}</div>
-  <div class="ins-counts"><span class="chip">{_safe_int(r.get('n_buys'))}P / {_safe_int(r.get('n_sells'))}S</span></div>
+  <div class="ins-tk"><strong>{html.escape(r["ticker"])}</strong></div>
+  <div class="ins-score" style="color:{color}">{r["insider_score"]:+.2f}</div>
+  <div class="ins-counts"><span class="chip">{_safe_int(r.get("n_buys"))}P / {_safe_int(r.get("n_sells"))}S</span></div>
   <div class="ins-val muted">{_fmt_money(val)}</div>
 </div>"""
-    buyers_html = "".join(_row(r, "#10b981") for _, r in buyers.iterrows()) or "<p class='muted'>No notable buys</p>"
-    sellers_html = "".join(_row(r, "#ef4444") for _, r in sellers.iterrows()) or "<p class='muted'>No notable sells</p>"
+
+    buyers_html = (
+        "".join(_row(r, "#10b981") for _, r in buyers.iterrows())
+        or "<p class='muted'>No notable buys</p>"
+    )
+    sellers_html = (
+        "".join(_row(r, "#ef4444") for _, r in sellers.iterrows())
+        or "<p class='muted'>No notable sells</p>"
+    )
     return f"""
 <section class="panel">
   <h3>Insider Insider Activity <span class="muted">(SEC EDGAR, last 90d)</span></h3>
@@ -767,8 +842,7 @@ def _insider_heatmap(insider_df: pd.DataFrame, n_each: int = 8) -> str:
 """
 
 
-def _wsb_panel(trending: List[str], sentiment_df: pd.DataFrame,
-               trending_meta: List = None) -> str:
+def _wsb_panel(trending: list[str], sentiment_df: pd.DataFrame, trending_meta: list = None) -> str:
     """Render the WSB trending tile grid.
 
     Pulls mention counts from `trending_meta` if provided (WSB engine output),
@@ -799,12 +873,12 @@ def _wsb_panel(trending: List[str], sentiment_df: pd.DataFrame,
 <div class="wsb-tile">
   <span class="wsb-ticker">{html.escape(t)}</span>
   <span class="chip" style="background:{sent_color}20;color:{sent_color}">Delta {delta:+.2f}</span>
-  <span class="muted">{mentions} mention{'s' if mentions != 1 else ''}{ups_str}</span>
+  <span class="muted">{mentions} mention{"s" if mentions != 1 else ""}{ups_str}</span>
 </div>""")
     return f"""
 <section class="panel">
   <h3>WSB WSB Trending <span class="muted">({len(trending)} discovered live, added to universe)</span></h3>
-  <div class="wsb-grid">{''.join(rows)}</div>
+  <div class="wsb-grid">{"".join(rows)}</div>
 </section>
 """
 
@@ -821,21 +895,21 @@ def _options_table(df: pd.DataFrame) -> str:
         source_html = _quote_quality_chip(r)
         rows.append(f"""
 <tr>
-  <td>{i+1}</td>
-  <td><strong>{html.escape(r['ticker'])}</strong></td>
-  <td>{html.escape(r['contract'])}</td>
+  <td>{i + 1}</td>
+  <td><strong>{html.escape(r["ticker"])}</strong></td>
+  <td>{html.escape(r["contract"])}</td>
   <td><span class="dot" style="background:{side_color}"></span>{side_label}</td>
   <td>{status}</td>
-  <td>{int(r['confidence'])}</td>
-  <td>{_fmt_pct(r.get('ev_pct'))}</td>
-  <td>{_fmt_pct(r.get('kelly_pct'))}</td>
-  <td>{_fmt_pct(r.get('buyer_edge_pct'))}</td>
-  <td>{html.escape(str(r.get('pricing_direction') or '-')).replace('_', ' ')}</td>
-  <td>{_fmt_pct(r['iv_market'])}</td>
-  <td>{_fmt_pct(r['fair_vol'])}</td>
-  <td>{_fmt_pct(r['vol_premium'])}</td>
-  <td>{int(r['dte'])}d</td>
-  <td>${_fmt_num(r['mid'])}</td>
+  <td>{int(r["confidence"])}</td>
+  <td>{_fmt_pct(r.get("ev_pct"))}</td>
+  <td>{_fmt_pct(r.get("kelly_pct"))}</td>
+  <td>{_fmt_pct(r.get("buyer_edge_pct"))}</td>
+  <td>{html.escape(str(r.get("pricing_direction") or "-")).replace("_", " ")}</td>
+  <td>{_fmt_pct(r["iv_market"])}</td>
+  <td>{_fmt_pct(r["fair_vol"])}</td>
+  <td>{_fmt_pct(r["vol_premium"])}</td>
+  <td>{int(r["dte"])}d</td>
+  <td>${_fmt_num(r["mid"])}</td>
   <td>{source_html}</td>
 </tr>""")
     return f"""
@@ -844,7 +918,7 @@ def _options_table(df: pd.DataFrame) -> str:
     <th>#</th><th>Ticker</th><th>Contract</th><th>Side</th>
     <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>Buyer edge</th><th>Pricing</th><th>IV</th><th>HV30</th><th>Vol prem</th><th>DTE</th><th>Mid</th><th>Source</th>
   </tr></thead>
-  <tbody>{''.join(rows)}</tbody>
+  <tbody>{"".join(rows)}</tbody>
 </table>
 """
 
@@ -860,19 +934,19 @@ def _shares_table(df: pd.DataFrame) -> str:
         status = html.escape(str(r.get("trade_status") or "Watch"))
         rows.append(f"""
 <tr>
-  <td>{i+1}</td>
-  <td><strong>{html.escape(r['ticker'])}</strong></td>
+  <td>{i + 1}</td>
+  <td><strong>{html.escape(r["ticker"])}</strong></td>
   <td>{html.escape(cls)}</td>
   <td>{mcap_str}</td>
   <td>{status}</td>
-  <td>{int(r['confidence'])}</td>
-  <td>{_fmt_pct(r.get('ev_pct'))}</td>
-  <td>{_fmt_pct(r.get('kelly_pct'))}</td>
-  <td>{r['share_score']:+.2f}</td>
-  <td>{_fmt_num(r.get('sentiment_delta'), 2)}</td>
-  <td>{_safe_int(r.get('mentions'))}</td>
-  <td>{_fmt_num(r.get('fund_score'), 1)}</td>
-  <td>{_fmt_num(r.get('insider_score'), 1)}</td>
+  <td>{int(r["confidence"])}</td>
+  <td>{_fmt_pct(r.get("ev_pct"))}</td>
+  <td>{_fmt_pct(r.get("kelly_pct"))}</td>
+  <td>{r["share_score"]:+.2f}</td>
+  <td>{_fmt_num(r.get("sentiment_delta"), 2)}</td>
+  <td>{_safe_int(r.get("mentions"))}</td>
+  <td>{_fmt_num(r.get("fund_score"), 1)}</td>
+  <td>{_fmt_num(r.get("insider_score"), 1)}</td>
 </tr>""")
     return f"""
 <table class="ranked">
@@ -880,7 +954,7 @@ def _shares_table(df: pd.DataFrame) -> str:
     <th>#</th><th>Ticker</th><th>Class</th><th>Mcap</th>
     <th>Status</th><th>Conf</th><th>EV</th><th>Kelly</th><th>Score</th><th>DeltaSent</th><th>Mentions</th><th>Fund</th><th>Insider</th>
   </tr></thead>
-  <tbody>{''.join(rows)}</tbody>
+  <tbody>{"".join(rows)}</tbody>
 </table>
 """
 
@@ -1311,13 +1385,19 @@ def _calibration_panel(calib) -> str:
     rows = ""
     for _, r in bins.iterrows():
         pc = "#10b981" if r["realized_mean"] > 0 else "#ef4444"
-        biasc = "#10b981" if abs(r["bias"]) < 0.05 else "#f59e0b" if abs(r["bias"]) < 0.15 else "#ef4444"
+        biasc = (
+            "#10b981"
+            if abs(r["bias"]) < 0.05
+            else "#f59e0b"
+            if abs(r["bias"]) < 0.15
+            else "#ef4444"
+        )
         rows += f"""
 <div class="perf-row">
-  <div class="perf-bucket">pred {r['pred_mean']*100:+.1f}%</div>
-  <div class="perf-n">n={int(r['n'])}</div>
-  <div class="perf-pnl" style="color:{pc}">realized {r['realized_mean']*100:+.2f}%</div>
-  <div class="perf-pnl" style="color:{biasc}">bias {r['bias']*100:+.2f}%</div>
+  <div class="perf-bucket">pred {r["pred_mean"] * 100:+.1f}%</div>
+  <div class="perf-n">n={int(r["n"])}</div>
+  <div class="perf-pnl" style="color:{pc}">realized {r["realized_mean"] * 100:+.2f}%</div>
+  <div class="perf-pnl" style="color:{biasc}">bias {r["bias"] * 100:+.2f}%</div>
 </div>"""
     rc_str = f"{rc:+.2f}" if rc is not None else "-"
     return f"""
@@ -1325,17 +1405,17 @@ def _calibration_panel(calib) -> str:
   <h3>Target Predictor Calibration <span class="muted">(predicted vs realized)</span></h3>
   <div class="perf-headline">
     <div><span class="lab">Rank corr</span><span class="val" style="color:{rc_color}">{rc_str}</span></div>
-    <div><span class="lab">Cal MAE</span><span class="val">{mae*100:.2f}%</span></div>
-    <div><span class="lab">Avg bias</span><span class="val" style="color:{bias_color}">{bias*100:+.2f}%</span></div>
-    <div><span class="lab">N signals</span><span class="val">{int(summary.get('n_signals', 0)) if isinstance(summary, dict) else 0}</span></div>
+    <div><span class="lab">Cal MAE</span><span class="val">{mae * 100:.2f}%</span></div>
+    <div><span class="lab">Avg bias</span><span class="val" style="color:{bias_color}">{bias * 100:+.2f}%</span></div>
+    <div><span class="lab">N signals</span><span class="val">{int(summary.get("n_signals", 0)) if isinstance(summary, dict) else 0}</span></div>
   </div>
-  <p class="muted" style="font-size:12px;margin-top:8px;">{html.escape(verdict or '')}</p>
+  <p class="muted" style="font-size:12px;margin-top:8px;">{html.escape(verdict or "")}</p>
   <h4 class="sub" style="margin-top:12px;">Per-decile breakdown</h4>
   {rows}
 </section>"""
 
 
-def _performance_panel(forward_summary, validation_summary: Optional[Dict] = None) -> str:
+def _performance_panel(forward_summary, validation_summary: dict | None = None) -> str:
     """Render the Performance Tracking panel from lifecycle validation first.
 
     Forward repricing is useful research telemetry, but it is not the same thing
@@ -1384,42 +1464,52 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
   <div class="perf-pnl" style="color:{color}">{ar_txt}</div>
 </div>"""
 
-        win_color = "#10b981" if (win_rate or 0) >= 0.55 else "#f59e0b" if (win_rate or 0) >= 0.45 else "#ef4444"
+        win_color = (
+            "#10b981"
+            if (win_rate or 0) >= 0.55
+            else "#f59e0b"
+            if (win_rate or 0) >= 0.45
+            else "#ef4444"
+        )
         pnl_color = "#10b981" if (avg_ret or 0) >= 0 else "#ef4444"
         fixed_win = fixed_shadow.get("win_rate")
         fixed_avg = fixed_shadow.get("avg_return")
         fixed_excess = fixed_shadow.get("avg_excess_vs_spy")
-        fixed_html = f"""
+        fixed_html = (
+            f"""
       <h4 class="sub">Independent {fixed_sessions}-session evidence</h4>
       <div class="perf-row">
         <div class="perf-bucket">SHADOW</div>
-        <div class="perf-n">n={int(fixed_shadow.get('n') or 0)} / {int(fixed_shadow.get('unique_entry_days') or 0)} days</div>
-        <div class="perf-win">win {'n/a' if fixed_win is None else f'{float(fixed_win)*100:.1f}%'}</div>
-        <div class="perf-pnl">{_fmt_pct(fixed_avg, 'n/a')}</div>
+        <div class="perf-n">n={int(fixed_shadow.get("n") or 0)} / {int(fixed_shadow.get("unique_entry_days") or 0)} days</div>
+        <div class="perf-win">win {"n/a" if fixed_win is None else f"{float(fixed_win) * 100:.1f}%"}</div>
+        <div class="perf-pnl">{_fmt_pct(fixed_avg, "n/a")}</div>
       </div>
-      <p class="muted" style="font-size:11px;margin-top:6px;">Executed n={int(fixed_headline.get('n') or 0)}. Average shadow excess vs SPY: {_fmt_pct(fixed_excess, 'n/a')}. Shadow rows passed strategy rules before portfolio guardrails. Options use a labeled constant-entry-IV proxy; shares and futures use observed closes.</p>
-        """ if fixed_horizon else ""
+      <p class="muted" style="font-size:11px;margin-top:6px;">Executed n={int(fixed_headline.get("n") or 0)}. Average shadow excess vs SPY: {_fmt_pct(fixed_excess, "n/a")}. Shadow rows passed strategy rules before portfolio guardrails. Options use a labeled constant-entry-IV proxy; shares and futures use observed closes.</p>
+        """
+            if fixed_horizon
+            else ""
+        )
         return f"""
 <section class="panel">
   <h3>Signal Performance Tracking <span class="muted">(lifecycle validation)</span></h3>
   <div class="perf-headline">
     <div><span class="lab">Open</span><span class="val">{open_count}</span></div>
     <div><span class="lab">Closed</span><span class="val">{closed}</span></div>
-    <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{'n/a' if win_rate is None else f'{float(win_rate)*100:.1f}%'}</span></div>
+    <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{"n/a" if win_rate is None else f"{float(win_rate) * 100:.1f}%"}</span></div>
     <div><span class="lab">Avg P&amp;L</span><span class="val" style="color:{pnl_color}">{_fmt_pct(avg_ret)}</span></div>
     <div><span class="lab">Median</span><span class="val">{_fmt_pct(med_ret)}</span></div>
   </div>
   <div class="perf-headline" style="margin-top:14px;">
-    <div><span class="lab">Profit factor</span><span class="val">{'n/a' if pf is None else f'{float(pf):.2f}'}</span></div>
+    <div><span class="lab">Profit factor</span><span class="val">{"n/a" if pf is None else f"{float(pf):.2f}"}</span></div>
     <div><span class="lab">Max DD</span><span class="val" style="color:#ef4444">{_fmt_pct(max_dd)}</span></div>
     <div><span class="lab">Scope</span><span class="val">current</span></div>
   </div>
   <div class="two-col" style="margin-top:14px;">
     <div>
       <h4 class="sub">By asset class</h4>
-      {_asset_row('option', 'OPTIONS')}
-      {_asset_row('share', 'SHARES')}
-      {_asset_row('futures', 'FUTURES')}
+      {_asset_row("option", "OPTIONS")}
+      {_asset_row("share", "SHARES")}
+      {_asset_row("futures", "FUTURES")}
     </div>
     <div>
       <h4 class="sub">Why this may be empty</h4>
@@ -1439,33 +1529,51 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     ovr = forward_summary["overall"]
     by_conf = forward_summary.get("by_confidence", pd.DataFrame())
     by_type = forward_summary.get("by_type", pd.DataFrame())
-    win_color = "#10b981" if ovr["win_rate"] >= 0.55 else "#f59e0b" if ovr["win_rate"] >= 0.45 else "#ef4444"
+    win_color = (
+        "#10b981"
+        if ovr["win_rate"] >= 0.55
+        else "#f59e0b"
+        if ovr["win_rate"] >= 0.45
+        else "#ef4444"
+    )
     pnl_color = "#10b981" if ovr["avg_pnl_pct"] > 0 else "#ef4444"
 
     conf_rows = ""
     if not by_conf.empty:
         for _, r in by_conf.iterrows():
-            wc = "#10b981" if r["win_rate"] >= 0.55 else "#f59e0b" if r["win_rate"] >= 0.45 else "#ef4444"
+            wc = (
+                "#10b981"
+                if r["win_rate"] >= 0.55
+                else "#f59e0b"
+                if r["win_rate"] >= 0.45
+                else "#ef4444"
+            )
             pc = "#10b981" if r["avg_pnl"] > 0 else "#ef4444"
             conf_rows += f"""
 <div class="perf-row">
-  <div class="perf-bucket">{html.escape(r['bucket'])}</div>
-  <div class="perf-n">n={int(r['n'])}</div>
-  <div class="perf-win" style="color:{wc}">win {r['win_rate']*100:.0f}%</div>
-  <div class="perf-pnl" style="color:{pc}">{r['avg_pnl']*100:+.2f}%</div>
+  <div class="perf-bucket">{html.escape(r["bucket"])}</div>
+  <div class="perf-n">n={int(r["n"])}</div>
+  <div class="perf-win" style="color:{wc}">win {r["win_rate"] * 100:.0f}%</div>
+  <div class="perf-pnl" style="color:{pc}">{r["avg_pnl"] * 100:+.2f}%</div>
 </div>"""
 
     type_rows = ""
     if not by_type.empty:
         for _, r in by_type.iterrows():
-            wc = "#10b981" if r["win_rate"] >= 0.55 else "#f59e0b" if r["win_rate"] >= 0.45 else "#ef4444"
+            wc = (
+                "#10b981"
+                if r["win_rate"] >= 0.55
+                else "#f59e0b"
+                if r["win_rate"] >= 0.45
+                else "#ef4444"
+            )
             pc = "#10b981" if r["avg_pnl"] > 0 else "#ef4444"
             type_rows += f"""
 <div class="perf-row">
-  <div class="perf-bucket">{html.escape(r['type']).upper()}</div>
-  <div class="perf-n">n={int(r['n'])}</div>
-  <div class="perf-win" style="color:{wc}">win {r['win_rate']*100:.0f}%</div>
-  <div class="perf-pnl" style="color:{pc}">{r['avg_pnl']*100:+.2f}%</div>
+  <div class="perf-bucket">{html.escape(r["type"]).upper()}</div>
+  <div class="perf-n">n={int(r["n"])}</div>
+  <div class="perf-win" style="color:{wc}">win {r["win_rate"] * 100:.0f}%</div>
+  <div class="perf-pnl" style="color:{pc}">{r["avg_pnl"] * 100:+.2f}%</div>
 </div>"""
 
     # New: per-asset-type breakdown
@@ -1473,15 +1581,21 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
     asset_rows = ""
     if not by_asset.empty:
         for _, r in by_asset.iterrows():
-            wc = "#10b981" if r["win_rate"] >= 0.55 else "#f59e0b" if r["win_rate"] >= 0.45 else "#ef4444"
+            wc = (
+                "#10b981"
+                if r["win_rate"] >= 0.55
+                else "#f59e0b"
+                if r["win_rate"] >= 0.45
+                else "#ef4444"
+            )
             pc = "#10b981" if r["avg_pnl"] > 0 else "#ef4444"
             sharpe_str = f"  Sharpe {r.get('sharpe', 0):.2f}" if r.get("sharpe") else ""
             asset_rows += f"""
 <div class="perf-row">
-  <div class="perf-bucket">{html.escape(r['asset']).upper()}</div>
-  <div class="perf-n">n={int(r['n'])}</div>
-  <div class="perf-win" style="color:{wc}">win {r['win_rate']*100:.0f}%</div>
-  <div class="perf-pnl" style="color:{pc}">{r['avg_pnl']*100:+.2f}%{sharpe_str}</div>
+  <div class="perf-bucket">{html.escape(r["asset"]).upper()}</div>
+  <div class="perf-n">n={int(r["n"])}</div>
+  <div class="perf-win" style="color:{wc}">win {r["win_rate"] * 100:.0f}%</div>
+  <div class="perf-pnl" style="color:{pc}">{r["avg_pnl"] * 100:+.2f}%{sharpe_str}</div>
 </div>"""
 
     # Drop reasons (signals that couldn't be re-priced)
@@ -1500,22 +1614,22 @@ def _performance_panel(forward_summary, validation_summary: Optional[Dict] = Non
         dd = risk.get("max_drawdown_pct", 0)
         risk_info = f"""
 <div class="perf-headline" style="margin-top:14px;">
-  <div><span class="lab">Sharpe</span><span class="val" style="color:{'#10b981' if sharpe > 0.5 else '#f59e0b'}">{sharpe:+.2f}</span></div>
-  <div><span class="lab">Sortino</span><span class="val" style="color:{'#10b981' if sortino > 0.5 else '#f59e0b'}">{sortino:+.2f}</span></div>
-  <div><span class="lab">Max DD</span><span class="val" style="color:#ef4444">{dd*100:+.1f}%</span></div>
-  <div><span class="lab">N</span><span class="val">{risk.get('n', 0)}</span></div>
-  <div><span class="lab">Tot logged</span><span class="val">{ovr.get('n_total_logged', '-')}</span></div>
+  <div><span class="lab">Sharpe</span><span class="val" style="color:{"#10b981" if sharpe > 0.5 else "#f59e0b"}">{sharpe:+.2f}</span></div>
+  <div><span class="lab">Sortino</span><span class="val" style="color:{"#10b981" if sortino > 0.5 else "#f59e0b"}">{sortino:+.2f}</span></div>
+  <div><span class="lab">Max DD</span><span class="val" style="color:#ef4444">{dd * 100:+.1f}%</span></div>
+  <div><span class="lab">N</span><span class="val">{risk.get("n", 0)}</span></div>
+  <div><span class="lab">Tot logged</span><span class="val">{ovr.get("n_total_logged", "-")}</span></div>
 </div>"""
 
     return f"""
 <section class="panel">
-  <h3>Signal Performance Tracking <span class="muted">({int(ovr['n_signals'])} signals re-priced)</span></h3>
+  <h3>Signal Performance Tracking <span class="muted">({int(ovr["n_signals"])} signals re-priced)</span></h3>
   <div class="perf-headline">
-    <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{ovr['win_rate']*100:.1f}%</span></div>
-    <div><span class="lab">Avg P&amp;L</span><span class="val" style="color:{pnl_color}">{ovr['avg_pnl_pct']*100:+.2f}%</span></div>
-    <div><span class="lab">Median</span><span class="val">{ovr['median_pnl_pct']*100:+.2f}%</span></div>
-    <div><span class="lab">Best</span><span class="val" style="color:#10b981">{ovr['best']*100:+.1f}%</span></div>
-    <div><span class="lab">Worst</span><span class="val" style="color:#ef4444">{ovr['worst']*100:+.1f}%</span></div>
+    <div><span class="lab">Win rate</span><span class="val" style="color:{win_color}">{ovr["win_rate"] * 100:.1f}%</span></div>
+    <div><span class="lab">Avg P&amp;L</span><span class="val" style="color:{pnl_color}">{ovr["avg_pnl_pct"] * 100:+.2f}%</span></div>
+    <div><span class="lab">Median</span><span class="val">{ovr["median_pnl_pct"] * 100:+.2f}%</span></div>
+    <div><span class="lab">Best</span><span class="val" style="color:#10b981">{ovr["best"] * 100:+.1f}%</span></div>
+    <div><span class="lab">Worst</span><span class="val" style="color:#ef4444">{ovr["worst"] * 100:+.1f}%</span></div>
   </div>
   {risk_info}
   <div class="two-col" style="margin-top:14px;">
@@ -1540,7 +1654,7 @@ def _analyst_panel(analyst: pd.DataFrame, top_n: int = 10) -> str:
     if analyst is None or analyst.empty:
         return ""
     df = analyst.copy()
-    df = df[df["analyst_total"] >= 5]   # need at least 5 analysts to be meaningful
+    df = df[df["analyst_total"] >= 5]  # need at least 5 analysts to be meaningful
     if df.empty:
         return ""
     # Top buys ranked by score
@@ -1555,14 +1669,20 @@ def _analyst_panel(analyst: pd.DataFrame, top_n: int = 10) -> str:
         mom = _safe_int(r.get("analyst_momentum"))
         return f"""
 <div class="cong-row">
-  <div class="cong-tk"><strong>{html.escape(r['ticker'])}</strong></div>
-  <div class="cong-score" style="color:{color}">{r['analyst_score']:+.1f}</div>
+  <div class="cong-tk"><strong>{html.escape(r["ticker"])}</strong></div>
+  <div class="cong-score" style="color:{color}">{r["analyst_score"]:+.1f}</div>
   <div class="cong-counts"><span class="chip">{sb}SB / {b}B / {h}H / {s}S</span></div>
-  <div class="cong-buyer muted">{'+' if mom > 0 else ''}{mom} this month</div>
+  <div class="cong-buyer muted">{"+" if mom > 0 else ""}{mom} this month</div>
 </div>"""
 
-    bulls_html = "".join(_row(r, "#10b981") for _, r in bulls.iterrows()) or "<p class='muted'>No strong buys</p>"
-    bears_html = "".join(_row(r, "#ef4444") for _, r in bears.iterrows()) or "<p class='muted'>No clear bears</p>"
+    bulls_html = (
+        "".join(_row(r, "#10b981") for _, r in bulls.iterrows())
+        or "<p class='muted'>No strong buys</p>"
+    )
+    bears_html = (
+        "".join(_row(r, "#ef4444") for _, r in bears.iterrows())
+        or "<p class='muted'>No clear bears</p>"
+    )
     return f"""
 <section class="panel">
   <h3>Analyst Recommendations <span class="muted">(Finnhub, latest month consensus)</span></h3>
@@ -1599,9 +1719,9 @@ def _social_panel(social: pd.DataFrame, top_n: int = 10) -> str:
         sent_color = "#10b981" if st_avg > 0.05 else "#ef4444" if st_avg < -0.05 else "#94a3b8"
         st_rows += f"""
 <div class="cong-row">
-  <div class="cong-tk"><strong>{html.escape(r['ticker'])}</strong></div>
+  <div class="cong-tk"><strong>{html.escape(r["ticker"])}</strong></div>
   <div class="cong-score" style="color:{sent_color}">{st_avg:+.2f}</div>
-  <div class="cong-counts"><span class="chip">{_safe_int(r.get('stocktwits_n'))} msgs</span></div>
+  <div class="cong-counts"><span class="chip">{_safe_int(r.get("stocktwits_n"))} msgs</span></div>
   <div class="cong-buyer muted">{n_bull} / {n_bear}</div>
 </div>"""
 
@@ -1614,9 +1734,9 @@ def _social_panel(social: pd.DataFrame, top_n: int = 10) -> str:
         excerpt = (r.get("trump_excerpt") or "")[:70]
         tr_rows += f"""
 <div class="cong-row">
-  <div class="cong-tk"><strong>{html.escape(r['ticker'])}</strong></div>
+  <div class="cong-tk"><strong>{html.escape(r["ticker"])}</strong></div>
   <div class="cong-score" style="color:{sent_color}">{tr_avg:+.2f}</div>
-  <div class="cong-counts"><span class="chip">{_safe_int(r.get('trump_n'))}x mentioned</span></div>
+  <div class="cong-counts"><span class="chip">{_safe_int(r.get("trump_n"))}x mentioned</span></div>
   <div class="cong-buyer muted">"{html.escape(excerpt)}"</div>
 </div>"""
     if not tr_rows:
@@ -1657,18 +1777,27 @@ def _congress_panel(congress: pd.DataFrame, top_n: int = 12) -> str:
         n_reps = _safe_int(r.get("congress_n_reps"))
         buyer = (r.get("congress_top_buyer") or "")[:38]
         members = []
-        if n_sens > 0: members.append(f"{n_sens}  sen")
-        if n_reps > 0: members.append(f"{n_reps}  rep")
+        if n_sens > 0:
+            members.append(f"{n_sens}  sen")
+        if n_reps > 0:
+            members.append(f"{n_reps}  rep")
         members_str = ", ".join(members) if members else ""
         return f"""
 <div class="cong-row">
-  <div class="cong-tk"><strong>{html.escape(r['ticker'])}</strong></div>
-  <div class="cong-score" style="color:{color}">{r['congress_score']:+.2f}</div>
+  <div class="cong-tk"><strong>{html.escape(r["ticker"])}</strong></div>
+  <div class="cong-score" style="color:{color}">{r["congress_score"]:+.2f}</div>
   <div class="cong-counts"><span class="chip">{members_str}</span></div>
   <div class="cong-buyer muted">{html.escape(buyer)}</div>
 </div>"""
-    buyers_html = "".join(_row(r, "#10b981") for _, r in buyers.iterrows()) or "<p class='muted'>No notable buys</p>"
-    sellers_html = "".join(_row(r, "#ef4444") for _, r in sellers.iterrows()) or "<p class='muted'>No notable sells</p>"
+
+    buyers_html = (
+        "".join(_row(r, "#10b981") for _, r in buyers.iterrows())
+        or "<p class='muted'>No notable buys</p>"
+    )
+    sellers_html = (
+        "".join(_row(r, "#ef4444") for _, r in sellers.iterrows())
+        or "<p class='muted'>No notable sells</p>"
+    )
     return f"""
 <section class="panel">
   <h3> Congressional Activity <span class="muted">(STOCK Act disclosures, last 90d)</span></h3>
@@ -1690,6 +1819,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     """Build the Plotly-powered analytics section using live data from disk."""
     import json
     import warnings
+
     warnings.filterwarnings("ignore")
 
     def _load_json_rows(filename: str, asset: str) -> list:
@@ -1714,7 +1844,9 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     validation_summary = {}
     try:
-        validation_summary = json.loads((ROOT / "data" / "validation_summary.json").read_text(encoding="utf-8"))
+        validation_summary = json.loads(
+            (ROOT / "data" / "validation_summary.json").read_text(encoding="utf-8")
+        )
     except Exception:
         validation_summary = {}
 
@@ -1746,7 +1878,9 @@ def _build_analytics_html(forward_summary=None) -> str:
         closed["is_win"] = closed["pnl_pct"].map(_is_win_pnl)
         closed["outcome"] = closed.apply(_exit_bucket, axis=1)
         if "bucket" not in closed.columns:
-            closed["bucket"] = closed.get("asset", pd.Series("position", index=closed.index)).fillna("position")
+            closed["bucket"] = closed.get(
+                "asset", pd.Series("position", index=closed.index)
+            ).fillna("position")
         closed = closed.sort_values("log_time")
         cutoff_raw = validation_summary.get("current_model_cutoff") if validation_summary else None
         if validation_summary.get("validation_scope") == "current_model" and cutoff_raw:
@@ -1756,7 +1890,11 @@ def _build_analytics_html(forward_summary=None) -> str:
     else:
         closed = pd.DataFrame(columns=["log_time", "date_str", "outcome", "pnl_pct", "bucket"])
 
-    if closed.empty and forward_summary and not forward_summary.get("signals", pd.DataFrame()).empty:
+    if (
+        closed.empty
+        and forward_summary
+        and not forward_summary.get("signals", pd.DataFrame()).empty
+    ):
         closed = forward_summary["signals"].copy()
         analytics_source = "forward"
         if "pnl_pct" not in closed.columns:
@@ -1802,10 +1940,12 @@ def _build_analytics_html(forward_summary=None) -> str:
         closed["running_avg_pnl_pct"] = closed["pnl_pct"].expanding().mean()
         daily_pnl = (
             closed.groupby("date_str")
-            .agg(curve_pnl=("running_avg_pnl_pct", "last"),
-                 trades=("pnl_pct", "count"),
-                 avg_pnl=("pnl_pct", "mean"),
-                 wins=("is_win", "sum"))
+            .agg(
+                curve_pnl=("running_avg_pnl_pct", "last"),
+                trades=("pnl_pct", "count"),
+                avg_pnl=("pnl_pct", "mean"),
+                wins=("is_win", "sum"),
+            )
             .reset_index()
         )
         daily_pnl["win_rate"] = (daily_pnl["wins"] / daily_pnl["trades"] * 100).round(1)
@@ -1819,9 +1959,7 @@ def _build_analytics_html(forward_summary=None) -> str:
     if not closed.empty:
         bucket_stats = (
             closed.groupby("bucket")
-            .agg(wins=("is_win", "sum"),
-                 total=("outcome", "count"),
-                 avg_pnl=("pnl_pct", "mean"))
+            .agg(wins=("is_win", "sum"), total=("outcome", "count"), avg_pnl=("pnl_pct", "mean"))
             .reset_index()
         )
         bucket_stats["win_rate"] = (bucket_stats["wins"] / bucket_stats["total"] * 100).round(1)
@@ -1832,14 +1970,22 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     #  6. Confidence vs win rate scatter
     if not closed.empty and "confidence" in closed.columns:
-        conf_bins = pd.cut(closed["confidence"], bins=[0, 55, 65, 75, 85, 100], labels=["<55", "55-65", "65-75", "75-85", ">85"])
+        conf_bins = pd.cut(
+            closed["confidence"],
+            bins=[0, 55, 65, 75, 85, 100],
+            labels=["<55", "55-65", "65-75", "75-85", ">85"],
+        )
         conf_wr = (
             closed.groupby(conf_bins, observed=True)
-            .apply(lambda g: pd.Series({
-                "win_rate": g["is_win"].mean() * 100,
-                "n": len(g),
-                "avg_pnl": g["pnl_pct"].mean() * 100
-            }))
+            .apply(
+                lambda g: pd.Series(
+                    {
+                        "win_rate": g["is_win"].mean() * 100,
+                        "n": len(g),
+                        "avg_pnl": g["pnl_pct"].mean() * 100,
+                    }
+                )
+            )
             .reset_index()
         )
         conf_labels = conf_wr["confidence"].astype(str).tolist()
@@ -1871,7 +2017,9 @@ def _build_analytics_html(forward_summary=None) -> str:
         for col in ("current_pnl_pct", "pnl_pct"):
             if col in df_open.columns:
                 df_open["unrealized_pct"] = df_open["unrealized_pct"].fillna(df_open[col])
-        df_open["unrealized_pct"] = pd.to_numeric(df_open["unrealized_pct"], errors="coerce").fillna(0.0)
+        df_open["unrealized_pct"] = pd.to_numeric(
+            df_open["unrealized_pct"], errors="coerce"
+        ).fillna(0.0)
 
         def _num(value, default=0.0):
             try:
@@ -1884,21 +2032,25 @@ def _build_analytics_html(forward_summary=None) -> str:
         for r in op_list:
             current_price = r.get("current_mid", r.get("current_price", r.get("last_price", 0)))
             side = str(r.get("side") or r.get("direction") or r.get("asset") or "-").upper()
-            display_open_rows.append({
-                "ticker": r.get("ticker") or r.get("symbol") or "-",
-                "position_label": _open_position_label(r),
-                "asset": r.get("asset") or "position",
-                "side": side,
-                "strike": r.get("strike", r.get("contract", "-")),
-                "expiry": r.get("expiry", "-"),
-                "entry_price": _num(r.get("entry_price")),
-                "current_price": _num(current_price),
-                "unrealized_pct": _num(r.get("unrealized_pct", r.get("current_pnl_pct", r.get("pnl_pct", 0)))),
-                "age_days": _num(r.get("age_days")),
-                "confidence": r.get("confidence"),
-                "stop_price": _num(r.get("stop_price")),
-                "target_price": _num(r.get("target_price")),
-            })
+            display_open_rows.append(
+                {
+                    "ticker": r.get("ticker") or r.get("symbol") or "-",
+                    "position_label": _open_position_label(r),
+                    "asset": r.get("asset") or "position",
+                    "side": side,
+                    "strike": r.get("strike", r.get("contract", "-")),
+                    "expiry": r.get("expiry", "-"),
+                    "entry_price": _num(r.get("entry_price")),
+                    "current_price": _num(current_price),
+                    "unrealized_pct": _num(
+                        r.get("unrealized_pct", r.get("current_pnl_pct", r.get("pnl_pct", 0)))
+                    ),
+                    "age_days": _num(r.get("age_days")),
+                    "confidence": r.get("confidence"),
+                    "stop_price": _num(r.get("stop_price")),
+                    "target_price": _num(r.get("target_price")),
+                }
+            )
         display_open_rows = sorted(
             display_open_rows,
             key=lambda row: float(row.get("unrealized_pct") or 0),
@@ -1908,12 +2060,16 @@ def _build_analytics_html(forward_summary=None) -> str:
     if not df_open.empty and "unrealized_pct" in df_open.columns:
         unr_vals = df_open["unrealized_pct"].dropna().tolist()
         unr_labels = [_open_position_label(r) for r in op_list]
-        unr_sides = df_open["side"].tolist() if "side" in df_open.columns else ["call"] * len(unr_vals)
+        unr_sides = (
+            df_open["side"].tolist() if "side" in df_open.columns else ["call"] * len(unr_vals)
+        )
         # sort by unrealized_pct desc
-        combined = sorted(zip(unr_vals, unr_labels, unr_sides), reverse=True)
-        unr_vals, unr_labels, unr_sides = ([x[0] for x in combined],
-                                            [x[1] for x in combined],
-                                            [x[2] for x in combined])
+        combined = sorted(zip(unr_vals, unr_labels, unr_sides, strict=False), reverse=True)
+        unr_vals, unr_labels, unr_sides = (
+            [x[0] for x in combined],
+            [x[1] for x in combined],
+            [x[2] for x in combined],
+        )
         open_total_unrealized = round(sum(unr_vals) / len(unr_vals) * 100 if unr_vals else 0, 2)
         total_open = len(unr_vals)
         gainers = sum(1 for v in unr_vals if v > 0)
@@ -1926,15 +2082,24 @@ def _build_analytics_html(forward_summary=None) -> str:
     if not df_open.empty and "entry_time" in df_open.columns:
         if "age_days" not in df_open.columns:
             df_open["age_days"] = (
-                pd.Timestamp.utcnow() - pd.to_datetime(df_open["entry_time"], errors="coerce", utc=True)
+                pd.Timestamp.utcnow()
+                - pd.to_datetime(df_open["entry_time"], errors="coerce", utc=True)
             ).dt.total_seconds() / 86400.0
         age_bins = [-0.01, 1, 3, 7, 14, 30, float("inf")]
         age_names = ["0-1d", "1-3d", "3-7d", "7-14d", "14-30d", "30d+"]
-        df_open["age_bucket"] = pd.cut(df_open["age_days"].clip(lower=0), bins=age_bins, labels=age_names)
-        age_stats = df_open.groupby("age_bucket", observed=True).agg(
-            count=("ticker", "count"),
-            avg_unrealized=("unrealized_pct", "mean") if "unrealized_pct" in df_open.columns else ("ticker", "size"),
-        ).reset_index()
+        df_open["age_bucket"] = pd.cut(
+            df_open["age_days"].clip(lower=0), bins=age_bins, labels=age_names
+        )
+        age_stats = (
+            df_open.groupby("age_bucket", observed=True)
+            .agg(
+                count=("ticker", "count"),
+                avg_unrealized=("unrealized_pct", "mean")
+                if "unrealized_pct" in df_open.columns
+                else ("ticker", "size"),
+            )
+            .reset_index()
+        )
         age_labels = age_stats["age_bucket"].astype(str).tolist()
         age_counts = [int(v) for v in age_stats["count"].tolist()]
         age_avg = [
@@ -1952,7 +2117,11 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     #  10. Overall stats
     total_closed = len(closed) if not closed.empty else 0
-    overall_wr = round(closed["is_win"].mean() * 100, 1) if not closed.empty and "is_win" in closed.columns else 0
+    overall_wr = (
+        round(closed["is_win"].mean() * 100, 1)
+        if not closed.empty and "is_win" in closed.columns
+        else 0
+    )
     overall_avg_pnl = round(closed["pnl_pct"].mean() * 100, 2) if not closed.empty else 0
     median_pnl = round(closed["pnl_pct"].median() * 100, 2) if not closed.empty else 0
     pnl_scope_label = "re-priced" if analytics_source == "forward" else "closed"
@@ -1967,6 +2136,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     # JSON-serialize for JS
     import json as _json
+
     J = _json.dumps
 
     def _render_open_position_row(row):
@@ -2001,9 +2171,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 
     # Keep nested row templating outside the surrounding page f-string so the
     # module parses identically on every supported Python version, including 3.11.
-    open_positions_rows_html = "".join(
-        _render_open_position_row(row) for row in display_open_rows
-    )
+    open_positions_rows_html = "".join(_render_open_position_row(row) for row in display_open_rows)
 
     return f"""
 <details class="dash-section" open id="sect-analytics">
@@ -2090,19 +2258,19 @@ def _build_analytics_html(forward_summary=None) -> str:
 
 <div class="stat-ribbon">
   <div class="stat-chip">
-    <div class="sc-val" style="color:{'#10b981' if overall_avg_pnl >= 0 else '#ef4444'}">{overall_avg_pnl:+.1f}%</div>
+    <div class="sc-val" style="color:{"#10b981" if overall_avg_pnl >= 0 else "#ef4444"}">{overall_avg_pnl:+.1f}%</div>
     <div class="sc-lab">Avg {pnl_scope_label} P&amp;L</div>
   </div>
   <div class="stat-chip">
-    <div class="sc-val" style="color:{'#10b981' if median_pnl >= 0 else '#ef4444'}">{median_pnl:+.0f}%</div>
+    <div class="sc-val" style="color:{"#10b981" if median_pnl >= 0 else "#ef4444"}">{median_pnl:+.0f}%</div>
     <div class="sc-lab">Median {pnl_scope_label} P&amp;L</div>
   </div>
   <div class="stat-chip">
-    <div class="sc-val" style="color:{'#10b981' if overall_wr >= 40 else '#f59e0b'}">{overall_wr:.1f}%</div>
+    <div class="sc-val" style="color:{"#10b981" if overall_wr >= 40 else "#f59e0b"}">{overall_wr:.1f}%</div>
     <div class="sc-lab">Win rate ({total_closed} {pnl_scope_label})</div>
   </div>
   <div class="stat-chip">
-    <div class="sc-val" style="color:{'#10b981' if open_total_unrealized >= 0 else '#ef4444'}">{open_total_unrealized:+.1f}%</div>
+    <div class="sc-val" style="color:{"#10b981" if open_total_unrealized >= 0 else "#ef4444"}">{open_total_unrealized:+.1f}%</div>
     <div class="sc-lab">Avg unrealized ({total_open} open)</div>
   </div>
   <div class="stat-chip">
@@ -2117,7 +2285,7 @@ def _build_analytics_html(forward_summary=None) -> str:
 
 <div class="analytics-grid">
   <div class="chart-box" style="grid-column: span 2;">
-  <h4>Running average P&amp;L over time {'(current forward reprice)' if analytics_source == 'forward' else '(closed lifecycle)'}</h4>
+  <h4>Running average P&amp;L over time {"(current forward reprice)" if analytics_source == "forward" else "(closed lifecycle)"}</h4>
     <div id="chart-pnl-curve" style="height:260px;"></div>
   </div>
   <div class="chart-box">
@@ -2234,7 +2402,7 @@ def _build_analytics_html(forward_summary=None) -> str:
   Plotly.newPlot('chart-conf-wr', [
     {{ x:{J(conf_labels)}, y:{J(conf_wr_vals)},
        type:'bar', marker:{{color:cColors}},
-       customdata:{J(list(zip(conf_n, conf_pnl)))},
+       customdata:{J(list(zip(conf_n, conf_pnl, strict=False)))},
        hovertemplate:'Conf %{{x}}<br>Win rate: %{{y:.1f}}%<br>n=%{{customdata[0]}}<br>Avg P&L: %{{customdata[1]:+.1f}}%<extra></extra>' }}
   ], Object.assign({{}}, DARK, {{
     xaxis: Object.assign({{}}, DARK.xaxis, {{title:'Confidence bucket', type:'category'}}),
@@ -2243,7 +2411,7 @@ def _build_analytics_html(forward_summary=None) -> str:
   if ({len(conf_labels)} === 0) showEmpty('chart-conf-wr', 'No confidence bucket history yet.');
 
   // 5. Factor IC
-  var icSorted = {J(list(zip(factor_labels, factor_ic, factor_reliability, factor_n, factor_days)))}
+  var icSorted = {J(list(zip(factor_labels, factor_ic, factor_reliability, factor_n, factor_days, strict=False)))}
     .sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
   var icLabels = icSorted.map(x=>x[0]), icVals = icSorted.map(x=>x[1]);
   var icMeta = icSorted.map(x=>[x[2], x[3], x[4]]);
@@ -2274,9 +2442,9 @@ def _build_analytics_html(forward_summary=None) -> str:
   if ({len(age_labels)} === 0) showEmpty('chart-position-aging', 'No open-position age history yet.');
 
   // 7. Open positions bar
-  var posColors = {J([v*100 for v in unr_vals])}.map(v => v >= 0 ? '#10b981' : '#ef4444');
+  var posColors = {J([v * 100 for v in unr_vals])}.map(v => v >= 0 ? '#10b981' : '#ef4444');
   Plotly.newPlot('chart-open-positions', [
-    {{ x:{J(unr_labels)}, y:{J([round(v*100,2) for v in unr_vals])},
+    {{ x:{J(unr_labels)}, y:{J([round(v * 100, 2) for v in unr_vals])},
        type:'bar',
        marker:{{color:posColors}},
        hovertemplate:'%{{x}}<br>Unrealized: %{{y:+.1f}}%<extra></extra>' }}
@@ -2294,43 +2462,80 @@ def _build_analytics_html(forward_summary=None) -> str:
 """
 
 
-def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
-           ranked_options: pd.DataFrame, ranked_shares: pd.DataFrame,
-           macro: Dict[str, Any], asof: datetime, demo: bool = False,
-           news: pd.DataFrame = None, earnings: pd.DataFrame = None,
-           insider: pd.DataFrame = None, trending: List[str] = None,
-           elapsed: float = 0.0, universe_size: int = 0,
-           value_plays: pd.DataFrame = None, futures_plays: pd.DataFrame = None,
-           forward_summary=None, bankroll: float = 10000,
-           aggressive: bool = False, congress: pd.DataFrame = None,
-           sentiment: pd.DataFrame = None,
-           trending_meta: List = None,
-           social: pd.DataFrame = None,
-           analyst: pd.DataFrame = None,
-           calibration_summary: Optional[Dict[str, Any]] = None,
-           # ---- v20 payloads (all optional for back-compat) ------------
-           portfolio_greeks: Optional[Dict] = None,
-           hedge_suggestion: Optional[Dict] = None,
-           breaker_state: Optional[Dict] = None,
-           research_guard_report: Optional[Dict] = None,
-           engine_timings: Optional[Dict] = None,
-           engine_health: Optional[Dict] = None,
-           validation_summary: Optional[Dict] = None,
-           v20_factors: Optional[Dict] = None,
-           empty_engines: Optional[List[Dict]] = None,
-           **_unused) -> Path:
+def render(
+    calls: pd.DataFrame,
+    puts: pd.DataFrame,
+    shares: pd.DataFrame,
+    ranked_options: pd.DataFrame,
+    ranked_shares: pd.DataFrame,
+    macro: dict[str, Any],
+    asof: datetime,
+    demo: bool = False,
+    news: pd.DataFrame = None,
+    earnings: pd.DataFrame = None,
+    insider: pd.DataFrame = None,
+    trending: list[str] = None,
+    elapsed: float = 0.0,
+    universe_size: int = 0,
+    value_plays: pd.DataFrame = None,
+    futures_plays: pd.DataFrame = None,
+    forward_summary=None,
+    bankroll: float = 10000,
+    aggressive: bool = False,
+    congress: pd.DataFrame = None,
+    sentiment: pd.DataFrame = None,
+    trending_meta: list = None,
+    social: pd.DataFrame = None,
+    analyst: pd.DataFrame = None,
+    calibration_summary: dict[str, Any] | None = None,
+    # ---- v20 payloads (all optional for back-compat) ------------
+    portfolio_greeks: dict | None = None,
+    hedge_suggestion: dict | None = None,
+    breaker_state: dict | None = None,
+    research_guard_report: dict | None = None,
+    engine_timings: dict | None = None,
+    engine_health: dict | None = None,
+    validation_summary: dict | None = None,
+    v20_factors: dict | None = None,
+    empty_engines: list[dict] | None = None,
+    **_unused,
+) -> Path:
     """Build a self-contained HTML cockpit. Returns the path."""
     asof_str = asof.strftime("%Y-%m-%d %H:%M UTC")
     trending = trending or []
     portfolio_greeks = portfolio_greeks or {}
     v20_factors = v20_factors or {}
 
-    cards_calls = "\n".join(_option_card(r) for _, r in calls.iterrows()) if calls is not None and not calls.empty else "<p class='muted'>No long-call ideas pass filters this run.</p>"
-    cards_puts = "\n".join(_option_card(r) for _, r in puts.iterrows()) if puts is not None and not puts.empty else "<p class='muted'>No long-put ideas pass filters this run.</p>"
-    cards_shares = "\n".join(_share_card(r) for _, r in shares.iterrows()) if shares is not None and not shares.empty else "<p class='muted'>No small-cap share ideas above the score threshold.</p>"
-    cards_value = "\n".join(_value_card(r) for _, r in value_plays.iterrows()) if value_plays is not None and not value_plays.empty else "<p class='muted'>No standout value plays above threshold.</p>"
-    cards_futures = "\n".join(_futures_card(r) for _, r in futures_plays.iterrows()) if futures_plays is not None and not futures_plays.empty else "<p class='muted'>No futures with directional bias.</p>"
-    table_opts = _options_table(pd.concat([calls, puts], ignore_index=True) if (calls is not None and puts is not None) else None)
+    cards_calls = (
+        "\n".join(_option_card(r) for _, r in calls.iterrows())
+        if calls is not None and not calls.empty
+        else "<p class='muted'>No long-call ideas pass filters this run.</p>"
+    )
+    cards_puts = (
+        "\n".join(_option_card(r) for _, r in puts.iterrows())
+        if puts is not None and not puts.empty
+        else "<p class='muted'>No long-put ideas pass filters this run.</p>"
+    )
+    cards_shares = (
+        "\n".join(_share_card(r) for _, r in shares.iterrows())
+        if shares is not None and not shares.empty
+        else "<p class='muted'>No small-cap share ideas above the score threshold.</p>"
+    )
+    cards_value = (
+        "\n".join(_value_card(r) for _, r in value_plays.iterrows())
+        if value_plays is not None and not value_plays.empty
+        else "<p class='muted'>No standout value plays above threshold.</p>"
+    )
+    cards_futures = (
+        "\n".join(_futures_card(r) for _, r in futures_plays.iterrows())
+        if futures_plays is not None and not futures_plays.empty
+        else "<p class='muted'>No futures with directional bias.</p>"
+    )
+    table_opts = _options_table(
+        pd.concat([calls, puts], ignore_index=True)
+        if (calls is not None and puts is not None)
+        else None
+    )
     table_sh = _shares_table(shares)
 
     # New panels
@@ -2344,23 +2549,36 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
     n_puts = len(puts) if puts is not None else 0
     n_shares = len(shares) if shares is not None else 0
     n_news_rows = len(news) if news is not None else 0
-    n_earn_rows = len(earnings[earnings["days_to_earnings"].notna()]) if earnings is not None and not earnings.empty and "days_to_earnings" in earnings.columns else 0
+    n_earn_rows = (
+        len(earnings[earnings["days_to_earnings"].notna()])
+        if earnings is not None and not earnings.empty and "days_to_earnings" in earnings.columns
+        else 0
+    )
 
-    stats = _stats_panel(elapsed, universe_size, n_calls, n_puts, n_shares,
-                         n_news_rows, n_earn_rows, len(trending))
+    stats = _stats_panel(
+        elapsed, universe_size, n_calls, n_puts, n_shares, n_news_rows, n_earn_rows, len(trending)
+    )
 
     from config import SIGNAL_WEIGHTS
+
     weight_rows = "".join(
         f'<div class="row"><span>{k}</span><span>{v:.2f}</span></div>'
         for k, v in SIGNAL_WEIGHTS.items()
     )
 
     from fusion.rank import to_tv_watchlist
+
     tv_text = to_tv_watchlist(calls, puts, shares)
 
-    demo_banner = ('<div class="demo-banner"><strong>DEMO/HYBRID MODE</strong> - '
-                    'options + sentiment data is synthetic. Insider data is LIVE if SEC EDGAR is reachable. '
-                    'Run without <code>--demo</code> on a residential IP for full live mode.</div>') if demo else ""
+    demo_banner = (
+        (
+            '<div class="demo-banner"><strong>DEMO/HYBRID MODE</strong> - '
+            "options + sentiment data is synthetic. Insider data is LIVE if SEC EDGAR is reachable. "
+            "Run without <code>--demo</code> on a residential IP for full live mode.</div>"
+        )
+        if demo
+        else ""
+    )
     guard_banner = ""
     if research_guard_report and research_guard_report.get("warnings"):
         status = html.escape(str(research_guard_report.get("status", "review")).upper())
@@ -2458,7 +2676,7 @@ def render(calls: pd.DataFrame, puts: pd.DataFrame, shares: pd.DataFrame,
   </div>
   <div class="muted" style="font-size:11px; margin-bottom:16px; font-family:'JetBrains Mono', monospace;">
     Bankroll: <strong>${bankroll:,.0f}</strong>  -
-    {'<strong style="color:#f87171">AGGRESSIVE MODE</strong>  -  1/2 Kelly  -  Cap 10% per option / 15% per share' if aggressive else '1/4 Kelly  -  Cap 5% per option / 8% per share'}
+    {'<strong style="color:#f87171">AGGRESSIVE MODE</strong>  -  1/2 Kelly  -  Cap 10% per option / 15% per share' if aggressive else "1/4 Kelly  -  Cap 5% per option / 8% per share"}
   </div>
 
 
@@ -2555,11 +2773,15 @@ __JS_PLACEHOLDER__
     return out_path
 
 
-def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Dict],
-                            breaker_state: Optional[Dict], engine_timings: Dict,
-                            engine_health: Optional[Dict],
-                            v20_factors: Dict,
-                            empty_engines: Optional[List[Dict]] = None) -> str:
+def _build_v20_panels_html(
+    portfolio_greeks: dict,
+    hedge_suggestion: dict | None,
+    breaker_state: dict | None,
+    engine_timings: dict,
+    engine_health: dict | None,
+    v20_factors: dict,
+    empty_engines: list[dict] | None = None,
+) -> str:
     """Generate the v20 dashboard panels block - Greeks, breaker, telemetry,
     empty-engine diagnostic, plus quick summaries of the 15 new factor outputs."""
     portfolio_greeks = portfolio_greeks or {}
@@ -2576,18 +2798,20 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
         delta_color = "#10b981" if nd > 0 else "#f87171"
         hedge_html = ""
         if hedge_suggestion:
-            hedge_html = (f'<div class="hedge-warn" style="margin-top:10px;padding:10px;'
-                           f'background:#fef3c7;border-left:4px solid #f59e0b;color:#92400e;'
-                           f'border-radius:6px;font-family:Inter">'
-                           f'Warning {html.escape(hedge_suggestion["suggestion"])}</div>')
+            hedge_html = (
+                f'<div class="hedge-warn" style="margin-top:10px;padding:10px;'
+                f"background:#fef3c7;border-left:4px solid #f59e0b;color:#92400e;"
+                f'border-radius:6px;font-family:Inter">'
+                f"Warning {html.escape(hedge_suggestion['suggestion'])}</div>"
+            )
         greeks_html = f"""
         <details class="dash-section" id="sect-greeks" open>
-          <summary><h2 class="section-title">v Portfolio Greeks <span class="muted">(net exposure across {portfolio_greeks['n_positions']} positions)</span></h2></summary>
+          <summary><h2 class="section-title">v Portfolio Greeks <span class="muted">(net exposure across {portfolio_greeks["n_positions"]} positions)</span></h2></summary>
           <div class="greeks-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0">
             <div class="greek-tile" style="padding:14px;background:#f8fafc;border-radius:8px;border-left:4px solid {delta_color}">
               <div class="muted" style="font-size:12px">Net Delta</div>
               <div style="font-size:24px;font-weight:700;color:{delta_color}">${nd:+,.0f}</div>
-              <div class="muted" style="font-size:11px">{'long bias' if nd > 0 else 'short bias' if nd < 0 else 'neutral'}</div>
+              <div class="muted" style="font-size:11px">{"long bias" if nd > 0 else "short bias" if nd < 0 else "neutral"}</div>
             </div>
             <div class="greek-tile" style="padding:14px;background:#f8fafc;border-radius:8px">
               <div class="muted" style="font-size:12px">Net Gamma</div>
@@ -2624,8 +2848,8 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
         <details class="dash-section" id="sect-breaker" open>
           <summary><h2 class="section-title">v Drawdown breaker <span class="muted">(validated equity curve)</span></h2></summary>
           <div style="padding:14px;background:{bg};border-left:4px solid {border};border-radius:6px;margin:10px 0">
-            <div style="font-size:18px;font-weight:600">{html.escape(breaker_state['verdict'])}</div>
-            <div class="muted" style="margin-top:6px">Kelly multiplier: {breaker_state['multiplier']:.2f}x  -  Max drawdown: {drawdown_label}  -  n={breaker_state.get('n', 0)}</div>
+            <div style="font-size:18px;font-weight:600">{html.escape(breaker_state["verdict"])}</div>
+            <div class="muted" style="margin-top:6px">Kelly multiplier: {breaker_state["multiplier"]:.2f}x  -  Max drawdown: {drawdown_label}  -  n={breaker_state.get("n", 0)}</div>
           </div>
         </details>
         """
@@ -2652,7 +2876,9 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
     for key, (label, score_col) in factor_labels.items():
         df_ = v20_factors.get(key)
         if df_ is None or (hasattr(df_, "empty") and df_.empty):
-            factor_rows.append(f'<tr><td>{label}</td><td class="muted">empty</td><td class="muted">-</td></tr>')
+            factor_rows.append(
+                f'<tr><td>{label}</td><td class="muted">empty</td><td class="muted">-</td></tr>'
+            )
             continue
         try:
             n = len(df_)
@@ -2671,9 +2897,15 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                 f'<tr><td>{label}</td><td>{n} rows</td><td class="muted">{html.escape(top)}</td></tr>'
             )
         except Exception:
-            factor_rows.append(f'<tr><td>{label}</td><td class="muted">err</td><td class="muted">-</td></tr>')
+            factor_rows.append(
+                f'<tr><td>{label}</td><td class="muted">err</td><td class="muted">-</td></tr>'
+            )
 
-    v20_factor_table = "<table class='v20-factor-table' style='width:100%;font-family:Inter;font-size:13px;border-collapse:collapse'><thead><tr><th style='text-align:left;padding:6px'>Factor</th><th style='text-align:left;padding:6px'>Coverage</th><th style='text-align:left;padding:6px'>Top signals</th></tr></thead><tbody>" + "".join(factor_rows) + "</tbody></table>"
+    v20_factor_table = (
+        "<table class='v20-factor-table' style='width:100%;font-family:Inter;font-size:13px;border-collapse:collapse'><thead><tr><th style='text-align:left;padding:6px'>Factor</th><th style='text-align:left;padding:6px'>Coverage</th><th style='text-align:left;padding:6px'>Top signals</th></tr></thead><tbody>"
+        + "".join(factor_rows)
+        + "</tbody></table>"
+    )
 
     new_factors_html = f"""
     <details class="dash-section" id="sect-v20-factors">
@@ -2690,11 +2922,11 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
             from config import ENGINE_SLA_SECONDS as _SLA
         except Exception:
             _SLA = {}
-        max_elapsed = max((t.get("elapsed", 0) for t in engine_timings.values()),
-                          default=1.0)
+        max_elapsed = max((t.get("elapsed", 0) for t in engine_timings.values()), default=1.0)
         rows = []
-        for name, t in sorted(engine_timings.items(),
-                              key=lambda kv: kv[1].get("elapsed", 0), reverse=True):
+        for name, t in sorted(
+            engine_timings.items(), key=lambda kv: kv[1].get("elapsed", 0), reverse=True
+        ):
             elapsed = float(t.get("elapsed", 0))
             sla = _SLA.get(name)
             ok = "" if t.get("ok") else "-"
@@ -2703,11 +2935,14 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
             if sla:
                 pct = elapsed / sla
                 if pct >= 1.0:
-                    sla_chip = (f"<span style='color:#f87171;margin-left:6px;"
-                                 f"font-weight:600'>SLA {sla:.0f}s -</span>")
+                    sla_chip = (
+                        f"<span style='color:#f87171;margin-left:6px;"
+                        f"font-weight:600'>SLA {sla:.0f}s -</span>"
+                    )
                 elif pct >= 0.8:
-                    sla_chip = (f"<span style='color:#f59e0b;margin-left:6px'>"
-                                 f"SLA {sla:.0f}s Warning</span>")
+                    sla_chip = (
+                        f"<span style='color:#f59e0b;margin-left:6px'>SLA {sla:.0f}s Warning</span>"
+                    )
             # Latency bar (relative to slowest engine this run)
             bar_pct = int(min(100, elapsed / max_elapsed * 100)) if max_elapsed > 0 else 0
             bar_color = "#10b981" if t.get("ok") else "#f87171"
@@ -2715,11 +2950,13 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                 bar_color = "#f87171"
             elif sla and elapsed >= 0.8 * sla:
                 bar_color = "#f59e0b"
-            bar_html = (f"<div style='display:inline-block;width:80px;height:6px;"
-                         f"background:#222;border-radius:3px;vertical-align:middle;"
-                         f"margin-right:6px'>"
-                         f"<div style='width:{bar_pct}%;height:100%;background:{bar_color};"
-                         f"border-radius:3px'></div></div>")
+            bar_html = (
+                f"<div style='display:inline-block;width:80px;height:6px;"
+                f"background:#222;border-radius:3px;vertical-align:middle;"
+                f"margin-right:6px'>"
+                f"<div style='width:{bar_pct}%;height:100%;background:{bar_color};"
+                f"border-radius:3px'></div></div>"
+            )
             elapsed_color = "#10b981" if t.get("ok") else "#f87171"
             rows.append(
                 f"<tr>"
@@ -2733,12 +2970,14 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
           <h4>This run</h4>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:780px;border-collapse:collapse'><thead>
             <tr style='border-bottom:1px solid #333'><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:right;padding:6px'>Latency</th><th style='text-align:right;padding:6px'>Output</th></tr>
-          </thead><tbody>{''.join(rows)}</tbody></table>
+          </thead><tbody>{"".join(rows)}</tbody></table>
           </div>
         """
 
     health_body = ""
-    health_rows = (engine_health or {}).get("engines", []) if isinstance(engine_health, dict) else []
+    health_rows = (
+        (engine_health or {}).get("engines", []) if isinstance(engine_health, dict) else []
+    )
     if health_rows:
         rows = []
         for r in health_rows[:12]:
@@ -2748,8 +2987,8 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
                 f"<tr>"
                 f"<td style='padding:5px 6px;font-weight:600'>{html.escape(str(r.get('engine')))}</td>"
                 f"<td style='padding:5px 6px;color:{color};font-weight:700;text-align:right'>{score:.0f}</td>"
-                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('hit_rate') or 0)*100:.0f}%</td>"
-                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('ok_rate') or 0)*100:.0f}%</td>"
+                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('hit_rate') or 0) * 100:.0f}%</td>"
+                f"<td style='padding:5px 6px;text-align:right'>{float(r.get('ok_rate') or 0) * 100:.0f}%</td>"
                 f"<td style='padding:5px 6px;text-align:right' class='muted'>{float(r.get('avg_elapsed') or 0):.1f}s</td>"
                 f"</tr>"
             )
@@ -2758,7 +2997,7 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
           <h4>Rolling health</h4>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:780px;border-collapse:collapse'><thead>
             <tr style='border-bottom:1px solid #333'><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:right;padding:6px'>Health</th><th style='text-align:right;padding:6px'>Hit rate</th><th style='text-align:right;padding:6px'>OK rate</th><th style='text-align:right;padding:6px'>Avg latency</th></tr>
-          </thead><tbody>{''.join(rows)}</tbody></table>
+          </thead><tbody>{"".join(rows)}</tbody></table>
           </div>
         """
 
@@ -2776,14 +3015,16 @@ def _build_v20_panels_html(portfolio_greeks: Dict, hedge_suggestion: Optional[Di
     if empty_engines:
         rows = []
         for e in empty_engines:
-            rows.append(f"<tr><td style='padding:6px;font-weight:600'>{html.escape(e['name'])}</td>"
-                         f"<td style='padding:6px' class='muted'>{html.escape(e.get('reason', '') or '-')}</td></tr>")
+            rows.append(
+                f"<tr><td style='padding:6px;font-weight:600'>{html.escape(e['name'])}</td>"
+                f"<td style='padding:6px' class='muted'>{html.escape(e.get('reason', '') or '-')}</td></tr>"
+            )
         empty_html = f"""
         <details class="dash-section" id="sect-empty-engines">
           <summary><h2 class="section-title">Empty engines this run <span class="muted">({len(empty_engines)} returned 0 rows - click for diagnosis)</span></h2></summary>
           <table style='font-family:Inter;font-size:13px;width:100%;max-width:900px;border-collapse:collapse'>
             <thead><tr><th style='text-align:left;padding:6px'>Engine</th><th style='text-align:left;padding:6px'>Likely cause</th></tr></thead>
-            <tbody>{''.join(rows)}</tbody>
+            <tbody>{"".join(rows)}</tbody>
           </table>
           <p class="muted" style="margin-top:10px;font-size:12px;font-family:Inter">
             Use <code>--skip-&lt;name&gt;</code> CLI flag to disable any of these (e.g. <code>--skip-cot --skip-13f</code>). Or install missing deps: <code>pip install pytrends</code>. Credit and yield-curve engines retain keyless public fallbacks; EIA and Finnhub enrichment need their own optional keys.

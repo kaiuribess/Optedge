@@ -5,13 +5,14 @@ This script does not place trades and does not use broker credentials. It only
 turns the latest ranked Optedge outputs into a compact candidate file that can
 be manually entered into a paper broker or imported into a journal.
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -134,7 +135,7 @@ def _load_latest_parquet(data_dir: Path, pattern: str) -> pd.DataFrame:
         return pd.DataFrame()
     out = df.copy()
     out["_source_file"] = path.name
-    out["_source_mtime"] = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+    out["_source_mtime"] = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
     return out
 
 
@@ -193,11 +194,17 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["strike"] = _series_or_default(df, "strike")
     out["expiry"] = _series_or_default(df, "expiry")
     out["mid"] = pd.to_numeric(_series_or_default(df, "mid", 0.0), errors="coerce").fillna(0.0)
-    premium = pd.to_numeric(_series_or_default(df, "premium_dollars", float("nan")), errors="coerce")
+    premium = pd.to_numeric(
+        _series_or_default(df, "premium_dollars", float("nan")), errors="coerce"
+    )
     out["actual_dollars"] = premium.fillna(out["mid"] * 100.0)
     out["suggested_contracts"] = (out["mid"] > 0).astype(int)
-    stop_ref = pd.to_numeric(_series_or_default(df, "stop_price_reference", float("nan")), errors="coerce")
-    target_ref = pd.to_numeric(_series_or_default(df, "target_price_reference", float("nan")), errors="coerce")
+    stop_ref = pd.to_numeric(
+        _series_or_default(df, "stop_price_reference", float("nan")), errors="coerce"
+    )
+    target_ref = pd.to_numeric(
+        _series_or_default(df, "target_price_reference", float("nan")), errors="coerce"
+    )
     out["stop_price"] = stop_ref.fillna(out["mid"] * 0.50).round(2)
     out["target_price"] = target_ref.fillna(out["mid"] * 2.00).round(2)
     out["execution_profile"] = _series_or_default(df, "execution_profile")
@@ -205,13 +212,15 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["profile_policy_version"] = _series_or_default(df, "profile_policy_version")
     readiness = pd.to_numeric(_series_or_default(df, "readiness_score", 0), errors="coerce")
     quality = pd.to_numeric(_series_or_default(df, "contract_quality_score", 0), errors="coerce")
-    swing_fit = pd.to_numeric(_series_or_default(df, "swing_fit_score", float("nan")), errors="coerce")
+    swing_fit = pd.to_numeric(
+        _series_or_default(df, "swing_fit_score", float("nan")), errors="coerce"
+    )
     signal_confidence = pd.to_numeric(
         _series_or_default(df, "confidence", float("nan")), errors="coerce"
     )
     legacy_confidence = readiness.fillna(swing_fit).fillna(quality).fillna(0)
-    leaps_rows = out["execution_profile"].astype(str).str.strip().str.lower().eq(
-        LEAPS_SWING_PROFILE.name
+    leaps_rows = (
+        out["execution_profile"].astype(str).str.strip().str.lower().eq(LEAPS_SWING_PROFILE.name)
     )
     # A contract-readiness score measures data/contract usability; it is not a
     # directional signal confidence.  Legacy swing rows retain the historical
@@ -221,10 +230,7 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
         signal_confidence.notna() | leaps_rows,
         legacy_confidence,
     ).clip(lower=0, upper=100)
-    out["rank_score"] = (
-        quality.fillna(0) / 25.0
-        + swing_fit.fillna(0) / 60.0
-    ).round(4)
+    out["rank_score"] = (quality.fillna(0) / 25.0 + swing_fit.fillna(0) / 60.0).round(4)
     out["fused_score"] = out["rank_score"]
     grade = _series_or_default(df, "contract_grade").astype(str).str.upper()
     readiness_label = _series_or_default(df, "readiness_label").astype(str).str.lower()
@@ -232,8 +238,12 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
         "Trade" if g in {"A", "B"} or r in {"ready", "review"} else "Watch"
         for g, r in zip(grade, readiness_label, strict=False)
     ]
-    out["spread_pct"] = pd.to_numeric(_series_or_default(df, "spread_pct", 0.0), errors="coerce").fillna(0.0)
-    out["dte"] = pd.to_numeric(_series_or_default(df, "dte", -1), errors="coerce").fillna(-1).astype(int)
+    out["spread_pct"] = pd.to_numeric(
+        _series_or_default(df, "spread_pct", 0.0), errors="coerce"
+    ).fillna(0.0)
+    out["dte"] = (
+        pd.to_numeric(_series_or_default(df, "dte", -1), errors="coerce").fillna(-1).astype(int)
+    )
     out["swing_fit_score"] = swing_fit
     out["swing_fit_label"] = _series_or_default(df, "swing_fit_label")
     out["swing_fit_reasons"] = _series_or_default(df, "swing_fit_reasons")
@@ -246,15 +256,13 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
         _series_or_default(df, "openInterest", float("nan")), errors="coerce"
     )
     open_interest = open_interest.fillna(
-        pd.to_numeric(
-            _series_or_default(df, "open_interest", float("nan")), errors="coerce"
-        )
+        pd.to_numeric(_series_or_default(df, "open_interest", float("nan")), errors="coerce")
     )
     out["openInterest"] = open_interest
-    out["volume"] = pd.to_numeric(
-        _series_or_default(df, "volume", float("nan")), errors="coerce"
+    out["volume"] = pd.to_numeric(_series_or_default(df, "volume", float("nan")), errors="coerce")
+    out["impliedVolatility"] = pd.to_numeric(
+        _series_or_default(df, "impliedVolatility", float("nan")), errors="coerce"
     )
-    out["impliedVolatility"] = pd.to_numeric(_series_or_default(df, "impliedVolatility", float("nan")), errors="coerce")
     out["delta"] = pd.to_numeric(_series_or_default(df, "delta", float("nan")), errors="coerce")
     out["after_cost_edge_pct"] = pd.to_numeric(
         _series_or_default(df, "after_cost_edge_pct", float("nan")),
@@ -264,14 +272,28 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
         _series_or_default(df, "planned_hold_sessions", float("nan")),
         errors="coerce",
     )
-    out["breakeven_price"] = pd.to_numeric(_series_or_default(df, "breakeven_price", float("nan")), errors="coerce")
-    out["breakeven_move_pct"] = pd.to_numeric(_series_or_default(df, "breakeven_move_pct", float("nan")), errors="coerce")
+    out["breakeven_price"] = pd.to_numeric(
+        _series_or_default(df, "breakeven_price", float("nan")), errors="coerce"
+    )
+    out["breakeven_move_pct"] = pd.to_numeric(
+        _series_or_default(df, "breakeven_move_pct", float("nan")), errors="coerce"
+    )
     out["breakeven_direction"] = _series_or_default(df, "breakeven_direction")
-    out["budget_usage_pct"] = pd.to_numeric(_series_or_default(df, "budget_usage_pct", float("nan")), errors="coerce")
-    out["contracts_for_budget"] = pd.to_numeric(_series_or_default(df, "contracts_for_budget", 0), errors="coerce").fillna(0)
-    out["risk_dollars_reference"] = pd.to_numeric(_series_or_default(df, "risk_dollars_reference", float("nan")), errors="coerce")
-    out["reward_dollars_reference"] = pd.to_numeric(_series_or_default(df, "reward_dollars_reference", float("nan")), errors="coerce")
-    out["reward_risk_reference"] = pd.to_numeric(_series_or_default(df, "reward_risk_reference", float("nan")), errors="coerce")
+    out["budget_usage_pct"] = pd.to_numeric(
+        _series_or_default(df, "budget_usage_pct", float("nan")), errors="coerce"
+    )
+    out["contracts_for_budget"] = pd.to_numeric(
+        _series_or_default(df, "contracts_for_budget", 0), errors="coerce"
+    ).fillna(0)
+    out["risk_dollars_reference"] = pd.to_numeric(
+        _series_or_default(df, "risk_dollars_reference", float("nan")), errors="coerce"
+    )
+    out["reward_dollars_reference"] = pd.to_numeric(
+        _series_or_default(df, "reward_dollars_reference", float("nan")), errors="coerce"
+    )
+    out["reward_risk_reference"] = pd.to_numeric(
+        _series_or_default(df, "reward_risk_reference", float("nan")), errors="coerce"
+    )
     out["budget_fit"] = _series_or_default(df, "budget_fit")
     out["contract_grade"] = grade
     out["review_lane"] = _series_or_default(df, "review_lane")
@@ -294,9 +316,9 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     for timestamp_key in ("quote_updated_at", "updated_at", "asof", "entry_time"):
         out[timestamp_key] = _series_or_default(df, timestamp_key)
     out["_source_file"] = source_path.name
-    source_modified = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
+    source_modified = datetime.fromtimestamp(source_path.stat().st_mtime, tz=UTC)
     out["_source_mtime"] = source_modified.isoformat()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     def artifact_age_minutes(value: Any) -> float | None:
         timestamp = _parse_time(value) or source_modified
@@ -395,9 +417,22 @@ def _matches_query(row: pd.Series, normalized: dict[str, Any], query: str) -> bo
         return True
     values: list[str] = []
     for key in (
-        "ticker_or_symbol", "contract", "option_side", "strike", "expiry", "direction", "action",
-        "ticker", "symbol", "name", "company", "company_name", "security_name", "localSymbol",
-        "side", "top_headline",
+        "ticker_or_symbol",
+        "contract",
+        "option_side",
+        "strike",
+        "expiry",
+        "direction",
+        "action",
+        "ticker",
+        "symbol",
+        "name",
+        "company",
+        "company_name",
+        "security_name",
+        "localSymbol",
+        "side",
+        "top_headline",
     ):
         if key in normalized:
             values.append(_text(normalized.get(key)))
@@ -458,7 +493,9 @@ def _base_output(generated_at: str, asset: str) -> dict[str, Any]:
     }
 
 
-def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool) -> tuple[dict[str, Any], str]:
+def _normalize_option(
+    row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool
+) -> tuple[dict[str, Any], str]:
     ticker = _text(row.get("ticker")).upper()
     side = _text(row.get("side")).lower()
     strike = row.get("strike")
@@ -478,7 +515,9 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
     if contracts <= 0 and not allow_zero_size_placeholder:
         return {}, "suggested_contracts <= 0"
     out = _base_output(generated_at, "option")
-    suggested_dollars = _safe_float(row.get("actual_dollars") or row.get("suggested_dollars"), entry * contracts * 100)
+    suggested_dollars = _safe_float(
+        row.get("actual_dollars") or row.get("suggested_dollars"), entry * contracts * 100
+    )
     stop = _safe_float(row.get("stop_price"), 0.0)
     target = _safe_float(row.get("target_price"), 0.0)
     risk = max(entry - stop, 0.0) * max(contracts, 1) * 100 if stop else suggested_dollars
@@ -507,66 +546,66 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
             notes += f"; reasons={swing_reasons}"
         if swing_warnings:
             notes += f"; warnings={swing_warnings}"
-    out.update({
-        "_sector": _sector(row),
-        "ticker_or_symbol": ticker,
-        "action": "BUY_TO_OPEN",
-        "direction": f"long_{side}",
-        "quantity": contracts,
-        "contract": _text(row.get("contract")) or f"{ticker} {expiry} {side.upper()} {strike}",
-        "option_side": side,
-        "underlying_type": _text(row.get("underlying_type")),
-        "strike": strike,
-        "expiry": expiry,
-        "entry_price": entry,
-        "bid": round(bid, 6) if math.isfinite(bid) else "",
-        "ask": round(ask, 6) if math.isfinite(ask) else "",
-        "spread_pct": round(spread, 6) if math.isfinite(spread) else "",
-        "source_quote_at": source_quote_at,
-        "source_quote_time_basis": source_quote_time_basis,
-        "execution_profile": _text(row.get("execution_profile")),
-        "strategy_evidence_lane": _text(row.get("strategy_evidence_lane")),
-        "profile_policy_version": _text(row.get("profile_policy_version")),
-        "chain_source": _text(row.get("chain_source")),
-        "quote_quality": _text(row.get("quote_quality")),
-        "data_delay": _text(row.get("data_delay")),
-        "stop_price": stop,
-        "target_price": target,
-        "confidence": _safe_int(row.get("confidence"), ""),
-        "delta": _safe_float(row.get("delta"), ""),
-        "open_interest": _safe_int(
-            row.get("openInterest")
-            if _text(row.get("openInterest"))
-            else row.get("open_interest"),
-            "",
-        ),
-        "volume": _safe_int(row.get("volume"), ""),
-        "after_cost_edge_pct": _safe_float(
-            row.get("after_cost_edge_pct"), ""
-        ),
-        "planned_hold_sessions": _safe_int(
-            row.get("planned_hold_sessions"), ""
-        ),
-        "rank_score": _safe_float(row.get("rank_score"), ""),
-        "fused_score": _safe_float(row.get("fused_score"), ""),
-        "trade_status": _text(row.get("trade_status") or "Trade"),
-        "risk_dollars": round(risk, 2) if risk != "" else "",
-        "reward_dollars": round(reward, 2) if reward != "" else "",
-        "suggested_dollars": round(suggested_dollars, 2),
-        "suggested_contracts": contracts,
-        "swing_fit_score": _safe_float(row.get("swing_fit_score"), ""),
-        "swing_fit_label": swing_label,
-        "swing_fit_reasons": swing_reasons,
-        "swing_fit_warnings": swing_warnings,
-        "breakeven_move_label": _text(row.get("breakeven_move_label")),
-        "liquidity_label": _text(row.get("liquidity_label")),
-        "reason_selected": reason_selected,
-        "notes": notes,
-    })
+    out.update(
+        {
+            "_sector": _sector(row),
+            "ticker_or_symbol": ticker,
+            "action": "BUY_TO_OPEN",
+            "direction": f"long_{side}",
+            "quantity": contracts,
+            "contract": _text(row.get("contract")) or f"{ticker} {expiry} {side.upper()} {strike}",
+            "option_side": side,
+            "underlying_type": _text(row.get("underlying_type")),
+            "strike": strike,
+            "expiry": expiry,
+            "entry_price": entry,
+            "bid": round(bid, 6) if math.isfinite(bid) else "",
+            "ask": round(ask, 6) if math.isfinite(ask) else "",
+            "spread_pct": round(spread, 6) if math.isfinite(spread) else "",
+            "source_quote_at": source_quote_at,
+            "source_quote_time_basis": source_quote_time_basis,
+            "execution_profile": _text(row.get("execution_profile")),
+            "strategy_evidence_lane": _text(row.get("strategy_evidence_lane")),
+            "profile_policy_version": _text(row.get("profile_policy_version")),
+            "chain_source": _text(row.get("chain_source")),
+            "quote_quality": _text(row.get("quote_quality")),
+            "data_delay": _text(row.get("data_delay")),
+            "stop_price": stop,
+            "target_price": target,
+            "confidence": _safe_int(row.get("confidence"), ""),
+            "delta": _safe_float(row.get("delta"), ""),
+            "open_interest": _safe_int(
+                row.get("openInterest")
+                if _text(row.get("openInterest"))
+                else row.get("open_interest"),
+                "",
+            ),
+            "volume": _safe_int(row.get("volume"), ""),
+            "after_cost_edge_pct": _safe_float(row.get("after_cost_edge_pct"), ""),
+            "planned_hold_sessions": _safe_int(row.get("planned_hold_sessions"), ""),
+            "rank_score": _safe_float(row.get("rank_score"), ""),
+            "fused_score": _safe_float(row.get("fused_score"), ""),
+            "trade_status": _text(row.get("trade_status") or "Trade"),
+            "risk_dollars": round(risk, 2) if risk != "" else "",
+            "reward_dollars": round(reward, 2) if reward != "" else "",
+            "suggested_dollars": round(suggested_dollars, 2),
+            "suggested_contracts": contracts,
+            "swing_fit_score": _safe_float(row.get("swing_fit_score"), ""),
+            "swing_fit_label": swing_label,
+            "swing_fit_reasons": swing_reasons,
+            "swing_fit_warnings": swing_warnings,
+            "breakeven_move_label": _text(row.get("breakeven_move_label")),
+            "liquidity_label": _text(row.get("liquidity_label")),
+            "reason_selected": reason_selected,
+            "notes": notes,
+        }
+    )
     return out, ""
 
 
-def _normalize_share(row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool) -> tuple[dict[str, Any], str]:
+def _normalize_share(
+    row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool
+) -> tuple[dict[str, Any], str]:
     ticker = _text(row.get("ticker")).upper()
     entry = _safe_float(row.get("entry_price") or row.get("spot") or row.get("current_price"), 0.0)
     dollars = _safe_float(row.get("suggested_dollars") or row.get("actual_dollars"), 0.0)
@@ -586,30 +625,34 @@ def _normalize_share(row: pd.Series, generated_at: str, allow_zero_size_placehol
     risk = max(entry - stop, 0.0) * max(qty, 1) if stop else ""
     reward = max(target - entry, 0.0) * max(qty, 1) if target else ""
     out = _base_output(generated_at, "share")
-    out.update({
-        "_sector": _sector(row),
-        "ticker_or_symbol": ticker,
-        "action": "BUY",
-        "direction": "long",
-        "quantity": qty,
-        "entry_price": entry,
-        "stop_price": round(stop, 4) if stop else "",
-        "target_price": round(target, 4) if target else "",
-        "confidence": _safe_int(row.get("confidence"), ""),
-        "rank_score": _safe_float(row.get("rank_score") or row.get("share_score"), ""),
-        "fused_score": _safe_float(row.get("fused_score") or row.get("share_score"), ""),
-        "trade_status": _text(row.get("trade_status") or "Trade"),
-        "risk_dollars": round(risk, 2) if risk != "" else "",
-        "reward_dollars": round(reward, 2) if reward != "" else "",
-        "suggested_dollars": round(dollars, 2),
-        "suggested_contracts": "",
-        "reason_selected": "passed external share filters",
-        "notes": "manual paper-tracking candidate; no broker order placed",
-    })
+    out.update(
+        {
+            "_sector": _sector(row),
+            "ticker_or_symbol": ticker,
+            "action": "BUY",
+            "direction": "long",
+            "quantity": qty,
+            "entry_price": entry,
+            "stop_price": round(stop, 4) if stop else "",
+            "target_price": round(target, 4) if target else "",
+            "confidence": _safe_int(row.get("confidence"), ""),
+            "rank_score": _safe_float(row.get("rank_score") or row.get("share_score"), ""),
+            "fused_score": _safe_float(row.get("fused_score") or row.get("share_score"), ""),
+            "trade_status": _text(row.get("trade_status") or "Trade"),
+            "risk_dollars": round(risk, 2) if risk != "" else "",
+            "reward_dollars": round(reward, 2) if reward != "" else "",
+            "suggested_dollars": round(dollars, 2),
+            "suggested_contracts": "",
+            "reason_selected": "passed external share filters",
+            "notes": "manual paper-tracking candidate; no broker order placed",
+        }
+    )
     return out, ""
 
 
-def _normalize_future(row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool) -> tuple[dict[str, Any], str]:
+def _normalize_future(
+    row: pd.Series, generated_at: str, allow_zero_size_placeholder: bool
+) -> tuple[dict[str, Any], str]:
     symbol = _text(row.get("symbol") or row.get("ticker")).upper()
     direction = _text(row.get("direction")).lower()
     if direction not in {"long", "short"}:
@@ -638,27 +681,29 @@ def _normalize_future(row: pd.Series, generated_at: str, allow_zero_size_placeho
     if reward <= 0:
         reward = abs(target - entry) * point_value * max(contracts, 1)
     out = _base_output(generated_at, "futures")
-    out.update({
-        "_sector": _sector(row),
-        "ticker_or_symbol": symbol,
-        "action": "BUY_TO_OPEN" if direction == "long" else "SELL_TO_OPEN",
-        "direction": direction,
-        "quantity": contracts,
-        "contract": contract,
-        "entry_price": entry,
-        "stop_price": stop,
-        "target_price": target,
-        "confidence": _safe_int(row.get("confidence"), ""),
-        "rank_score": _safe_float(row.get("rank_score") or row.get("futures_score"), ""),
-        "fused_score": _safe_float(row.get("fused_score") or row.get("futures_score"), ""),
-        "trade_status": _text(row.get("trade_status") or "Trade"),
-        "risk_dollars": round(risk, 2),
-        "reward_dollars": round(reward, 2),
-        "suggested_dollars": "",
-        "suggested_contracts": contracts,
-        "reason_selected": "passed external futures filters",
-        "notes": f"manual paper-tracking candidate; point_value={point_value:g}; no broker order placed",
-    })
+    out.update(
+        {
+            "_sector": _sector(row),
+            "ticker_or_symbol": symbol,
+            "action": "BUY_TO_OPEN" if direction == "long" else "SELL_TO_OPEN",
+            "direction": direction,
+            "quantity": contracts,
+            "contract": contract,
+            "entry_price": entry,
+            "stop_price": stop,
+            "target_price": target,
+            "confidence": _safe_int(row.get("confidence"), ""),
+            "rank_score": _safe_float(row.get("rank_score") or row.get("futures_score"), ""),
+            "fused_score": _safe_float(row.get("fused_score") or row.get("futures_score"), ""),
+            "trade_status": _text(row.get("trade_status") or "Trade"),
+            "risk_dollars": round(risk, 2),
+            "reward_dollars": round(reward, 2),
+            "suggested_dollars": "",
+            "suggested_contracts": contracts,
+            "reason_selected": "passed external futures filters",
+            "notes": f"manual paper-tracking candidate; point_value={point_value:g}; no broker order placed",
+        }
+    )
     return out, ""
 
 
@@ -688,7 +733,11 @@ def _candidate_rows(
         guard_reason = _guard_excluded(row)
         if guard_reason:
             reasons.append(guard_reason)
-        if asset == "option" and "spread_pct" in row.index and _safe_float(row.get("spread_pct"), 0.0) > max_spread:
+        if (
+            asset == "option"
+            and "spread_pct" in row.index
+            and _safe_float(row.get("spread_pct"), 0.0) > max_spread
+        ):
             reasons.append("option spread above max acceptable spread")
         if asset == "option":
             dte = _option_dte(row, generated_at)
@@ -701,7 +750,11 @@ def _candidate_rows(
 
         if asset == "option":
             normalized, reason = _normalize_option(row, generated_at, allow_zero_size_placeholder)
-            direction = _text(normalized.get("direction")).replace("long_", "") if normalized else _text(row.get("side")).lower()
+            direction = (
+                _text(normalized.get("direction")).replace("long_", "")
+                if normalized
+                else _text(row.get("side")).lower()
+            )
             ticker = _text(normalized.get("ticker_or_symbol") or row.get("ticker")).upper()
         elif asset == "share":
             normalized, reason = _normalize_share(row, generated_at, allow_zero_size_placeholder)
@@ -710,7 +763,9 @@ def _candidate_rows(
         else:
             normalized, reason = _normalize_future(row, generated_at, allow_zero_size_placeholder)
             direction = _text(normalized.get("direction") or row.get("direction")).lower()
-            ticker = _text(normalized.get("ticker_or_symbol") or row.get("symbol") or row.get("ticker")).upper()
+            ticker = _text(
+                normalized.get("ticker_or_symbol") or row.get("symbol") or row.get("ticker")
+            ).upper()
         if reason:
             reasons.append(reason)
         if ticker and (asset, ticker, direction) in open_key_set:
@@ -763,7 +818,7 @@ def export_candidates(
     dry-run mode it includes selected and excluded rows with `reason_excluded`.
     """
     del validation_summary, research_guard_report  # reserved for future policy hints
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     generated_at = generated_at or now.isoformat()
     open_key_set = _open_keys(
         (open_positions or []) + (open_share_positions or []) + (open_futures_positions or [])
@@ -794,7 +849,9 @@ def export_candidates(
         selected.extend(picked)
         excluded.extend(dropped)
 
-    selected = sorted(selected, key=lambda row: _safe_float(row.get("_sort_score"), 0.0), reverse=True)
+    selected = sorted(
+        selected, key=lambda row: _safe_float(row.get("_sort_score"), 0.0), reverse=True
+    )
 
     selected = _apply_limits(
         selected,
@@ -867,7 +924,9 @@ def build_external_orders(
 ) -> pd.DataFrame:
     data_dir = Path(data_dir)
     options = _load_latest_parquet(data_dir, "top_options_*.parquet")
-    chain_options = _load_option_chain_shortlist(data_dir) if include_chain_shortlist else pd.DataFrame()
+    chain_options = (
+        _load_option_chain_shortlist(data_dir) if include_chain_shortlist else pd.DataFrame()
+    )
     if include_chain_shortlist and not chain_options.empty:
         options = pd.concat([options, chain_options], ignore_index=True, sort=False)
     shares = _load_latest_parquet(data_dir, "top_shares_*.parquet")

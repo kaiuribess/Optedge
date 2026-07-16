@@ -5,6 +5,7 @@ The current orchestrator owns engine dispatch and runtime status. These lists
 are not an orchestration source of truth, do not prove that an engine ran, and
 must not be treated as market evidence or model-promotion input.
 """
+
 from __future__ import annotations
 
 REGISTRY_ROLE = "informational_compatibility_metadata"

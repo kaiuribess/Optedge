@@ -42,10 +42,25 @@ SWING_EXECUTION_MAX_TOTAL_PREMIUM = 250.0
 SWING_EXECUTION_ORDER_PREMIUM_BUDGET_FRACTION = 0.30
 SWING_EXECUTION_MAX_PREMIUM_PER_ORDER = 150.0
 SWING_EXECUTION_OPTION_UNDERLYING_TYPE = "equity"
-UNSUPPORTED_INDEX_OPTION_ROOTS = frozenset({
-    "DJX", "MRUT", "NANOS", "NDX", "NDXP", "NQX", "OEX", "RUT", "RUTW",
-    "SPX", "SPXW", "VIX", "VIXW", "XEO", "XSP",
-})
+UNSUPPORTED_INDEX_OPTION_ROOTS = frozenset(
+    {
+        "DJX",
+        "MRUT",
+        "NANOS",
+        "NDX",
+        "NDXP",
+        "NQX",
+        "OEX",
+        "RUT",
+        "RUTW",
+        "SPX",
+        "SPXW",
+        "VIX",
+        "VIXW",
+        "XEO",
+        "XSP",
+    }
+)
 
 
 # Dedicated LEAPS-as-a-swing-instrument policy.  The contract runway and the

@@ -6,6 +6,7 @@ for research ordering, but it never overrides policy or data blockers.  Only a
 candidate with no blocker receives a non-zero execution score, and even an
 ``execution_ready`` result is merely eligible for a separate manual review.
 """
+
 from __future__ import annotations
 
 import math
@@ -91,9 +92,7 @@ def score_leaps_swing_candidate(
         or not float(hold_sessions).is_integer()
         or hold_sessions > profile.max_hold_sessions
     ):
-        hard_blockers.append(
-            f"planned hold must be a whole 1-{profile.max_hold_sessions} sessions"
-        )
+        hard_blockers.append(f"planned hold must be a whole 1-{profile.max_hold_sessions} sessions")
 
     delta = _first_number(candidate, "delta")
     abs_delta = abs(delta) if delta is not None else None
@@ -136,16 +135,18 @@ def score_leaps_swing_candidate(
             f"OI below {profile.preferred_open_interest} requires daily volume "
             f">= {profile.min_daily_volume}"
         )
-    elif open_interest is not None and open_interest >= profile.preferred_open_interest and volume == 0:
+    elif (
+        open_interest is not None
+        and open_interest >= profile.preferred_open_interest
+        and volume == 0
+    ):
         warnings.append("no same-day volume; deep open interest keeps this researchable")
 
     confidence = _first_number(candidate, "confidence")
     if confidence is None:
         data_blockers.append("confidence is missing or invalid")
     elif confidence < profile.min_confidence:
-        hard_blockers.append(
-            f"confidence {confidence:g} is below {profile.min_confidence:g}"
-        )
+        hard_blockers.append(f"confidence {confidence:g} is below {profile.min_confidence:g}")
 
     after_cost_edge = _first_number(
         candidate,
@@ -172,9 +173,7 @@ def score_leaps_swing_candidate(
     elif age < -5:
         hard_blockers.append("quote age is implausibly in the future")
     elif age > profile.max_quote_age_seconds:
-        data_blockers.append(
-            f"quote is older than {profile.max_quote_age_seconds:g} seconds"
-        )
+        data_blockers.append(f"quote is older than {profile.max_quote_age_seconds:g} seconds")
 
     budget = _number(account_budget)
     premium_dollars = _premium_dollars(candidate)
@@ -249,10 +248,10 @@ def score_leaps_swing_candidate(
     freshness_points = 0
     if live_quote and age is not None and 0 <= age <= profile.max_quote_age_seconds:
         freshness_points = 5 if age <= 60 else 3
-    budget_points = 5 if budget is None else (
+    budget_points = (
         5
-        if premium_dollars is not None and 0 < premium_dollars <= budget
-        else 0
+        if budget is None
+        else (5 if premium_dollars is not None and 0 < premium_dollars <= budget else 0)
     )
     breakdown = {
         "spread": spread_points,
@@ -315,9 +314,7 @@ def score_leaps_swing_candidate(
         "management_references": {
             "stop_loss_fraction": profile.stop_loss_fraction,
             "target_gain_fraction": profile.target_gain_fraction,
-            "breakeven_review_trigger_fraction": (
-                profile.breakeven_review_trigger_fraction
-            ),
+            "breakeven_review_trigger_fraction": (profile.breakeven_review_trigger_fraction),
             "manual_management_only": profile.manual_management_only,
         },
         "does_not_place_orders": True,

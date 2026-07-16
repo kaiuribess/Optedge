@@ -3,11 +3,12 @@
 
 Uses SEC's public data.sec.gov submissions API. No API key required.
 """
+
 from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import data_provider
@@ -22,9 +23,20 @@ SEC_ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_clean}
 def _sec_headers() -> dict[str, str]:
     return sec_headers(accept="application/json")
 
+
 IMPORTANT_FORMS = {
-    "8-K", "10-Q", "10-K", "S-1", "S-3", "S-8", "424B5", "424B2",
-    "DEF 14A", "SC 13D", "SC 13G", "4",
+    "8-K",
+    "10-Q",
+    "10-K",
+    "S-1",
+    "S-3",
+    "S-8",
+    "424B5",
+    "424B2",
+    "DEF 14A",
+    "SC 13D",
+    "SC 13G",
+    "4",
 }
 
 FACT_DEFS = {
@@ -48,7 +60,11 @@ FACT_DEFS = {
         "label": "Stockholders equity",
         "concepts": [
             ("us-gaap", "StockholdersEquity", "USD"),
-            ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "USD"),
+            (
+                "us-gaap",
+                "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                "USD",
+            ),
         ],
     },
     "debt": {
@@ -128,14 +144,16 @@ def _compact_recent_filings(recent: dict[str, Any]) -> list[dict[str, Any]]:
     descriptions = recent.get("primaryDocDescription") or []
     rows = []
     for idx, form in enumerate(forms):
-        rows.append({
-            "form": form,
-            "filing_date": filing_dates[idx] if idx < len(filing_dates) else None,
-            "report_date": report_dates[idx] if idx < len(report_dates) else None,
-            "accession": accession_numbers[idx] if idx < len(accession_numbers) else None,
-            "primary_document": primary_docs[idx] if idx < len(primary_docs) else None,
-            "description": descriptions[idx] if idx < len(descriptions) else None,
-        })
+        rows.append(
+            {
+                "form": form,
+                "filing_date": filing_dates[idx] if idx < len(filing_dates) else None,
+                "report_date": report_dates[idx] if idx < len(report_dates) else None,
+                "accession": accession_numbers[idx] if idx < len(accession_numbers) else None,
+                "primary_document": primary_docs[idx] if idx < len(primary_docs) else None,
+                "description": descriptions[idx] if idx < len(descriptions) else None,
+            }
+        )
     return rows
 
 
@@ -162,28 +180,32 @@ def _as_float(value: Any) -> float | None:
     return out if out == out else None
 
 
-def _latest_fact(companyfacts: dict[str, Any], concepts: list[tuple[str, str, str]]) -> dict[str, Any] | None:
+def _latest_fact(
+    companyfacts: dict[str, Any], concepts: list[tuple[str, str, str]]
+) -> dict[str, Any] | None:
     facts = companyfacts.get("facts", {}) if isinstance(companyfacts, dict) else {}
     candidates = []
     for taxonomy, concept, unit in concepts:
-        concept_obj = ((facts.get(taxonomy) or {}).get(concept) or {})
+        concept_obj = (facts.get(taxonomy) or {}).get(concept) or {}
         units = concept_obj.get("units") or {}
         rows = units.get(unit) or []
         for row in rows:
             value = _as_float(row.get("val"))
             if value is None:
                 continue
-            candidates.append({
-                "value": value,
-                "period_end": row.get("end"),
-                "filed": row.get("filed"),
-                "form": row.get("form"),
-                "fy": row.get("fy"),
-                "fp": row.get("fp"),
-                "unit": unit,
-                "taxonomy": taxonomy,
-                "concept": concept,
-            })
+            candidates.append(
+                {
+                    "value": value,
+                    "period_end": row.get("end"),
+                    "filed": row.get("filed"),
+                    "form": row.get("form"),
+                    "fy": row.get("fy"),
+                    "fp": row.get("fp"),
+                    "unit": unit,
+                    "taxonomy": taxonomy,
+                    "concept": concept,
+                }
+            )
     if not candidates:
         return None
     return sorted(
@@ -250,16 +272,18 @@ def recent_filings_for_symbol(symbol: str, limit: int = 8) -> dict[str, Any]:
                 acc_clean=accession.replace("-", ""),
                 doc=doc,
             )
-        rows.append({
-            "ticker": ticker,
-            "company_name": mapping.get("name"),
-            "form": form,
-            "filing_date": row.get("filing_date"),
-            "report_date": row.get("report_date"),
-            "description": row.get("description"),
-            "filing_signal": _filing_signal(form),
-            "url": url,
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "company_name": mapping.get("name"),
+                "form": form,
+                "filing_date": row.get("filing_date"),
+                "report_date": row.get("report_date"),
+                "description": row.get("description"),
+                "filing_signal": _filing_signal(form),
+                "url": url,
+            }
+        )
         if len(rows) >= limit:
             break
     return {
@@ -267,7 +291,7 @@ def recent_filings_for_symbol(symbol: str, limit: int = 8) -> dict[str, Any]:
         "cik": cik,
         "company_name": mapping.get("name"),
         "source": "sec_edgar_submissions",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(rows),
         "rows": rows,
     }
@@ -302,18 +326,20 @@ def companyfacts_for_symbol(symbol: str, limit: int = 12) -> dict[str, Any]:
             metrics[key] = None
             continue
         metrics[key] = fact["value"]
-        rows.append({
-            "ticker": ticker,
-            "company_name": mapping.get("name"),
-            "metric": key,
-            "label": spec["label"],
-            "value": fact["value"],
-            "unit": fact.get("unit"),
-            "period_end": fact.get("period_end"),
-            "filed": fact.get("filed"),
-            "form": fact.get("form"),
-            "concept": fact.get("concept"),
-        })
+        rows.append(
+            {
+                "ticker": ticker,
+                "company_name": mapping.get("name"),
+                "metric": key,
+                "label": spec["label"],
+                "value": fact["value"],
+                "unit": fact.get("unit"),
+                "period_end": fact.get("period_end"),
+                "filed": fact.get("filed"),
+                "form": fact.get("form"),
+                "concept": fact.get("concept"),
+            }
+        )
 
     metrics["liabilities_to_assets"] = _ratio(metrics.get("liabilities"), metrics.get("assets"))
     metrics["debt_to_assets"] = _ratio(metrics.get("debt"), metrics.get("assets"))
@@ -327,7 +353,7 @@ def companyfacts_for_symbol(symbol: str, limit: int = 12) -> dict[str, Any]:
         "cik": cik,
         "company_name": mapping.get("name"),
         "source": "sec_companyfacts",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "count": len(rows[:limit]),
         "rows": rows[:limit],
         "metrics": metrics,

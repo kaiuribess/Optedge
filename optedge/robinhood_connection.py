@@ -12,6 +12,7 @@ Every network action is a direct method call from the operator; this module has
 no poller, scheduler, retry loop, file credential fallback, or account-data
 cache.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,54 +40,60 @@ from optedge.robinhood_mcp import (
 )
 
 CONNECTION_MANAGER_SCHEMA = "optedge_robinhood_connection_manager_v1"
-_SAFE_CONNECTION_STATES = frozenset({
-    "authorization_required",
-    "connected",
-    "connected_limited",
-    "connecting",
-    "disconnected",
-    "disconnecting",
-    "error",
-    "shutdown",
-    "starting",
-})
-_SAFE_OAUTH_STATES = frozenset({
-    "authorization_required",
-    "callback_received",
-    "complete",
-    "failed",
-    "idle",
-})
-_SAFE_ERROR_CODES = frozenset({
-    "authorization_url_invalid",
-    "authorization_url_timeout",
-    "authorization_url_unavailable",
-    "callback_uri_invalid",
-    "client_initialization_timeout",
-    "client_reported_error",
-    "client_unavailable",
-    "connect_timeout",
-    "connection_or_transport_error",
-    "credential_storage_unavailable",
-    "disconnect_timeout",
-    "loop_start_timeout",
-    "loop_thread_reentry_blocked",
-    "loop_unavailable",
-    "manager_shutdown",
-    "mcp_operation_failed",
-    "oauth_callback_timeout",
-    "oauth_state_invalid",
-    "operation_cancelled",
-    "operation_failed",
-    "read_timeout",
-    "review_timeout",
-    "shutdown_timeout",
-    "status_timeout",
-    "tool_arguments_invalid",
-    "tool_catalog_invalid",
-    "tool_policy_blocked",
-    "tool_result_invalid",
-})
+_SAFE_CONNECTION_STATES = frozenset(
+    {
+        "authorization_required",
+        "connected",
+        "connected_limited",
+        "connecting",
+        "disconnected",
+        "disconnecting",
+        "error",
+        "shutdown",
+        "starting",
+    }
+)
+_SAFE_OAUTH_STATES = frozenset(
+    {
+        "authorization_required",
+        "callback_received",
+        "complete",
+        "failed",
+        "idle",
+    }
+)
+_SAFE_ERROR_CODES = frozenset(
+    {
+        "authorization_url_invalid",
+        "authorization_url_timeout",
+        "authorization_url_unavailable",
+        "callback_uri_invalid",
+        "client_initialization_timeout",
+        "client_reported_error",
+        "client_unavailable",
+        "connect_timeout",
+        "connection_or_transport_error",
+        "credential_storage_unavailable",
+        "disconnect_timeout",
+        "loop_start_timeout",
+        "loop_thread_reentry_blocked",
+        "loop_unavailable",
+        "manager_shutdown",
+        "mcp_operation_failed",
+        "oauth_callback_timeout",
+        "oauth_state_invalid",
+        "operation_cancelled",
+        "operation_failed",
+        "read_timeout",
+        "review_timeout",
+        "shutdown_timeout",
+        "status_timeout",
+        "tool_arguments_invalid",
+        "tool_catalog_invalid",
+        "tool_policy_blocked",
+        "tool_result_invalid",
+    }
+)
 _TOOL_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,79}")
 
 
@@ -153,12 +160,14 @@ def _safe_error_code_value(value: Any) -> str | None:
 def _safe_tool_names(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return sorted({
-        name
-        for item in value
-        for name in (str(item or "").strip(),)
-        if _TOOL_NAME_PATTERN.fullmatch(name)
-    })[:100]
+    return sorted(
+        {
+            name
+            for item in value
+            for name in (str(item or "").strip(),)
+            if _TOOL_NAME_PATTERN.fullmatch(name)
+        }
+    )[:100]
 
 
 def _project_client_status(value: Any) -> dict[str, Any]:
@@ -177,9 +186,7 @@ def _project_client_status(value: Any) -> dict[str, Any]:
         else {}
     )
     catalog_raw = (
-        cleaned.get("tool_catalog")
-        if isinstance(cleaned.get("tool_catalog"), dict)
-        else {}
+        cleaned.get("tool_catalog") if isinstance(cleaned.get("tool_catalog"), dict) else {}
     )
     try:
         tool_count = max(0, min(int(catalog_raw.get("tool_count") or 0), 10_000))
@@ -196,9 +203,7 @@ def _project_client_status(value: Any) -> dict[str, Any]:
     return {
         "schema": "optedge_robinhood_mcp_connection_v1",
         "endpoint": (
-            ROBINHOOD_MCP_ENDPOINT
-            if cleaned.get("endpoint") == ROBINHOOD_MCP_ENDPOINT
-            else None
+            ROBINHOOD_MCP_ENDPOINT if cleaned.get("endpoint") == ROBINHOOD_MCP_ENDPOINT else None
         ),
         "connection_state": state,
         "last_error_code": _safe_error_code_value(cleaned.get("last_error_code")),
@@ -218,12 +223,8 @@ def _project_client_status(value: Any) -> dict[str, Any]:
         },
         "tool_catalog": {
             "schema_valid": catalog_raw.get("schema_valid") is True,
-            "ready_for_direct_review": (
-                catalog_raw.get("ready_for_direct_review") is True
-            ),
-            "placement_tools_detected": (
-                catalog_raw.get("placement_tools_detected") is True
-            ),
+            "ready_for_direct_review": (catalog_raw.get("ready_for_direct_review") is True),
+            "placement_tools_detected": (catalog_raw.get("placement_tools_detected") is True),
             "placement_api_exposed": False,
             "tool_count": tool_count,
             "read_tools": _safe_tool_names(catalog_raw.get("read_tools")),
@@ -232,12 +233,8 @@ def _project_client_status(value: Any) -> dict[str, Any]:
             "missing_required_read_tools": _safe_tool_names(
                 catalog_raw.get("missing_required_read_tools")
             ),
-            "missing_review_tools": _safe_tool_names(
-                catalog_raw.get("missing_review_tools")
-            ),
-            "missing_place_tools": _safe_tool_names(
-                catalog_raw.get("missing_place_tools")
-            ),
+            "missing_review_tools": _safe_tool_names(catalog_raw.get("missing_review_tools")),
+            "missing_place_tools": _safe_tool_names(catalog_raw.get("missing_place_tools")),
             "unsupported_tools": _safe_tool_names(catalog_raw.get("unsupported_tools")),
             "issue_count": len(issues),
         },
@@ -340,9 +337,7 @@ class RobinhoodConnectionManager:
             for task in pending:
                 task.cancel()
             if pending:
-                self._loop.run_until_complete(
-                    asyncio.gather(*pending, return_exceptions=True)
-                )
+                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             self._loop.close()
 
@@ -419,10 +414,11 @@ class RobinhoodConnectionManager:
         with self._lock:
             self._client_status = cleaned
             state = str(cleaned.get("connection_state") or "").strip().lower()
-            preserve_manager_error = (
-                self._connection_state == "error"
-                and state not in {"connected", "connected_limited", "error"}
-            )
+            preserve_manager_error = self._connection_state == "error" and state not in {
+                "connected",
+                "connected_limited",
+                "error",
+            }
             if (
                 state
                 and state not in {"connecting", "authorization_required"}
@@ -442,8 +438,7 @@ class RobinhoodConnectionManager:
         with self._lock:
             client_status = dict(self._client_status)
             connect_pending = bool(
-                self._connect_future is not None
-                and not self._connect_future.done()
+                self._connect_future is not None and not self._connect_future.done()
             )
             connection_state = self._connection_state
             last_error_code = self._last_error_code
@@ -476,11 +471,7 @@ class RobinhoodConnectionManager:
     def status(self) -> dict[str, Any]:
         """Return a bounded, recursively sanitized connection snapshot."""
         with self._lock:
-            can_probe = (
-                not self._shutdown
-                and self._client is not None
-                and self._thread.is_alive()
-            )
+            can_probe = not self._shutdown and self._client is not None and self._thread.is_alive()
         probe_error: str | None = None
         if can_probe:
             try:
@@ -492,9 +483,7 @@ class RobinhoodConnectionManager:
                 self._cache_client_status(status)
             except RobinhoodConnectionError as exc:
                 probe_error = exc.code
-        return _sanitize_status(
-            self._compose_status(status_probe_error_code=probe_error)
-        )
+        return _sanitize_status(self._compose_status(status_probe_error_code=probe_error))
 
     async def _connect_once(self) -> Any:
         client = self._require_client()
@@ -526,9 +515,9 @@ class RobinhoodConnectionManager:
             return
         cleaned = self._cache_client_status(result)
         with self._lock:
-            self._connection_state = str(
-                cleaned.get("connection_state") or "connected"
-            ).strip().lower()
+            self._connection_state = (
+                str(cleaned.get("connection_state") or "connected").strip().lower()
+            )
             self._last_error_code = None
 
     def start_connect(self) -> dict[str, Any]:

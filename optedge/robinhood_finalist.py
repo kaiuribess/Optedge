@@ -149,7 +149,9 @@ def _field_schema(schema: Mapping[str, Any], field: str) -> dict[str, Any]:
 
 
 def _accepts_field(schema: Mapping[str, Any], field: str) -> bool:
-    return field in _schema_properties(schema) or schema.get("additionalProperties", True) is not False
+    return (
+        field in _schema_properties(schema) or schema.get("additionalProperties", True) is not False
+    )
 
 
 def _first_field(schema: Mapping[str, Any], names: tuple[str, ...]) -> str | None:
@@ -340,9 +342,7 @@ def _collection_rows(
         )
         data = _data_envelope(result)
         collection_keys = (
-            (collection_key,)
-            if isinstance(collection_key, str)
-            else tuple(collection_key)
+            (collection_key,) if isinstance(collection_key, str) else tuple(collection_key)
         )
         present_keys = [key for key in collection_keys if key in data]
         if len(present_keys) != 1:
@@ -457,9 +457,7 @@ def _standard_chain_blockers(chain: Mapping[str, Any], symbol: str) -> list[str]
             and any(_text(row.get(field)) for field in ("id", "instrument_id", "instrument", "url"))
         ]
         exact_reference_binding = bool(
-            chain_symbol == symbol
-            and len(underlyings) == 1
-            and len(stable_references) == 1
+            chain_symbol == symbol and len(underlyings) == 1 and len(stable_references) == 1
         )
         if symbol not in symbols and not exact_reference_binding:
             blockers.append("The live chain does not prove the exact equity underlying.")
@@ -600,9 +598,7 @@ def _safe_blocked_report(
             "label": _candidate_label(identity),
             "candidate_digest_sha256": canonical_digest(candidate),
             "quantity_cap": _integer(candidate.get("quantity")),
-            "limit_cap": _number(
-                candidate.get("max_limit_price") or candidate.get("limit_price")
-            ),
+            "limit_cap": _number(candidate.get("max_limit_price") or candidate.get("limit_price")),
             "execution_profile": candidate.get("execution_profile"),
         },
         "source_bindings": {
@@ -616,12 +612,26 @@ def _safe_blocked_report(
         "contract": dict(contract or {}),
         "quote": dict(quote or {}),
         "checks": {
-            "exact_contract_identity": not any("identity" in value.lower() or "contract" in value.lower() for value in blockers),
-            "fresh_quote": not any("stale" in value.lower() or "timestamp" in value.lower() for value in blockers),
+            "exact_contract_identity": not any(
+                "identity" in value.lower() or "contract" in value.lower() for value in blockers
+            ),
+            "fresh_quote": not any(
+                "stale" in value.lower() or "timestamp" in value.lower() for value in blockers
+            ),
             "spread_within_cap": not any("spread" in value.lower() for value in blockers),
-            "ask_within_limit_cap": not any("limit" in value.lower() or "ask" in value.lower() and "cap" in value.lower() for value in blockers),
-            "liquidity_within_profile": not any("open interest" in value.lower() or "volume" in value.lower() for value in blockers),
-            "standard_contract_proven": not any("standard" in value.lower() or "underlying" in value.lower() or "cash component" in value.lower() for value in blockers),
+            "ask_within_limit_cap": not any(
+                "limit" in value.lower() or "ask" in value.lower() and "cap" in value.lower()
+                for value in blockers
+            ),
+            "liquidity_within_profile": not any(
+                "open interest" in value.lower() or "volume" in value.lower() for value in blockers
+            ),
+            "standard_contract_proven": not any(
+                "standard" in value.lower()
+                or "underlying" in value.lower()
+                or "cash component" in value.lower()
+                for value in blockers
+            ),
         },
         "blockers": list(dict.fromkeys(value for value in blockers if value)),
         "warnings": list(dict.fromkeys(value for value in (warnings or []) if value)),
@@ -717,9 +727,7 @@ def check_best_option_finalist(
     data_dir = Path(data_dir)
     queue = _read_json(data_dir / "robinhood_agentic_queue.json")
     cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
-    candidate, candidate_lane, local_entry_allowed = _select_current_finalist(
-        queue, cycle, current
-    )
+    candidate, candidate_lane, local_entry_allowed = _select_current_finalist(queue, cycle, current)
     identity = _option_identity(candidate)
     symbol = str(identity["symbol"])
     expiry = str(identity["expiry"])
@@ -750,20 +758,21 @@ def check_best_option_finalist(
     )
     calls.append("get_option_chains")
     matching_chains = [
-        row for row in chains
+        row
+        for row in chains
         if _text(row.get("symbol") or row.get("chain_symbol")).upper() == symbol
         and expiry in _chain_expiries(row)
     ]
-    unique_chain_ids = {
-        _text(row.get("id") or row.get("chain_id")) for row in matching_chains
-    }
+    unique_chain_ids = {_text(row.get("id") or row.get("chain_id")) for row in matching_chains}
     unique_chain_ids.discard("")
     blockers: list[str] = []
     warnings: list[str] = []
     if not matching_chains or not unique_chain_ids:
         blockers.append("Robinhood returned no exact option chain containing the planned expiry.")
     if len(unique_chain_ids) > MAX_MATCHING_CHAINS:
-        blockers.append("Robinhood returned too many matching chains to verify safely in one bounded check.")
+        blockers.append(
+            "Robinhood returned too many matching chains to verify safely in one bounded check."
+        )
 
     all_instruments: list[dict[str, Any]] = []
     if not blockers:
@@ -787,7 +796,8 @@ def check_best_option_finalist(
             calls.append("get_option_instruments")
             all_instruments.extend(rows)
     matches = [
-        row for row in all_instruments
+        row
+        for row in all_instruments
         if _text(row.get("chain_symbol")).upper() == symbol
         and _text(row.get("expiration_date"))[:10] == expiry
         and _text(row.get("type") or row.get("option_type")).lower() == option_type
@@ -811,7 +821,8 @@ def check_best_option_finalist(
     option_id = _text(instrument.get("id") or instrument.get("option_id"))
     selected_chain = next(
         (
-            row for row in matching_chains
+            row
+            for row in matching_chains
             if _text(row.get("id") or row.get("chain_id")) == _text(instrument.get("chain_id"))
         ),
         {},
@@ -836,11 +847,15 @@ def check_best_option_finalist(
         )
         calls.append("get_option_quotes")
         exact_quotes = [
-            _quote_row(row) for row in quote_rows
-            if _text(_quote_row(row).get("instrument_id") or _quote_row(row).get("option_id")) == option_id
+            _quote_row(row)
+            for row in quote_rows
+            if _text(_quote_row(row).get("instrument_id") or _quote_row(row).get("option_id"))
+            == option_id
         ]
         if len(exact_quotes) != 1:
-            blockers.append("Robinhood did not return exactly one quote for the resolved option ID.")
+            blockers.append(
+                "Robinhood did not return exactly one quote for the resolved option ID."
+            )
         else:
             raw_quote = exact_quotes[0]
             bid = _number(raw_quote.get("bid_price") or raw_quote.get("bid"))
@@ -857,13 +872,17 @@ def check_best_option_finalist(
                 if bid is not None and bid > 0 and ask is not None and ask >= bid
                 else None
             )
-            open_interest = _integer(raw_quote.get("open_interest") or raw_quote.get("openInterest"))
+            open_interest = _integer(
+                raw_quote.get("open_interest") or raw_quote.get("openInterest")
+            )
             volume = _integer(raw_quote.get("volume") or raw_quote.get("daily_volume"))
             min_open_interest, min_volume = _liquidity_thresholds(candidate)
             if quote_at is None or age_seconds is None:
                 blockers.append("The Robinhood option quote timestamp is missing or invalid.")
             elif age_seconds < -5:
-                blockers.append("The Robinhood option quote timestamp is implausibly in the future.")
+                blockers.append(
+                    "The Robinhood option quote timestamp is implausibly in the future."
+                )
             elif age_seconds > MAX_QUOTE_AGE_SECONDS:
                 blockers.append(
                     f"The Robinhood option quote is stale ({age_seconds:.0f} seconds old)."
@@ -938,8 +957,7 @@ def check_best_option_finalist(
         "tradability": instrument.get("tradability") if instrument else None,
         "can_open_position": selected_chain.get("can_open_position") if selected_chain else None,
         "trade_value_multiplier": _number(
-            selected_chain.get("trade_value_multiplier")
-            if selected_chain else None
+            selected_chain.get("trade_value_multiplier") if selected_chain else None
         ),
         "cash_component_is_null": (
             selected_chain.get("cash_component") is None if selected_chain else False
@@ -1034,24 +1052,27 @@ def apply_finalist_check_to_sources(
     ):
         status["reason"] = "finalist_check_expired"
         return cycle_copy, queue_copy, status
-    bindings = check.get("source_bindings") if isinstance(check.get("source_bindings"), Mapping) else {}
-    if (
-        bindings.get("queue_digest_sha256") != canonical_digest(queue)
-        or bindings.get("cycle_digest_sha256") != canonical_digest(cycle)
-    ):
+    bindings = (
+        check.get("source_bindings") if isinstance(check.get("source_bindings"), Mapping) else {}
+    )
+    if bindings.get("queue_digest_sha256") != canonical_digest(queue) or bindings.get(
+        "cycle_digest_sha256"
+    ) != canonical_digest(cycle):
         status["reason"] = "finalist_check_source_changed"
         return cycle_copy, queue_copy, status
     candidate_check = check.get("candidate") if isinstance(check.get("candidate"), Mapping) else {}
     quote = check.get("quote") if isinstance(check.get("quote"), Mapping) else {}
     contract = check.get("contract") if isinstance(check.get("contract"), Mapping) else {}
     order = plan.get("order") if isinstance(plan.get("order"), Mapping) else {}
-    plan_key = _identity_key({
-        "symbol": order.get("symbol"),
-        "expiry": order.get("expiry"),
-        "strike": order.get("strike"),
-        "option_type": order.get("option_type"),
-        "underlying_type": order.get("underlying_type"),
-    })
+    plan_key = _identity_key(
+        {
+            "symbol": order.get("symbol"),
+            "expiry": order.get("expiry"),
+            "strike": order.get("strike"),
+            "option_type": order.get("option_type"),
+            "underlying_type": order.get("underlying_type"),
+        }
+    )
     if plan_key != _identity_key(candidate_check):
         status["reason"] = "finalist_check_identity_changed"
         return cycle_copy, queue_copy, status
@@ -1102,17 +1123,19 @@ def apply_finalist_check_to_sources(
     if queue_matches != 1 or cycle_matches != 1:
         status["reason"] = "finalist_check_candidate_binding_changed"
         return copy.deepcopy(dict(cycle)), copy.deepcopy(dict(queue)), status
-    status.update({
-        "applied": True,
-        "reason": "live_robinhood_quote_applied",
-        "artifact_digest_sha256": check.get("artifact_digest_sha256"),
-        "option_id": contract.get("option_id"),
-        "quote_updated_at": quote.get("updated_at"),
-        "quote_age_seconds": quote.get("age_seconds"),
-        "bid_price": quote.get("bid_price"),
-        "ask_price": quote.get("ask_price"),
-        "spread_fraction": quote.get("spread_fraction"),
-    })
+    status.update(
+        {
+            "applied": True,
+            "reason": "live_robinhood_quote_applied",
+            "artifact_digest_sha256": check.get("artifact_digest_sha256"),
+            "option_id": contract.get("option_id"),
+            "quote_updated_at": quote.get("updated_at"),
+            "quote_age_seconds": quote.get("age_seconds"),
+            "bid_price": quote.get("bid_price"),
+            "ask_price": quote.get("ask_price"),
+            "spread_fraction": quote.get("spread_fraction"),
+        }
+    )
     return cycle_copy, queue_copy, status
 
 

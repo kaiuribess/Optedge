@@ -1,5 +1,6 @@
 # Purpose: Run and track background symbol research jobs.
 """Background focused-scan jobs for the local cockpit."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,7 +8,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,14 +16,19 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.lookup_symbol import DATA_DIR, lookup_symbol, rich_lookup_kwargs, save_lookup
-from scripts.symbol_resolver import resolve_symbol
+from scripts.lookup_symbol import (  # noqa: E402
+    DATA_DIR,
+    lookup_symbol,
+    rich_lookup_kwargs,
+    save_lookup,
+)
+from scripts.symbol_resolver import resolve_symbol  # noqa: E402
 
 JOBS_DIRNAME = "cockpit_jobs"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def jobs_dir(data_dir: Path = DATA_DIR) -> Path:
@@ -121,20 +127,21 @@ def write_job(job: dict[str, Any], data_dir: Path = DATA_DIR) -> None:
 def _unique_job_id(base_id: str, data_dir: Path = DATA_DIR) -> str:
     """Return a job id that will not overwrite an existing cockpit job file."""
     clean = "".join(ch for ch in str(base_id) if ch.isalnum() or ch in {"_", "-"})[:70]
-    clean = clean or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    clean = clean or datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     if not job_path(clean, data_dir).exists():
         return clean
     for idx in range(1, 100):
         candidate = f"{clean}_{idx:02d}"
         if not job_path(candidate, data_dir).exists():
             return candidate
-    return f"{clean}_{datetime.now(timezone.utc).strftime('%f')}"
+    return f"{clean}_{datetime.now(UTC).strftime('%f')}"
 
 
 def list_jobs(data_dir: Path = DATA_DIR, limit: int = 20) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for path in sorted(jobs_dir(data_dir).glob("*.json"), key=lambda p: p.stat().st_mtime,
-                       reverse=True):
+    for path in sorted(
+        jobs_dir(data_dir).glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
         try:
             obj = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
@@ -148,7 +155,7 @@ def list_jobs(data_dir: Path = DATA_DIR, limit: int = 20) -> list[dict[str, Any]
 
 def _latest_dashboard_after(started_at: datetime, data_dir: Path) -> str | None:
     files = [p for p in data_dir.glob("dashboard_*.html") if p.is_file()]
-    files = [p for p in files if datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc) >= started_at]
+    files = [p for p in files if datetime.fromtimestamp(p.stat().st_mtime, tz=UTC) >= started_at]
     if not files:
         return None
     return str(max(files, key=lambda p: p.stat().st_mtime))
@@ -177,7 +184,7 @@ def _request_chain_scan_fields(request: dict[str, Any] | None) -> dict[str, Any]
     expiry = str(request.get("expiry") or "").strip()[:10]
     try:
         expiry_dt = datetime.fromisoformat(expiry).date()
-        dte = (expiry_dt - datetime.now(timezone.utc).date()).days
+        dte = (expiry_dt - datetime.now(UTC).date()).days
     except Exception:
         dte = None
     if dte is None:
@@ -242,56 +249,68 @@ def _attach_lookup_summary(job: dict[str, Any], data_dir: Path) -> None:
     brief = report.get("brief", {}) if isinstance(report.get("brief"), dict) else {}
     swing = brief.get("swing_verdict", {}) if isinstance(brief.get("swing_verdict"), dict) else {}
     price = brief.get("price_snapshot", {}) if isinstance(brief.get("price_snapshot"), dict) else {}
-    market = brief.get("market_structure", {}) if isinstance(brief.get("market_structure"), dict) else {}
+    market = (
+        brief.get("market_structure", {}) if isinstance(brief.get("market_structure"), dict) else {}
+    )
     cboe_activity = (
         brief.get("cboe_option_activity", {})
-        if isinstance(brief.get("cboe_option_activity"), dict) else {}
+        if isinstance(brief.get("cboe_option_activity"), dict)
+        else {}
     )
     option_alternatives = (
         brief.get("option_alternatives", {})
-        if isinstance(brief.get("option_alternatives"), dict) else {}
+        if isinstance(brief.get("option_alternatives"), dict)
+        else {}
     )
     contract_comparison = (
         brief.get("contract_comparison", {})
-        if isinstance(brief.get("contract_comparison"), dict) else {}
+        if isinstance(brief.get("contract_comparison"), dict)
+        else {}
     )
     requested_matches = sections.get("requested_option_matches") or []
     best_match = requested_matches[0] if requested_matches else {}
     request_summary = _requested_match_summary(job.get("request"), requested_matches)
-    job.update({
-        "lookup_query": query,
-        "lookup_total_hits": int(report.get("total_hits") or 0),
-        "lookup_html_path": str(paths["html"]),
-        "lookup_json_path": str(paths["json"]),
-        "requested_match_mid": best_match.get("mid"),
-        "requested_match_quote_quality": best_match.get("quote_quality"),
-        "requested_match_chain_source": best_match.get("chain_source"),
-        "requested_match_source_file": sources.get("requested_option_matches"),
-        "lookup_price_trend": price.get("trend_label"),
-        "lookup_market_structure_status": market.get("status"),
-        "lookup_market_risk_score": market.get("risk_score"),
-        "lookup_cboe_activity_status": cboe_activity.get("status"),
-        "lookup_option_alt_count": option_alternatives.get("count"),
-        "lookup_option_alt_best": option_alternatives.get("best_label"),
-        "lookup_option_alt_reason": option_alternatives.get("best_reason"),
-        "lookup_option_alt_score": option_alternatives.get("best_score"),
-        "lookup_option_alt_readiness": option_alternatives.get("best_readiness_score"),
-        "lookup_option_alt_swing_fit": option_alternatives.get("best_swing_fit_score"),
-        "lookup_option_alt_spread_pct": option_alternatives.get("best_spread_pct"),
-        "lookup_contract_pick": contract_comparison.get("label"),
-        "lookup_contract_pick_winner": contract_comparison.get("winner"),
-        "lookup_contract_pick_score": contract_comparison.get("edge_score"),
-        "lookup_contract_pick_reasons": contract_comparison.get("reasons"),
-        "lookup_swing_verdict": swing.get("label"),
-        "lookup_swing_verdict_score": swing.get("score"),
-        "lookup_swing_verdict_decision": swing.get("decision"),
-    })
+    job.update(
+        {
+            "lookup_query": query,
+            "lookup_total_hits": int(report.get("total_hits") or 0),
+            "lookup_html_path": str(paths["html"]),
+            "lookup_json_path": str(paths["json"]),
+            "requested_match_mid": best_match.get("mid"),
+            "requested_match_quote_quality": best_match.get("quote_quality"),
+            "requested_match_chain_source": best_match.get("chain_source"),
+            "requested_match_source_file": sources.get("requested_option_matches"),
+            "lookup_price_trend": price.get("trend_label"),
+            "lookup_market_structure_status": market.get("status"),
+            "lookup_market_risk_score": market.get("risk_score"),
+            "lookup_cboe_activity_status": cboe_activity.get("status"),
+            "lookup_option_alt_count": option_alternatives.get("count"),
+            "lookup_option_alt_best": option_alternatives.get("best_label"),
+            "lookup_option_alt_reason": option_alternatives.get("best_reason"),
+            "lookup_option_alt_score": option_alternatives.get("best_score"),
+            "lookup_option_alt_readiness": option_alternatives.get("best_readiness_score"),
+            "lookup_option_alt_swing_fit": option_alternatives.get("best_swing_fit_score"),
+            "lookup_option_alt_spread_pct": option_alternatives.get("best_spread_pct"),
+            "lookup_contract_pick": contract_comparison.get("label"),
+            "lookup_contract_pick_winner": contract_comparison.get("winner"),
+            "lookup_contract_pick_score": contract_comparison.get("edge_score"),
+            "lookup_contract_pick_reasons": contract_comparison.get("reasons"),
+            "lookup_swing_verdict": swing.get("label"),
+            "lookup_swing_verdict_score": swing.get("score"),
+            "lookup_swing_verdict_decision": swing.get("decision"),
+        }
+    )
     job.update(request_summary)
 
 
-def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
-               extra_scan_args: list[str] | None = None,
-               scan_mode: str = "full") -> dict[str, Any]:
+def create_job(
+    query: str,
+    data_dir: Path = DATA_DIR,
+    *,
+    launch: bool = True,
+    extra_scan_args: list[str] | None = None,
+    scan_mode: str = "full",
+) -> dict[str, Any]:
     resolution = resolve_symbol(query)
     if not resolution.get("symbol"):
         return {
@@ -300,7 +319,7 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
             "resolution": resolution,
         }
     symbol = str(resolution["symbol"]).upper()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     job_id = _unique_job_id(f"{stamp}_{symbol}", data_dir)
     job = {
         "ok": True,
@@ -346,10 +365,14 @@ def create_job(query: str, data_dir: Path = DATA_DIR, *, launch: bool = True,
     return job
 
 
-def create_refresh_job(data_dir: Path = DATA_DIR, *, launch: bool = True,
-                       extra_scan_args: list[str] | None = None,
-                       scan_mode: str = "full") -> dict[str, Any]:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+def create_refresh_job(
+    data_dir: Path = DATA_DIR,
+    *,
+    launch: bool = True,
+    extra_scan_args: list[str] | None = None,
+    scan_mode: str = "full",
+) -> dict[str, Any]:
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     job_id = _unique_job_id(f"{stamp}_MARKET_REFRESH", data_dir)
     job = {
         "ok": True,
@@ -392,8 +415,9 @@ def create_refresh_job(data_dir: Path = DATA_DIR, *, launch: bool = True,
     return job
 
 
-def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
-            extra_scan_args: list[str] | None = None) -> int:
+def run_job(
+    job_id: str, symbol: str, data_dir: Path = DATA_DIR, extra_scan_args: list[str] | None = None
+) -> int:
     job = read_job(job_id, data_dir) or {
         "ok": True,
         "job_id": job_id,
@@ -402,7 +426,7 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
         "status": "queued",
         "created_at": _now(),
     }
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     log_path = job_log_path(job_id, data_dir)
     command = [
         sys.executable,
@@ -415,13 +439,15 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
         str(data_dir),
     ]
     command.extend(extra_scan_args or [])
-    job.update({
-        "status": "running",
-        "started_at": started.isoformat(),
-        "updated_at": _now(),
-        "command": command,
-        "log_path": str(log_path),
-    })
+    job.update(
+        {
+            "status": "running",
+            "started_at": started.isoformat(),
+            "updated_at": _now(),
+            "command": command,
+            "log_path": str(log_path),
+        }
+    )
     write_job(job, data_dir)
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         log_file.write(f"Optedge focused scan for {symbol}\n")
@@ -429,8 +455,9 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
             log_file.write("Requested contract: " + json.dumps(job["request"], default=str) + "\n")
         log_file.write("Command: " + " ".join(command) + "\n\n")
         log_file.flush()
-        proc = subprocess.run(command, cwd=str(ROOT), stdout=log_file,
-                              stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.run(
+            command, cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT, text=True
+        )
     dashboard = _latest_dashboard_after(started, data_dir)
     lookup_error = None
     if proc.returncode == 0:
@@ -438,21 +465,24 @@ def run_job(job_id: str, symbol: str, data_dir: Path = DATA_DIR,
             _attach_lookup_summary(job, data_dir)
         except Exception as exc:
             lookup_error = str(exc)[:240]
-    job.update({
-        "status": "completed" if proc.returncode == 0 else "failed",
-        "exit_code": proc.returncode,
-        "finished_at": _now(),
-        "updated_at": _now(),
-        "dashboard_path": dashboard,
-    })
+    job.update(
+        {
+            "status": "completed" if proc.returncode == 0 else "failed",
+            "exit_code": proc.returncode,
+            "finished_at": _now(),
+            "updated_at": _now(),
+            "dashboard_path": dashboard,
+        }
+    )
     if lookup_error:
         job["lookup_error"] = lookup_error
     write_job(job, data_dir)
     return int(proc.returncode)
 
 
-def run_refresh_job(job_id: str, data_dir: Path = DATA_DIR,
-                    extra_scan_args: list[str] | None = None) -> int:
+def run_refresh_job(
+    job_id: str, data_dir: Path = DATA_DIR, extra_scan_args: list[str] | None = None
+) -> int:
     job = read_job(job_id, data_dir) or {
         "ok": True,
         "job_id": job_id,
@@ -462,7 +492,7 @@ def run_refresh_job(job_id: str, data_dir: Path = DATA_DIR,
         "status": "queued",
         "created_at": _now(),
     }
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     log_path = job_log_path(job_id, data_dir)
     command = [
         sys.executable,
@@ -473,28 +503,33 @@ def run_refresh_job(job_id: str, data_dir: Path = DATA_DIR,
         str(data_dir),
     ]
     command.extend(extra_scan_args or [])
-    job.update({
-        "status": "running",
-        "started_at": started.isoformat(),
-        "updated_at": _now(),
-        "command": command,
-        "log_path": str(log_path),
-    })
+    job.update(
+        {
+            "status": "running",
+            "started_at": started.isoformat(),
+            "updated_at": _now(),
+            "command": command,
+            "log_path": str(log_path),
+        }
+    )
     write_job(job, data_dir)
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         log_file.write("Optedge full market refresh\n")
         log_file.write("Command: " + " ".join(command) + "\n\n")
         log_file.flush()
-        proc = subprocess.run(command, cwd=str(ROOT), stdout=log_file,
-                              stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.run(
+            command, cwd=str(ROOT), stdout=log_file, stderr=subprocess.STDOUT, text=True
+        )
     dashboard = _latest_dashboard_after(started, data_dir)
-    job.update({
-        "status": "completed" if proc.returncode == 0 else "failed",
-        "exit_code": proc.returncode,
-        "finished_at": _now(),
-        "updated_at": _now(),
-        "dashboard_path": dashboard,
-    })
+    job.update(
+        {
+            "status": "completed" if proc.returncode == 0 else "failed",
+            "exit_code": proc.returncode,
+            "finished_at": _now(),
+            "updated_at": _now(),
+            "dashboard_path": dashboard,
+        }
+    )
     write_job(job, data_dir)
     return int(proc.returncode)
 
@@ -528,18 +563,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run-refresh-job":
         return run_refresh_job(args.job_id, Path(args.data_dir), args.scan_arg)
     if args.cmd == "create":
-        print(json.dumps(create_job(
-            args.query, Path(args.data_dir), launch=not args.no_launch,
-            extra_scan_args=args.scan_arg, scan_mode=args.scan_mode,
-        ),
-                         indent=2, default=str))
+        print(
+            json.dumps(
+                create_job(
+                    args.query,
+                    Path(args.data_dir),
+                    launch=not args.no_launch,
+                    extra_scan_args=args.scan_arg,
+                    scan_mode=args.scan_mode,
+                ),
+                indent=2,
+                default=str,
+            )
+        )
         return 0
     if args.cmd == "create-refresh":
-        print(json.dumps(create_refresh_job(
-            Path(args.data_dir), launch=not args.no_launch,
-            extra_scan_args=args.scan_arg, scan_mode=args.scan_mode,
-        ),
-                         indent=2, default=str))
+        print(
+            json.dumps(
+                create_refresh_job(
+                    Path(args.data_dir),
+                    launch=not args.no_launch,
+                    extra_scan_args=args.scan_arg,
+                    scan_mode=args.scan_mode,
+                ),
+                indent=2,
+                default=str,
+            )
+        )
         return 0
     return 1
 

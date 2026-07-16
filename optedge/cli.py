@@ -1,5 +1,6 @@
 # Purpose: Route requests to scans loops lookups and the cockpit.
 """Command-line entry point for Optedge."""
+
 from __future__ import annotations
 
 import sys
@@ -52,7 +53,9 @@ def main() -> int:
         print(f"Lookup JSON: {paths['json']}")
         print(f"Hits: {report['total_hits']}")
         if report["total_hits"] == 0:
-            print(f"Tip: run a focused scan with: python run.py --universe {lookup.upper()} --no-open")
+            print(
+                f"Tip: run a focused scan with: python run.py --universe {lookup.upper()} --no-open"
+            )
         return 0
 
     from . import orchestrator

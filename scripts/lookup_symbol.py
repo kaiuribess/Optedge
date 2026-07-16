@@ -4,6 +4,7 @@
 This does not call a broker or paid API. It reads the latest generated Optedge
 snapshots and open-position state, then writes a compact ticker report.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -12,7 +13,7 @@ import json
 import math
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,21 +21,23 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import pandas as pd
+import pandas as pd  # noqa: E402
 
-import data_provider
-from engines import cboe_symbol_data as cboe_symbol_data_engine
-from engines import sec_ftd as sec_ftd_engine
-from engines.regsho_threshold import threshold_rows_for_symbols
-from engines.short_sale_circuit import circuit_rows_for_symbols
-from engines.trading_halts import halt_rows_for_symbols
-from scripts.export_external_paper_track import _load_option_chain_shortlist
-from scripts.robinhood_research_bridge import (
+import data_provider  # noqa: E402
+from engines import cboe_symbol_data as cboe_symbol_data_engine  # noqa: E402
+from engines import sec_ftd as sec_ftd_engine  # noqa: E402
+from engines.regsho_threshold import threshold_rows_for_symbols  # noqa: E402
+from engines.short_sale_circuit import circuit_rows_for_symbols  # noqa: E402
+from engines.trading_halts import halt_rows_for_symbols  # noqa: E402
+from scripts.export_external_paper_track import _load_option_chain_shortlist  # noqa: E402
+from scripts.robinhood_research_bridge import (  # noqa: E402
     lookup_sections as robinhood_lookup_sections,
+)
+from scripts.robinhood_research_bridge import (  # noqa: E402
     queue_request as queue_robinhood_research,
 )
-from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol
-from scripts.symbol_resolver import resolve_symbol
+from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol  # noqa: E402
+from scripts.symbol_resolver import resolve_symbol  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 FRESH_SNAPSHOT_MINUTES = 90.0
@@ -62,9 +65,8 @@ def _guard_for_current_validation(
             return build_guard_report(validation_summary=validation)
         except Exception:
             pass
-    return (
-        _load_json_obj(data_dir / "research_guard_report.json")
-        or _load_json_obj(data_dir / "research_guard.json")
+    return _load_json_obj(data_dir / "research_guard_report.json") or _load_json_obj(
+        data_dir / "research_guard.json"
     )
 
 
@@ -88,6 +90,7 @@ def _validation_warning_is_guard_duplicate(value: Any) -> bool:
         )
     )
 
+
 SNAPSHOTS = {
     "options": ("top_options_*.parquet", "ticker"),
     "shares": ("top_shares_*.parquet", "ticker"),
@@ -103,125 +106,394 @@ OPEN_FILES = {
 
 DISPLAY_COLUMNS = {
     "options": [
-        "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
-        "rank_score", "fused_score", "trade_status", "suggested_contracts",
-        "stop_price", "target_price", "spread_pct", "ev_pct", "net_edge_pct",
-        "buyer_edge_pct", "seller_edge_pct", "pricing_direction", "trade_gate_reason",
-        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
+        "ticker",
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "mid",
+        "spot",
+        "confidence",
+        "rank_score",
+        "fused_score",
+        "trade_status",
+        "suggested_contracts",
+        "stop_price",
+        "target_price",
+        "spread_pct",
+        "ev_pct",
+        "net_edge_pct",
+        "buyer_edge_pct",
+        "seller_edge_pct",
+        "pricing_direction",
+        "trade_gate_reason",
+        "chain_source",
+        "quote_quality",
+        "snapshot_age_min",
+        "snapshot_freshness",
         "top_headline",
     ],
     "shares": [
-        "ticker", "spot", "confidence", "rank_score", "fused_score", "trade_status",
-        "suggested_dollars", "stop_price", "target_price", "ev_pct",
-        "snapshot_age_min", "snapshot_freshness", "top_headline",
+        "ticker",
+        "spot",
+        "confidence",
+        "rank_score",
+        "fused_score",
+        "trade_status",
+        "suggested_dollars",
+        "stop_price",
+        "target_price",
+        "ev_pct",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "top_headline",
     ],
     "value": [
-        "ticker", "value_score", "value_bucket", "pe", "fcf_yield", "earnings_yield",
-        "insider_score", "snapshot_age_min", "snapshot_freshness", "top_headline",
+        "ticker",
+        "value_score",
+        "value_bucket",
+        "pe",
+        "fcf_yield",
+        "earnings_yield",
+        "insider_score",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "top_headline",
     ],
     "futures": [
-        "symbol", "name", "direction", "contract", "using_micro", "futures_score",
-        "rank_score", "trade_status", "suggested_contracts", "entry_price",
-        "stop_price", "target_price", "risk_dollars", "reward_dollars",
-        "snapshot_age_min", "snapshot_freshness",
+        "symbol",
+        "name",
+        "direction",
+        "contract",
+        "using_micro",
+        "futures_score",
+        "rank_score",
+        "trade_status",
+        "suggested_contracts",
+        "entry_price",
+        "stop_price",
+        "target_price",
+        "risk_dollars",
+        "reward_dollars",
+        "snapshot_age_min",
+        "snapshot_freshness",
     ],
     "chain_shortlist": [
-        "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "bid",
-        "ask", "spread_pct", "premium_dollars", "actual_dollars", "confidence",
-        "rank_score", "trade_status", "suggested_contracts", "stop_price",
-        "target_price", "contract_grade", "review_lane", "readiness_score",
-        "swing_fit_label", "openInterest", "volume", "chain_source",
-        "quote_quality", "snapshot_age_min", "snapshot_freshness", "review_thesis",
+        "ticker",
+        "contract",
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "mid",
+        "bid",
+        "ask",
+        "spread_pct",
+        "premium_dollars",
+        "actual_dollars",
+        "confidence",
+        "rank_score",
+        "trade_status",
+        "suggested_contracts",
+        "stop_price",
+        "target_price",
+        "contract_grade",
+        "review_lane",
+        "readiness_score",
+        "swing_fit_label",
+        "openInterest",
+        "volume",
+        "chain_source",
+        "quote_quality",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "review_thesis",
     ],
     "open_options": [
-        "ticker", "side", "strike", "expiry", "entry_time", "entry_price",
-        "current_mid", "unrealized_pct", "trade_status", "stop_price", "target_price",
-        "latest_exit_pressure", "latest_exit_action", "chain_source", "quote_quality",
+        "ticker",
+        "side",
+        "strike",
+        "expiry",
+        "entry_time",
+        "entry_price",
+        "current_mid",
+        "unrealized_pct",
+        "trade_status",
+        "stop_price",
+        "target_price",
+        "latest_exit_pressure",
+        "latest_exit_action",
+        "chain_source",
+        "quote_quality",
         "last_reprice_source",
     ],
     "open_shares": [
-        "ticker", "entry_time", "entry_price", "current_price", "unrealized_pct",
-        "trade_status", "stop_price", "target_price", "latest_exit_pressure",
+        "ticker",
+        "entry_time",
+        "entry_price",
+        "current_price",
+        "unrealized_pct",
+        "trade_status",
+        "stop_price",
+        "target_price",
+        "latest_exit_pressure",
         "latest_exit_action",
     ],
     "open_futures": [
-        "symbol", "direction", "entry_time", "entry_price", "current_price",
-        "pnl_pct", "pnl_dollars", "trade_status", "stop_price", "target_price",
-        "latest_exit_pressure", "latest_exit_action",
+        "symbol",
+        "direction",
+        "entry_time",
+        "entry_price",
+        "current_price",
+        "pnl_pct",
+        "pnl_dollars",
+        "trade_status",
+        "stop_price",
+        "target_price",
+        "latest_exit_pressure",
+        "latest_exit_action",
     ],
     "broker_positions": [
-        "account_mask", "account_label", "asset", "symbol", "contract",
-        "option_side", "strike", "expiry", "quantity", "average_price",
-        "current_price", "unrealized_pct",
-        "market_value", "bid_price", "ask_price", "quote_updated_at",
-        "agentic_allowed", "option_level", "snapshot_age_min",
-        "snapshot_freshness", "status",
+        "account_mask",
+        "account_label",
+        "asset",
+        "symbol",
+        "contract",
+        "option_side",
+        "strike",
+        "expiry",
+        "quantity",
+        "average_price",
+        "current_price",
+        "unrealized_pct",
+        "market_value",
+        "bid_price",
+        "ask_price",
+        "quote_updated_at",
+        "agentic_allowed",
+        "option_level",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "status",
     ],
     "robinhood_research": [
-        "symbol", "current_price", "price_session", "quote_updated_at", "bid_price",
-        "ask_price", "mid_price", "spread_pct", "official_close",
-        "official_close_date", "market_cap", "pe_ratio", "pb_ratio", "sector",
-        "industry", "volume", "average_volume_30d", "high_52w", "low_52w",
-        "float_shares", "financial_status", "next_earnings_date", "days_to_earnings",
-        "earnings_timing", "earnings_verified", "earnings_eps_estimate",
-        "broker_ret_5d", "broker_ret_20d", "broker_ret_60d",
-        "broker_history_last_date", "snapshot_age_min", "snapshot_freshness", "source",
+        "symbol",
+        "current_price",
+        "price_session",
+        "quote_updated_at",
+        "bid_price",
+        "ask_price",
+        "mid_price",
+        "spread_pct",
+        "official_close",
+        "official_close_date",
+        "market_cap",
+        "pe_ratio",
+        "pb_ratio",
+        "sector",
+        "industry",
+        "volume",
+        "average_volume_30d",
+        "high_52w",
+        "low_52w",
+        "float_shares",
+        "financial_status",
+        "next_earnings_date",
+        "days_to_earnings",
+        "earnings_timing",
+        "earnings_verified",
+        "earnings_eps_estimate",
+        "broker_ret_5d",
+        "broker_ret_20d",
+        "broker_ret_60d",
+        "broker_history_last_date",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "source",
     ],
     "robinhood_option_quotes": [
-        "symbol", "side", "strike", "expiry", "dte", "state", "tradability",
-        "mark_price", "bid_price", "ask_price", "mid_price", "spread_pct",
-        "bid_size", "ask_size", "volume", "open_interest", "implied_volatility",
-        "delta", "gamma", "theta", "vega", "chance_of_profit_long",
-        "break_even_price", "low_fill_rate_buy_price", "high_fill_rate_buy_price",
-        "official_close", "official_close_date", "quote_updated_at", "sellout_datetime",
-        "snapshot_age_min", "snapshot_freshness", "source",
+        "symbol",
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "state",
+        "tradability",
+        "mark_price",
+        "bid_price",
+        "ask_price",
+        "mid_price",
+        "spread_pct",
+        "bid_size",
+        "ask_size",
+        "volume",
+        "open_interest",
+        "implied_volatility",
+        "delta",
+        "gamma",
+        "theta",
+        "vega",
+        "chance_of_profit_long",
+        "break_even_price",
+        "low_fill_rate_buy_price",
+        "high_fill_rate_buy_price",
+        "official_close",
+        "official_close_date",
+        "quote_updated_at",
+        "sellout_datetime",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "source",
     ],
     "requested_option_matches": [
-        "ticker", "side", "strike", "expiry", "dte", "mid", "spot", "confidence",
-        "rank_score", "fused_score", "trade_status", "suggested_contracts",
-        "stop_price", "target_price", "spread_pct", "premium_dollars",
-        "actual_dollars", "ev_pct", "net_edge_pct", "buyer_edge_pct",
-        "seller_edge_pct", "pricing_direction", "trade_gate_reason",
-        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
-        "match_quality", "strike_diff", "requested_side", "requested_expiry",
-        "requested_strike", "match_source", "contract_grade", "review_lane",
-        "readiness_score", "top_headline",
+        "ticker",
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "mid",
+        "spot",
+        "confidence",
+        "rank_score",
+        "fused_score",
+        "trade_status",
+        "suggested_contracts",
+        "stop_price",
+        "target_price",
+        "spread_pct",
+        "premium_dollars",
+        "actual_dollars",
+        "ev_pct",
+        "net_edge_pct",
+        "buyer_edge_pct",
+        "seller_edge_pct",
+        "pricing_direction",
+        "trade_gate_reason",
+        "chain_source",
+        "quote_quality",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "match_quality",
+        "strike_diff",
+        "requested_side",
+        "requested_expiry",
+        "requested_strike",
+        "match_source",
+        "contract_grade",
+        "review_lane",
+        "readiness_score",
+        "top_headline",
     ],
     "option_alternatives": [
-        "ticker", "contract", "side", "strike", "expiry", "dte", "mid", "bid",
-        "ask", "spread_pct", "premium_dollars", "actual_dollars", "confidence",
-        "rank_score", "trade_status", "suggested_contracts", "stop_price",
-        "target_price", "contract_grade", "review_lane", "readiness_score",
-        "swing_fit_score", "swing_fit_label", "openInterest", "volume",
-        "chain_source", "quote_quality", "snapshot_age_min", "snapshot_freshness",
-        "strike_diff", "dte_diff", "alternative_score", "alternative_reason",
+        "ticker",
+        "contract",
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "mid",
+        "bid",
+        "ask",
+        "spread_pct",
+        "premium_dollars",
+        "actual_dollars",
+        "confidence",
+        "rank_score",
+        "trade_status",
+        "suggested_contracts",
+        "stop_price",
+        "target_price",
+        "contract_grade",
+        "review_lane",
+        "readiness_score",
+        "swing_fit_score",
+        "swing_fit_label",
+        "openInterest",
+        "volume",
+        "chain_source",
+        "quote_quality",
+        "snapshot_age_min",
+        "snapshot_freshness",
+        "strike_diff",
+        "dte_diff",
+        "alternative_score",
+        "alternative_reason",
     ],
     "cboe_option_activity": [
-        "ticker", "option_side", "strike", "expiry", "cboe_activity_volume",
-        "cboe_activity_matched", "cboe_activity_routed", "cboe_activity_bid",
-        "cboe_activity_ask", "cboe_activity_mid", "cboe_activity_spread_pct",
-        "cboe_activity_last", "cboe_activity_contract", "cboe_activity_venues",
-        "cboe_activity_source", "match_quality", "strike_diff",
+        "ticker",
+        "option_side",
+        "strike",
+        "expiry",
+        "cboe_activity_volume",
+        "cboe_activity_matched",
+        "cboe_activity_routed",
+        "cboe_activity_bid",
+        "cboe_activity_ask",
+        "cboe_activity_mid",
+        "cboe_activity_spread_pct",
+        "cboe_activity_last",
+        "cboe_activity_contract",
+        "cboe_activity_venues",
+        "cboe_activity_source",
+        "match_quality",
+        "strike_diff",
     ],
     "recent_sec_filings": [
-        "ticker", "company_name", "form", "filing_date", "report_date",
-        "filing_signal", "description", "url",
+        "ticker",
+        "company_name",
+        "form",
+        "filing_date",
+        "report_date",
+        "filing_signal",
+        "description",
+        "url",
     ],
     "sec_companyfacts": [
-        "ticker", "company_name", "metric", "label", "value", "unit",
-        "period_end", "filed", "form", "concept",
+        "ticker",
+        "company_name",
+        "metric",
+        "label",
+        "value",
+        "unit",
+        "period_end",
+        "filed",
+        "form",
+        "concept",
     ],
     "price_snapshot": [
-        "symbol", "last_price", "last_date", "ret_5d", "ret_20d", "ret_60d",
-        "sma20", "sma50", "range_6mo_pos", "hv20", "trend_label",
-        "history_source", "history_quality", "rows",
+        "symbol",
+        "last_price",
+        "last_date",
+        "ret_5d",
+        "ret_20d",
+        "ret_60d",
+        "sma20",
+        "sma50",
+        "range_6mo_pos",
+        "hv20",
+        "trend_label",
+        "history_source",
+        "history_quality",
+        "rows",
     ],
     "market_structure": [
-        "symbol", "check", "status", "flag", "risk_score", "detail",
-        "source", "source_url",
+        "symbol",
+        "check",
+        "status",
+        "flag",
+        "risk_score",
+        "detail",
+        "source",
+        "source_url",
     ],
     "data_coverage": [
-        "layer", "group", "status", "rows", "source", "freshness", "detail",
+        "layer",
+        "group",
+        "status",
+        "rows",
+        "source",
+        "freshness",
+        "detail",
     ],
 }
 
@@ -234,8 +506,8 @@ def _latest_file(data_dir: Path, pattern: str) -> Path | None:
 
 
 def _snapshot_age_minutes(path: Path) -> float:
-    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-    return max(0.0, (datetime.now(timezone.utc) - modified).total_seconds() / 60.0)
+    modified = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    return max(0.0, (datetime.now(UTC) - modified).total_seconds() / 60.0)
 
 
 def _snapshot_freshness(age_minutes: float | None) -> str:
@@ -464,13 +736,15 @@ def _build_data_coverage(
         ("chain_shortlist", "option_chain", "Saved chain shortlist"),
     ]:
         sec_rows = sections.get(section, [])
-        rows.append(_coverage_row(
-            label,
-            group,
-            len(sec_rows),
-            sources.get(section),
-            freshness=_section_freshness(sec_rows),
-        ))
+        rows.append(
+            _coverage_row(
+                label,
+                group,
+                len(sec_rows),
+                sources.get(section),
+                freshness=_section_freshness(sec_rows),
+            )
+        )
 
     for section, label in [
         ("open_options", "Open options"),
@@ -479,84 +753,106 @@ def _build_data_coverage(
         ("broker_positions", "Broker snapshot positions"),
     ]:
         sec_rows = sections.get(section, [])
-        rows.append(_coverage_row(
-            label,
-            "position_state",
-            len(sec_rows),
-            sources.get(section),
-            freshness=_section_freshness(sec_rows),
-        ))
+        rows.append(
+            _coverage_row(
+                label,
+                "position_state",
+                len(sec_rows),
+                sources.get(section),
+                freshness=_section_freshness(sec_rows),
+            )
+        )
 
     broker_research_rows = sections.get("robinhood_research", [])
     broker_option_rows = sections.get("robinhood_option_quotes", [])
     broker_rows = broker_research_rows + broker_option_rows
     broker_freshness = _section_freshness(broker_rows)
     broker_status = (
-        "hit" if broker_rows and broker_freshness in {"fresh", "aging"}
-        else "risk_review" if broker_rows
+        "hit"
+        if broker_rows and broker_freshness in {"fresh", "aging"}
+        else "risk_review"
+        if broker_rows
         else "optional_pending"
     )
-    rows.append(_coverage_row(
-        "Robinhood read-only research",
-        "broker_market_data",
-        len(broker_rows),
-        sources.get("robinhood_research"),
-        status=broker_status,
-        freshness=broker_freshness,
-        detail=(
-            "Fresh/aging broker quote, fundamentals, earnings, and contract context is cached."
-            if broker_status == "hit"
-            else "Broker research cache is stale; do not treat it as a current quote."
-            if broker_status == "risk_review"
-            else "Optional read-only broker refresh is queued; local/free research remains available now."
-        ),
-    ))
+    rows.append(
+        _coverage_row(
+            "Robinhood read-only research",
+            "broker_market_data",
+            len(broker_rows),
+            sources.get("robinhood_research"),
+            status=broker_status,
+            freshness=broker_freshness,
+            detail=(
+                "Fresh/aging broker quote, fundamentals, earnings, and contract context is cached."
+                if broker_status == "hit"
+                else "Broker research cache is stale; do not treat it as a current quote."
+                if broker_status == "risk_review"
+                else "Optional read-only broker refresh is queued; local/free research remains available now."
+            ),
+        )
+    )
 
     if requested_option:
         sec_rows = sections.get("requested_option_matches", [])
-        rows.append(_coverage_row(
-            "Requested option match",
-            "option_request",
-            len(sec_rows),
-            sources.get("requested_option_matches"),
-            status=None if sec_rows else "missing_snapshot",
-            detail=(
-                "Requested option was matched to latest option/chain artifacts."
-                if sec_rows else "Requested option was not found in latest option/chain artifacts."
-            ),
-            freshness=_section_freshness(sec_rows),
-        ))
+        rows.append(
+            _coverage_row(
+                "Requested option match",
+                "option_request",
+                len(sec_rows),
+                sources.get("requested_option_matches"),
+                status=None if sec_rows else "missing_snapshot",
+                detail=(
+                    "Requested option was matched to latest option/chain artifacts."
+                    if sec_rows
+                    else "Requested option was not found in latest option/chain artifacts."
+                ),
+                freshness=_section_freshness(sec_rows),
+            )
+        )
 
     if include_price:
         sec_rows = sections.get("price_snapshot", [])
-        rows.append(_coverage_row(
-            "Free price snapshot",
-            "price",
-            len(sec_rows),
-            sources.get("price_snapshot"),
-            status="hit" if sec_rows else "unavailable",
-            detail="Free history stack returned a trend snapshot." if sec_rows else "Free history stack did not return price data.",
-        ))
+        rows.append(
+            _coverage_row(
+                "Free price snapshot",
+                "price",
+                len(sec_rows),
+                sources.get("price_snapshot"),
+                status="hit" if sec_rows else "unavailable",
+                detail="Free history stack returned a trend snapshot."
+                if sec_rows
+                else "Free history stack did not return price data.",
+            )
+        )
     else:
         rows.append(_coverage_row("Free price snapshot", "price", 0, None, status="not_requested"))
 
     if include_market_structure:
-        report = sections.get("_market_structure_report", [{}])[0] if sections.get("_market_structure_report") else {}
+        report = (
+            sections.get("_market_structure_report", [{}])[0]
+            if sections.get("_market_structure_report")
+            else {}
+        )
         market_status = str(report.get("status") or "clear")
         market_rows = len(sections.get("market_structure", []))
-        rows.append(_coverage_row(
-            "Market-structure risk",
-            "official_risk",
-            market_rows,
-            sources.get("market_structure"),
-            status=market_status,
-            detail=(
-                "Official no-key risk lists checked; no symbol-specific flags."
-                if market_status == "clear" else "; ".join(str(x) for x in (report.get("flags") or [])[:4])
-            ),
-        ))
+        rows.append(
+            _coverage_row(
+                "Market-structure risk",
+                "official_risk",
+                market_rows,
+                sources.get("market_structure"),
+                status=market_status,
+                detail=(
+                    "Official no-key risk lists checked; no symbol-specific flags."
+                    if market_status == "clear"
+                    else "; ".join(str(x) for x in (report.get("flags") or [])[:4])
+                ),
+            )
+        )
     else:
-        rows.append(_coverage_row("Market-structure risk", "official_risk", 0, None, status="not_requested"))
+        rows.append(
+            _coverage_row("Market-structure risk", "official_risk", 0, None, status="not_requested")
+        )
 
     if include_sec and not symbol.endswith("=F") and not symbol.startswith("^"):
         for section, label in [
@@ -564,23 +860,29 @@ def _build_data_coverage(
             ("sec_companyfacts", "SEC companyfacts"),
         ]:
             sec_rows = sections.get(section, [])
-            rows.append(_coverage_row(
-                label,
-                "official_filings",
-                len(sec_rows),
-                sources.get(section),
-                status=None if sources.get(section) else "unavailable",
-            ))
+            rows.append(
+                _coverage_row(
+                    label,
+                    "official_filings",
+                    len(sec_rows),
+                    sources.get(section),
+                    status=None if sources.get(section) else "unavailable",
+                )
+            )
     elif include_sec:
-        rows.append(_coverage_row(
-            "SEC filings/facts",
-            "official_filings",
-            0,
-            None,
-            status="not_applicable",
-        ))
+        rows.append(
+            _coverage_row(
+                "SEC filings/facts",
+                "official_filings",
+                0,
+                None,
+                status="not_applicable",
+            )
+        )
     else:
-        rows.append(_coverage_row("SEC filings/facts", "official_filings", 0, None, status="not_requested"))
+        rows.append(
+            _coverage_row("SEC filings/facts", "official_filings", 0, None, status="not_requested")
+        )
 
     bad_statuses = {"blocked", "unavailable"}
     warn_statuses = {"risk_review", "missing_snapshot"}
@@ -648,10 +950,7 @@ def _quote_source_info(row: pd.Series | dict[str, Any] | None) -> dict[str, Any]
         return None
     getter = row.get
     source = str(
-        getter("chain_source")
-        or getter("quote_source")
-        or getter("last_reprice_source")
-        or ""
+        getter("chain_source") or getter("quote_source") or getter("last_reprice_source") or ""
     ).strip()
     quality = str(getter("quote_quality") or "").strip().lower()
     if not source or source.lower() in {"nan", "none"}:
@@ -697,7 +996,9 @@ def _series_return(close: pd.Series, lookback: int) -> float | None:
     return (current - previous) / previous
 
 
-def _price_trend_label(ret_20d: float | None, sma20: float | None, sma50: float | None, last: float | None) -> str:
+def _price_trend_label(
+    ret_20d: float | None, sma20: float | None, sma50: float | None, last: float | None
+) -> str:
     if last is None:
         return "unknown"
     above20 = sma20 is not None and last >= sma20
@@ -773,7 +1074,15 @@ def _price_snapshot(symbol: str) -> dict[str, Any] | None:
     }
 
 
-def _market_structure_row(symbol: str, check: str, status: str, flag: str, risk_score: Any, detail: str, row: dict[str, Any]) -> dict[str, Any]:
+def _market_structure_row(
+    symbol: str,
+    check: str,
+    status: str,
+    flag: str,
+    risk_score: Any,
+    detail: str,
+    row: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "check": check,
@@ -835,7 +1144,9 @@ def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
         flag = "regsho_threshold"
         risk = raw.get("settlement_risk_score")
         detail = "Reg SHO threshold security" if raw.get("is_threshold") else "Reg SHO monitor row"
-        rows.append(_market_structure_row(clean, "regsho_threshold", "risk_review", flag, risk, detail, raw))
+        rows.append(
+            _market_structure_row(clean, "regsho_threshold", "risk_review", flag, risk, detail, raw)
+        )
         add_warning(flag, f"Market structure risk: {clean} is on the Reg SHO threshold list.", risk)
 
     try:
@@ -846,8 +1157,14 @@ def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
         flag = "short_sale_circuit_breaker"
         risk = raw.get("ssr_risk_score")
         detail = f"Short-sale circuit breaker triggered {raw.get('trigger_time') or ''}".strip()
-        rows.append(_market_structure_row(clean, "short_sale_circuit", "risk_review", flag, risk, detail, raw))
-        add_warning(flag, f"Market structure risk: {clean} is under a short-sale circuit breaker.", risk)
+        rows.append(
+            _market_structure_row(
+                clean, "short_sale_circuit", "risk_review", flag, risk, detail, raw
+            )
+        )
+        add_warning(
+            flag, f"Market structure risk: {clean} is under a short-sale circuit breaker.", risk
+        )
 
     try:
         ftd = sec_ftd_engine.run([clean], max_files=1)
@@ -870,15 +1187,17 @@ def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
             "source": raw.get("sec_ftd_source") or "sec_fails_to_deliver",
             "source_url": "https://www.sec.gov/data-research/sec-markets-data/fails-deliver-data",
         }
-        rows.append(_market_structure_row(
-            clean,
-            "sec_fails_to_deliver",
-            "risk_review" if elevated else "clear",
-            flag,
-            risk,
-            detail,
-            source_row,
-        ))
+        rows.append(
+            _market_structure_row(
+                clean,
+                "sec_fails_to_deliver",
+                "risk_review" if elevated else "clear",
+                flag,
+                risk,
+                detail,
+                source_row,
+            )
+        )
         if elevated:
             add_warning(
                 flag,
@@ -888,8 +1207,10 @@ def _market_structure_snapshot(symbol: str) -> dict[str, Any]:
 
     clean_flags = list(dict.fromkeys(flags))
     status = (
-        "blocked" if "active_trading_halt" in clean_flags
-        else "risk_review" if clean_flags
+        "blocked"
+        if "active_trading_halt" in clean_flags
+        else "risk_review"
+        if clean_flags
         else "clear"
     )
     return {
@@ -921,16 +1242,22 @@ def _factor_drivers(row: pd.Series | None, limit: int = 6) -> dict[str, list[dic
     items = []
     for col, value in row.items():
         name = str(col)
-        if not (name.startswith("z_") or name.endswith("_score") or name in {"rank_score", "fused_score"}):
+        if not (
+            name.startswith("z_")
+            or name.endswith("_score")
+            or name in {"rank_score", "fused_score"}
+        ):
             continue
         val = _float_value(value)
         if val is None or abs(val) < 0.05:
             continue
-        items.append({
-            "factor": name.replace("z_", "").replace("_score", "").replace("_", " "),
-            "column": name,
-            "value": round(val, 4),
-        })
+        items.append(
+            {
+                "factor": name.replace("z_", "").replace("_score", "").replace("_", " "),
+                "column": name,
+                "value": round(val, 4),
+            }
+        )
     positive = sorted([x for x in items if x["value"] > 0], key=lambda x: x["value"], reverse=True)
     negative = sorted([x for x in items if x["value"] < 0], key=lambda x: x["value"])
     return {"positive": positive[:limit], "negative": negative[:limit]}
@@ -961,7 +1288,7 @@ def _broker_snapshot_age_minutes(snapshot: dict[str, Any]) -> float | None:
         generated_at = pd.to_datetime(snapshot.get("generated_at"), errors="coerce", utc=True)
         if pd.isna(generated_at):
             return None
-        return max(0.0, (pd.Timestamp(datetime.now(timezone.utc)) - generated_at).total_seconds() / 60.0)
+        return max(0.0, (pd.Timestamp(datetime.now(UTC)) - generated_at).total_seconds() / 60.0)
     except Exception:
         return None
 
@@ -986,8 +1313,7 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
             current_price = _float_value(pos.get("current_price") or pos.get("mark_price"))
             multiplier = _float_value(pos.get("trade_value_multiplier"), 100.0) or 100.0
             market_value = (
-                current_price * quantity * multiplier
-                if current_price is not None else None
+                current_price * quantity * multiplier if current_price is not None else None
             )
             unrealized = (
                 (current_price - average_price) / average_price
@@ -995,41 +1321,51 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
                 else None
             )
             option_type = str(pos.get("option_type") or pos.get("type") or "").lower()
-            side = "C" if option_type.startswith("call") else "P" if option_type.startswith("put") else option_type.upper()
+            side = (
+                "C"
+                if option_type.startswith("call")
+                else "P"
+                if option_type.startswith("put")
+                else option_type.upper()
+            )
             expiry = str(pos.get("expiration_date") or "")
             strike = pos.get("strike_price")
             contract = " ".join(
-                part for part in [
+                part
+                for part in [
                     sym,
                     expiry,
                     side,
                     str(strike or ""),
-                ] if part
+                ]
+                if part
             )
-            rows.append({
-                "account_mask": account_mask,
-                "account_label": account_label,
-                "asset": "option",
-                "symbol": sym,
-                "contract": contract,
-                "option_side": side,
-                "side": "call" if side == "C" else "put" if side == "P" else side,
-                "strike": _clean_value(strike),
-                "expiry": expiry,
-                "quantity": quantity,
-                "average_price": average_price,
-                "current_price": current_price,
-                "unrealized_pct": unrealized,
-                "market_value": market_value,
-                "bid_price": _clean_value(pos.get("bid_price")),
-                "ask_price": _clean_value(pos.get("ask_price")),
-                "quote_updated_at": _clean_value(pos.get("quote_updated_at")),
-                "agentic_allowed": bool(account.get("agentic_allowed")),
-                "option_level": _clean_value(account.get("option_level")),
-                "snapshot_age_min": None if age is None else round(age, 1),
-                "snapshot_freshness": freshness,
-                "status": "broker_snapshot",
-            })
+            rows.append(
+                {
+                    "account_mask": account_mask,
+                    "account_label": account_label,
+                    "asset": "option",
+                    "symbol": sym,
+                    "contract": contract,
+                    "option_side": side,
+                    "side": "call" if side == "C" else "put" if side == "P" else side,
+                    "strike": _clean_value(strike),
+                    "expiry": expiry,
+                    "quantity": quantity,
+                    "average_price": average_price,
+                    "current_price": current_price,
+                    "unrealized_pct": unrealized,
+                    "market_value": market_value,
+                    "bid_price": _clean_value(pos.get("bid_price")),
+                    "ask_price": _clean_value(pos.get("ask_price")),
+                    "quote_updated_at": _clean_value(pos.get("quote_updated_at")),
+                    "agentic_allowed": bool(account.get("agentic_allowed")),
+                    "option_level": _clean_value(account.get("option_level")),
+                    "snapshot_age_min": None if age is None else round(age, 1),
+                    "snapshot_freshness": freshness,
+                    "status": "broker_snapshot",
+                }
+            )
         for pos in account.get("equity_positions") or []:
             sym = str(pos.get("symbol") or pos.get("ticker") or "").upper().strip()
             if sym != q:
@@ -1037,27 +1373,29 @@ def _broker_snapshot_positions(symbol: str, data_dir: Path) -> list[dict[str, An
             quantity = _float_value(pos.get("quantity"), 0.0) or 0.0
             average_price = _float_value(pos.get("average_buy_price") or pos.get("average_price"))
             current_price = _float_value(pos.get("current_price") or pos.get("mark_price"))
-            rows.append({
-                "account_mask": account_mask,
-                "account_label": account_label,
-                "asset": "equity",
-                "symbol": sym,
-                "contract": sym,
-                "quantity": quantity,
-                "average_price": average_price,
-                "current_price": current_price,
-                "unrealized_pct": (
-                    (current_price - average_price) / average_price
-                    if current_price is not None and average_price not in {None, 0}
-                    else None
-                ),
-                "market_value": current_price * quantity if current_price is not None else None,
-                "agentic_allowed": bool(account.get("agentic_allowed")),
-                "option_level": _clean_value(account.get("option_level")),
-                "snapshot_age_min": None if age is None else round(age, 1),
-                "snapshot_freshness": freshness,
-                "status": "broker_snapshot",
-            })
+            rows.append(
+                {
+                    "account_mask": account_mask,
+                    "account_label": account_label,
+                    "asset": "equity",
+                    "symbol": sym,
+                    "contract": sym,
+                    "quantity": quantity,
+                    "average_price": average_price,
+                    "current_price": current_price,
+                    "unrealized_pct": (
+                        (current_price - average_price) / average_price
+                        if current_price is not None and average_price not in {None, 0}
+                        else None
+                    ),
+                    "market_value": current_price * quantity if current_price is not None else None,
+                    "agentic_allowed": bool(account.get("agentic_allowed")),
+                    "option_level": _clean_value(account.get("option_level")),
+                    "snapshot_age_min": None if age is None else round(age, 1),
+                    "snapshot_freshness": freshness,
+                    "status": "broker_snapshot",
+                }
+            )
     return rows
 
 
@@ -1091,12 +1429,14 @@ def _strike_key(value: Any) -> str:
 
 
 def _option_contract_key(symbol: Any, side: Any, expiry: Any, strike: Any) -> str:
-    return "|".join([
-        str(symbol or "").strip().upper(),
-        _side_code(side),
-        _expiry_key(expiry),
-        _strike_key(strike),
-    ])
+    return "|".join(
+        [
+            str(symbol or "").strip().upper(),
+            _side_code(side),
+            _expiry_key(expiry),
+            _strike_key(strike),
+        ]
+    )
 
 
 def _row_contract_key(row: dict[str, Any]) -> str:
@@ -1116,7 +1456,11 @@ def _row_contract_key(row: dict[str, Any]) -> str:
                 side = part
         if strike in (None, "") and side:
             side_index = next(
-                (idx for idx, part in enumerate(parts) if part.upper() in {"C", "P", "CALL", "PUT"}),
+                (
+                    idx
+                    for idx, part in enumerate(parts)
+                    if part.upper() in {"C", "P", "CALL", "PUT"}
+                ),
                 None,
             )
             if side_index is not None and side_index + 1 < len(parts):
@@ -1145,18 +1489,22 @@ def _contract_exposure_summary(
     broker_options = [row for row in broker_rows if row.get("asset") == "option"]
     exact_broker = [row for row in broker_options if _row_contract_key(row) == key]
     same_ticker_open = [
-        row for row in open_option_rows
+        row
+        for row in open_option_rows
         if str(row.get("ticker") or row.get("symbol") or "").upper().strip() == ticker
     ]
     same_ticker_broker = [
-        row for row in broker_options
+        row
+        for row in broker_options
         if str(row.get("ticker") or row.get("symbol") or "").upper().strip() == ticker
     ]
     exact_count = len(exact_open) + len(exact_broker)
     same_ticker_count = len(same_ticker_open) + len(same_ticker_broker)
     status = (
-        "exact_exposure" if exact_count
-        else "same_ticker_exposure" if same_ticker_count
+        "exact_exposure"
+        if exact_count
+        else "same_ticker_exposure"
+        if same_ticker_count
         else "clear"
     )
     return {
@@ -1173,8 +1521,7 @@ def _contract_exposure_summary(
             for row in exact_open[:5]
         ],
         "matched_broker_labels": [
-            str(row.get("contract") or row.get("symbol") or "")
-            for row in exact_broker[:5]
+            str(row.get("contract") or row.get("symbol") or "") for row in exact_broker[:5]
         ],
     }
 
@@ -1197,10 +1544,14 @@ def _broker_position_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "equity_count": sum(1 for row in rows if row.get("asset") == "equity"),
         "market_value": sum(market_values) if market_values else None,
         "avg_unrealized_pct": (sum(pnls) / len(pnls)) if pnls else None,
-        "snapshot_freshness": "stale" if stale else (rows[0].get("snapshot_freshness") if rows else None),
+        "snapshot_freshness": "stale"
+        if stale
+        else (rows[0].get("snapshot_freshness") if rows else None),
         "max_snapshot_age_min": max(
             (_float_value(row.get("snapshot_age_min"), 0.0) or 0.0) for row in rows
-        ) if rows else None,
+        )
+        if rows
+        else None,
     }
 
 
@@ -1218,12 +1569,14 @@ def _requested_option_summary(
     except Exception:
         strike_text = str(request.get("strike") or "").strip()
     label = " ".join(
-        part for part in [
+        part
+        for part in [
             str(request.get("ticker") or "").upper(),
             str(request.get("expiry") or ""),
             side_code,
             strike_text,
-        ] if part
+        ]
+        if part
     )
     quality = str(best.get("match_quality") or "missing")
     return {
@@ -1233,7 +1586,8 @@ def _requested_option_summary(
         "matched_contract": (
             f"{best.get('ticker')} {str(best.get('side') or '').upper()[:1]} "
             f"{best.get('strike')} {best.get('expiry')}"
-            if best else None
+            if best
+            else None
         ),
         "matched_mid": _clean_value(best.get("mid")),
         "matched_premium_dollars": _clean_value(
@@ -1275,10 +1629,13 @@ def _contract_comparison(
         }
 
     quality = str(requested.get("match_quality") or "missing").lower()
-    req_readiness = _float_value(
-        requested.get("matched_readiness_score"),
-        _float_value(requested.get("matched_confidence"), 0.0),
-    ) or 0.0
+    req_readiness = (
+        _float_value(
+            requested.get("matched_readiness_score"),
+            _float_value(requested.get("matched_confidence"), 0.0),
+        )
+        or 0.0
+    )
     req_swing = _float_value(requested.get("matched_swing_fit_score"), req_readiness) or 0.0
     alt_readiness = _float_value(alternatives.get("best_readiness_score"), 0.0) or 0.0
     alt_swing = _float_value(alternatives.get("best_swing_fit_score"), alt_readiness) or 0.0
@@ -1336,7 +1693,9 @@ def _contract_comparison(
         status = "mixed"
         label = "Mixed contract evidence"
         if len(reasons) == 1:
-            reasons.append("No nearby alternative was materially cleaner on readiness, spread, or premium.")
+            reasons.append(
+                "No nearby alternative was materially cleaner on readiness, spread, or premium."
+            )
 
     return {
         "status": status,
@@ -1370,7 +1729,9 @@ def _best_idea_dict(section: str | None, row: pd.Series | None) -> dict[str, Any
     asset = section.rstrip("s")
     if section in {"options", "chain_shortlist"}:
         asset = "option"
-        label = f"{symbol} {str(side).upper()[:1]} {row.get('strike', '-')} {row.get('expiry', '-')}"
+        label = (
+            f"{symbol} {str(side).upper()[:1]} {row.get('strike', '-')} {row.get('expiry', '-')}"
+        )
     elif section == "futures":
         label = f"{symbol} {str(side).upper()} {row.get('contract', '')}".strip()
     quote_source = _quote_source_info(row)
@@ -1427,7 +1788,7 @@ def _request_chain_scan_fields(symbol: str, request: dict[str, Any] | None) -> d
     if expiry:
         try:
             expiry_dt = datetime.fromisoformat(expiry).date()
-            dte = (expiry_dt - datetime.now(timezone.utc).date()).days
+            dte = (expiry_dt - datetime.now(UTC).date()).days
         except ValueError:
             dte = None
 
@@ -1514,8 +1875,12 @@ def _research_action(
         action = "review_existing_contract"
         label = "Review existing contract"
         risk_level = "medium"
-        reasons.append(f"The requested exact option contract already has {exact_contract_count} open exposure row(s).")
-        next_steps.append("Review or manage the existing exact contract before considering any new entry.")
+        reasons.append(
+            f"The requested exact option contract already has {exact_contract_count} open exposure row(s)."
+        )
+        next_steps.append(
+            "Review or manage the existing exact contract before considering any new entry."
+        )
     if max_pressure >= 80:
         action = "review_exit_now"
         label = "Review exit now"
@@ -1534,7 +1899,9 @@ def _research_action(
         label = "Blocked by guardrails"
         risk_level = "high"
         reasons.append("Research guardrail warnings include blocked/do-not-trust language.")
-        next_steps.append("Do not paper-export this idea until validation/guardrail warnings clear.")
+        next_steps.append(
+            "Do not paper-export this idea until validation/guardrail warnings clear."
+        )
     elif sample_small:
         risk_level = "medium" if risk_level == "low" else risk_level
         reasons.append("Validation sample-size warning is active.")
@@ -1549,19 +1916,28 @@ def _research_action(
         label = "Scan option chain"
         risk_level = "medium" if risk_level == "low" else risk_level
         if requested_quality == "missing":
-            reasons.append(f"Requested option {requested_label} was not found in current local rows.")
+            reasons.append(
+                f"Requested option {requested_label} was not found in current local rows."
+            )
         elif requested_quality == "closest":
             reasons.append(f"Requested option {requested_label} only has a closest-contract match.")
         else:
-            reasons.append(f"Requested option {requested_label} only has same-ticker option context.")
-        next_steps.insert(0, "Run the option-chain scanner around the requested contract before judging the setup.")
+            reasons.append(
+                f"Requested option {requested_label} only has same-ticker option context."
+            )
+        next_steps.insert(
+            0,
+            "Run the option-chain scanner around the requested contract before judging the setup.",
+        )
 
     if best_idea:
         reasons.append(f"Best local idea status is {best_idea.get('trade_status') or 'unknown'}.")
         snapshot_age = _float_value(best_idea.get("snapshot_age_min"))
         if snapshot_age is not None and snapshot_age > STALE_SNAPSHOT_MINUTES:
             risk_level = "medium" if risk_level == "low" else risk_level
-            reasons.append(f"Best local idea comes from a stale snapshot ({snapshot_age:.0f} minutes old).")
+            reasons.append(
+                f"Best local idea comes from a stale snapshot ({snapshot_age:.0f} minutes old)."
+            )
             next_steps.append("Run a fresh focused scan before using this as a paper candidate.")
         quote_label = best_idea.get("quote_source_label")
         quote_warning = best_idea.get("quote_source_warning")
@@ -1574,31 +1950,48 @@ def _research_action(
         if action == "review" and status in {"trade", "actionable", "buy", "long", "short"}:
             action = "paper_candidate_review"
             label = "Candidate for paper review"
-            next_steps.append("Review spread, sizing, stop/target, and guardrails before paper tracking.")
+            next_steps.append(
+                "Review spread, sizing, stop/target, and guardrails before paper tracking."
+            )
         elif action == "review" and status in {"watch", "skip", "blocked"}:
             action = "watch_only"
             label = "Watch only"
             risk_level = "medium" if status == "watch" else "high"
-            next_steps.append("Keep this on the research watchlist unless a fresh scan upgrades it.")
+            next_steps.append(
+                "Keep this on the research watchlist unless a fresh scan upgrades it."
+            )
     elif action == "review":
         action = "watchlist_or_rescan"
         label = "Watchlist or rescan"
         reasons.append("No ranked current idea was found, only position or historical context.")
-        next_steps.append("Add it to the watchlist or run a focused scan for a current ranked view.")
+        next_steps.append(
+            "Add it to the watchlist or run a focused scan for a current ranked view."
+        )
 
-    if broker_count > 0 and action not in {"review_exit_now", "blocked_by_guardrails", "review_existing_contract"}:
+    if broker_count > 0 and action not in {
+        "review_exit_now",
+        "blocked_by_guardrails",
+        "review_existing_contract",
+    }:
         action = "review_broker_position"
         label = "Review broker position"
         risk_level = "medium" if risk_level == "low" else risk_level
-        next_steps.insert(0, "Reconcile Robinhood broker snapshot against local Optedge open positions before adding exposure.")
+        next_steps.insert(
+            0,
+            "Reconcile Robinhood broker snapshot against local Optedge open positions before adding exposure.",
+        )
         if open_count <= 0:
-            reasons.append("Broker exposure exists but no matching local open position was found in this lookup.")
+            reasons.append(
+                "Broker exposure exists but no matching local open position was found in this lookup."
+            )
 
     if avg_unreal is not None and open_count > 0:
         reasons.append(f"Average open unrealized P&L is {avg_unreal * 100:+.1f}%.")
 
     if not next_steps:
-        next_steps.append("Read the factor drivers and open exposure before making any manual decision.")
+        next_steps.append(
+            "Read the factor drivers and open exposure before making any manual decision."
+        )
 
     can_export = action == "paper_candidate_review" and risk_level != "high" and broker_count <= 0
     result = {
@@ -1641,16 +2034,27 @@ def _paper_readiness(
     else:
         status = _status_text(best_idea.get("trade_status"))
         if status in {"watch", "skip", "blocked"}:
-            add("warn" if status == "watch" else "bad", "Trade status", f"Best idea status is {status}.", 30)
+            add(
+                "warn" if status == "watch" else "bad",
+                "Trade status",
+                f"Best idea status is {status}.",
+                30,
+            )
         else:
-            add("ok", "Trade status", f"Best idea status is {best_idea.get('trade_status') or 'unknown'}.")
+            add(
+                "ok",
+                "Trade status",
+                f"Best idea status is {best_idea.get('trade_status') or 'unknown'}.",
+            )
 
         freshness = str(best_idea.get("snapshot_freshness") or "unknown").lower()
         age = _float_value(best_idea.get("snapshot_age_min"))
         if freshness == "stale":
             add("bad", "Snapshot freshness", f"Snapshot is stale ({age or 0:.0f} minutes old).", 30)
         elif freshness == "aging":
-            add("warn", "Snapshot freshness", f"Snapshot is aging ({age or 0:.0f} minutes old).", 10)
+            add(
+                "warn", "Snapshot freshness", f"Snapshot is aging ({age or 0:.0f} minutes old).", 10
+            )
         else:
             add("ok", "Snapshot freshness", f"Snapshot freshness is {freshness}.")
 
@@ -1691,18 +2095,38 @@ def _paper_readiness(
 
     max_pressure = _float_value(open_summary.get("max_exit_pressure"), 0.0) or 0.0
     if max_pressure >= 80:
-        add("bad", "Open exposure", f"Existing position exit pressure is high ({max_pressure:.0f}/100).", 35)
+        add(
+            "bad",
+            "Open exposure",
+            f"Existing position exit pressure is high ({max_pressure:.0f}/100).",
+            35,
+        )
     elif max_pressure >= 60:
-        add("warn", "Open exposure", f"Existing position exit pressure is elevated ({max_pressure:.0f}/100).", 20)
+        add(
+            "warn",
+            "Open exposure",
+            f"Existing position exit pressure is elevated ({max_pressure:.0f}/100).",
+            20,
+        )
     else:
         add("ok", "Open exposure", "No high exit-pressure open position conflict surfaced.")
 
     broker_count = int(broker_summary.get("count") or 0)
     if broker_count > 0:
         if int(open_summary.get("count") or 0) <= 0:
-            add("warn", "Broker exposure", "Robinhood snapshot has exposure that is not matched by local open positions.", 30)
+            add(
+                "warn",
+                "Broker exposure",
+                "Robinhood snapshot has exposure that is not matched by local open positions.",
+                30,
+            )
         else:
-            add("warn", "Broker exposure", "Robinhood snapshot already has exposure for this symbol.", 20)
+            add(
+                "warn",
+                "Broker exposure",
+                "Robinhood snapshot already has exposure for this symbol.",
+                20,
+            )
 
     warning_text = " ".join(str(w).lower() for w in warnings)
     if "blocked" in warning_text or "do not trust" in warning_text:
@@ -1752,7 +2176,13 @@ def _setup_bias(request: dict[str, Any] | None, best_idea: dict[str, Any] | None
     padded = f" {text.replace('-', ' ')} "
     if " put" in padded or " p " in padded or " short" in padded:
         return "bearish"
-    if " call" in padded or " c " in padded or " long" in padded or "share" in padded or "option" in padded:
+    if (
+        " call" in padded
+        or " c " in padded
+        or " long" in padded
+        or "share" in padded
+        or "option" in padded
+    ):
         return "bullish"
     return "neutral"
 
@@ -1805,7 +2235,9 @@ def _swing_verdict(
         idea_score = _float_value(best_idea.get("score"))
         if status in {"trade", "actionable", "buy", "long", "short"}:
             score += 12
-            reasons.append(f"Best local idea is marked {best_idea.get('trade_status') or 'actionable'}.")
+            reasons.append(
+                f"Best local idea is marked {best_idea.get('trade_status') or 'actionable'}."
+            )
         elif status in {"watch", "skip", "blocked"}:
             score -= 18 if status == "watch" else 30
             reasons.append(f"Best local idea is only {status}.")
@@ -1882,9 +2314,7 @@ def _swing_verdict(
 
     if requested_option:
         if broker_option_quote:
-            broker_quote_freshness = str(
-                broker_option_quote.get("snapshot_freshness") or "unknown"
-            )
+            broker_quote_freshness = str(broker_option_quote.get("snapshot_freshness") or "unknown")
             tradability = str(broker_option_quote.get("tradability") or "").lower()
             if tradability and tradability != "tradable":
                 score -= 40
@@ -2103,7 +2533,8 @@ def _research_brief(
     guard = _guard_for_current_validation(validation, data_dir)
     warnings = []
     warnings.extend(
-        str(w.get("message", w)) for w in (guard.get("warnings") or [])[:3]
+        str(w.get("message", w))
+        for w in (guard.get("warnings") or [])[:3]
         if isinstance(w, (dict, str))
     )
     warnings.extend(
@@ -2114,7 +2545,12 @@ def _research_brief(
     warnings.extend(f"SEC companyfacts: {signal}" for signal in sec_fact_signals[:3])
     warnings.extend(str(w) for w in (market_structure.get("warnings") or [])[:5])
     if cboe_activity and cboe_activity.get("status") == "no_exact_match":
-        warnings.append(str(cboe_activity.get("note") or "No exact public Cboe activity matched the requested option."))
+        warnings.append(
+            str(
+                cboe_activity.get("note")
+                or "No exact public Cboe activity matched the requested option."
+            )
+        )
     warnings.extend(str(w) for w in (data_coverage.get("warnings") or [])[:2])
     if broker_research and broker_research.get("snapshot_freshness") == "stale":
         warnings.append("Robinhood read-only ticker research is stale; a refresh is queued.")
@@ -2132,17 +2568,23 @@ def _research_brief(
         "best_label": (
             f"{best_alternative.get('ticker')} {str(best_alternative.get('side') or '').upper()[:1]} "
             f"{best_alternative.get('strike')} {best_alternative.get('expiry')}"
-            if best_alternative else None
+            if best_alternative
+            else None
         ),
         "best_reason": best_alternative.get("alternative_reason") if best_alternative else None,
         "best_score": best_alternative.get("alternative_score") if best_alternative else None,
-        "best_readiness_score": best_alternative.get("readiness_score") if best_alternative else None,
-        "best_swing_fit_score": best_alternative.get("swing_fit_score") if best_alternative else None,
+        "best_readiness_score": best_alternative.get("readiness_score")
+        if best_alternative
+        else None,
+        "best_swing_fit_score": best_alternative.get("swing_fit_score")
+        if best_alternative
+        else None,
         "best_spread_pct": best_alternative.get("spread_pct") if best_alternative else None,
         "best_mid": best_alternative.get("mid") if best_alternative else None,
         "best_premium_dollars": (
             best_alternative.get("premium_dollars", best_alternative.get("actual_dollars"))
-            if best_alternative else None
+            if best_alternative
+            else None
         ),
         "best_quote_quality": best_alternative.get("quote_quality") if best_alternative else None,
     }
@@ -2153,15 +2595,21 @@ def _research_brief(
     if requested_option:
         quality = str(requested_option.get("match_quality") or "missing").lower()
         if quality == "missing":
-            warnings.append(f"Requested option {requested_option.get('label')} was not found in latest local option rows.")
+            warnings.append(
+                f"Requested option {requested_option.get('label')} was not found in latest local option rows."
+            )
         elif quality != "exact":
             warnings.append(
                 f"Requested option {requested_option.get('label')} matched as {quality}; verify before using it."
             )
         if quality != "exact" and best_alternative:
-            warnings.append("Nearby chain alternatives exist; compare them before acting on the requested contract.")
+            warnings.append(
+                "Nearby chain alternatives exist; compare them before acting on the requested contract."
+            )
     if contract_comparison.get("winner") == "alternative":
-        warnings.append("Best nearby contract looks cleaner than the requested contract on local comparison.")
+        warnings.append(
+            "Best nearby contract looks cleaner than the requested contract on local comparison."
+        )
     if contract_exposure and int(contract_exposure.get("exact_total") or 0) > 0:
         warnings.append(
             f"Requested option already has {contract_exposure.get('exact_total')} exact local/broker exposure row(s)."
@@ -2179,22 +2627,46 @@ def _research_brief(
             f"Broker snapshot has {broker_summary.get('count')} position(s) for {symbol}, but no matching local open position was found."
         )
     if broker_summary.get("snapshot_freshness") == "stale":
-        warnings.append("Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting.")
+        warnings.append(
+            "Broker snapshot is stale; refresh the Robinhood read-only snapshot before acting."
+        )
     deduped_warnings = list(dict.fromkeys(warnings))[:5]
     research_action = _research_action(
-        symbol, best_idea, open_summary, broker_summary, resolution.get("request"),
-        requested_option, contract_exposure,
-        deduped_warnings, local_hit_count
+        symbol,
+        best_idea,
+        open_summary,
+        broker_summary,
+        resolution.get("request"),
+        requested_option,
+        contract_exposure,
+        deduped_warnings,
+        local_hit_count,
     )
     paper_readiness = _paper_readiness(
-        best_idea, requested_option, open_summary, broker_summary, contract_exposure,
-        deduped_warnings, research_action, local_hit_count,
+        best_idea,
+        requested_option,
+        open_summary,
+        broker_summary,
+        contract_exposure,
+        deduped_warnings,
+        research_action,
+        local_hit_count,
     )
     swing_verdict = _swing_verdict(
-        resolution.get("request"), best_idea, requested_option, price_snapshot,
-        broker_research, broker_option_quote,
-        open_summary, broker_summary, market_structure, cboe_activity, data_coverage,
-        paper_readiness, research_action, deduped_warnings,
+        resolution.get("request"),
+        best_idea,
+        requested_option,
+        price_snapshot,
+        broker_research,
+        broker_option_quote,
+        open_summary,
+        broker_summary,
+        market_structure,
+        cboe_activity,
+        data_coverage,
+        paper_readiness,
+        research_action,
+        deduped_warnings,
     )
     brief = {
         "symbol": symbol,
@@ -2247,10 +2719,11 @@ def _research_brief(
         "recent_sec_filings": {
             "count": len(sec_rows),
             "latest_forms": [row.get("form") for row in sec_rows[:5]],
-            "watch_signals": list(dict.fromkeys(
-                str(row.get("filing_signal")) for row in sec_rows
-                if row.get("filing_signal")
-            ))[:5],
+            "watch_signals": list(
+                dict.fromkeys(
+                    str(row.get("filing_signal")) for row in sec_rows if row.get("filing_signal")
+                )
+            )[:5],
         },
         "sec_fundamentals": {
             "count": len(sec_facts),
@@ -2387,7 +2860,8 @@ def match_option_request(
     exact["match_quality"] = exact.apply(
         lambda row: (
             "exact"
-            if bool(row.get("_side_match")) and bool(row.get("_expiry_match"))
+            if bool(row.get("_side_match"))
+            and bool(row.get("_expiry_match"))
             and float(row.get("strike_diff") or 0) == 0
             else "closest"
             if bool(row.get("_side_match")) or bool(row.get("_expiry_match"))
@@ -2478,7 +2952,9 @@ def option_alternatives_for_request(
         out["dte_diff"] = math.nan
 
     if math.isfinite(strike) and expiry:
-        exact = out["_expiry_match"] & (pd.to_numeric(out["strike_diff"], errors="coerce") <= 0.0001)
+        exact = out["_expiry_match"] & (
+            pd.to_numeric(out["strike_diff"], errors="coerce") <= 0.0001
+        )
         out = out[~exact].copy()
     if out.empty:
         return []
@@ -2500,8 +2976,14 @@ def option_alternatives_for_request(
     spread = num_col("spread_pct", 0.50).clip(lower=0.0, upper=1.0)
     oi = num_col("openInterest").clip(lower=0.0, upper=5000.0)
     volume = num_col("volume").clip(lower=0.0, upper=1000.0)
-    strike_diff = pd.to_numeric(out["strike_diff"], errors="coerce").fillna(999.0).clip(lower=0.0, upper=100.0)
-    dte_diff = pd.to_numeric(out["dte_diff"], errors="coerce").fillna(365.0).clip(lower=0.0, upper=365.0)
+    strike_diff = (
+        pd.to_numeric(out["strike_diff"], errors="coerce")
+        .fillna(999.0)
+        .clip(lower=0.0, upper=100.0)
+    )
+    dte_diff = (
+        pd.to_numeric(out["dte_diff"], errors="coerce").fillna(365.0).clip(lower=0.0, upper=365.0)
+    )
     trade_status = text_col("trade_status").str.lower()
     freshness = text_col("snapshot_freshness").str.lower()
 
@@ -2570,9 +3052,13 @@ def _requested_cboe_option_activity(
 
     work = activity.copy()
     ticker_col = work["ticker"] if "ticker" in work.columns else pd.Series("", index=work.index)
-    side_col = work["option_side"] if "option_side" in work.columns else pd.Series("", index=work.index)
+    side_col = (
+        work["option_side"] if "option_side" in work.columns else pd.Series("", index=work.index)
+    )
     expiry_col = work["expiry"] if "expiry" in work.columns else pd.Series("", index=work.index)
-    strike_col = work["strike"] if "strike" in work.columns else pd.Series(math.nan, index=work.index)
+    strike_col = (
+        work["strike"] if "strike" in work.columns else pd.Series(math.nan, index=work.index)
+    )
     work["_side_norm"] = side_col.map(_norm_side)
     work["_expiry_norm"] = expiry_col.map(_norm_expiry)
     work["strike_diff"] = (pd.to_numeric(strike_col, errors="coerce") - strike).abs()
@@ -2602,7 +3088,9 @@ def _requested_cboe_option_activity(
         exact.loc[idx, "match_quality"] = "exact"
 
     exact = exact.sort_values("cboe_activity_volume", ascending=False).head(limit).copy()
-    total_volume = int(pd.to_numeric(exact["cboe_activity_volume"], errors="coerce").fillna(0).sum())
+    total_volume = int(
+        pd.to_numeric(exact["cboe_activity_volume"], errors="coerce").fillna(0).sum()
+    )
     best = exact.iloc[0]
     summary = {
         "status": "matched",
@@ -2635,7 +3123,7 @@ def lookup_symbol(
     original_query = query.strip()
     resolution = resolve_symbol(original_query)
     q = str(resolution.get("symbol") or original_query).strip().upper()
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = datetime.now(UTC).isoformat()
     sections: dict[str, list[dict[str, Any]]] = {}
     sources: dict[str, str | None] = {}
     raw_matches: dict[str, pd.DataFrame] = {}
@@ -2668,7 +3156,11 @@ def lookup_symbol(
         sections[section] = _frame_records(matched, section)
 
     chain_df = _chain_shortlist_frame(data_dir)
-    chain_source = _clean_value(chain_df["_source_file"].iloc[0]) if not chain_df.empty and "_source_file" in chain_df.columns else None
+    chain_source = (
+        _clean_value(chain_df["_source_file"].iloc[0])
+        if not chain_df.empty and "_source_file" in chain_df.columns
+        else None
+    )
     sources["chain_shortlist"] = str(chain_source) if chain_source else None
     chain_matched = _match(chain_df, "ticker", q)
     raw_matches["chain_shortlist"] = chain_matched
@@ -2683,7 +3175,9 @@ def lookup_symbol(
 
     broker_snapshot_path = data_dir / "robinhood_broker_snapshot.json"
     broker_rows = _broker_snapshot_positions(q, data_dir)
-    sources["broker_positions"] = broker_snapshot_path.name if broker_snapshot_path.exists() else None
+    sources["broker_positions"] = (
+        broker_snapshot_path.name if broker_snapshot_path.exists() else None
+    )
     sections["broker_positions"] = _frame_records(pd.DataFrame(broker_rows), "broker_positions")
 
     try:
@@ -2700,15 +3194,14 @@ def lookup_symbol(
     for section in ("robinhood_research", "robinhood_option_quotes"):
         rows = broker_research_sections.get(section) or []
         sections[section] = _frame_records(pd.DataFrame(rows), section)
-        sources[section] = (
-            "robinhood_research_snapshot.json" if rows else None
-        )
+        sources[section] = "robinhood_research_snapshot.json" if rows else None
 
     if include_price:
         price_snapshot = _price_snapshot(q)
         sources["price_snapshot"] = (
             str(price_snapshot.get("history_source") or "data_provider.get_history")
-            if price_snapshot else None
+            if price_snapshot
+            else None
         )
         sections["price_snapshot"] = [price_snapshot] if price_snapshot else []
 
@@ -2743,10 +3236,14 @@ def lookup_symbol(
         sections["option_alternatives"] = option_alternatives_for_request(
             resolution.get("request"), data_dir
         )
-        sources["requested_option_matches"] = ", ".join(
-            source for source in [sources.get("options"), sources.get("chain_shortlist")]
-            if source
-        ) or None
+        sources["requested_option_matches"] = (
+            ", ".join(
+                source
+                for source in [sources.get("options"), sources.get("chain_shortlist")]
+                if source
+            )
+            or None
+        )
         sources["option_alternatives"] = sources.get("chain_shortlist")
         if include_cboe_activity:
             cboe_rows, cboe_report = _requested_cboe_option_activity(resolution.get("request"))
@@ -2768,12 +3265,10 @@ def lookup_symbol(
     sources["data_coverage"] = "Optedge lookup coverage audit"
 
     public_sections = {name: rows for name, rows in sections.items() if not name.startswith("_")}
-    hit_sections = {
-        name: rows for name, rows in public_sections.items()
-        if name != "data_coverage"
-    }
+    hit_sections = {name: rows for name, rows in public_sections.items() if name != "data_coverage"}
     local_hit_count = sum(
-        len(rows) for name, rows in hit_sections.items()
+        len(rows)
+        for name, rows in hit_sections.items()
         if not name.startswith("sec_") and name != "recent_sec_filings"
     )
     total_hits = sum(len(rows) for rows in hit_sections.values())
@@ -2861,36 +3356,55 @@ def _render_brief(brief: dict[str, Any]) -> str:
     action = brief.get("research_action") or {}
     sec = brief.get("recent_sec_filings") or {}
     sec_fund = brief.get("sec_fundamentals") or {}
-    positives = "".join(
-        f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
-        for x in brief.get("top_positive_factors", [])[:5]
-    ) or "<li>None surfaced</li>"
-    negatives = "".join(
-        f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
-        for x in brief.get("top_negative_factors", [])[:5]
-    ) or "<li>None surfaced</li>"
-    warnings = "".join(
-        f"<li>{html.escape(str(w))}</li>" for w in brief.get("risk_warnings", [])[:5]
-    ) or "<li>No local warnings found</li>"
-    next_steps = "".join(
-        f"<li>{html.escape(str(step))}</li>" for step in action.get("next_steps", [])[:5]
-    ) or "<li>Review local factors and exposure.</li>"
-    action_reasons = "".join(
-        f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6]
-    ) or "<li>No action-specific reasons surfaced.</li>"
-    readiness_checks = "".join(
-        f"<li>{html.escape(str(row.get('label')))}: {html.escape(str(row.get('detail')))}</li>"
-        for row in readiness.get("checks", [])[:6]
-    ) or "<li>No readiness checks available.</li>"
-    swing_reasons = "".join(
-        f"<li>{html.escape(str(reason))}</li>" for reason in swing.get("reasons", [])[:6]
-    ) or "<li>No swing-specific reasons surfaced.</li>"
-    swing_blockers = "".join(
-        f"<li>{html.escape(str(blocker))}</li>" for blocker in swing.get("blockers", [])[:5]
-    ) or "<li>No swing blockers surfaced.</li>"
-    comparison_reasons = "".join(
-        f"<li>{html.escape(str(reason))}</li>" for reason in comparison.get("reasons", [])[:6]
-    ) or "<li>No contract comparison available.</li>"
+    positives = (
+        "".join(
+            f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
+            for x in brief.get("top_positive_factors", [])[:5]
+        )
+        or "<li>None surfaced</li>"
+    )
+    negatives = (
+        "".join(
+            f"<li>{html.escape(str(x.get('factor')))} <b>{_clean_value(x.get('value'))}</b></li>"
+            for x in brief.get("top_negative_factors", [])[:5]
+        )
+        or "<li>None surfaced</li>"
+    )
+    warnings = (
+        "".join(f"<li>{html.escape(str(w))}</li>" for w in brief.get("risk_warnings", [])[:5])
+        or "<li>No local warnings found</li>"
+    )
+    next_steps = (
+        "".join(f"<li>{html.escape(str(step))}</li>" for step in action.get("next_steps", [])[:5])
+        or "<li>Review local factors and exposure.</li>"
+    )
+    action_reasons = (
+        "".join(f"<li>{html.escape(str(reason))}</li>" for reason in action.get("reasons", [])[:6])
+        or "<li>No action-specific reasons surfaced.</li>"
+    )
+    readiness_checks = (
+        "".join(
+            f"<li>{html.escape(str(row.get('label')))}: {html.escape(str(row.get('detail')))}</li>"
+            for row in readiness.get("checks", [])[:6]
+        )
+        or "<li>No readiness checks available.</li>"
+    )
+    swing_reasons = (
+        "".join(f"<li>{html.escape(str(reason))}</li>" for reason in swing.get("reasons", [])[:6])
+        or "<li>No swing-specific reasons surfaced.</li>"
+    )
+    swing_blockers = (
+        "".join(
+            f"<li>{html.escape(str(blocker))}</li>" for blocker in swing.get("blockers", [])[:5]
+        )
+        or "<li>No swing blockers surfaced.</li>"
+    )
+    comparison_reasons = (
+        "".join(
+            f"<li>{html.escape(str(reason))}</li>" for reason in comparison.get("reasons", [])[:6]
+        )
+        or "<li>No contract comparison available.</li>"
+    )
     sec_signals = ", ".join(str(x) for x in sec.get("watch_signals", [])[:4]) or "-"
     sec_fund_signals = ", ".join(str(x) for x in sec_fund.get("watch_signals", [])[:4]) or "-"
     if robinhood or robinhood_option:
@@ -2899,19 +3413,19 @@ def _render_brief(brief: dict[str, Any]) -> str:
     <div>
       <h3>Robinhood read-only ticker context</h3>
       <ul>
-        <li>Price: <b>{html.escape(str(robinhood.get('current_price') if robinhood.get('current_price') is not None else '-'))}</b> ({html.escape(str(robinhood.get('price_session') or '-'))})</li>
-        <li>Quote age: <b>{html.escape(str(round(float(robinhood.get('snapshot_age_min')), 1) if robinhood.get('snapshot_age_min') is not None else '-'))} min</b> ({html.escape(str(robinhood.get('snapshot_freshness') or '-'))})</li>
-        <li>Market cap: <b>{_fmt_brief_money(robinhood.get('market_cap'))}</b>; P/E: <b>{html.escape(str(robinhood.get('pe_ratio') if robinhood.get('pe_ratio') is not None else '-'))}</b></li>
-        <li>Next earnings: <b>{html.escape(str(robinhood.get('next_earnings_date') or '-'))}</b> ({html.escape(str(robinhood.get('days_to_earnings') if robinhood.get('days_to_earnings') is not None else '-'))}d)</li>
+        <li>Price: <b>{html.escape(str(robinhood.get("current_price") if robinhood.get("current_price") is not None else "-"))}</b> ({html.escape(str(robinhood.get("price_session") or "-"))})</li>
+        <li>Quote age: <b>{html.escape(str(round(float(robinhood.get("snapshot_age_min")), 1) if robinhood.get("snapshot_age_min") is not None else "-"))} min</b> ({html.escape(str(robinhood.get("snapshot_freshness") or "-"))})</li>
+        <li>Market cap: <b>{_fmt_brief_money(robinhood.get("market_cap"))}</b>; P/E: <b>{html.escape(str(robinhood.get("pe_ratio") if robinhood.get("pe_ratio") is not None else "-"))}</b></li>
+        <li>Next earnings: <b>{html.escape(str(robinhood.get("next_earnings_date") or "-"))}</b> ({html.escape(str(robinhood.get("days_to_earnings") if robinhood.get("days_to_earnings") is not None else "-"))}d)</li>
       </ul>
     </div>
     <div>
       <h3>Robinhood exact option context</h3>
       <ul>
-        <li>Mark: <b>{html.escape(str(robinhood_option.get('mark_price') if robinhood_option.get('mark_price') is not None else '-'))}</b>; spread: <b>{_fmt_brief_pct(robinhood_option.get('spread_pct'))}</b></li>
-        <li>Volume / OI: <b>{html.escape(str(robinhood_option.get('volume') if robinhood_option.get('volume') is not None else '-'))} / {html.escape(str(robinhood_option.get('open_interest') if robinhood_option.get('open_interest') is not None else '-'))}</b></li>
-        <li>IV / delta / theta: <b>{_fmt_brief_pct(robinhood_option.get('implied_volatility'))} / {html.escape(str(robinhood_option.get('delta') if robinhood_option.get('delta') is not None else '-'))} / {html.escape(str(robinhood_option.get('theta') if robinhood_option.get('theta') is not None else '-'))}</b></li>
-        <li>Quote age: <b>{html.escape(str(round(float(robinhood_option.get('snapshot_age_min')), 1) if robinhood_option.get('snapshot_age_min') is not None else '-'))} min</b> ({html.escape(str(robinhood_option.get('snapshot_freshness') or '-'))}); tradability: <b>{html.escape(str(robinhood_option.get('tradability') or '-'))}</b></li>
+        <li>Mark: <b>{html.escape(str(robinhood_option.get("mark_price") if robinhood_option.get("mark_price") is not None else "-"))}</b>; spread: <b>{_fmt_brief_pct(robinhood_option.get("spread_pct"))}</b></li>
+        <li>Volume / OI: <b>{html.escape(str(robinhood_option.get("volume") if robinhood_option.get("volume") is not None else "-"))} / {html.escape(str(robinhood_option.get("open_interest") if robinhood_option.get("open_interest") is not None else "-"))}</b></li>
+        <li>IV / delta / theta: <b>{_fmt_brief_pct(robinhood_option.get("implied_volatility"))} / {html.escape(str(robinhood_option.get("delta") if robinhood_option.get("delta") is not None else "-"))} / {html.escape(str(robinhood_option.get("theta") if robinhood_option.get("theta") is not None else "-"))}</b></li>
+        <li>Quote age: <b>{html.escape(str(round(float(robinhood_option.get("snapshot_age_min")), 1) if robinhood_option.get("snapshot_age_min") is not None else "-"))} min</b> ({html.escape(str(robinhood_option.get("snapshot_freshness") or "-"))}); tradability: <b>{html.escape(str(robinhood_option.get("tradability") or "-"))}</b></li>
       </ul>
     </div>
   </div>"""
@@ -2921,67 +3435,67 @@ def _render_brief(brief: dict[str, Any]) -> str:
 <section>
   <h2>Research Brief</h2>
   <div class="brief-grid">
-    <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get('symbol') or '-'))}</strong></div>
-    <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get('resolution_source') or '-'))}</strong></div>
-    <div><span class="muted">Swing verdict</span><strong>{html.escape(str(swing.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Swing score</span><strong>{html.escape(str(swing.get('score') if swing.get('score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Swing bias</span><strong>{html.escape(str(swing.get('bias') or '-'))}</strong></div>
-    <div><span class="muted">Swing decision</span><strong>{html.escape(str(swing.get('decision') or '-'))}</strong></div>
-    <div><span class="muted">Swing R/R</span><strong>{html.escape(str(swing.get('risk_reward') if swing.get('risk_reward') is not None else '-'))}</strong></div>
-    <div><span class="muted">Last price</span><strong>{html.escape(str(price.get('last_price') if price.get('last_price') is not None else '-'))}</strong></div>
-    <div><span class="muted">Price trend</span><strong>{html.escape(str(price.get('trend_label') or '-'))}</strong></div>
-    <div><span class="muted">20d return</span><strong>{_fmt_brief_pct(price.get('ret_20d'))}</strong></div>
-    <div><span class="muted">60d return</span><strong>{_fmt_brief_pct(price.get('ret_60d'))}</strong></div>
-    <div><span class="muted">6m range pos</span><strong>{_fmt_brief_pct(price.get('range_6mo_pos'))}</strong></div>
-    <div><span class="muted">Price source</span><strong>{html.escape(str(price.get('history_source') or '-'))}</strong></div>
-    <div><span class="muted">Data coverage</span><strong>{html.escape(str(coverage.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Coverage score</span><strong>{html.escape(str(coverage.get('score') if coverage.get('score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Coverage flags</span><strong>{int(coverage.get('bad_count') or 0)} bad / {int(coverage.get('warn_count') or 0)} warn</strong></div>
-    <div><span class="muted">Market structure</span><strong>{html.escape(str(market_structure.get('status') or '-'))}</strong></div>
-    <div><span class="muted">Market risk score</span><strong>{html.escape(str(market_structure.get('risk_score') if market_structure.get('risk_score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Cboe contract activity</span><strong>{html.escape(str(cboe_activity.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Cboe volume</span><strong>{html.escape(str(cboe_activity.get('total_volume') if cboe_activity.get('total_volume') is not None else '-'))}</strong></div>
-    <div><span class="muted">Cboe spread</span><strong>{_fmt_brief_pct(cboe_activity.get('spread_pct'))}</strong></div>
-    <div><span class="muted">Cboe venues</span><strong>{html.escape(str(cboe_activity.get('venues') or '-'))}</strong></div>
-    <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get('match_quality') or '-'))}</strong></div>
-    <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get('matched_contract') or '-'))}</strong></div>
-    <div><span class="muted">Alt contracts</span><strong>{int(alternatives.get('count') or 0)}</strong></div>
-    <div><span class="muted">Best alternative</span><strong>{html.escape(str(alternatives.get('best_label') or '-'))}</strong></div>
-    <div><span class="muted">Alt readiness</span><strong>{html.escape(str(alternatives.get('best_readiness_score') if alternatives.get('best_readiness_score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Alt reason</span><strong>{html.escape(str(alternatives.get('best_reason') or '-'))}</strong></div>
-    <div><span class="muted">Contract pick</span><strong>{html.escape(str(comparison.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Pick winner</span><strong>{html.escape(str(comparison.get('winner') or '-'))}</strong></div>
-    <div><span class="muted">Pick score</span><strong>{html.escape(str(comparison.get('edge_score') if comparison.get('edge_score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Premium delta</span><strong>{_fmt_brief_pct(comparison.get('premium_delta_pct'))}</strong></div>
-    <div><span class="muted">Paper readiness</span><strong>{html.escape(str(readiness.get('label') or '-'))}</strong></div>
-    <div><span class="muted">Readiness score</span><strong>{html.escape(str(readiness.get('score') if readiness.get('score') is not None else '-'))}</strong></div>
-    <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get('label') or 'None'))}</strong></div>
-    <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get('quote_source_label') or '-'))}</strong></div>
-    <div><span class="muted">Snapshot age</span><strong>{html.escape(str(idea.get('snapshot_age_min') if idea.get('snapshot_age_min') is not None else '-'))} min</strong></div>
-    <div><span class="muted">Freshness</span><strong>{html.escape(str(idea.get('snapshot_freshness') or '-'))}</strong></div>
-    <div><span class="muted">Research action</span><strong>{html.escape(str(action.get('label') or 'Review'))}</strong></div>
-    <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get('risk_level') or '-'))}</strong></div>
-    <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get('spread_pct'))}</strong></div>
-    <div><span class="muted">Buyer edge</span><strong>{_fmt_brief_pct(idea.get('buyer_edge_pct'))}</strong></div>
-    <div><span class="muted">Pricing anomaly</span><strong>{_fmt_brief_pct(idea.get('net_edge_pct'))}</strong></div>
-    <div><span class="muted">Pricing direction</span><strong>{html.escape(str(idea.get('pricing_direction') or '-'))}</strong></div>
-    <div><span class="muted">Open exposure</span><strong>{int(open_pos.get('count') or 0)}</strong></div>
-    <div><span class="muted">Exact contract exposure</span><strong>{int(contract_exposure.get('exact_total') or 0)}</strong></div>
-    <div><span class="muted">Same ticker options</span><strong>{int(contract_exposure.get('same_ticker_total') or 0)}</strong></div>
-    <div><span class="muted">Broker positions</span><strong>{int(broker_pos.get('count') or 0)}</strong></div>
-    <div><span class="muted">Broker value</span><strong>{_fmt_brief_money(broker_pos.get('market_value'))}</strong></div>
-    <div><span class="muted">Broker snapshot</span><strong>{html.escape(str(broker_pos.get('snapshot_freshness') or '-'))}</strong></div>
-    <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get('count') or 0)}</strong></div>
+    <div><span class="muted">Symbol</span><strong>{html.escape(str(brief.get("symbol") or "-"))}</strong></div>
+    <div><span class="muted">Resolved via</span><strong>{html.escape(str(brief.get("resolution_source") or "-"))}</strong></div>
+    <div><span class="muted">Swing verdict</span><strong>{html.escape(str(swing.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Swing score</span><strong>{html.escape(str(swing.get("score") if swing.get("score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Swing bias</span><strong>{html.escape(str(swing.get("bias") or "-"))}</strong></div>
+    <div><span class="muted">Swing decision</span><strong>{html.escape(str(swing.get("decision") or "-"))}</strong></div>
+    <div><span class="muted">Swing R/R</span><strong>{html.escape(str(swing.get("risk_reward") if swing.get("risk_reward") is not None else "-"))}</strong></div>
+    <div><span class="muted">Last price</span><strong>{html.escape(str(price.get("last_price") if price.get("last_price") is not None else "-"))}</strong></div>
+    <div><span class="muted">Price trend</span><strong>{html.escape(str(price.get("trend_label") or "-"))}</strong></div>
+    <div><span class="muted">20d return</span><strong>{_fmt_brief_pct(price.get("ret_20d"))}</strong></div>
+    <div><span class="muted">60d return</span><strong>{_fmt_brief_pct(price.get("ret_60d"))}</strong></div>
+    <div><span class="muted">6m range pos</span><strong>{_fmt_brief_pct(price.get("range_6mo_pos"))}</strong></div>
+    <div><span class="muted">Price source</span><strong>{html.escape(str(price.get("history_source") or "-"))}</strong></div>
+    <div><span class="muted">Data coverage</span><strong>{html.escape(str(coverage.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Coverage score</span><strong>{html.escape(str(coverage.get("score") if coverage.get("score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Coverage flags</span><strong>{int(coverage.get("bad_count") or 0)} bad / {int(coverage.get("warn_count") or 0)} warn</strong></div>
+    <div><span class="muted">Market structure</span><strong>{html.escape(str(market_structure.get("status") or "-"))}</strong></div>
+    <div><span class="muted">Market risk score</span><strong>{html.escape(str(market_structure.get("risk_score") if market_structure.get("risk_score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Cboe contract activity</span><strong>{html.escape(str(cboe_activity.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Cboe volume</span><strong>{html.escape(str(cboe_activity.get("total_volume") if cboe_activity.get("total_volume") is not None else "-"))}</strong></div>
+    <div><span class="muted">Cboe spread</span><strong>{_fmt_brief_pct(cboe_activity.get("spread_pct"))}</strong></div>
+    <div><span class="muted">Cboe venues</span><strong>{html.escape(str(cboe_activity.get("venues") or "-"))}</strong></div>
+    <div><span class="muted">Requested option</span><strong>{html.escape(str(requested.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Requested match</span><strong>{html.escape(str(requested.get("match_quality") or "-"))}</strong></div>
+    <div><span class="muted">Matched contract</span><strong>{html.escape(str(requested.get("matched_contract") or "-"))}</strong></div>
+    <div><span class="muted">Alt contracts</span><strong>{int(alternatives.get("count") or 0)}</strong></div>
+    <div><span class="muted">Best alternative</span><strong>{html.escape(str(alternatives.get("best_label") or "-"))}</strong></div>
+    <div><span class="muted">Alt readiness</span><strong>{html.escape(str(alternatives.get("best_readiness_score") if alternatives.get("best_readiness_score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Alt reason</span><strong>{html.escape(str(alternatives.get("best_reason") or "-"))}</strong></div>
+    <div><span class="muted">Contract pick</span><strong>{html.escape(str(comparison.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Pick winner</span><strong>{html.escape(str(comparison.get("winner") or "-"))}</strong></div>
+    <div><span class="muted">Pick score</span><strong>{html.escape(str(comparison.get("edge_score") if comparison.get("edge_score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Premium delta</span><strong>{_fmt_brief_pct(comparison.get("premium_delta_pct"))}</strong></div>
+    <div><span class="muted">Paper readiness</span><strong>{html.escape(str(readiness.get("label") or "-"))}</strong></div>
+    <div><span class="muted">Readiness score</span><strong>{html.escape(str(readiness.get("score") if readiness.get("score") is not None else "-"))}</strong></div>
+    <div><span class="muted">Best local idea</span><strong>{html.escape(str(idea.get("label") or "None"))}</strong></div>
+    <div><span class="muted">Quote source</span><strong>{html.escape(str(idea.get("quote_source_label") or "-"))}</strong></div>
+    <div><span class="muted">Snapshot age</span><strong>{html.escape(str(idea.get("snapshot_age_min") if idea.get("snapshot_age_min") is not None else "-"))} min</strong></div>
+    <div><span class="muted">Freshness</span><strong>{html.escape(str(idea.get("snapshot_freshness") or "-"))}</strong></div>
+    <div><span class="muted">Research action</span><strong>{html.escape(str(action.get("label") or "Review"))}</strong></div>
+    <div><span class="muted">Action risk</span><strong>{html.escape(str(action.get("risk_level") or "-"))}</strong></div>
+    <div><span class="muted">Spread</span><strong>{_fmt_brief_pct(idea.get("spread_pct"))}</strong></div>
+    <div><span class="muted">Buyer edge</span><strong>{_fmt_brief_pct(idea.get("buyer_edge_pct"))}</strong></div>
+    <div><span class="muted">Pricing anomaly</span><strong>{_fmt_brief_pct(idea.get("net_edge_pct"))}</strong></div>
+    <div><span class="muted">Pricing direction</span><strong>{html.escape(str(idea.get("pricing_direction") or "-"))}</strong></div>
+    <div><span class="muted">Open exposure</span><strong>{int(open_pos.get("count") or 0)}</strong></div>
+    <div><span class="muted">Exact contract exposure</span><strong>{int(contract_exposure.get("exact_total") or 0)}</strong></div>
+    <div><span class="muted">Same ticker options</span><strong>{int(contract_exposure.get("same_ticker_total") or 0)}</strong></div>
+    <div><span class="muted">Broker positions</span><strong>{int(broker_pos.get("count") or 0)}</strong></div>
+    <div><span class="muted">Broker value</span><strong>{_fmt_brief_money(broker_pos.get("market_value"))}</strong></div>
+    <div><span class="muted">Broker snapshot</span><strong>{html.escape(str(broker_pos.get("snapshot_freshness") or "-"))}</strong></div>
+    <div><span class="muted">Recent SEC filings</span><strong>{int(sec.get("count") or 0)}</strong></div>
     <div><span class="muted">SEC watch signals</span><strong>{html.escape(sec_signals)}</strong></div>
-    <div><span class="muted">SEC cash</span><strong>{_fmt_brief_money(sec_fund.get('cash'))}</strong></div>
-    <div><span class="muted">SEC cash/debt</span><strong>{_fmt_brief_ratio(sec_fund.get('cash_to_debt'))}</strong></div>
-    <div><span class="muted">SEC debt/assets</span><strong>{_fmt_brief_pct(sec_fund.get('debt_to_assets'))}</strong></div>
-    <div><span class="muted">SEC net margin</span><strong>{_fmt_brief_pct(sec_fund.get('net_margin'))}</strong></div>
+    <div><span class="muted">SEC cash</span><strong>{_fmt_brief_money(sec_fund.get("cash"))}</strong></div>
+    <div><span class="muted">SEC cash/debt</span><strong>{_fmt_brief_ratio(sec_fund.get("cash_to_debt"))}</strong></div>
+    <div><span class="muted">SEC debt/assets</span><strong>{_fmt_brief_pct(sec_fund.get("debt_to_assets"))}</strong></div>
+    <div><span class="muted">SEC net margin</span><strong>{_fmt_brief_pct(sec_fund.get("net_margin"))}</strong></div>
     <div><span class="muted">SEC fact flags</span><strong>{html.escape(sec_fund_signals)}</strong></div>
-    <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get('avg_unrealized_pct'))}</strong></div>
-    <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get('win_rate'))}</strong></div>
-    <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get('avg_return'))}</strong></div>
+    <div><span class="muted">Avg unrealized</span><strong>{_fmt_brief_pct(open_pos.get("avg_unrealized_pct"))}</strong></div>
+    <div><span class="muted">Validation win rate</span><strong>{_fmt_brief_pct(validation.get("win_rate"))}</strong></div>
+    <div><span class="muted">Validation avg return</span><strong>{_fmt_brief_pct(validation.get("avg_return"))}</strong></div>
   </div>
   {robinhood_context}
   <div class="two-col">
@@ -3040,24 +3554,26 @@ th {{ color:#94a3b8; text-transform:uppercase; font-size:10px; letter-spacing:.4
 </style>
 </head>
 <body><div class="wrap">
-<header><div><h1>Optedge Lookup: {q}</h1><div class="muted">Latest local scan snapshot</div></div><div class="pill">{report.get('total_hits', 0)} hits</div></header>
+<header><div><h1>Optedge Lookup: {q}</h1><div class="muted">Latest local scan snapshot</div></div><div class="pill">{report.get("total_hits", 0)} hits</div></header>
 <ul>{notes}</ul>
-{_render_brief(report.get('brief', {}))}
-{''.join(parts)}
+{_render_brief(report.get("brief", {}))}
+{"".join(parts)}
 </div></body></html>"""
 
 
 def save_lookup(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, Path]:
     data_dir.mkdir(parents=True, exist_ok=True)
-    safe = "".join(ch for ch in report["query"] if ch.isalnum() or ch in {"_", "-", "="}) or "lookup"
+    safe = (
+        "".join(ch for ch in report["query"] if ch.isalnum() or ch in {"_", "-", "="}) or "lookup"
+    )
     json_path = data_dir / f"lookup_{safe}.json"
     html_path = data_dir / f"lookup_{safe}.html"
     generated_raw = str(report.get("generated_at") or "")
     try:
         generated_dt = datetime.fromisoformat(generated_raw.replace("Z", "+00:00"))
     except Exception:
-        generated_dt = datetime.now(timezone.utc)
-    stamp = generated_dt.astimezone(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        generated_dt = datetime.now(UTC)
+    stamp = generated_dt.astimezone(UTC).strftime("%Y%m%d_%H%M%S_%f")
     archive_dir = data_dir / "lookup_reports"
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_json_path = archive_dir / f"lookup_{safe}_{stamp}.json"
@@ -3077,7 +3593,11 @@ def save_lookup(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, 
     brief = report.get("brief") if isinstance(report.get("brief"), dict) else {}
     action = brief.get("research_action") if isinstance(brief.get("research_action"), dict) else {}
     swing = brief.get("swing_verdict") if isinstance(brief.get("swing_verdict"), dict) else {}
-    comparison = brief.get("contract_comparison") if isinstance(brief.get("contract_comparison"), dict) else {}
+    comparison = (
+        brief.get("contract_comparison")
+        if isinstance(brief.get("contract_comparison"), dict)
+        else {}
+    )
     idea = brief.get("best_idea") if isinstance(brief.get("best_idea"), dict) else {}
     price = brief.get("price_snapshot") if isinstance(brief.get("price_snapshot"), dict) else {}
     history_row = {
@@ -3124,12 +3644,24 @@ def save_lookup(report: dict[str, Any], data_dir: Path = DATA_DIR) -> dict[str, 
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Look up one ticker/symbol in latest local Optedge outputs.")
+    ap = argparse.ArgumentParser(
+        description="Look up one ticker/symbol in latest local Optedge outputs."
+    )
     ap.add_argument("symbol", help="Ticker or futures symbol to inspect, e.g. NVDA, TSLA, CL=F")
     ap.add_argument("--data-dir", default=str(DATA_DIR))
-    ap.add_argument("--price", action="store_true", help="Include a free cached price/trend snapshot.")
-    ap.add_argument("--market-structure", action="store_true", help="Include official no-key market-structure risk checks.")
-    ap.add_argument("--cboe-activity", action="store_true", help="Include public Cboe option activity for option-style queries.")
+    ap.add_argument(
+        "--price", action="store_true", help="Include a free cached price/trend snapshot."
+    )
+    ap.add_argument(
+        "--market-structure",
+        action="store_true",
+        help="Include official no-key market-structure risk checks.",
+    )
+    ap.add_argument(
+        "--cboe-activity",
+        action="store_true",
+        help="Include public Cboe option activity for option-style queries.",
+    )
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args(argv)
 
@@ -3141,7 +3673,11 @@ def main(argv: list[str] | None = None) -> int:
         include_cboe_activity=args.cboe_activity,
     )
     paths = save_lookup(report, Path(args.data_dir))
-    print(json.dumps(report, indent=2, default=str) if args.json_only else f"Lookup report: {paths['html']}\nLookup JSON: {paths['json']}\nHits: {report['total_hits']}")
+    print(
+        json.dumps(report, indent=2, default=str)
+        if args.json_only
+        else f"Lookup report: {paths['html']}\nLookup JSON: {paths['json']}\nHits: {report['total_hits']}"
+    )
     return 0
 
 

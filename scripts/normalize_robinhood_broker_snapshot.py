@@ -5,6 +5,7 @@ This script does not connect to Robinhood and does not place orders. It turns a
 raw JSON bundle of account/portfolio/position/order reads into the local
 `data/robinhood_broker_snapshot.json` shape consumed by the cockpit.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,12 +70,14 @@ ROW_HINT_KEYS = {
     "order_id",
     "state",
 }
-RAW_ACCOUNT_NUMBER_KEYS = frozenset({
-    "account_number",
-    "rhs_account_number",
-    "brokerage_account_number",
-    "account",
-})
+RAW_ACCOUNT_NUMBER_KEYS = frozenset(
+    {
+        "account_number",
+        "rhs_account_number",
+        "brokerage_account_number",
+        "account",
+    }
+)
 ACCOUNT_NUMBER_REDACTION = "[redacted-account]"
 
 
@@ -125,11 +128,7 @@ def _max_finite_field(
         number
         for field in fields
         if field in raw and raw.get(field) is not None and raw.get(field) != ""
-        for number in (
-            None
-            if isinstance(raw.get(field), bool)
-            else _float(raw.get(field)),
-        )
+        for number in (None if isinstance(raw.get(field), bool) else _float(raw.get(field)),)
         if number is not None
     ]
     return max(values) if values else None
@@ -162,10 +161,7 @@ def _numeric_field_issues(
             not math.isclose(number, reference, rel_tol=1e-9, abs_tol=1e-9)
             for _, number in observed[1:]
         ):
-            issues.append(
-                f"{label} fields disagree: "
-                + ", ".join(field for field, _ in observed)
-            )
+            issues.append(f"{label} fields disagree: " + ", ".join(field for field, _ in observed))
     return issues
 
 
@@ -187,10 +183,7 @@ def _position_type_issues(
             observed.append((field, value))
     issues = [f"invalid position-type field(s): {', '.join(invalid)}"] if invalid else []
     if observed and any(value != observed[0][1] for _, value in observed[1:]):
-        issues.append(
-            "position-type fields disagree: "
-            + ", ".join(field for field, _ in observed)
-        )
+        issues.append("position-type fields disagree: " + ", ".join(field for field, _ in observed))
     return issues
 
 
@@ -212,8 +205,7 @@ def _position_sign_issues(
     direction = next(iter(directions))
     signed = _first_finite_field(raw, ("signed_quantity",))
     if signed is not None and (
-        (direction == "long" and signed < 0)
-        or (direction == "short" and signed > 0)
+        (direction == "long" and signed < 0) or (direction == "short" and signed > 0)
     ):
         return ["signed quantity contradicts explicit position type"]
     if direction == "long":
@@ -258,10 +250,7 @@ def _position_numeric_issues(
             not math.isclose(abs(number), reference, rel_tol=1e-9, abs_tol=1e-9)
             for _, number in observed[1:]
         ):
-            issues.append(
-                "quantity fields disagree: "
-                + ", ".join(field for field, _ in observed)
-            )
+            issues.append("quantity fields disagree: " + ", ".join(field for field, _ in observed))
 
     invalid_pending: list[str] = []
     for field in pending_fields:
@@ -271,9 +260,7 @@ def _position_numeric_issues(
         if isinstance(value, bool) or _float(value) is None:
             invalid_pending.append(field)
     if invalid_pending:
-        issues.append(
-            f"invalid pending quantity field(s): {', '.join(invalid_pending)}"
-        )
+        issues.append(f"invalid pending quantity field(s): {', '.join(invalid_pending)}")
     return issues
 
 
@@ -323,9 +310,7 @@ def _redact_account_number_text(text: str, account_numbers: tuple[str, ...]) -> 
     """Redact exact account tokens while leaving unrelated numeric substrings intact."""
     redacted = text
     for account_number in account_numbers:
-        pattern = re.compile(
-            rf"(?<![A-Za-z0-9]){re.escape(account_number)}(?![A-Za-z0-9])"
-        )
+        pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(account_number)}(?![A-Za-z0-9])")
         redacted = pattern.sub(ACCOUNT_NUMBER_REDACTION, redacted)
     return redacted
 
@@ -346,10 +331,7 @@ def _redact_supplied_account_numbers(
             redacted[clean_key] = _redact_supplied_account_numbers(item, account_numbers)
         return redacted
     if isinstance(value, list):
-        return [
-            _redact_supplied_account_numbers(item, account_numbers)
-            for item in value
-        ]
+        return [_redact_supplied_account_numbers(item, account_numbers) for item in value]
     if isinstance(value, str):
         return _redact_account_number_text(value, account_numbers)
     return value
@@ -372,9 +354,7 @@ def _assert_account_numbers_absent(
                 inspect(item)
         elif isinstance(node, str):
             leaks.update(
-                account_number
-                for account_number in account_numbers
-                if account_number in node
+                account_number for account_number in account_numbers if account_number in node
             )
 
     inspect(value)
@@ -430,19 +410,13 @@ def default_account_equity_ledger_dir(data_dir: Path) -> Path:
         )
         return base / "Optedge" / "risk"
     xdg_state_home = os.environ.get("XDG_STATE_HOME", "").strip()
-    base = (
-        Path(xdg_state_home).expanduser()
-        if xdg_state_home
-        else Path.home() / ".local" / "state"
-    )
+    base = Path(xdg_state_home).expanduser() if xdg_state_home else Path.home() / ".local" / "state"
     return base / "optedge" / "risk"
 
 
 def account_equity_ledger_path(ledger_dir: Path, account_key: str) -> Path:
     """Map a pseudonymous account key to a non-identifying stable filename."""
-    digest = hashlib.sha256(
-        f"optedge-account-equity-ledger-v1|{account_key}".encode()
-    ).hexdigest()
+    digest = hashlib.sha256(f"optedge-account-equity-ledger-v1|{account_key}".encode()).hexdigest()
     return Path(ledger_dir) / f"account_{digest[:16]}.json"
 
 
@@ -493,8 +467,7 @@ def _load_consistent_account_equity_ledger(
     backup_validation = validate_equity_ledger(backup)
     if backup_validation.get("valid") is not True:
         raise ValueError(
-            "equity ledger .bak is unsafe: "
-            + "; ".join(backup_validation.get("blockers") or [])
+            "equity ledger .bak is unsafe: " + "; ".join(backup_validation.get("blockers") or [])
         )
 
     primary_observations = primary.get("observations")
@@ -592,7 +565,11 @@ def append_account_equity_ledgers(
             deduplicated += 1
     return {
         "schema": "optedge_robinhood_account_equity_ledger_update_v1",
-        "status": "updated" if appended and not blockers else "unchanged" if not blockers else "blocked",
+        "status": "updated"
+        if appended and not blockers
+        else "unchanged"
+        if not blockers
+        else "blocked",
         "eligible_account_count": len(account_keys),
         "observations_appended": appended,
         "identical_observations_deduplicated": deduplicated,
@@ -608,8 +585,14 @@ def _unwrap_rows(value: Any, preferred_keys: tuple[str, ...] = ()) -> list[dict[
     if isinstance(value, list):
         rows: list[dict[str, Any]] = []
         page_keys = preferred_keys + (
-            "results", "items", "accounts", "positions", "orders",
-            "option_positions", "equity_positions", "instruments",
+            "results",
+            "items",
+            "accounts",
+            "positions",
+            "orders",
+            "option_positions",
+            "equity_positions",
+            "instruments",
         )
         for row in value:
             if not isinstance(row, dict):
@@ -644,7 +627,11 @@ def _unwrap_rows(value: Any, preferred_keys: tuple[str, ...] = ()) -> list[dict[
                     {
                         **{
                             k: value[k]
-                            for k in ("account_number", "rhs_account_number", "brokerage_account_number")
+                            for k in (
+                                "account_number",
+                                "rhs_account_number",
+                                "brokerage_account_number",
+                            )
                             if value.get(k)
                         },
                         **row,
@@ -717,11 +704,13 @@ def _account_key(account_number: str, raw: dict[str, Any]) -> str:
         and all(char in "0123456789abcdef" for char in explicit[5:])
     ):
         return explicit
-    basis = account_number or "|".join([
-        _text(raw.get("account_mask") or raw.get("mask")),
-        _text(raw.get("label") or raw.get("nickname") or raw.get("name")),
-        _text(raw.get("brokerage_account_type") or raw.get("type")),
-    ])
+    basis = account_number or "|".join(
+        [
+            _text(raw.get("account_mask") or raw.get("mask")),
+            _text(raw.get("label") or raw.get("nickname") or raw.get("name")),
+            _text(raw.get("brokerage_account_type") or raw.get("type")),
+        ]
+    )
     if not basis.strip("|"):
         return ""
     digest = hashlib.sha256(f"optedge-robinhood-account-v1|{basis}".encode()).hexdigest()
@@ -809,10 +798,7 @@ def _find_symbol(raw: dict[str, Any]) -> str:
 
 def _option_side(raw: dict[str, Any]) -> str:
     text = _text(
-        raw.get("option_type")
-        or raw.get("side")
-        or raw.get("right")
-        or raw.get("type")
+        raw.get("option_type") or raw.get("side") or raw.get("right") or raw.get("type")
     ).lower()
     if text.startswith("c"):
         return "call"
@@ -844,11 +830,14 @@ def _expiration(raw: dict[str, Any]) -> str:
 
 
 def _normalize_equity_position(raw: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
-    quantity = _first_finite_field(
-        raw,
-        ("signed_quantity", "quantity", "shares", "qty"),
-        0.0,
-    ) or 0.0
+    quantity = (
+        _first_finite_field(
+            raw,
+            ("signed_quantity", "quantity", "shares", "qty"),
+            0.0,
+        )
+        or 0.0
+    )
     position_type = _text(raw.get("position_type") or raw.get("type")).lower()
     if position_type not in {"long", "short", "boxed", "empty"}:
         position_type = "short" if quantity < 0 else "long" if quantity > 0 else "empty"
@@ -881,11 +870,14 @@ def _normalize_equity_position(raw: dict[str, Any], account: dict[str, Any]) -> 
 
 
 def _normalize_option_position(raw: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
-    quantity = _first_finite_field(
-        raw,
-        ("signed_quantity", "quantity", "contracts", "qty"),
-        0.0,
-    ) or 0.0
+    quantity = (
+        _first_finite_field(
+            raw,
+            ("signed_quantity", "quantity", "contracts", "qty"),
+            0.0,
+        )
+        or 0.0
+    )
     avg = _float(raw.get("average_price") or raw.get("avg_price") or raw.get("average_buy_price"))
     current = _max_finite_field(
         raw,
@@ -936,10 +928,7 @@ def _normalize_order(raw: dict[str, Any], account: dict[str, Any], asset: str) -
     raw_legs = raw.get("legs")
     legs = raw_legs if isinstance(raw_legs, list) else []
     option_legs = [leg for leg in legs if isinstance(leg, dict)]
-    exact_single_leg = (
-        asset != "option"
-        or (len(legs) == 1 and isinstance(legs[0], dict))
-    )
+    exact_single_leg = asset != "option" or (len(legs) == 1 and isinstance(legs[0], dict))
     leg = option_legs[0] if exact_single_leg and option_legs else {}
     row = {
         "asset": asset,
@@ -965,39 +954,43 @@ def _normalize_order(raw: dict[str, Any], account: dict[str, Any], asset: str) -
             if len(legs) > 1
             else "unresolved_missing_leg"
         )
-        row.update({
-            "chain_symbol": _find_symbol(raw) or _find_symbol(leg),
-            "option_type": _option_right(leg) or _option_right(raw) if exact_single_leg else "",
-            "expiration_date": _expiration(leg) or _expiration(raw) if exact_single_leg else "",
-            "strike_price": (
-                _float(
-                    leg.get("strike_price")
-                    or leg.get("strike")
-                    or raw.get("strike_price")
-                    or raw.get("strike")
-                )
-                if exact_single_leg
-                else None
-            ),
-            "option_id": (
-                _text(leg.get("option_id") or leg.get("instrument_id") or raw.get("option_id"))
-                if exact_single_leg
-                else ""
-            ),
-            "leg_count": len(legs),
-            "contract_identity_status": contract_identity_status,
-            "contract_identity_blocker": (
-                "Nonterminal option orders require exactly one leg for exact duplicate-exposure checks."
-                if not exact_single_leg
-                else ""
-            ),
-            "pending_quantity": raw.get("pending_quantity"),
-            "processed_quantity": raw.get("processed_quantity"),
-        })
+        row.update(
+            {
+                "chain_symbol": _find_symbol(raw) or _find_symbol(leg),
+                "option_type": _option_right(leg) or _option_right(raw) if exact_single_leg else "",
+                "expiration_date": _expiration(leg) or _expiration(raw) if exact_single_leg else "",
+                "strike_price": (
+                    _float(
+                        leg.get("strike_price")
+                        or leg.get("strike")
+                        or raw.get("strike_price")
+                        or raw.get("strike")
+                    )
+                    if exact_single_leg
+                    else None
+                ),
+                "option_id": (
+                    _text(leg.get("option_id") or leg.get("instrument_id") or raw.get("option_id"))
+                    if exact_single_leg
+                    else ""
+                ),
+                "leg_count": len(legs),
+                "contract_identity_status": contract_identity_status,
+                "contract_identity_blocker": (
+                    "Nonterminal option orders require exactly one leg for exact duplicate-exposure checks."
+                    if not exact_single_leg
+                    else ""
+                ),
+                "pending_quantity": raw.get("pending_quantity"),
+                "processed_quantity": raw.get("processed_quantity"),
+            }
+        )
     return row
 
 
-def _pick_account(accounts: dict[str, dict[str, Any]], account_number: str, fallback: str) -> dict[str, Any]:
+def _pick_account(
+    accounts: dict[str, dict[str, Any]], account_number: str, fallback: str
+) -> dict[str, Any]:
     key = account_number or fallback
     if key not in accounts:
         accounts[key] = _normalize_account({"account_number": key}, key)
@@ -1024,7 +1017,9 @@ def _merge_portfolio(account: dict[str, Any], raw: dict[str, Any]) -> None:
     account["portfolio"] = portfolio
     if buying_power is not None:
         existing = _float(account.get("buying_power"))
-        account["buying_power"] = min(existing, buying_power) if existing is not None else buying_power
+        account["buying_power"] = (
+            min(existing, buying_power) if existing is not None else buying_power
+        )
 
 
 def _option_instrument_lookup(*sources: Any) -> dict[str, dict[str, Any]]:
@@ -1146,11 +1141,7 @@ def _pagination_capture_issue(
                 return "follow-up page is missing request.cursor linkage metadata"
             if expected_cursor != actual_cursor:
                 return "captured page cursor linkage is out of order"
-    final_data = (
-        pages[-1].get("data")
-        if isinstance(pages[-1].get("data"), dict)
-        else pages[-1]
-    )
+    final_data = pages[-1].get("data") if isinstance(pages[-1].get("data"), dict) else pages[-1]
     final_next = final_data.get("next") if isinstance(final_data, dict) else None
     if require_explicit_next and final_next is not None:
         return "final data.next is non-null"
@@ -1197,8 +1188,7 @@ def _enrich_option_order(
     out = dict(raw)
     legs = raw.get("legs") if isinstance(raw.get("legs"), list) else []
     out["legs"] = [
-        _enrich_option_contract(leg, instruments) if isinstance(leg, dict) else leg
-        for leg in legs
+        _enrich_option_contract(leg, instruments) if isinstance(leg, dict) else leg for leg in legs
     ]
     return _enrich_option_contract(out, instruments)
 
@@ -1223,7 +1213,9 @@ def normalize_broker_snapshot(
             normalization_blockers.append(
                 f"get_accounts capture has an invalid decoded shape: {accounts_shape_issue}."
             )
-    account_rows = _unwrap_rows(bundle.get("accounts") or bundle.get("get_accounts"), ("accounts", "results"))
+    account_rows = _unwrap_rows(
+        bundle.get("accounts") or bundle.get("get_accounts"), ("accounts", "results")
+    )
     if is_v2_bundle and not account_rows:
         normalization_blockers.append(
             f"{RAW_BUNDLE_SCHEMA} requires the complete get_accounts result before account-scoped reads."
@@ -1253,7 +1245,9 @@ def normalize_broker_snapshot(
         accounts[key] = _normalize_account({"account_number": key}, key)
     known_account_keys = list(accounts)
     scoped_value = bundle.get("account_snapshots") or bundle.get("account_reads")
-    account_scopes = _unwrap_rows(scoped_value, ("account_snapshots", "account_reads")) if scoped_value else []
+    account_scopes = (
+        _unwrap_rows(scoped_value, ("account_snapshots", "account_reads")) if scoped_value else []
+    )
     if is_v2_bundle and not account_scopes:
         normalization_blockers.append(
             f"{RAW_BUNDLE_SCHEMA} requires non-empty account_snapshots with an account_number on every wrapper."
@@ -1261,7 +1255,9 @@ def normalize_broker_snapshot(
     if is_v2_bundle:
         pagination_issue = _pagination_capture_issue(bundle.get("get_accounts"))
         if pagination_issue:
-            normalization_blockers.append(f"get_accounts capture is incomplete: {pagination_issue}.")
+            normalization_blockers.append(
+                f"get_accounts capture is incomplete: {pagination_issue}."
+            )
 
     if is_v2_bundle and account_scopes:
         required_scoped_reads = (
@@ -1284,9 +1280,7 @@ def normalize_broker_snapshot(
         if forbidden_top_level_reads:
             normalization_blockers.append(
                 "V2 account-scoped read section(s) must not appear at the top level when "
-                "account_snapshots wrappers exist: "
-                + ", ".join(forbidden_top_level_reads)
-                + "."
+                "account_snapshots wrappers exist: " + ", ".join(forbidden_top_level_reads) + "."
             )
         scoped_account_numbers = [
             _account_number(scope) for scope in account_scopes if _account_number(scope)
@@ -1312,9 +1306,7 @@ def normalize_broker_snapshot(
             )
         for scope in account_scopes:
             missing_sections = [
-                section
-                for section in required_scoped_reads
-                if section not in scope
+                section for section in required_scoped_reads if section not in scope
             ]
             if missing_sections:
                 normalization_blockers.append(
@@ -1349,8 +1341,7 @@ def normalize_broker_snapshot(
             )
             if shape_issue:
                 normalization_blockers.append(
-                    "get_option_instruments capture has an invalid decoded shape: "
-                    f"{shape_issue}."
+                    f"get_option_instruments capture has an invalid decoded shape: {shape_issue}."
                 )
             else:
                 pagination_issue = _pagination_capture_issue(
@@ -1367,10 +1358,12 @@ def normalize_broker_snapshot(
         bundle.get("get_option_instruments"),
     ]
     for scope in account_scopes:
-        instrument_sources.extend([
-            scope.get("option_instruments"),
-            scope.get("get_option_instruments"),
-        ])
+        instrument_sources.extend(
+            [
+                scope.get("option_instruments"),
+                scope.get("get_option_instruments"),
+            ]
+        )
     instruments = _option_instrument_lookup(*instrument_sources)
 
     def resolve_account(row: dict[str, Any], forced_account: str, section: str) -> str:
@@ -1496,8 +1489,7 @@ def normalize_broker_snapshot(
                     )
                 )
             normalization_blockers.extend(
-                f"{attr} row {row_index} is unsafe: {issue}."
-                for issue in numeric_issues
+                f"{attr} row {row_index} is unsafe: {issue}." for issue in numeric_issues
             )
             acct_num = resolve_account(raw_row, forced_account, attr)
             account = _pick_account(accounts, acct_num, "unscoped")
@@ -1535,23 +1527,31 @@ def normalize_broker_snapshot(
         )
         attach_rows(
             scope.get("equity_positions") or scope.get("get_equity_positions"),
-            "equity_positions", _normalize_equity_position,
+            "equity_positions",
+            _normalize_equity_position,
             forced_account=scoped_account,
         )
         attach_rows(
             scope.get("option_positions") or scope.get("get_option_positions"),
-            "option_positions", _normalize_option_position,
-            forced_account=scoped_account, option_contracts=True,
+            "option_positions",
+            _normalize_option_position,
+            forced_account=scoped_account,
+            option_contracts=True,
         )
         attach_rows(
             scope.get("equity_orders") or scope.get("get_equity_orders"),
-            "equity_orders", _normalize_order, "equity",
+            "equity_orders",
+            _normalize_order,
+            "equity",
             forced_account=scoped_account,
         )
         attach_rows(
             scope.get("option_orders") or scope.get("get_option_orders"),
-            "option_orders", _normalize_order, "option",
-            forced_account=scoped_account, option_contracts=True,
+            "option_orders",
+            _normalize_order,
+            "option",
+            forced_account=scoped_account,
+            option_contracts=True,
         )
 
     if account_scopes:
@@ -1565,32 +1565,43 @@ def normalize_broker_snapshot(
             bundle.get("equity_positions")
             or bundle.get("stock_positions")
             or bundle.get("get_equity_positions"),
-            "equity_positions", _normalize_equity_position,
+            "equity_positions",
+            _normalize_equity_position,
         )
         attach_rows(
             bundle.get("option_positions")
             or bundle.get("options_positions")
             or bundle.get("get_option_positions"),
-            "option_positions", _normalize_option_position,
+            "option_positions",
+            _normalize_option_position,
             option_contracts=True,
         )
         attach_rows(
             bundle.get("equity_orders") or bundle.get("get_equity_orders"),
-            "equity_orders", _normalize_order, "equity",
+            "equity_orders",
+            _normalize_order,
+            "equity",
         )
         attach_rows(
             bundle.get("option_orders") or bundle.get("get_option_orders"),
-            "option_orders", _normalize_order, "option",
+            "option_orders",
+            _normalize_order,
+            "option",
             option_contracts=True,
         )
 
     account_list = list(accounts.values())
-    option_positions = [pos for account in account_list for pos in account.get("option_positions", [])]
-    equity_positions = [pos for account in account_list for pos in account.get("equity_positions", [])]
+    option_positions = [
+        pos for account in account_list for pos in account.get("option_positions", [])
+    ]
+    equity_positions = [
+        pos for account in account_list for pos in account.get("equity_positions", [])
+    ]
     option_orders = [row for account in account_list for row in account.get("option_orders", [])]
     equity_orders = [row for account in account_list for row in account.get("equity_orders", [])]
     missing_option_contract_count = sum(
-        1 for row in option_positions
+        1
+        for row in option_positions
         if _float(row.get("quantity"), 0.0) != 0
         and (
             not _find_symbol(row)
@@ -1607,7 +1618,9 @@ def normalize_broker_snapshot(
     normalization_blockers = list(dict.fromkeys(normalization_blockers))
     return {
         "schema": SNAPSHOT_SCHEMA,
-        "generated_at": generated_at or _text(bundle.get("generated_at") or bundle.get("collected_at")) or None,
+        "generated_at": generated_at
+        or _text(bundle.get("generated_at") or bundle.get("collected_at"))
+        or None,
         "normalized_at": _now(),
         "source": "read_only_robinhood_agentic_mcp_export",
         "raw_bundle_schema": _text(bundle.get("schema")) or "legacy_flexible_bundle",
@@ -1682,9 +1695,13 @@ def persist_broker_snapshot_bundle(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Normalize a read-only Robinhood snapshot for Optedge.")
+    ap = argparse.ArgumentParser(
+        description="Normalize a read-only Robinhood snapshot for Optedge."
+    )
     ap.add_argument("--input", default=str(DEFAULT_INPUT), help="Raw JSON bundle to normalize.")
-    ap.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Normalized broker snapshot output path.")
+    ap.add_argument(
+        "--output", default=str(DEFAULT_OUTPUT), help="Normalized broker snapshot output path."
+    )
     ap.add_argument(
         "--equity-ledger-dir",
         default="",
@@ -1694,8 +1711,12 @@ def main(argv: list[str] | None = None) -> int:
             f"or {EQUITY_LEDGER_DIRNAME}/ beside a custom --output."
         ),
     )
-    ap.add_argument("--account-number", default="", help="Fallback account number when raw rows omit it.")
-    ap.add_argument("--dry-run", action="store_true", help="Print summary without writing the output file.")
+    ap.add_argument(
+        "--account-number", default="", help="Fallback account number when raw rows omit it."
+    )
+    ap.add_argument(
+        "--dry-run", action="store_true", help="Print summary without writing the output file."
+    )
     args = ap.parse_args(argv)
 
     input_path = Path(args.input)

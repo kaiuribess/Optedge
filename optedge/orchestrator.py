@@ -6,7 +6,9 @@ internally parallelizes per-ticker work.
 
 First run? Run `python setup_check.py` first to verify data sources.
 """
+
 from __future__ import annotations
+
 import argparse
 import importlib
 import json
@@ -15,7 +17,7 @@ import os
 import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -25,11 +27,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
-    from config import (UNIVERSE, UNIVERSE_OPTIONS, UNIVERSE_SHARES, TOP_N_CALLS, TOP_N_PUTS, TOP_N_SHARES,
-                        TOP_N_VALUE, TOP_N_FUTURES,
-                        WSB_TRENDING_TOP_N, WSB_TRENDING_MIN_MENTIONS,
-                        ENGINE_CONCURRENT)
     import config as _config
+    from config import (
+        ENGINE_CONCURRENT,
+        TOP_N_CALLS,
+        TOP_N_FUTURES,
+        TOP_N_PUTS,
+        TOP_N_SHARES,
+        TOP_N_VALUE,
+        UNIVERSE,
+        UNIVERSE_OPTIONS,
+        UNIVERSE_SHARES,
+        WSB_TRENDING_MIN_MENTIONS,
+        WSB_TRENDING_TOP_N,
+    )
+
     # v20: optional config keys with defaults (in case user runs over an
     # old config.py that doesn't have them yet)
     ENGINE_SLA_SECONDS = getattr(_config, "ENGINE_SLA_SECONDS", {})
@@ -37,19 +49,34 @@ try:
     UNIVERSE_PREFILTER_ENABLED = getattr(_config, "UNIVERSE_PREFILTER_ENABLED", True)
     HEDGE_DELTA_THRESHOLD = getattr(_config, "HEDGE_DELTA_THRESHOLD", 5000.0)
     DRAWDOWN_BREAKER_ENABLED = getattr(_config, "DRAWDOWN_BREAKER_ENABLED", True)
-    from engines import mispricing, sentiment, fundamentals, insider, macro
-    from engines import wsb_trending, news, earnings, value, futures, congress, social, analyst
-    from fusion import rank as fusion_rank
-    from backtest import track as backtest_track
+    import data_provider
     from backtest import predictor as bt_predictor
     from backtest import sizing as bt_sizing
+    from backtest import track as backtest_track
     from dashboard import build as dash_build
+    from engines import (
+        analyst,
+        congress,
+        earnings,
+        fundamentals,
+        futures,
+        insider,
+        macro,
+        mispricing,
+        news,
+        sentiment,
+        social,
+        value,
+        wsb_trending,
+    )
+    from fusion import rank as fusion_rank
     from optedge.strategy_profile import is_known_index_option_symbol
-    import data_provider
+
     # v20: telemetry + universe filter (best-effort imports)
     try:
-        from telemetry import perf as _perf
         from telemetry import cache_stats as _cache_stats
+        from telemetry import perf as _perf
+
         _cache_stats.install_hooks()
     except Exception as _telem_err:
         _perf = None
@@ -83,6 +110,7 @@ def _apply_runtime_weight_override() -> None:
         _config.SIGNAL_WEIGHTS = runtime_weights
         # Also patch the imported module so fusion sees the override.
         import fusion.rank as rank_module
+
         rank_module.SIGNAL_WEIGHTS = runtime_weights
         top_factor = max(runtime_weights, key=runtime_weights.get)
         print(
@@ -162,12 +190,23 @@ def auto_detect_mode(args) -> tuple:
     return use_demo, skip
 
 
-def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
-                           skip_insider, skip_fund, skip_news=False, skip_earnings=False,
-                           skip_value=False, skip_futures=False, skip_congress=False,
-                           skip_social=False, skip_analyst=False,
-                           universe_heavy=None, skip_v20=None,
-                           fast_insider: bool = False):
+def run_engines_concurrent(
+    universe_options,
+    universe_all,
+    skip_sentiment,
+    skip_insider,
+    skip_fund,
+    skip_news=False,
+    skip_earnings=False,
+    skip_value=False,
+    skip_futures=False,
+    skip_congress=False,
+    skip_social=False,
+    skip_analyst=False,
+    universe_heavy=None,
+    skip_v20=None,
+    fast_insider: bool = False,
+):
     """Dispatch all ticker-driven engines in parallel.
 
     v20: universe_heavy is the pre-filtered subset for slow per-ticker engines.
@@ -179,6 +218,7 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
     # If pre-filter not provided, treat heavy = all
     universe_heavy = universe_heavy or universe_all
     skip_v20 = skip_v20 or {}
+
     def _v20_on(name):
         return not skip_v20.get(name, False)
 
@@ -238,6 +278,7 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
 
     flow_module = _load_optional_engine("sector_etf_flow")
     if flow_module is not None:
+
         def _sector_flow_task(module=flow_module):
             sector_flow = module.run()
             return module.per_ticker_score(universe_all, sector_flow)
@@ -251,6 +292,7 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
     def _runner(name, fn):
         """Wrap engine call with telemetry tracking."""
         import time as _t
+
         t0 = _t.time()
         try:
             r = fn()
@@ -266,8 +308,7 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
                     elif "rows" in r and hasattr(r["rows"], "__len__"):
                         rows = len(r["rows"])
                     else:
-                        rows = sum(len(v) for v in r.values()
-                                    if hasattr(v, "__len__"))
+                        rows = sum(len(v) for v in r.values() if hasattr(v, "__len__"))
                 elif r is not None and hasattr(r, "__len__"):
                     rows = len(r)
             except Exception:
@@ -283,8 +324,12 @@ def run_engines_concurrent(universe_options, universe_all, skip_sentiment,
                     pass
             return r
         except Exception as e:
-            timings[name] = {"elapsed": _t.time() - t0, "rows": 0, "ok": False,
-                              "error": str(e)[:200]}
+            timings[name] = {
+                "elapsed": _t.time() - t0,
+                "rows": 0,
+                "ok": False,
+                "error": str(e)[:200],
+            }
             raise
 
     with ThreadPoolExecutor(max_workers=max(8, len(tasks))) as ex:
@@ -326,8 +371,12 @@ def main():
         action="store_true",
         help="Open the local risk-first Trade Desk (handled by the Optedge CLI router)",
     )
-    ap.add_argument("--universe", nargs="*", default=None,
-                    help="Override universe (default: config.UNIVERSE + WSB trending)")
+    ap.add_argument(
+        "--universe",
+        nargs="*",
+        default=None,
+        help="Override universe (default: config.UNIVERSE + WSB trending)",
+    )
     ap.add_argument("--max-calls", type=int, default=TOP_N_CALLS)
     ap.add_argument("--max-puts", type=int, default=TOP_N_PUTS)
     ap.add_argument("--max-shares", type=int, default=TOP_N_SHARES)
@@ -342,99 +391,200 @@ def main():
     ap.add_argument("--skip-value", action="store_true")
     ap.add_argument("--skip-futures", action="store_true")
     ap.add_argument("--skip-congress", action="store_true")
-    ap.add_argument("--skip-social", action="store_true",
-                    help="Skip StockTwits + Trump Truth Social engine")
-    ap.add_argument("--skip-analyst", action="store_true",
-                    help="Skip Finnhub analyst recommendations engine")
+    ap.add_argument(
+        "--skip-social", action="store_true", help="Skip StockTwits + Trump Truth Social engine"
+    )
+    ap.add_argument(
+        "--skip-analyst", action="store_true", help="Skip Finnhub analyst recommendations engine"
+    )
     # v20.1 — per-engine skip flags for the v20 new factor set
-    ap.add_argument("--skip-cot", action="store_true",
-                    help="Skip CFTC Commitments of Traders engine (v20)")
-    ap.add_argument("--skip-13f", action="store_true",
-                    help="Skip SEC 13F smart-money engine (v20)")
-    ap.add_argument("--skip-vix-term", action="store_true",
-                    help="Skip CBOE VIX term-structure engine (v20)")
-    ap.add_argument("--skip-eia", action="store_true",
-                    help="Skip EIA petroleum/natgas inventory engine (v20)")
-    ap.add_argument("--skip-wasde", action="store_true",
-                    help="Skip USDA WASDE ag engine (v20)")
-    ap.add_argument("--skip-buybacks", action="store_true",
-                    help="Skip SEC 8-K buyback scanner (v20)")
-    ap.add_argument("--skip-gtrends", action="store_true",
-                    help="Skip Google Trends engine (v20)")
-    ap.add_argument("--skip-form-144", action="store_true",
-                    help="Skip SEC Form 144 pre-sale engine (v20)")
-    ap.add_argument("--skip-whisper", action="store_true",
-                    help="Skip earnings whisper engine (v20)")
-    ap.add_argument("--skip-hyperliquid", action="store_true",
-                    help="Skip Hyperliquid perp OI engine (v20)")
-    ap.add_argument("--skip-twitter", action="store_true",
-                    help="Skip Twitter/Apewisdom engine (v20)")
-    ap.add_argument("--skip-r-options", action="store_true",
-                    help="Skip r/options sticky engine (v20)")
-    ap.add_argument("--skip-yield-curve", action="store_true",
-                    help="Skip FRED yield-curve PCA engine (v20)")
-    ap.add_argument("--skip-credit-spread", action="store_true",
-                    help="Skip FRED IG/HY credit spread engine (v20)")
-    ap.add_argument("--skip-sec-ftd", action="store_true",
-                    help="Skip SEC fails-to-deliver context engine (free/no-key)")
-    ap.add_argument("--skip-finbert", action="store_true",
-                    help="Skip FinBERT sentiment engine (v20.3, GPU-aware, optional)")
-    ap.add_argument("--fast-insider", action="store_true",
-                    help="Insider engine: count-only mode (skip XML parsing, ~5x faster)")
-    ap.add_argument("--turbo", action="store_true",
-                    help="Performance preset: RAM cache + batched GPU FinBERT + fast insider parsing")
-    ap.add_argument("--demo", action="store_true",
-                    help="Force synthetic data (sandbox / first-look mode)")
+    ap.add_argument(
+        "--skip-cot", action="store_true", help="Skip CFTC Commitments of Traders engine (v20)"
+    )
+    ap.add_argument("--skip-13f", action="store_true", help="Skip SEC 13F smart-money engine (v20)")
+    ap.add_argument(
+        "--skip-vix-term", action="store_true", help="Skip CBOE VIX term-structure engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-eia", action="store_true", help="Skip EIA petroleum/natgas inventory engine (v20)"
+    )
+    ap.add_argument("--skip-wasde", action="store_true", help="Skip USDA WASDE ag engine (v20)")
+    ap.add_argument(
+        "--skip-buybacks", action="store_true", help="Skip SEC 8-K buyback scanner (v20)"
+    )
+    ap.add_argument("--skip-gtrends", action="store_true", help="Skip Google Trends engine (v20)")
+    ap.add_argument(
+        "--skip-form-144", action="store_true", help="Skip SEC Form 144 pre-sale engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-whisper", action="store_true", help="Skip earnings whisper engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-hyperliquid", action="store_true", help="Skip Hyperliquid perp OI engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-twitter", action="store_true", help="Skip Twitter/Apewisdom engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-r-options", action="store_true", help="Skip r/options sticky engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-yield-curve", action="store_true", help="Skip FRED yield-curve PCA engine (v20)"
+    )
+    ap.add_argument(
+        "--skip-credit-spread",
+        action="store_true",
+        help="Skip FRED IG/HY credit spread engine (v20)",
+    )
+    ap.add_argument(
+        "--skip-sec-ftd",
+        action="store_true",
+        help="Skip SEC fails-to-deliver context engine (free/no-key)",
+    )
+    ap.add_argument(
+        "--skip-finbert",
+        action="store_true",
+        help="Skip FinBERT sentiment engine (v20.3, GPU-aware, optional)",
+    )
+    ap.add_argument(
+        "--fast-insider",
+        action="store_true",
+        help="Insider engine: count-only mode (skip XML parsing, ~5x faster)",
+    )
+    ap.add_argument(
+        "--turbo",
+        action="store_true",
+        help="Performance preset: RAM cache + batched GPU FinBERT + fast insider parsing",
+    )
+    ap.add_argument(
+        "--demo", action="store_true", help="Force synthetic data (sandbox / first-look mode)"
+    )
     ap.add_argument("--no-auto-detect", action="store_true")
-    ap.add_argument("--sequential", action="store_true",
-                    help="Run engines sequentially (debug mode)")
-    ap.add_argument("--forward", action="store_true",
-                    help="Forward test only — replay logged signals with current prices")
-    ap.add_argument("--backtest", action="store_true",
-                    help="Diagnostic-only look-ahead IC analysis on 7/30/60/90d forward returns; not promotion eligible")
-    ap.add_argument("--validation-report", action="store_true",
-                    help="Build the formal validation report from local logs/positions")
-    ap.add_argument("--validation-all-time", action="store_true",
-                    help="Validation report: include archived/stale history instead of the current unarchived experiment only")
-    ap.add_argument("--heston-stability", action="store_true",
-                    help="Run a Heston numerical stability report without enabling Heston")
-    ap.add_argument("--lookup", metavar="SYMBOL",
-                    help="Look up one ticker/symbol in latest local Optedge outputs without rerunning engines")
-    ap.add_argument("--bankroll", type=float, default=10000,
-                    help="Account size used for Kelly position sizing (default $10K)")
-    ap.add_argument("--aggressive", action="store_true",
-                    help="½ Kelly + 10%% per option / 15%% per share caps (vs default ¼ Kelly + 5/8%%)")
-    ap.add_argument("--loop", type=int, metavar="MINUTES",
-                    help="Run continuously, sleeping N minutes between iterations")
-    ap.add_argument("--no-open", action="store_true",
-                    help="Don't auto-open the dashboard in browser when done")
-    ap.add_argument("--robinhood-agentic-queue", action="store_true",
-                    help="Write an options-only Robinhood research/paper shortlist after each scan")
-    ap.add_argument("--robinhood-budget", type=float, default=None,
-                    help="Budget for Robinhood Agentic queue caps (defaults to --bankroll)")
-    ap.add_argument("--robinhood-max-candidates", type=int, default=5,
-                    help="Max option candidates to keep in the manual-review shortlist")
-    ap.add_argument("--robinhood-max-orders", type=int, default=2,
-                    help="Compatibility name for the manual-review comparison cap; authorizes zero submissions")
-    ap.add_argument("--robinhood-min-dte", type=int, default=90,
-                    help="Minimum DTE for Robinhood agentic option candidates (default 90d+ swing)")
-    ap.add_argument("--robinhood-min-confidence", type=float, default=55.0,
-                    help="Minimum confidence for Robinhood agentic option candidates")
-    ap.add_argument("--robinhood-max-premium-per-order", type=float, default=None,
-                    help="Max debit per option candidate in the Robinhood manual-review shortlist")
-    ap.add_argument("--robinhood-refresh-chain", action="store_true",
-                    help="Refresh the free/provider option-chain shortlist before building the Robinhood queue")
-    ap.add_argument("--robinhood-chain-preset", default="auto",
-                    choices=["auto", "swing", "leaps", "liquid", "custom"],
-                    help="Chain refresh preset for Robinhood queue (auto uses DTE to choose swing/leaps)")
-    ap.add_argument("--robinhood-chain-symbols-limit", type=int, default=6,
-                    help="Max symbols to scan during Robinhood chain refresh")
-    ap.add_argument("--robinhood-chain-contracts-per-symbol", type=int, default=4,
-                    help="Max contracts per symbol to keep during Robinhood chain refresh")
-    ap.add_argument("--quiet", action="store_true",
-                    help="Reduce log verbosity (only WARNING and above)")
-    ap.add_argument("--minimal", action="store_true",
-                    help="Lightweight preset: skip slow engines (wsb, news, congress, social, analyst). ~30s runs.")
+    ap.add_argument(
+        "--sequential", action="store_true", help="Run engines sequentially (debug mode)"
+    )
+    ap.add_argument(
+        "--forward",
+        action="store_true",
+        help="Forward test only — replay logged signals with current prices",
+    )
+    ap.add_argument(
+        "--backtest",
+        action="store_true",
+        help="Diagnostic-only look-ahead IC analysis on 7/30/60/90d forward returns; not promotion eligible",
+    )
+    ap.add_argument(
+        "--validation-report",
+        action="store_true",
+        help="Build the formal validation report from local logs/positions",
+    )
+    ap.add_argument(
+        "--validation-all-time",
+        action="store_true",
+        help="Validation report: include archived/stale history instead of the current unarchived experiment only",
+    )
+    ap.add_argument(
+        "--heston-stability",
+        action="store_true",
+        help="Run a Heston numerical stability report without enabling Heston",
+    )
+    ap.add_argument(
+        "--lookup",
+        metavar="SYMBOL",
+        help="Look up one ticker/symbol in latest local Optedge outputs without rerunning engines",
+    )
+    ap.add_argument(
+        "--bankroll",
+        type=float,
+        default=10000,
+        help="Account size used for Kelly position sizing (default $10K)",
+    )
+    ap.add_argument(
+        "--aggressive",
+        action="store_true",
+        help="½ Kelly + 10%% per option / 15%% per share caps (vs default ¼ Kelly + 5/8%%)",
+    )
+    ap.add_argument(
+        "--loop",
+        type=int,
+        metavar="MINUTES",
+        help="Run continuously, sleeping N minutes between iterations",
+    )
+    ap.add_argument(
+        "--no-open", action="store_true", help="Don't auto-open the dashboard in browser when done"
+    )
+    ap.add_argument(
+        "--robinhood-agentic-queue",
+        action="store_true",
+        help="Write an options-only Robinhood research/paper shortlist after each scan",
+    )
+    ap.add_argument(
+        "--robinhood-budget",
+        type=float,
+        default=None,
+        help="Budget for Robinhood Agentic queue caps (defaults to --bankroll)",
+    )
+    ap.add_argument(
+        "--robinhood-max-candidates",
+        type=int,
+        default=5,
+        help="Max option candidates to keep in the manual-review shortlist",
+    )
+    ap.add_argument(
+        "--robinhood-max-orders",
+        type=int,
+        default=2,
+        help="Compatibility name for the manual-review comparison cap; authorizes zero submissions",
+    )
+    ap.add_argument(
+        "--robinhood-min-dte",
+        type=int,
+        default=90,
+        help="Minimum DTE for Robinhood agentic option candidates (default 90d+ swing)",
+    )
+    ap.add_argument(
+        "--robinhood-min-confidence",
+        type=float,
+        default=55.0,
+        help="Minimum confidence for Robinhood agentic option candidates",
+    )
+    ap.add_argument(
+        "--robinhood-max-premium-per-order",
+        type=float,
+        default=None,
+        help="Max debit per option candidate in the Robinhood manual-review shortlist",
+    )
+    ap.add_argument(
+        "--robinhood-refresh-chain",
+        action="store_true",
+        help="Refresh the free/provider option-chain shortlist before building the Robinhood queue",
+    )
+    ap.add_argument(
+        "--robinhood-chain-preset",
+        default="auto",
+        choices=["auto", "swing", "leaps", "liquid", "custom"],
+        help="Chain refresh preset for Robinhood queue (auto uses DTE to choose swing/leaps)",
+    )
+    ap.add_argument(
+        "--robinhood-chain-symbols-limit",
+        type=int,
+        default=6,
+        help="Max symbols to scan during Robinhood chain refresh",
+    )
+    ap.add_argument(
+        "--robinhood-chain-contracts-per-symbol",
+        type=int,
+        default=4,
+        help="Max contracts per symbol to keep during Robinhood chain refresh",
+    )
+    ap.add_argument(
+        "--quiet", action="store_true", help="Reduce log verbosity (only WARNING and above)"
+    )
+    ap.add_argument(
+        "--minimal",
+        action="store_true",
+        help="Lightweight preset: skip slow engines (wsb, news, congress, social, analyst). ~30s runs.",
+    )
     ap.add_argument("--out-dir", default=str(ROOT / "data"))
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
@@ -446,7 +596,7 @@ def main():
     setup_logging("WARNING" if args.quiet else args.log_level)
     log = logging.getLogger("optedge")
     t_start = datetime.now()
-    run_asof = datetime.now(timezone.utc)
+    run_asof = datetime.now(UTC)
 
     # --minimal preset: stack of skip flags for fast iteration
     if args.turbo:
@@ -469,6 +619,7 @@ def main():
     # Standalone modes — validation / forward / backtest only
     if args.lookup:
         from scripts.lookup_symbol import lookup_symbol, save_lookup
+
         log.info("== LOCAL LOOKUP: %s ==", args.lookup.upper())
         report = lookup_symbol(args.lookup, Path(args.out_dir))
         paths = save_lookup(report, Path(args.out_dir))
@@ -476,7 +627,9 @@ def main():
         print(f"Lookup JSON: {paths['json']}")
         print(f"Hits: {report['total_hits']}")
         if report["total_hits"] == 0:
-            print(f"Tip: run a focused scan with: python run.py --universe {args.lookup.upper()} --no-open")
+            print(
+                f"Tip: run a focused scan with: python run.py --universe {args.lookup.upper()} --no-open"
+            )
         return 0
 
     if args.validation_report:
@@ -487,9 +640,14 @@ def main():
         except Exception as e:
             log.warning("fixed-horizon refresh skipped: %s", e)
         from reports.validation_report import (
-            EQUITY_PNG, FACTOR_IC_JSON, POSITION_AGING_JSON, REPORT_HTML,
-            SUMMARY_JSON, write_report,
+            EQUITY_PNG,
+            FACTOR_IC_JSON,
+            POSITION_AGING_JSON,
+            REPORT_HTML,
+            SUMMARY_JSON,
+            write_report,
         )
+
         log.info("== VALIDATION REPORT ==")
         summary = write_report(scope="all_time" if args.validation_all_time else "current_model")
         print(f"\nValidation report: {REPORT_HTML}")
@@ -505,6 +663,7 @@ def main():
 
     if args.heston_stability:
         from reports.heston_stability import OUT_JSON, write_report
+
         log.info("== HESTON STABILITY ==")
         report = write_report()
         print(f"\nHeston stability: {OUT_JSON}")
@@ -515,7 +674,8 @@ def main():
         return 0
 
     if args.forward:
-        from backtest.forward import run_forward_test, _load_all_logs
+        from backtest.forward import _load_all_logs, run_forward_test
+
         log.info("== FORWARD TEST ==")
         result = run_forward_test()
         if result["signals"].empty:
@@ -525,8 +685,10 @@ def main():
                 print("Each daily run logs its top picks to logs/signals_*.parquet")
                 print("automatically. After 1+ runs, --forward will replay them.")
             else:
-                print(f"\nFound {len(sigs)} logged signals across "
-                      f"{len(set(sigs['log_time'].astype(str)))} runs, but couldn't")
+                print(
+                    f"\nFound {len(sigs)} logged signals across "
+                    f"{len(set(sigs['log_time'].astype(str)))} runs, but couldn't"
+                )
                 print("fetch current prices to re-price them. Common causes:")
                 print("  - yfinance is rate-limited from your IP")
                 print("  - You're offline")
@@ -536,48 +698,65 @@ def main():
         ovr = result["overall"]
         print("\n=== FORWARD TEST RESULTS ===")
         print(f"  Signals tracked:    {ovr['n_signals']}")
-        print(f"  Win rate:           {ovr['win_rate']*100:.1f}%")
-        print(f"  Avg P&L:            {ovr['avg_pnl_pct']*100:+.2f}%")
-        print(f"  Median P&L:         {ovr['median_pnl_pct']*100:+.2f}%")
-        print(f"  Best winner:        {ovr['best']*100:+.1f}%")
-        print(f"  Worst loser:        {ovr['worst']*100:+.1f}%")
+        print(f"  Win rate:           {ovr['win_rate'] * 100:.1f}%")
+        print(f"  Avg P&L:            {ovr['avg_pnl_pct'] * 100:+.2f}%")
+        print(f"  Median P&L:         {ovr['median_pnl_pct'] * 100:+.2f}%")
+        print(f"  Best winner:        {ovr['best'] * 100:+.1f}%")
+        print(f"  Worst loser:        {ovr['worst'] * 100:+.1f}%")
         if not result["by_confidence"].empty:
             print("\n  By confidence bucket:")
             for _, r in result["by_confidence"].iterrows():
-                print(f"    {r['bucket']:<14} n={int(r['n']):>4}  win={r['win_rate']*100:>5.1f}%  avg P&L={r['avg_pnl']*100:+.2f}%")
+                print(
+                    f"    {r['bucket']:<14} n={int(r['n']):>4}  win={r['win_rate'] * 100:>5.1f}%  avg P&L={r['avg_pnl'] * 100:+.2f}%"
+                )
         if not result["by_type"].empty:
             print("\n  By signal type:")
             for _, r in result["by_type"].iterrows():
-                print(f"    {r['type']:<6}  n={int(r['n']):>4}  win={r['win_rate']*100:>5.1f}%  avg P&L={r['avg_pnl']*100:+.2f}%")
+                print(
+                    f"    {r['type']:<6}  n={int(r['n']):>4}  win={r['win_rate'] * 100:>5.1f}%  avg P&L={r['avg_pnl'] * 100:+.2f}%"
+                )
         fixed = result.get("fixed_horizon", {}) or {}
         headline = fixed.get("headline_shadow", {}) or {}
         if fixed:
-            print(f"\n  Fixed {fixed.get('headline_horizon_sessions', 10)}-session current-method shadow sample:")
+            print(
+                f"\n  Fixed {fixed.get('headline_horizon_sessions', 10)}-session current-method shadow sample:"
+            )
             print(f"    Outcomes:          {int(headline.get('n') or 0)}")
             print(f"    Entry days:        {int(headline.get('unique_entry_days') or 0)}")
             if headline.get("win_rate") is not None:
-                print(f"    Win rate:          {float(headline['win_rate'])*100:.1f}%")
-                print(f"    Avg after costs:   {float(headline['avg_return'])*100:+.2f}%")
+                print(f"    Win rate:          {float(headline['win_rate']) * 100:.1f}%")
+                print(f"    Avg after costs:   {float(headline['avg_return']) * 100:+.2f}%")
             executed = int((fixed.get("headline") or {}).get("n") or 0)
             print(f"    Executed outcomes: {executed}")
             option_data = fixed.get("option_market_data", {}) or {}
             observed = int(option_data.get("broker_observed_outcomes") or 0)
             modeled = int(option_data.get("modeled_proxy_outcomes") or 0)
-            print("    Shadow rows passed strategy rules before guardrails. Shares/futures use observed closes.")
-            print(f"    Option evidence:   {observed} broker-observed / {modeled} modeled fallback outcome(s)")
+            print(
+                "    Shadow rows passed strategy rules before guardrails. Shares/futures use observed closes."
+            )
+            print(
+                f"    Option evidence:   {observed} broker-observed / {modeled} modeled fallback outcome(s)"
+            )
         # Save
-        out_dir = Path(args.out_dir); out_dir.mkdir(exist_ok=True)
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(exist_ok=True)
         asof_tag = run_asof.strftime("%Y%m%d_%H%M%S")
         result["signals"].to_parquet(out_dir / f"forward_test_{asof_tag}.parquet", index=False)
         return 0
 
     if args.backtest:
         from backtest.historical import run_historical_backtest
+
         log.info("== HISTORICAL BACKTEST ==")
         # We need factor scores. Run the live engines (or demo) to get them.
         if args.demo or auto_detect_mode(args)[0]:
-            from demo_data import (synthetic_fundamentals, synthetic_sentiment,
-                                    synthetic_insider, synthetic_value)
+            from demo_data import (
+                synthetic_fundamentals,
+                synthetic_insider,
+                synthetic_sentiment,
+                synthetic_value,
+            )
+
             log.info("(using synthetic factor scores for backtest)")
             fund_df = synthetic_fundamentals(UNIVERSE)
             sent_df = synthetic_sentiment(UNIVERSE)
@@ -621,8 +800,11 @@ def main():
                 continue
             print(f"\n  {h}-day horizon:")
             for _, r in sub.iterrows():
-                print(f"    {r['factor']:<20}  IC={r['ic']:>+.3f}  Q5-Q1 spread={r['spread']*100:>+5.1f}%  n={int(r['n'])}")
-        out_dir = Path(args.out_dir); out_dir.mkdir(exist_ok=True)
+                print(
+                    f"    {r['factor']:<20}  IC={r['ic']:>+.3f}  Q5-Q1 spread={r['spread'] * 100:>+5.1f}%  n={int(r['n'])}"
+                )
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(exist_ok=True)
         asof_tag = run_asof.strftime("%Y%m%d_%H%M%S")
         ic.to_parquet(out_dir / f"backtest_ic_{asof_tag}.parquet", index=False)
         result["returns"].to_parquet(out_dir / f"backtest_returns_{asof_tag}.parquet", index=False)
@@ -638,13 +820,16 @@ def main():
 
     if args.fast_insider:
         import config
+
         config.INSIDER_FAST_MODE = True
         log.info("performance: fast insider mode enabled")
     if args.turbo:
         try:
-            log.info("performance: turbo mode enabled; cache=%s finbert_batch=%s",
-                     data_provider.cache_stats(),
-                     os.environ.get("OPTEDGE_FINBERT_BATCH_SIZE", "auto"))
+            log.info(
+                "performance: turbo mode enabled; cache=%s finbert_batch=%s",
+                data_provider.cache_stats(),
+                os.environ.get("OPTEDGE_FINBERT_BATCH_SIZE", "auto"),
+            )
         except Exception:
             log.info("performance: turbo mode enabled")
 
@@ -652,41 +837,58 @@ def main():
     universe_options_static = args.universe or UNIVERSE_OPTIONS
 
     trending = []
-    trending_meta = []   # list of {ticker, score, mentions, ups}
+    trending_meta = []  # list of {ticker, score, mentions, ups}
     if not skip_wsb and not args.universe:
         log.info("== WSB trending discovery ==")
         try:
             trending_meta = wsb_trending.get_trending_with_metadata(
-                valid_universe=universe_static, top_n=WSB_TRENDING_TOP_N,
+                valid_universe=universe_static,
+                top_n=WSB_TRENDING_TOP_N,
                 min_mentions=WSB_TRENDING_MIN_MENTIONS,
             )
             trending = [t["ticker"] for t in trending_meta]
             if trending:
-                log.info("added %d trending tickers from WSB (top: %s)",
-                         len(trending),
-                         ", ".join(f"{t['ticker']}({t['mentions']})" for t in trending_meta[:5]))
+                log.info(
+                    "added %d trending tickers from WSB (top: %s)",
+                    len(trending),
+                    ", ".join(f"{t['ticker']}({t['mentions']})" for t in trending_meta[:5]),
+                )
         except Exception as e:
             log.warning("wsb trending failed: %s", e)
 
     universe_options = list(dict.fromkeys(universe_options_static + trending))
     universe_shares = UNIVERSE_SHARES
     universe_all = list(dict.fromkeys(universe_static + trending))
-    log.info("universe: options=%d  shares=%d  all=%d  (WSB added: %d)",
-             len(universe_options), len(universe_shares), len(universe_all), len(trending))
+    log.info(
+        "universe: options=%d  shares=%d  all=%d  (WSB added: %d)",
+        len(universe_options),
+        len(universe_shares),
+        len(universe_all),
+        len(trending),
+    )
 
     # v20 Tier A — Universe pre-filter for slow per-ticker engines.
     # The full universe goes to engines that don't fan out per-ticker (macro,
     # vix_term, sector_flow, futures). The pre-filtered subset goes to
     # everything per-ticker (mispricing chains, insider, news, value, etc.).
     universe_heavy = universe_all
-    if UNIVERSE_PREFILTER_ENABLED and _ufilter is not None and len(universe_all) > UNIVERSE_PREFILTER_TOP_N:
+    if (
+        UNIVERSE_PREFILTER_ENABLED
+        and _ufilter is not None
+        and len(universe_all) > UNIVERSE_PREFILTER_TOP_N
+    ):
         try:
             universe_heavy = _ufilter.filter_for_heavy_engines(
-                universe_all, top_n=UNIVERSE_PREFILTER_TOP_N,
-                include_trending=trending, include_priors=True,
+                universe_all,
+                top_n=UNIVERSE_PREFILTER_TOP_N,
+                include_trending=trending,
+                include_priors=True,
             )
-            log.info("universe pre-filter: heavy engines see %d of %d tickers",
-                     len(universe_heavy), len(universe_all))
+            log.info(
+                "universe pre-filter: heavy engines see %d of %d tickers",
+                len(universe_heavy),
+                len(universe_all),
+            )
         except Exception as e:
             log.warning("universe pre-filter failed: %s — using full", e)
             universe_heavy = universe_all
@@ -702,15 +904,26 @@ def main():
     analyst_df = pd.DataFrame()
 
     if use_demo:
-        from demo_data import (synthetic_mispricing, synthetic_sentiment,
-                                synthetic_fundamentals, synthetic_insider, synthetic_macro,
-                                synthetic_news, synthetic_earnings,
-                                synthetic_value, synthetic_futures, synthetic_congress,
-                                synthetic_social, synthetic_analyst)
+        from demo_data import (
+            synthetic_analyst,
+            synthetic_congress,
+            synthetic_earnings,
+            synthetic_fundamentals,
+            synthetic_futures,
+            synthetic_insider,
+            synthetic_macro,
+            synthetic_mispricing,
+            synthetic_news,
+            synthetic_sentiment,
+            synthetic_social,
+            synthetic_value,
+        )
+
         log.info("== DEMO/HYBRID MODE ==")
         macro_state = synthetic_macro()
         mp = synthetic_mispricing(universe_options, run_asof)
-        contracts = mp["contracts"]; summary = mp["summary"]
+        contracts = mp["contracts"]
+        summary = mp["summary"]
         sent_df = pd.DataFrame() if skip_sentiment else synthetic_sentiment(universe_all)
         fund_df = pd.DataFrame() if args.skip_fundamentals else synthetic_fundamentals(universe_all)
         news_df = pd.DataFrame() if args.skip_news else synthetic_news(universe_all)
@@ -721,7 +934,9 @@ def main():
         if not args.skip_congress:
             try:
                 live_congress = congress.run(universe_all)
-                congress_df = live_congress if not live_congress.empty else synthetic_congress(universe_all)
+                congress_df = (
+                    live_congress if not live_congress.empty else synthetic_congress(universe_all)
+                )
             except Exception as e:
                 log.warning("live congress failed: %s — using synthetic", e)
                 congress_df = synthetic_congress(universe_all)
@@ -737,7 +952,9 @@ def main():
         if not args.skip_analyst:
             try:
                 live_analyst = analyst.run(universe_all)
-                analyst_df = live_analyst if not live_analyst.empty else synthetic_analyst(universe_all)
+                analyst_df = (
+                    live_analyst if not live_analyst.empty else synthetic_analyst(universe_all)
+                )
             except Exception as e:
                 log.warning("live analyst failed: %s — using synthetic", e)
                 analyst_df = synthetic_analyst(universe_all)
@@ -756,21 +973,32 @@ def main():
         log.info("== LIVE DATA ==")
         if ENGINE_CONCURRENT and not args.sequential:
             skip_v20 = {
-                "cot": args.skip_cot, "thirteen_f": args.skip_13f,
-                "vix_term": args.skip_vix_term, "eia": args.skip_eia,
-                "wasde": args.skip_wasde, "buybacks": args.skip_buybacks,
-                "gtrends": args.skip_gtrends, "form_144": args.skip_form_144,
-                "whisper": args.skip_whisper, "hyperliquid": args.skip_hyperliquid,
-                "twitter": args.skip_twitter, "r_options": args.skip_r_options,
+                "cot": args.skip_cot,
+                "thirteen_f": args.skip_13f,
+                "vix_term": args.skip_vix_term,
+                "eia": args.skip_eia,
+                "wasde": args.skip_wasde,
+                "buybacks": args.skip_buybacks,
+                "gtrends": args.skip_gtrends,
+                "form_144": args.skip_form_144,
+                "whisper": args.skip_whisper,
+                "hyperliquid": args.skip_hyperliquid,
+                "twitter": args.skip_twitter,
+                "r_options": args.skip_r_options,
                 "yield_curve": args.skip_yield_curve,
                 "credit_spread": args.skip_credit_spread,
                 "sec_ftd": args.skip_sec_ftd,
             }
             results = run_engines_concurrent(
-                universe_options, universe_all,
-                skip_sentiment, skip_insider, args.skip_fundamentals,
-                skip_news=args.skip_news, skip_earnings=args.skip_earnings,
-                skip_value=args.skip_value, skip_futures=args.skip_futures,
+                universe_options,
+                universe_all,
+                skip_sentiment,
+                skip_insider,
+                args.skip_fundamentals,
+                skip_news=args.skip_news,
+                skip_earnings=args.skip_earnings,
+                skip_value=args.skip_value,
+                skip_futures=args.skip_futures,
                 skip_congress=args.skip_congress,
                 skip_social=args.skip_social,
                 skip_analyst=args.skip_analyst,
@@ -779,7 +1007,10 @@ def main():
                 fast_insider=args.fast_insider,
             )
             macro_state = results.get("macro") or {"regime": "neutral", "macro_tilt": 0.0}
-            mp = results.get("mispricing") or {"contracts": pd.DataFrame(), "summary": pd.DataFrame()}
+            mp = results.get("mispricing") or {
+                "contracts": pd.DataFrame(),
+                "summary": pd.DataFrame(),
+            }
             contracts = _to_df(mp.get("contracts"))
             summary = _to_df(mp.get("summary"))
             sent_df = _to_df(results.get("sentiment"))
@@ -793,13 +1024,17 @@ def main():
             social_df = _to_df(results.get("social"))
             analyst_df = _to_df(results.get("analyst"))
         else:
-            log.info("== Macro =="); macro_state = macro.run()
+            log.info("== Macro ==")
+            macro_state = macro.run()
             mp = mispricing.run(universe_options)
-            contracts = mp["contracts"]; summary = mp["summary"]
+            contracts = mp["contracts"]
+            summary = mp["summary"]
             sent_df = pd.DataFrame() if skip_sentiment else sentiment.run(universe_all)
             fund_df = pd.DataFrame() if args.skip_fundamentals else fundamentals.run(universe_all)
-            ins_df = pd.DataFrame() if skip_insider else insider.run(
-                universe_all, fast_mode=args.fast_insider
+            ins_df = (
+                pd.DataFrame()
+                if skip_insider
+                else insider.run(universe_all, fast_mode=args.fast_insider)
             )
             news_df = pd.DataFrame() if args.skip_news else news.run(universe_all)
             earn_df = pd.DataFrame() if args.skip_earnings else earnings.run(universe_all)
@@ -807,23 +1042,41 @@ def main():
             futures_df = pd.DataFrame() if args.skip_futures else futures.run()
 
         if contracts.empty:
-            log.error("No option contracts returned. Yahoo is likely rate-limited from this IP. "
-                      "Falling back to demo for THIS run.")
-            from demo_data import (synthetic_mispricing, synthetic_sentiment,
-                                    synthetic_fundamentals, synthetic_insider, synthetic_macro,
-                                    synthetic_news, synthetic_earnings,
-                                    synthetic_value, synthetic_futures)
+            log.error(
+                "No option contracts returned. Yahoo is likely rate-limited from this IP. "
+                "Falling back to demo for THIS run."
+            )
+            from demo_data import (
+                synthetic_earnings,
+                synthetic_fundamentals,
+                synthetic_futures,
+                synthetic_insider,
+                synthetic_macro,
+                synthetic_mispricing,
+                synthetic_news,
+                synthetic_sentiment,
+                synthetic_value,
+            )
+
             use_demo = True
             macro_state = synthetic_macro()
             mp = synthetic_mispricing(universe_options, run_asof)
-            contracts = mp["contracts"]; summary = mp["summary"]
-            if sent_df.empty: sent_df = synthetic_sentiment(universe_all)
-            if fund_df.empty: fund_df = synthetic_fundamentals(universe_all)
-            if ins_df.empty: ins_df = synthetic_insider(universe_all)
-            if news_df.empty: news_df = synthetic_news(universe_all)
-            if earn_df.empty: earn_df = synthetic_earnings(universe_all)
-            if value_df.empty: value_df = synthetic_value(universe_all)
-            if futures_df.empty: futures_df = synthetic_futures()
+            contracts = mp["contracts"]
+            summary = mp["summary"]
+            if sent_df.empty:
+                sent_df = synthetic_sentiment(universe_all)
+            if fund_df.empty:
+                fund_df = synthetic_fundamentals(universe_all)
+            if ins_df.empty:
+                ins_df = synthetic_insider(universe_all)
+            if news_df.empty:
+                news_df = synthetic_news(universe_all)
+            if earn_df.empty:
+                earn_df = synthetic_earnings(universe_all)
+            if value_df.empty:
+                value_df = synthetic_value(universe_all)
+            if futures_df.empty:
+                futures_df = synthetic_futures()
 
     # v20.3: optional FinBERT pass on news headlines (auto-detects GPU, falls
     # back to CPU torch, no-ops if torch/transformers not installed).
@@ -831,24 +1084,38 @@ def main():
     if not getattr(args, "skip_finbert", False) and not news_df.empty:
         try:
             from engines import finbert as _finbert
+
             finbert_df = _finbert.run(news_df)
         except Exception as e:
             log.debug("finbert engine skipped: %s", e)
 
-    log.info("rows: contracts=%d sent=%d fund=%d ins=%d news=%d earn=%d value=%d futures=%d congress=%d social=%d analyst=%d finbert=%d",
-             len(contracts), len(sent_df), len(fund_df), len(ins_df),
-             len(news_df), len(earn_df), len(value_df), len(futures_df),
-             len(congress_df), len(social_df), len(analyst_df), len(finbert_df))
+    log.info(
+        "rows: contracts=%d sent=%d fund=%d ins=%d news=%d earn=%d value=%d futures=%d congress=%d social=%d analyst=%d finbert=%d",
+        len(contracts),
+        len(sent_df),
+        len(fund_df),
+        len(ins_df),
+        len(news_df),
+        len(earn_df),
+        len(value_df),
+        len(futures_df),
+        len(congress_df),
+        len(social_df),
+        len(analyst_df),
+        len(finbert_df),
+    )
 
     # v20.1 — Thin-chains warning: yfinance got rate-limited if very few
     # contracts emerged. Tell the user so they don't think v20 broke options.
     if len(contracts) > 0 and len(contracts) < 50:
-        log.warning("THIN CHAIN COUNT: only %d option contracts cleared filters. "
-                    "Yfinance is likely rate-limited from your IP. Try: "
-                    "(1) wait 15 min and re-run, (2) use a residential VPN, "
-                    "(3) reduce universe with --universe AAPL MSFT NVDA, or "
-                    "(4) run with --loop 60 (longer gap = less rate-limit pressure).",
-                    len(contracts))
+        log.warning(
+            "THIN CHAIN COUNT: only %d option contracts cleared filters. "
+            "Yfinance is likely rate-limited from your IP. Try: "
+            "(1) wait 15 min and re-run, (2) use a residential VPN, "
+            "(3) reduce universe with --universe AAPL MSFT NVDA, or "
+            "(4) run with --loop 60 (longer gap = less rate-limit pressure).",
+            len(contracts),
+        )
 
     # Ordinary scans are inference-only. Adaptive challengers must be built in
     # an explicit research workflow and promoted through a purged OOS review;
@@ -871,6 +1138,7 @@ def main():
     # v17: derive UOA from already-fetched chains (free, no extra network)
     try:
         from engines import uoa as _uoa_mod
+
         uoa_df = _uoa_mod.derive_from_contracts(contracts)
     except Exception as e:
         log.debug("uoa derivation skipped: %s", e)
@@ -878,12 +1146,14 @@ def main():
     # v19: derive Put/Call + IV-surface anomalies from chains (also free)
     try:
         from engines import put_call as _pc_mod
+
         put_call_df = _pc_mod.derive_from_contracts(contracts)
     except Exception as e:
         log.debug("put/call derivation skipped: %s", e)
         put_call_df = pd.DataFrame()
     try:
         from engines import iv_surface as _ivs_mod
+
         iv_surface_df = _ivs_mod.derive_from_contracts(contracts)
     except Exception as e:
         log.debug("iv_surface derivation skipped: %s", e)
@@ -932,6 +1202,7 @@ def main():
     # v20 Tier C — derive cluster_buys from insider engine output (post-process)
     try:
         from engines import cluster_buys as _cb_mod
+
         cluster_buys_df = _cb_mod.derive_from_insider(ins_df)
     except Exception as e:
         log.debug("cluster_buys derivation skipped: %s", e)
@@ -940,30 +1211,39 @@ def main():
     # v20.1 — Empty-engine diagnostic: list which v20 engines returned 0 rows
     # with the most likely reason.
     EMPTY_REASONS = {
-        "cot":          "v20.2: CFTC Socrata + legacy TXT both unreachable (network?)",
-        "thirteen_f":   "no smart-money deltas in universe overlap (or SEC fetch failed)",
-        "vix_term":     "VIX futures unavailable",
-        "eia":          "v20.2: EIA v2 API + ir.eia.gov HTML fallback both empty (residential IP block?)",
-        "wasde":        "no current WASDE catalyst within window (normal — only 1 release/month)",
-        "buybacks":     "no 8-K repurchase mentions in universe overlap",
-        "gtrends":      "v20.2: pytrends + Wikipedia pageviews fallback both returned no momentum",
-        "form_144":     "no Form 144 filings overlap with universe (30d window)",
-        "whisper":      "v20.2: Finnhub + yfinance targetMeanPrice both empty, or no tickers in -2d..+14d earnings window",
-        "hyperliquid":  "Hyperliquid API unreachable",
-        "twitter":      "Apewisdom + Nitter mirrors both down",
-        "r_options":    "no r/options sticky mentions in universe",
-        "yield_curve":  "public/keyed curve series unavailable",
-        "credit_spread":"public/keyed HY/IG series unavailable",
-        "sec_ftd":      "no SEC fails-to-deliver rows overlapped the universe, or SEC fetch failed",
+        "cot": "v20.2: CFTC Socrata + legacy TXT both unreachable (network?)",
+        "thirteen_f": "no smart-money deltas in universe overlap (or SEC fetch failed)",
+        "vix_term": "VIX futures unavailable",
+        "eia": "v20.2: EIA v2 API + ir.eia.gov HTML fallback both empty (residential IP block?)",
+        "wasde": "no current WASDE catalyst within window (normal — only 1 release/month)",
+        "buybacks": "no 8-K repurchase mentions in universe overlap",
+        "gtrends": "v20.2: pytrends + Wikipedia pageviews fallback both returned no momentum",
+        "form_144": "no Form 144 filings overlap with universe (30d window)",
+        "whisper": "v20.2: Finnhub + yfinance targetMeanPrice both empty, or no tickers in -2d..+14d earnings window",
+        "hyperliquid": "Hyperliquid API unreachable",
+        "twitter": "Apewisdom + Nitter mirrors both down",
+        "r_options": "no r/options sticky mentions in universe",
+        "yield_curve": "public/keyed curve series unavailable",
+        "credit_spread": "public/keyed HY/IG series unavailable",
+        "sec_ftd": "no SEC fails-to-deliver rows overlapped the universe, or SEC fetch failed",
         "cluster_buys": "no insider triple-buys in last 90 days",
     }
     v20_df_map = {
-        "cot": cot_df, "thirteen_f": thirteen_f_df, "vix_term": vix_term_df,
-        "eia": eia_df, "wasde": wasde_df, "buybacks": buybacks_df,
-        "gtrends": gtrends_df, "form_144": form_144_df, "whisper": whisper_df,
-        "hyperliquid": hyperliquid_df, "twitter": twitter_df,
-        "r_options": r_options_df, "yield_curve": yield_curve_df,
-        "credit_spread": credit_spread_df, "sec_ftd": sec_ftd_df,
+        "cot": cot_df,
+        "thirteen_f": thirteen_f_df,
+        "vix_term": vix_term_df,
+        "eia": eia_df,
+        "wasde": wasde_df,
+        "buybacks": buybacks_df,
+        "gtrends": gtrends_df,
+        "form_144": form_144_df,
+        "whisper": whisper_df,
+        "hyperliquid": hyperliquid_df,
+        "twitter": twitter_df,
+        "r_options": r_options_df,
+        "yield_curve": yield_curve_df,
+        "credit_spread": credit_spread_df,
+        "sec_ftd": sec_ftd_df,
         "cluster_buys": cluster_buys_df,
     }
     empty_engines = []
@@ -971,12 +1251,15 @@ def main():
         if df is None or (hasattr(df, "empty") and df.empty):
             empty_engines.append({"name": name, "reason": EMPTY_REASONS.get(name, "")})
     if empty_engines:
-        log.info("v20 empty engines (%d): %s",
-                 len(empty_engines),
-                 ", ".join(e["name"] for e in empty_engines))
+        log.info(
+            "v20 empty engines (%d): %s",
+            len(empty_engines),
+            ", ".join(e["name"] for e in empty_engines),
+        )
     engine_health_summary = {}
     try:
         from telemetry.engine_health import record as _record_engine_health
+
         engine_health_summary = _record_engine_health(
             engine_timings if "engine_timings" in dir() else {},
             empty_engines=empty_engines,
@@ -985,27 +1268,45 @@ def main():
         log.debug("engine health record skipped: %s", e)
 
     log.info("== Fusion ==")
-    ranked_opts = fusion_rank.fuse_options(contracts, summary, sent_df, fund_df, ins_df,
-                                           macro_state, news=news_df, earnings=earn_df,
-                                           value=value_df, congress=congress_df,
-                                           social=social_df, analyst=analyst_df,
-                                           uoa=uoa_df, sector_rs=sector_rs_df,
-                                           dark_pool=dark_pool_df, fda=fda_df,
-                                           sector_flow=sector_flow_df,
-                                           technicals=technicals_df,
-                                           short_int=short_int_df,
-                                           put_call=put_call_df,
-                                           iv_surface=iv_surface_df,
-                                           # v20 new factors
-                                           cot=cot_df, thirteen_f=thirteen_f_df,
-                                           vix_term=vix_term_df, eia=eia_df,
-                                           wasde=wasde_df, buybacks=buybacks_df,
-                                           gtrends=gtrends_df, form_144=form_144_df,
-                                           whisper=whisper_df, hyperliquid=hyperliquid_df,
-                                           twitter=twitter_df, r_options=r_options_df,
-                                           yield_curve=yield_curve_df,
-                                           credit_spread=credit_spread_df,
-                                           cluster_buys=cluster_buys_df)
+    ranked_opts = fusion_rank.fuse_options(
+        contracts,
+        summary,
+        sent_df,
+        fund_df,
+        ins_df,
+        macro_state,
+        news=news_df,
+        earnings=earn_df,
+        value=value_df,
+        congress=congress_df,
+        social=social_df,
+        analyst=analyst_df,
+        uoa=uoa_df,
+        sector_rs=sector_rs_df,
+        dark_pool=dark_pool_df,
+        fda=fda_df,
+        sector_flow=sector_flow_df,
+        technicals=technicals_df,
+        short_int=short_int_df,
+        put_call=put_call_df,
+        iv_surface=iv_surface_df,
+        # v20 new factors
+        cot=cot_df,
+        thirteen_f=thirteen_f_df,
+        vix_term=vix_term_df,
+        eia=eia_df,
+        wasde=wasde_df,
+        buybacks=buybacks_df,
+        gtrends=gtrends_df,
+        form_144=form_144_df,
+        whisper=whisper_df,
+        hyperliquid=hyperliquid_df,
+        twitter=twitter_df,
+        r_options=r_options_df,
+        yield_curve=yield_curve_df,
+        credit_spread=credit_spread_df,
+        cluster_buys=cluster_buys_df,
+    )
 
     # Options require their own direct broker-observed OOS champion. A share
     # predictor can never flow into option returns.
@@ -1020,29 +1321,38 @@ def main():
     if DRAWDOWN_BREAKER_ENABLED:
         try:
             from backtest.drawdown_breaker import compute_breaker_state
+
             breaker_state = compute_breaker_state(window_days=14)
             drawdown_mult = breaker_state["multiplier"]
             if drawdown_mult != 1.0:
-                log.info("Drawdown breaker: %s (mult=%.2f)",
-                         breaker_state["verdict"], drawdown_mult)
+                log.info(
+                    "Drawdown breaker: %s (mult=%.2f)", breaker_state["verdict"], drawdown_mult
+                )
         except Exception as e:
             log.debug("drawdown breaker skipped: %s", e)
 
     # Add EV + Kelly sizing across the full ranked option universe before
     # selecting the top board, so final ideas reflect both the research score
     # and whether the sizing stack can actually support a position.
-    ranked_opts = bt_sizing.add_sizing_to_options(ranked_opts, bankroll=args.bankroll,
-                                                   aggressive=args.aggressive,
-                                                   drawdown_mult=drawdown_mult)
+    ranked_opts = bt_sizing.add_sizing_to_options(
+        ranked_opts, bankroll=args.bankroll, aggressive=args.aggressive, drawdown_mult=drawdown_mult
+    )
     ranked_opts = bt_sizing.add_pre_guard_qualification(ranked_opts, asset="option")
     research_guard_report = None
     try:
         from risk.research_guard import (
             apply_to_asset as _apply_research_guard_asset,
+        )
+        from risk.research_guard import (
             apply_to_recommendations as _apply_research_guard,
+        )
+        from risk.research_guard import (
             build_guard_report as _build_guard_report,
+        )
+        from risk.research_guard import (
             save_guard_report as _save_guard_report,
         )
+
         research_guard_report = _build_guard_report(
             empty_engines=empty_engines if "empty_engines" in dir() else None,
             engine_health=engine_health_summary if "engine_health_summary" in dir() else None,
@@ -1057,8 +1367,9 @@ def main():
     option_candidates = ranked_opts
     if "trade_status" in ranked_opts.columns:
         option_candidates = ranked_opts[ranked_opts["trade_status"] != "Skip"]
-    top_opts = fusion_rank.top_options(option_candidates, max_calls=args.max_calls,
-                                       max_puts=args.max_puts)
+    top_opts = fusion_rank.top_options(
+        option_candidates, max_calls=args.max_calls, max_puts=args.max_puts
+    )
     if not top_opts.empty:
         if "underlying_type" not in top_opts.columns:
             top_opts["underlying_type"] = "equity"
@@ -1075,44 +1386,71 @@ def main():
     hedge_sugg = None
     try:
         from backtest.portfolio_greeks import aggregate_portfolio_greeks, hedge_suggestion
+
         portfolio_greeks = aggregate_portfolio_greeks(top_opts)
         hedge_sugg = hedge_suggestion(portfolio_greeks, threshold=HEDGE_DELTA_THRESHOLD)
         if hedge_sugg:
             log.info("Hedge suggestion: %s", hedge_sugg["suggestion"])
     except Exception as e:
         log.debug("greeks aggregation skipped: %s", e)
-    calls = top_opts[top_opts["side"] == "call"].reset_index(drop=True) if not top_opts.empty else pd.DataFrame()
-    puts = top_opts[top_opts["side"] == "put"].reset_index(drop=True) if not top_opts.empty else pd.DataFrame()
+    calls = (
+        top_opts[top_opts["side"] == "call"].reset_index(drop=True)
+        if not top_opts.empty
+        else pd.DataFrame()
+    )
+    puts = (
+        top_opts[top_opts["side"] == "put"].reset_index(drop=True)
+        if not top_opts.empty
+        else pd.DataFrame()
+    )
 
     excluded = set(top_opts["ticker"].tolist()) if not top_opts.empty else set()
-    ranked_shares = fusion_rank.fuse_shares(universe_shares, sent_df, fund_df, ins_df, macro_state,
-                                             excluded_tickers=excluded,
-                                             news=news_df, earnings=earn_df, value=value_df,
-                                             congress=congress_df, social=social_df,
-                                             analyst=analyst_df, sector_rs=sector_rs_df,
-                                             dark_pool=dark_pool_df, fda=fda_df,
-                                             sector_flow=sector_flow_df,
-                                             technicals=technicals_df,
-                                             short_int=short_int_df, cot=cot_df,
-                                             thirteen_f=thirteen_f_df,
-                                             vix_term=vix_term_df, eia=eia_df,
-                                             wasde=wasde_df, buybacks=buybacks_df,
-                                             gtrends=gtrends_df, form_144=form_144_df,
-                                             whisper=whisper_df,
-                                             hyperliquid=hyperliquid_df,
-                                             twitter=twitter_df,
-                                             r_options=r_options_df,
-                                             yield_curve=yield_curve_df,
-                                             credit_spread=credit_spread_df,
-                                             cluster_buys=cluster_buys_df,
-                                             sec_ftd=sec_ftd_df)
+    ranked_shares = fusion_rank.fuse_shares(
+        universe_shares,
+        sent_df,
+        fund_df,
+        ins_df,
+        macro_state,
+        excluded_tickers=excluded,
+        news=news_df,
+        earnings=earn_df,
+        value=value_df,
+        congress=congress_df,
+        social=social_df,
+        analyst=analyst_df,
+        sector_rs=sector_rs_df,
+        dark_pool=dark_pool_df,
+        fda=fda_df,
+        sector_flow=sector_flow_df,
+        technicals=technicals_df,
+        short_int=short_int_df,
+        cot=cot_df,
+        thirteen_f=thirteen_f_df,
+        vix_term=vix_term_df,
+        eia=eia_df,
+        wasde=wasde_df,
+        buybacks=buybacks_df,
+        gtrends=gtrends_df,
+        form_144=form_144_df,
+        whisper=whisper_df,
+        hyperliquid=hyperliquid_df,
+        twitter=twitter_df,
+        r_options=r_options_df,
+        yield_curve=yield_curve_df,
+        credit_spread=credit_spread_df,
+        cluster_buys=cluster_buys_df,
+        sec_ftd=sec_ftd_df,
+    )
     share_coefs = bt_predictor.load_predictor_coefs(asset="share")
     has_share_predictor = any(abs(v) > 1e-6 for v in share_coefs.values())
     if has_share_predictor:
         ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, share_coefs)
-    ranked_shares = bt_sizing.add_sizing_to_shares(ranked_shares, bankroll=args.bankroll,
-                                                    aggressive=args.aggressive,
-                                                    drawdown_mult=drawdown_mult)
+    ranked_shares = bt_sizing.add_sizing_to_shares(
+        ranked_shares,
+        bankroll=args.bankroll,
+        aggressive=args.aggressive,
+        drawdown_mult=drawdown_mult,
+    )
     ranked_shares = bt_sizing.add_pre_guard_qualification(ranked_shares, asset="share")
     if research_guard_report is not None:
         try:
@@ -1133,14 +1471,20 @@ def main():
         # Merge in fund + insider + news for richer cards
         v = value_df.copy()
         if not fund_df.empty:
-            v = v.merge(fund_df[["ticker", "classification", "earnings_date", "market_cap"]],
-                        on="ticker", how="left", suffixes=("", "_f"))
+            v = v.merge(
+                fund_df[["ticker", "classification", "earnings_date", "market_cap"]],
+                on="ticker",
+                how="left",
+                suffixes=("", "_f"),
+            )
         if not news_df.empty:
-            v = v.merge(news_df[["ticker", "n_24h", "top_headline", "news_delta"]],
-                        on="ticker", how="left")
+            v = v.merge(
+                news_df[["ticker", "n_24h", "top_headline", "news_delta"]], on="ticker", how="left"
+            )
         if not ins_df.empty:
-            v = v.merge(ins_df[["ticker", "insider_score", "n_buys", "n_sells"]],
-                        on="ticker", how="left")
+            v = v.merge(
+                ins_df[["ticker", "insider_score", "n_buys", "n_sells"]], on="ticker", how="left"
+            )
         v = v[v["value_score"] > 0.3].sort_values("value_score", ascending=False)
         top_value = v.head(args.max_value).reset_index(drop=True)
 
@@ -1149,18 +1493,35 @@ def main():
     if not futures_df.empty and "futures_score" in futures_df.columns:
         try:
             futures_df = fusion_rank.enrich_futures_context(
-                futures_df, macro_state, sentiment=sent_df,
-                fundamentals=fund_df, insider=ins_df, news=news_df,
-                earnings=earn_df, value=value_df, congress=congress_df,
-                social=social_df, analyst=analyst_df, sector_rs=sector_rs_df,
-                dark_pool=dark_pool_df, fda=fda_df,
-                sector_flow=sector_flow_df, technicals=technicals_df,
-                short_int=short_int_df, cot=cot_df,
-                thirteen_f=thirteen_f_df, vix_term=vix_term_df,
-                eia=eia_df, wasde=wasde_df, buybacks=buybacks_df,
-                gtrends=gtrends_df, form_144=form_144_df,
-                whisper=whisper_df, hyperliquid=hyperliquid_df,
-                twitter=twitter_df, r_options=r_options_df,
+                futures_df,
+                macro_state,
+                sentiment=sent_df,
+                fundamentals=fund_df,
+                insider=ins_df,
+                news=news_df,
+                earnings=earn_df,
+                value=value_df,
+                congress=congress_df,
+                social=social_df,
+                analyst=analyst_df,
+                sector_rs=sector_rs_df,
+                dark_pool=dark_pool_df,
+                fda=fda_df,
+                sector_flow=sector_flow_df,
+                technicals=technicals_df,
+                short_int=short_int_df,
+                cot=cot_df,
+                thirteen_f=thirteen_f_df,
+                vix_term=vix_term_df,
+                eia=eia_df,
+                wasde=wasde_df,
+                buybacks=buybacks_df,
+                gtrends=gtrends_df,
+                form_144=form_144_df,
+                whisper=whisper_df,
+                hyperliquid=hyperliquid_df,
+                twitter=twitter_df,
+                r_options=r_options_df,
                 yield_curve=yield_curve_df,
                 credit_spread=credit_spread_df,
                 cluster_buys=cluster_buys_df,
@@ -1170,35 +1531,54 @@ def main():
             log.debug("futures context enrichment skipped: %s", e)
         fut_rank_col = "rank_score" if "rank_score" in futures_df.columns else "futures_score"
         # Bullish + bearish split
-        bullish = futures_df[futures_df["futures_score"] > 0.3].sort_values(fut_rank_col, ascending=False)
+        bullish = futures_df[futures_df["futures_score"] > 0.3].sort_values(
+            fut_rank_col, ascending=False
+        )
         bearish = futures_df[futures_df["futures_score"] < -0.3].sort_values(fut_rank_col)
-        top_fut = pd.concat([bullish.head(args.max_futures // 2),
-                             bearish.head(args.max_futures // 2)], ignore_index=True)
+        top_fut = pd.concat(
+            [bullish.head(args.max_futures // 2), bearish.head(args.max_futures // 2)],
+            ignore_index=True,
+        )
         try:
             from backtest.futures_sizing import add_sizing_to_futures
-            top_fut = add_sizing_to_futures(top_fut, bankroll=args.bankroll,
-                                            aggressive=args.aggressive)
+
+            top_fut = add_sizing_to_futures(
+                top_fut, bankroll=args.bankroll, aggressive=args.aggressive
+            )
             top_fut = bt_sizing.add_pre_guard_qualification(top_fut, asset="futures")
             if not futures_df.empty:
-                futures_df = add_sizing_to_futures(futures_df, bankroll=args.bankroll,
-                                                   aggressive=args.aggressive)
+                futures_df = add_sizing_to_futures(
+                    futures_df, bankroll=args.bankroll, aggressive=args.aggressive
+                )
                 futures_df = bt_sizing.add_pre_guard_qualification(
-                    futures_df, asset="futures",
+                    futures_df,
+                    asset="futures",
                 )
             if research_guard_report is not None:
                 top_fut = _apply_research_guard_asset(
-                    top_fut, guard_report=research_guard_report, asset="futures",
+                    top_fut,
+                    guard_report=research_guard_report,
+                    asset="futures",
                 )
                 futures_df = _apply_research_guard_asset(
-                    futures_df, guard_report=research_guard_report, asset="futures",
+                    futures_df,
+                    guard_report=research_guard_report,
+                    asset="futures",
                 )
         except Exception as e:
             log.debug("futures sizing skipped: %s", e)
 
-    log.info("top calls: %d  top puts: %d  top shares: %d  top value: %d  top futures: %d",
-             len(calls), len(puts), len(top_sh), len(top_value), len(top_fut))
+    log.info(
+        "top calls: %d  top puts: %d  top shares: %d  top value: %d  top futures: %d",
+        len(calls),
+        len(puts),
+        len(top_sh),
+        len(top_value),
+        len(top_fut),
+    )
 
-    out_dir = Path(args.out_dir); out_dir.mkdir(exist_ok=True)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(exist_ok=True)
     asof_tag = run_asof.strftime("%Y%m%d_%H%M%S")
 
     def _save(df, name):
@@ -1240,6 +1620,7 @@ def main():
     # this prevents a fresh entry from becoming a synthetic same-scan exit.
     try:
         from backtest import positions as _pos
+
         position_summary = _pos.mark_to_market(run_asof, current_signals=ranked_opts)
         if position_summary.get("expired_removed_from_open", 0) > 0:
             log.info(
@@ -1254,6 +1635,7 @@ def main():
 
     try:
         from backtest import share_positions as _share_pos
+
         _share_pos.mark_to_market_shares(run_asof, current_signals=ranked_shares)
         if not top_sh.empty:
             _share_pos.add_new_share_signals(top_sh, run_asof)
@@ -1262,6 +1644,7 @@ def main():
 
     try:
         from backtest import futures_positions as _fut_pos
+
         _fut_pos.mark_to_market_futures(run_asof, current_signals=futures_df)
         if not top_fut.empty:
             _fut_pos.add_new_futures_signals(top_fut, run_asof)
@@ -1270,6 +1653,7 @@ def main():
 
     try:
         from backtest.exit_learning import refit_exit_policy
+
         refit_exit_policy()
     except Exception as e:
         log.debug("exit policy refit skipped: %s", e)
@@ -1295,10 +1679,13 @@ def main():
     validation_summary = None
     try:
         from reports.validation_report import write_report as _write_validation_report
+
         validation_summary = _write_validation_report(scope="current_model")
-        log.info("validation refreshed: %d closed / %d open",
-                 validation_summary.get("closed_positions", 0),
-                 validation_summary.get("open_positions", 0))
+        log.info(
+            "validation refreshed: %d closed / %d open",
+            validation_summary.get("closed_positions", 0),
+            validation_summary.get("open_positions", 0),
+        )
     except Exception as e:
         log.debug("validation refresh skipped: %s", e)
 
@@ -1311,39 +1698,54 @@ def main():
     calibration_summary = None
     try:
         from backtest.forward import run_forward_test
+
         ft = run_forward_test(include_fixed_horizon=False)
         if not ft["signals"].empty:
             forward_summary = ft
-            log.info("forward test: %d signals, %.1f%% win rate, %.2f%% avg P&L",
-                     ft["overall"]["n_signals"],
-                     ft["overall"]["win_rate"]*100,
-                     ft["overall"]["avg_pnl_pct"]*100)
+            log.info(
+                "forward test: %d signals, %.1f%% win rate, %.2f%% avg P&L",
+                ft["overall"]["n_signals"],
+                ft["overall"]["win_rate"] * 100,
+                ft["overall"]["avg_pnl_pct"] * 100,
+            )
             # Calibration requires one fixed holding period. Mixed-age current
             # marks remain telemetry and cannot prove prediction calibration.
             try:
                 from backtest.calibration import diagnostic_summary
+
                 fixed_outcomes = (
                     fixed_horizon_result.get("outcomes", pd.DataFrame())
-                    if fixed_horizon_result else pd.DataFrame()
+                    if fixed_horizon_result
+                    else pd.DataFrame()
                 )
                 if fixed_outcomes.empty:
                     raise ValueError("no fixed-horizon outcomes")
                 headline_horizon = int(
                     fixed_horizon_result.get("summary", {}).get(
-                        "headline_horizon_sessions", 10,
+                        "headline_horizon_sessions",
+                        10,
                     )
                 )
                 eligible = fixed_outcomes[
                     fixed_outcomes.get(
-                        "is_independent", pd.Series(False, index=fixed_outcomes.index),
-                    ).fillna(False).astype(bool)
+                        "is_independent",
+                        pd.Series(False, index=fixed_outcomes.index),
+                    )
+                    .fillna(False)
+                    .astype(bool)
                     & fixed_outcomes.get(
                         "eligible_for_shadow_metrics",
                         pd.Series(False, index=fixed_outcomes.index),
-                    ).fillna(False).astype(bool)
-                    & (pd.to_numeric(
-                        fixed_outcomes.get("horizon_sessions"), errors="coerce",
-                    ) == headline_horizon)
+                    )
+                    .fillna(False)
+                    .astype(bool)
+                    & (
+                        pd.to_numeric(
+                            fixed_outcomes.get("horizon_sessions"),
+                            errors="coerce",
+                        )
+                        == headline_horizon
+                    )
                 ].copy()
                 if eligible.empty:
                     raise ValueError("no matured fixed-horizon current-method shadow outcomes")
@@ -1364,9 +1766,12 @@ def main():
     # guards reject this schema, so it cannot promote runtime weights.
     try:
         from backtest.historical import run_historical_backtest
+
         factor_dfs = {
-            "value_score": value_df, "fund_score": fund_df,
-            "sentiment_delta": sent_df, "insider_score": ins_df,
+            "value_score": value_df,
+            "fund_score": fund_df,
+            "sentiment_delta": sent_df,
+            "insider_score": ins_df,
         }
         bt = run_historical_backtest(universe_all, factor_dfs)
         if bt is not None and not bt.get("ic", pd.DataFrame()).empty:
@@ -1378,15 +1783,27 @@ def main():
     log.info("== Dashboard ==")
     elapsed = (datetime.now() - t_start).total_seconds()
     html_path = dash_build.render(
-        calls=calls, puts=puts, shares=top_sh,
-        value_plays=top_value, futures_plays=top_fut,
-        ranked_options=ranked_opts, ranked_shares=ranked_shares,
-        macro=macro_state, asof=run_asof, demo=use_demo,
-        news=news_df, earnings=earn_df, insider=ins_df,
-        congress=congress_df, sentiment=sent_df, social=social_df,
+        calls=calls,
+        puts=puts,
+        shares=top_sh,
+        value_plays=top_value,
+        futures_plays=top_fut,
+        ranked_options=ranked_opts,
+        ranked_shares=ranked_shares,
+        macro=macro_state,
+        asof=run_asof,
+        demo=use_demo,
+        news=news_df,
+        earnings=earn_df,
+        insider=ins_df,
+        congress=congress_df,
+        sentiment=sent_df,
+        social=social_df,
         analyst=analyst_df,
-        trending=trending, trending_meta=trending_meta,
-        elapsed=elapsed, universe_size=len(universe_all),
+        trending=trending,
+        trending_meta=trending_meta,
+        elapsed=elapsed,
+        universe_size=len(universe_all),
         forward_summary=forward_summary,
         calibration_summary=calibration_summary,
         bankroll=args.bankroll,
@@ -1396,7 +1813,7 @@ def main():
         hedge_suggestion=hedge_sugg,
         breaker_state=breaker_state,
         research_guard_report=research_guard_report,
-        engine_timings=engine_timings if 'engine_timings' in dir() else {},
+        engine_timings=engine_timings if "engine_timings" in dir() else {},
         engine_health=engine_health_summary,
         validation_summary=validation_summary,
         v20_factors=v20_df_map,
@@ -1412,9 +1829,14 @@ def main():
         try:
             from scripts.export_robinhood_agentic_queue import (
                 build_robinhood_queue as _build_robinhood_queue,
+            )
+            from scripts.export_robinhood_agentic_queue import (
                 write_outputs as _write_robinhood_queue,
             )
-            rh_budget = args.robinhood_budget if args.robinhood_budget is not None else args.bankroll
+
+            rh_budget = (
+                args.robinhood_budget if args.robinhood_budget is not None else args.bankroll
+            )
             queue = _build_robinhood_queue(
                 data_dir=out_dir,
                 account_budget=rh_budget,
@@ -1431,7 +1853,9 @@ def main():
             robinhood_queue_paths = _write_robinhood_queue(queue, out_dir)
             robinhood_queue_summary = queue
             rh_diag = queue.get("diagnostics") if isinstance(queue.get("diagnostics"), dict) else {}
-            rh_refresh = queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
+            rh_refresh = (
+                queue.get("chain_refresh") if isinstance(queue.get("chain_refresh"), dict) else {}
+            )
             log.info(
                 "robinhood agentic queue: %s (%d candidates, max %d orders, min_dte %d, diagnosis=%s, chain_refresh=%s)",
                 robinhood_queue_paths[0],
@@ -1439,7 +1863,11 @@ def main():
                 int(queue.get("max_orders_to_submit") or 0),
                 int(queue.get("min_dte") or 0),
                 rh_diag.get("label") or "-",
-                "ok" if rh_refresh.get("ok") else "off" if not rh_refresh.get("attempted") else "failed",
+                "ok"
+                if rh_refresh.get("ok")
+                else "off"
+                if not rh_refresh.get("attempted")
+                else "failed",
             )
         except Exception as e:
             log.warning("robinhood agentic queue export failed: %s", e)
@@ -1449,16 +1877,19 @@ def main():
     if not args.no_open and not os.environ.get("OPTEDGE_NO_OPEN"):
         try:
             import webbrowser
+
             file_url = "file://" + str(html_path.resolve())
             webbrowser.open(file_url)
             log.info("opened dashboard in browser")
-            os.environ["OPTEDGE_NO_OPEN"] = "1"   # don't re-open in loop iterations
+            os.environ["OPTEDGE_NO_OPEN"] = "1"  # don't re-open in loop iterations
         except Exception as e:
             log.debug("browser open skipped: %s", e)
 
     print("\n+------------------------------------------+")
     print(f"|  Optedge run complete in {elapsed:5.1f}s")
-    print(f"|  {len(calls)} calls / {len(puts)} puts / {len(top_sh)} shares / {len(top_value)} value / {len(top_fut)} futures")
+    print(
+        f"|  {len(calls)} calls / {len(puts)} puts / {len(top_sh)} shares / {len(top_value)} value / {len(top_fut)} futures"
+    )
     if trending:
         print(f"|  WSB trending added: {len(trending)}")
     if use_demo:
@@ -1476,8 +1907,11 @@ def main():
     print("\n=== TOP VALUE PLAYS (cheap & quality) ===")
     for _, r in top_value.head(10).iterrows():
         bucket = r.get("value_bucket") or "—"
-        print(f"  {r['ticker']:<6} score {r['value_score']:+.2f}  P/E {r.get('pe', '—'):>5}  bucket {bucket}")
+        print(
+            f"  {r['ticker']:<6} score {r['value_score']:+.2f}  P/E {r.get('pe', '—'):>5}  bucket {bucket}"
+        )
     print("\n=== TOP FUTURES PLAYS ===")
+
     def _fmt_cli_num(value, digits=2):
         try:
             if value is None or pd.isna(value):
@@ -1496,7 +1930,7 @@ def main():
         print(
             f"  {r['symbol']:<8} {r['name']:<22} {side:<5} "
             f"score {r['futures_score']:+.2f}  ctx {(ctx if ctx is not None else 0):+.2f}  "
-            f"20d {(r.get('ret_20d') or 0)*100:+.1f}%  "
+            f"20d {(r.get('ret_20d') or 0) * 100:+.1f}%  "
             f"ATR {_fmt_cli_num(atr, 2)}  "
             f"{contract} {micro} x{int(r.get('suggested_contracts') or 0)}  "
             f"stop {_fmt_cli_num(r.get('stop_price'), 2)}  "
@@ -1521,9 +1955,7 @@ def main():
             else {}
         )
         refresh_label = (
-            "ok" if rh_refresh.get("ok")
-            else "off" if not rh_refresh.get("attempted")
-            else "failed"
+            "ok" if rh_refresh.get("ok") else "off" if not rh_refresh.get("attempted") else "failed"
         )
         print(
             f"Robinhood agentic queue: {robinhood_queue_paths[0]} "
@@ -1539,9 +1971,10 @@ def main_loop():
     Memory hygiene: explicitly invokes Python's garbage collector after each
     iteration so DataFrames from previous runs don't accumulate.
     """
-    import time
-    import gc
     import argparse as _ap
+    import gc
+    import time
+
     pre = _ap.ArgumentParser(add_help=False)
     pre.add_argument("--loop", type=int, default=None)
     known, _ = pre.parse_known_args()
@@ -1553,6 +1986,7 @@ def main_loop():
     # v20.4: import health harness for whole-day reliability tracking
     try:
         from telemetry import health as _health
+
         _have_health = True
     except Exception:
         _have_health = False
@@ -1565,7 +1999,11 @@ def main_loop():
                 _health.assert_can_continue()
             except Exception:
                 pass
-        print(f"\n-- Iteration {iteration} @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} " + "-" * 30, flush=True)
+        print(
+            f"\n-- Iteration {iteration} @ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            + "-" * 30,
+            flush=True,
+        )
         iter_error: str = ""
         rc = 0
         try:
@@ -1583,18 +2021,23 @@ def main_loop():
         # v20.4: record per-iter health row before we sleep
         if _have_health:
             try:
-                _health.record({
-                    "iteration": iteration,
-                    "iter_seconds": time.time() - iter_t0,
-                    "rc": rc,
-                    "error": iter_error,
-                })
+                _health.record(
+                    {
+                        "iteration": iteration,
+                        "iter_seconds": time.time() - iter_t0,
+                        "rc": rc,
+                        "error": iter_error,
+                    }
+                )
             except Exception:
                 pass
         # Memory hygiene
         gc.collect()
         next_run = datetime.now() + pd.Timedelta(seconds=interval_sec)
-        print(f"\n-- next run @ {next_run.strftime('%H:%M:%S')} (sleeping {known.loop} min)\n", flush=True)
+        print(
+            f"\n-- next run @ {next_run.strftime('%H:%M:%S')} (sleeping {known.loop} min)\n",
+            flush=True,
+        )
         try:
             time.sleep(interval_sec)
         except KeyboardInterrupt:

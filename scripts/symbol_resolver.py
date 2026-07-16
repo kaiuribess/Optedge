@@ -1,12 +1,13 @@
 # Purpose: Resolve company names and aliases to tradable symbols.
 """Resolve user search text into a tradable ticker/symbol using free sources."""
+
 from __future__ import annotations
 
 import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,6 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from optedge.http_identity import SecContactRequiredError, outbound_headers, sec_headers
-
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -86,7 +86,6 @@ COMMON_ALIASES: dict[str, tuple[str, str]] = {
     "ast space mobile": ("ASTS", "AST SpaceMobile, Inc."),
     "ionq": ("IONQ", "IonQ, Inc."),
     "rigetti": ("RGTI", "Rigetti Computing, Inc."),
-
     # Equity/index ETFs users often mean by plain-language searches
     "spy": ("SPY", "SPDR S&P 500 ETF Trust"),
     "s p 500 etf": ("SPY", "SPDR S&P 500 ETF Trust"),
@@ -96,7 +95,6 @@ COMMON_ALIASES: dict[str, tuple[str, str]] = {
     "russell 2000 etf": ("IWM", "iShares Russell 2000 ETF"),
     "bitcoin etf": ("IBIT", "iShares Bitcoin Trust ETF"),
     "ethereum etf": ("ETHA", "iShares Ethereum Trust ETF"),
-
     # Futures symbols used by Optedge
     "s p 500 futures": ("ES=F", "S&P 500 E-mini Futures"),
     "s&p 500 futures": ("ES=F", "S&P 500 E-mini Futures"),
@@ -155,8 +153,20 @@ def _alias_key(query: str) -> str:
 def _company_key(query: str) -> str:
     key = _alias_key(query)
     suffixes = {
-        "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited",
-        "plc", "class", "common", "stock", "the", "com",
+        "inc",
+        "incorporated",
+        "corp",
+        "corporation",
+        "co",
+        "company",
+        "ltd",
+        "limited",
+        "plc",
+        "class",
+        "common",
+        "stock",
+        "the",
+        "com",
     }
     words = [w for w in key.split() if w and w not in suffixes]
     return " ".join(words)
@@ -187,7 +197,9 @@ def parse_option_request(query: str) -> dict[str, Any] | None:
     raw_underlying = match.group("underlying").strip()
     raw_upper = raw_underlying.upper()
     alias = _alias_match(raw_underlying)
-    is_direct = bool(_SYMBOL_RE.match(raw_upper) and (raw_upper.endswith("=F") or len(raw_upper) <= 5))
+    is_direct = bool(
+        _SYMBOL_RE.match(raw_upper) and (raw_upper.endswith("=F") or len(raw_upper) <= 5)
+    )
     return {
         "asset": "option",
         "ticker": alias[0] if alias else raw_upper,
@@ -221,7 +233,7 @@ def _direct_symbol(query: str) -> str | None:
 
 def _cache_age_days(path: Path) -> float | None:
     try:
-        return (datetime.now(timezone.utc).timestamp() - path.stat().st_mtime) / 86400.0
+        return (datetime.now(UTC).timestamp() - path.stat().st_mtime) / 86400.0
     except Exception:
         return None
 
@@ -241,7 +253,9 @@ def sec_company_cache_meta(cache_path: Path | None = None) -> dict[str, Any]:
     row_count = 0
     try:
         cached = json.loads(path.read_text(encoding="utf-8-sig"))
-        row_count = len(_normalize_sec_rows(cached.get("rows", cached) if isinstance(cached, dict) else cached))
+        row_count = len(
+            _normalize_sec_rows(cached.get("rows", cached) if isinstance(cached, dict) else cached)
+        )
     except Exception:
         return {
             "exists": True,
@@ -272,14 +286,16 @@ def _normalize_sec_rows(raw: Any) -> list[dict[str, Any]]:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
-        rows.append({
-            "symbol": symbol,
-            "name": title,
-            "cik": item.get("cik_str") or item.get("cik"),
-            "exchange": item.get("exchange"),
-            "type": "EQUITY",
-            "source": "sec_company_tickers",
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": title,
+                "cik": item.get("cik_str") or item.get("cik"),
+                "exchange": item.get("exchange"),
+                "type": "EQUITY",
+                "source": "sec_company_tickers",
+            }
+        )
     return rows
 
 
@@ -328,7 +344,7 @@ def _parse_nasdaq_symbol_text(text: str, source: str) -> list[dict[str, Any]]:
         parts = line.split("|")
         if len(parts) != len(header):
             continue
-        raw = dict(zip(header, parts))
+        raw = dict(zip(header, parts, strict=False))
         if source == "nasdaq":
             symbol = _nasdaq_app_symbol(raw.get("Symbol"))
             name = str(raw.get("Security Name") or "").strip()
@@ -348,17 +364,19 @@ def _parse_nasdaq_symbol_text(text: str, source: str) -> list[dict[str, Any]]:
         if not symbol or not name:
             continue
         sec_type = _nasdaq_security_type(symbol, name, "Y" if etf else "N")
-        rows.append({
-            "symbol": symbol,
-            "name": name,
-            "exchange": exchange,
-            "exchange_code": raw_exchange,
-            "type": sec_type,
-            "is_etf": etf,
-            "test_issue": test_issue,
-            "round_lot_size": round_lot,
-            "source": "nasdaq_symbol_directory",
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "exchange": exchange,
+                "exchange_code": raw_exchange,
+                "type": sec_type,
+                "is_etf": etf,
+                "test_issue": test_issue,
+                "round_lot_size": round_lot,
+                "source": "nasdaq_symbol_directory",
+            }
+        )
     return rows
 
 
@@ -376,17 +394,19 @@ def _normalize_nasdaq_rows(raw: Any) -> list[dict[str, Any]]:
         if not symbol or symbol in seen:
             continue
         seen.add(symbol)
-        rows.append({
-            "symbol": symbol,
-            "name": name,
-            "exchange": item.get("exchange"),
-            "exchange_code": item.get("exchange_code"),
-            "type": item.get("type") or "EQUITY",
-            "is_etf": bool(item.get("is_etf")),
-            "test_issue": bool(item.get("test_issue")),
-            "round_lot_size": item.get("round_lot_size"),
-            "source": "nasdaq_symbol_directory",
-        })
+        rows.append(
+            {
+                "symbol": symbol,
+                "name": name,
+                "exchange": item.get("exchange"),
+                "exchange_code": item.get("exchange_code"),
+                "type": item.get("type") or "EQUITY",
+                "is_etf": bool(item.get("is_etf")),
+                "test_issue": bool(item.get("test_issue")),
+                "round_lot_size": item.get("round_lot_size"),
+                "source": "nasdaq_symbol_directory",
+            }
+        )
     return rows
 
 
@@ -465,7 +485,7 @@ def load_nasdaq_symbol_directory(
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {
                     "source": [NASDAQ_LISTED_URL, NASDAQ_OTHER_LISTED_URL],
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "fetched_at": datetime.now(UTC).isoformat(),
                     "rows": rows,
                 }
                 cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -504,7 +524,9 @@ def load_sec_company_tickers(
     if age_days is not None and age_days <= max_age_days:
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8-sig"))
-            return _normalize_sec_rows(cached.get("rows", cached) if isinstance(cached, dict) else cached)
+            return _normalize_sec_rows(
+                cached.get("rows", cached) if isinstance(cached, dict) else cached
+            )
         except Exception:
             pass
 
@@ -515,7 +537,7 @@ def load_sec_company_tickers(
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 payload = {
                     "source": SEC_TICKER_URL,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "fetched_at": datetime.now(UTC).isoformat(),
                     "rows": rows,
                 }
                 cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -528,7 +550,9 @@ def load_sec_company_tickers(
     if cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8-sig"))
-            return _normalize_sec_rows(cached.get("rows", cached) if isinstance(cached, dict) else cached)
+            return _normalize_sec_rows(
+                cached.get("rows", cached) if isinstance(cached, dict) else cached
+            )
         except Exception:
             return []
     return []
@@ -572,7 +596,9 @@ def sec_company_search(
         item = dict(row)
         item["score"] = round(score, 4)
         scored.append(item)
-    scored.sort(key=lambda x: (float(x.get("score") or 0.0), str(x.get("symbol") or "")), reverse=True)
+    scored.sort(
+        key=lambda x: (float(x.get("score") or 0.0), str(x.get("symbol") or "")), reverse=True
+    )
     return scored[:limit]
 
 
@@ -631,6 +657,7 @@ def nasdaq_symbol_search(
     )
     return scored[:limit]
 
+
 def _candidate_from_quote(quote: dict[str, Any]) -> dict[str, Any] | None:
     symbol = str(quote.get("symbol") or "").strip().upper()
     if not symbol or len(symbol) > 12:
@@ -670,24 +697,37 @@ def resolve_symbol(query: str, timeout: float = 6.0) -> dict[str, Any]:
         symbol, name = alias
         if option_request:
             option_request["ticker"] = symbol
-        return Resolution(query=clean, symbol=symbol, name=name, source="alias",
-                          candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
-                          request=option_request).to_dict()
+        return Resolution(
+            query=clean,
+            symbol=symbol,
+            name=name,
+            source="alias",
+            candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
+            request=option_request,
+        ).to_dict()
     if option_request and option_request.get("ticker_source") == "alias":
         symbol = str(option_request.get("ticker") or "")
         name = option_request.get("ticker_name")
-        return Resolution(query=clean, symbol=symbol, name=name, source="alias",
-                          candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
-                          request=option_request).to_dict()
+        return Resolution(
+            query=clean,
+            symbol=symbol,
+            name=name,
+            source="alias",
+            candidates=[{"symbol": symbol, "name": name, "type": "ALIAS"}],
+            request=option_request,
+        ).to_dict()
     direct = _direct_symbol(clean)
     if direct:
-        return Resolution(query=clean, symbol=direct, source="direct", candidates=[],
-                          request=option_request).to_dict()
+        return Resolution(
+            query=clean, symbol=direct, source="direct", candidates=[], request=option_request
+        ).to_dict()
     if not clean:
         return Resolution(query=clean, symbol=None, error="empty query").to_dict()
     search_text = clean
     if option_request and option_request.get("ticker_source") == "unresolved_name":
-        search_text = str(option_request.get("ticker_name") or option_request.get("ticker") or clean)
+        search_text = str(
+            option_request.get("ticker_name") or option_request.get("ticker") or clean
+        )
     sec_candidates = sec_company_search(search_text, timeout=timeout)
     if sec_candidates:
         best = sec_candidates[0]
@@ -723,8 +763,13 @@ def resolve_symbol(query: str, timeout: float = 6.0) -> dict[str, Any]:
     except Exception as exc:
         return Resolution(query=clean, symbol=None, source="yahoo", error=str(exc)).to_dict()
     if not candidates:
-        return Resolution(query=clean, symbol=None, source="yahoo", candidates=[],
-                          error="no symbol candidates found").to_dict()
+        return Resolution(
+            query=clean,
+            symbol=None,
+            source="yahoo",
+            candidates=[],
+            error="no symbol candidates found",
+        ).to_dict()
     best = candidates[0]
     if option_request:
         option_request["ticker"] = best["symbol"]
@@ -741,6 +786,7 @@ def resolve_symbol(query: str, timeout: float = 6.0) -> dict[str, Any]:
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Resolve company/ticker text to a symbol.")
     parser.add_argument("query")
     args = parser.parse_args()

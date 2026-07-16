@@ -6,6 +6,7 @@ It writes a bounded request queue instead. A connected Codex heartbeat can use
 read-only market-data tools, merge normalized results into the snapshot, and
 the regular lookup path consumes that cache with explicit freshness labels.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -169,12 +170,16 @@ def merge_snapshot_file(
 
 def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict[str, Any]:
     payload = _read_json(path, {})
-    return merge_snapshot_payload({}, payload) if payload else {
-        "schema": SNAPSHOT_SCHEMA,
-        "generated_at": None,
-        "source": "robinhood_mcp_read_only",
-        "records": [],
-    }
+    return (
+        merge_snapshot_payload({}, payload)
+        if payload
+        else {
+            "schema": SNAPSHOT_SCHEMA,
+            "generated_at": None,
+            "source": "robinhood_mcp_read_only",
+            "records": [],
+        }
+    )
 
 
 def _matching_records(
@@ -185,12 +190,14 @@ def _matching_records(
     clean = symbol.strip().upper()
     option_key = _option_request_key(clean, option_request)
     rows = [
-        row for row in _records(load_snapshot(snapshot_path))
+        row
+        for row in _records(load_snapshot(snapshot_path))
         if _text(row.get("symbol")).upper() == clean
     ]
     if option_key:
         exact = [
-            row for row in rows
+            row
+            for row in rows
             if _option_request_key(clean, row.get("option_request")) == option_key
         ]
         if exact:
@@ -215,7 +222,8 @@ def _current_equity_price(quote: dict[str, Any]) -> tuple[float | None, str, str
     if not candidates:
         return None, "unknown", ""
     candidates.sort(
-        key=lambda item: item[0] or pd.Timestamp.min.tz_localize("UTC"), reverse=True,
+        key=lambda item: item[0] or pd.Timestamp.min.tz_localize("UTC"),
+        reverse=True,
     )
     timestamp, price, session = candidates[0]
     return price, session, timestamp.isoformat() if timestamp is not None else ""
@@ -232,11 +240,13 @@ def _spread(bid: Any, ask: Any) -> tuple[float | None, float | None]:
 
 def _history_metrics(history: dict[str, Any]) -> dict[str, Any]:
     bars = [
-        bar for bar in (history.get("bars") or [])
+        bar
+        for bar in (history.get("bars") or [])
         if isinstance(bar, dict) and not bool(bar.get("interpolated", False))
     ]
     closes = [
-        _number(bar.get("close_price")) for bar in bars
+        _number(bar.get("close_price"))
+        for bar in bars
         if _number(bar.get("close_price")) is not None
     ]
     if not closes:
@@ -284,10 +294,18 @@ def flatten_equity_record(
     asof: datetime | None = None,
 ) -> dict[str, Any]:
     now = asof or datetime.now(UTC)
-    quote_result = record.get("equity_quote") if isinstance(record.get("equity_quote"), dict) else {}
-    quote = quote_result.get("quote") if isinstance(quote_result.get("quote"), dict) else quote_result
-    official_close = quote_result.get("close") if isinstance(quote_result.get("close"), dict) else {}
-    fundamentals = record.get("fundamentals") if isinstance(record.get("fundamentals"), dict) else {}
+    quote_result = (
+        record.get("equity_quote") if isinstance(record.get("equity_quote"), dict) else {}
+    )
+    quote = (
+        quote_result.get("quote") if isinstance(quote_result.get("quote"), dict) else quote_result
+    )
+    official_close = (
+        quote_result.get("close") if isinstance(quote_result.get("close"), dict) else {}
+    )
+    fundamentals = (
+        record.get("fundamentals") if isinstance(record.get("fundamentals"), dict) else {}
+    )
     earnings = record.get("earnings") if isinstance(record.get("earnings"), list) else []
     history = record.get("equity_history") if isinstance(record.get("equity_history"), dict) else {}
     price, session, quote_time = _current_equity_price(quote)
@@ -337,8 +355,12 @@ def flatten_option_contract(
     now = asof or datetime.now(UTC)
     instrument = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
     quote_result = raw.get("quote") if isinstance(raw.get("quote"), dict) else {}
-    quote = quote_result.get("quote") if isinstance(quote_result.get("quote"), dict) else quote_result
-    official_close = quote_result.get("close") if isinstance(quote_result.get("close"), dict) else {}
+    quote = (
+        quote_result.get("quote") if isinstance(quote_result.get("quote"), dict) else quote_result
+    )
+    official_close = (
+        quote_result.get("close") if isinstance(quote_result.get("close"), dict) else {}
+    )
     bid = _number(quote.get("bid_price"))
     ask = _number(quote.get("ask_price"))
     mid, spread_pct = _spread(bid, ask)
@@ -394,7 +416,9 @@ def lookup_sections(
     asof: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     rows = _matching_records(
-        symbol, option_request, data_dir / SNAPSHOT_PATH.name,
+        symbol,
+        option_request,
+        data_dir / SNAPSHOT_PATH.name,
     )
     if not rows:
         return {"robinhood_research": [], "robinhood_option_quotes": []}
@@ -407,11 +431,15 @@ def lookup_sections(
             if not isinstance(raw, dict):
                 continue
             flattened = flatten_option_contract(
-                raw, record.get("collected_at"), asof=asof,
+                raw,
+                record.get("collected_at"),
+                asof=asof,
             )
             key = contract_key(
-                flattened.get("symbol"), flattened.get("expiry"),
-                flattened.get("side"), flattened.get("strike"),
+                flattened.get("symbol"),
+                flattened.get("expiry"),
+                flattened.get("side"),
+                flattened.get("strike"),
             )
             if requested_key and key != requested_key:
                 continue
@@ -429,7 +457,9 @@ def _latest_record_for_request(
     rid: str,
     snapshot_path: Path,
 ) -> dict[str, Any] | None:
-    matches = [row for row in _records(load_snapshot(snapshot_path)) if row.get("request_id") == rid]
+    matches = [
+        row for row in _records(load_snapshot(snapshot_path)) if row.get("request_id") == rid
+    ]
     if not matches:
         return None
     return max(
@@ -461,9 +491,17 @@ def build_request(
         "status": "pending",
         "read_only": True,
         "tools": [
-            "get_equity_quotes", "get_equity_fundamentals",
-            "get_equity_historicals", "get_earnings_results", "get_option_chains",
-        ] + (["get_option_instruments", "get_option_quotes", "get_option_historicals"] if option_key else []),
+            "get_equity_quotes",
+            "get_equity_fundamentals",
+            "get_equity_historicals",
+            "get_earnings_results",
+            "get_option_chains",
+        ]
+        + (
+            ["get_option_instruments", "get_option_quotes", "get_option_historicals"]
+            if option_key
+            else []
+        ),
     }
 
 
@@ -480,7 +518,7 @@ After merging, run `python scripts/robinhood_research_bridge.py --status`.
 
 Do not call order, cancel, watchlist-write, scanner-write, or any other broker mutation tool. This cache is research evidence and never proves a fill.
 
-Pending requests: {int(packet.get('pending_count') or 0)}.
+Pending requests: {int(packet.get("pending_count") or 0)}.
 """
 
 
@@ -503,7 +541,9 @@ def coverage(
         "request_count": len(packet.get("requests") or []),
         "pending_requests": int(packet.get("pending_count") or 0),
         "cached_records": len(records),
-        "cached_symbols": len({_text(row.get("symbol")).upper() for row in records if row.get("symbol")}),
+        "cached_symbols": len(
+            {_text(row.get("symbol")).upper() for row in records if row.get("symbol")}
+        ),
         "freshness_counts": freshness_counts,
         "notes": [
             "This cache contains market research only, never broker orders or credentials.",
@@ -542,7 +582,9 @@ def queue_request(
         key=lambda item: (
             0 if item.get("status") == "pending" else 1,
             int(item.get("priority") or 0),
-            -(_parse_time(item.get("requested_at")) or pd.Timestamp.min.tz_localize("UTC")).timestamp(),
+            -(
+                _parse_time(item.get("requested_at")) or pd.Timestamp.min.tz_localize("UTC")
+            ).timestamp(),
         ),
     )[: max(1, int(max_requests))]
     output = {
@@ -597,7 +639,9 @@ def refresh_status(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage the read-only Robinhood lookup research cache")
+    parser = argparse.ArgumentParser(
+        description="Manage the read-only Robinhood lookup research cache"
+    )
     parser.add_argument("--queue", help="Queue a ticker or company lookup")
     parser.add_argument("--ingest", type=Path, help="Merge a normalized read-only snapshot JSON")
     parser.add_argument("--status", action="store_true", help="Refresh and print cache status")

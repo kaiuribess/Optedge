@@ -6,6 +6,7 @@ for the SEC, to contact an automated tool's operator.  Optedge never invents
 that contact information.  General requests use a versioned product token;
 SEC requests fail closed until the operator supplies a real email address.
 """
+
 from __future__ import annotations
 
 import os

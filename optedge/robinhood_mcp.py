@@ -11,6 +11,7 @@ operating-system keyring.  There is no file, environment-variable, or plaintext
 fallback.  Network calls are one-shot user actions: this module contains no
 polling loop, scheduler, retry loop, or background order activity.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,92 +54,110 @@ _KEYRING_MAX_CHUNKS = 64
 _KEYRING_GENERATION_RE = re.compile(r"^[0-9a-f]{16}$")
 _KEYRING_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
-_WINDOWS_OS_KEYRING_BACKENDS = frozenset({
-    ("keyring.backends.Windows", "WinVaultKeyring"),
-})
-_MACOS_OS_KEYRING_BACKENDS = frozenset({
-    ("keyring.backends.macOS", "Keyring"),
-})
-_LINUX_OS_KEYRING_BACKENDS = frozenset({
-    ("keyring.backends.SecretService", "Keyring"),
-    ("keyring.backends.libsecret", "Keyring"),
-    ("keyring.backends.kwallet", "DBusKeyring"),
-    ("keyring.backends.kwallet", "DBusKeyringKWallet4"),
-})
+_WINDOWS_OS_KEYRING_BACKENDS = frozenset(
+    {
+        ("keyring.backends.Windows", "WinVaultKeyring"),
+    }
+)
+_MACOS_OS_KEYRING_BACKENDS = frozenset(
+    {
+        ("keyring.backends.macOS", "Keyring"),
+    }
+)
+_LINUX_OS_KEYRING_BACKENDS = frozenset(
+    {
+        ("keyring.backends.SecretService", "Keyring"),
+        ("keyring.backends.libsecret", "Keyring"),
+        ("keyring.backends.kwallet", "DBusKeyring"),
+        ("keyring.backends.kwallet", "DBusKeyringKWallet4"),
+    }
+)
 
-READ_TOOL_ALLOWLIST = frozenset({
-    "get_accounts",
-    "get_portfolio",
-    "get_equity_positions",
-    "get_option_positions",
-    "get_equity_orders",
-    "get_option_orders",
-    "get_equity_quotes",
-    "get_equity_fundamentals",
-    "get_equity_historicals",
-    "get_equity_tradability",
-    "get_earnings_calendar",
-    "get_earnings_results",
-    "get_indexes",
-    "get_index_quotes",
-    "get_option_chains",
-    "get_option_instruments",
-    "get_option_quotes",
-    "get_option_historicals",
-    "get_realized_pnl",
-    "get_pnl_trade_history",
-    "get_scans",
-    "run_scan",
-    "search",
-})
+READ_TOOL_ALLOWLIST = frozenset(
+    {
+        "get_accounts",
+        "get_portfolio",
+        "get_equity_positions",
+        "get_option_positions",
+        "get_equity_orders",
+        "get_option_orders",
+        "get_equity_quotes",
+        "get_equity_fundamentals",
+        "get_equity_historicals",
+        "get_equity_tradability",
+        "get_earnings_calendar",
+        "get_earnings_results",
+        "get_indexes",
+        "get_index_quotes",
+        "get_option_chains",
+        "get_option_instruments",
+        "get_option_quotes",
+        "get_option_historicals",
+        "get_realized_pnl",
+        "get_pnl_trade_history",
+        "get_scans",
+        "run_scan",
+        "search",
+    }
+)
 
-REQUIRED_PREFLIGHT_READ_TOOLS = frozenset({
-    "get_accounts",
-    "get_portfolio",
-    "get_equity_positions",
-    "get_option_positions",
-    "get_equity_orders",
-    "get_option_orders",
-    "get_equity_quotes",
-    "get_equity_tradability",
-    "get_option_chains",
-    "get_option_instruments",
-    "get_option_quotes",
-})
+REQUIRED_PREFLIGHT_READ_TOOLS = frozenset(
+    {
+        "get_accounts",
+        "get_portfolio",
+        "get_equity_positions",
+        "get_option_positions",
+        "get_equity_orders",
+        "get_option_orders",
+        "get_equity_quotes",
+        "get_equity_tradability",
+        "get_option_chains",
+        "get_option_instruments",
+        "get_option_quotes",
+    }
+)
 
-REVIEW_TOOL_ALLOWLIST = frozenset({
-    "review_equity_order",
-    "review_option_order",
-})
+REVIEW_TOOL_ALLOWLIST = frozenset(
+    {
+        "review_equity_order",
+        "review_option_order",
+    }
+)
 
-PLACE_TOOL_ALLOWLIST = frozenset({
-    "place_equity_order",
-    "place_option_order",
-})
+PLACE_TOOL_ALLOWLIST = frozenset(
+    {
+        "place_equity_order",
+        "place_option_order",
+    }
+)
 
-_ACCOUNT_NUMBER_KEYS = frozenset({
-    "account_number",
-    "rhs_account_number",
-    "brokerage_account_number",
-})
-_EXACT_SENSITIVE_KEYS = frozenset({
-    "access_token",
-    "refresh_token",
-    "authorization",
-    "authorization_code",
-    "authorization_url",
-    "callback_code",
-    "client_secret",
-    "code_verifier",
-    "cookie",
-    "cookies",
-    "mfa_code",
-    "oauth_state",
-    "password",
-    "pkce_verifier",
-    "state",
-    "token",
-})
+_ACCOUNT_NUMBER_KEYS = frozenset(
+    {
+        "account_number",
+        "rhs_account_number",
+        "brokerage_account_number",
+    }
+)
+_EXACT_SENSITIVE_KEYS = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "authorization_code",
+        "authorization_url",
+        "callback_code",
+        "client_secret",
+        "code_verifier",
+        "cookie",
+        "cookies",
+        "mfa_code",
+        "oauth_state",
+        "password",
+        "pkce_verifier",
+        "state",
+        "token",
+    }
+)
 
 
 class RobinhoodMcpError(RuntimeError):
@@ -195,9 +214,7 @@ def validate_callback_uri(uri: str) -> str:
     if parsed.username or parsed.password:
         raise CallbackUriError("OAuth callback URI cannot contain user information.")
     if parsed.path != DEFAULT_CALLBACK_PATH:
-        raise CallbackUriError(
-            f"OAuth callback URI path must be {DEFAULT_CALLBACK_PATH}."
-        )
+        raise CallbackUriError(f"OAuth callback URI path must be {DEFAULT_CALLBACK_PATH}.")
     if parsed.params or parsed.query or parsed.fragment:
         raise CallbackUriError("OAuth callback URI cannot contain parameters or fragments.")
     return urlunparse(("http", parsed.netloc.lower(), parsed.path, "", "", ""))
@@ -359,9 +376,8 @@ class KeyringTokenStorage(TokenStorage):
             parts.append(chunk)
         value = "".join(parts)
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-        if (
-            len(value) != int(manifest["length"])
-            or not secrets.compare_digest(digest, str(manifest["sha256"]))
+        if len(value) != int(manifest["length"]) or not secrets.compare_digest(
+            digest, str(manifest["sha256"])
         ):
             raise CredentialStorageError(
                 "Stored OAuth credential chunks failed integrity verification; reconnect is required."
@@ -491,7 +507,9 @@ class KeyringTokenStorage(TokenStorage):
                 raise ValueError("wrong envelope")
             return model.model_validate(payload.get("value"))
         except Exception as exc:
-            raise CredentialStorageError("Stored OAuth state is malformed; reconnect is required.") from exc
+            raise CredentialStorageError(
+                "Stored OAuth state is malformed; reconnect is required."
+            ) from exc
 
     async def get_tokens(self) -> OAuthToken | None:
         raw = self._get_secret(TOKEN_KEYRING_USERNAME)
@@ -779,9 +797,7 @@ def validate_tool_catalog(tools: Iterable[Any]) -> dict[str, Any]:
     missing_reads = sorted(REQUIRED_PREFLIGHT_READ_TOOLS - names)
     missing_reviews = sorted(REVIEW_TOOL_ALLOWLIST - names)
     missing_places = sorted(PLACE_TOOL_ALLOWLIST - names)
-    unsupported = sorted(
-        names - READ_TOOL_ALLOWLIST - REVIEW_TOOL_ALLOWLIST - PLACE_TOOL_ALLOWLIST
-    )
+    unsupported = sorted(names - READ_TOOL_ALLOWLIST - REVIEW_TOOL_ALLOWLIST - PLACE_TOOL_ALLOWLIST)
     schema_valid = not issues
     return {
         "schema_valid": schema_valid,
@@ -929,9 +945,7 @@ class RobinhoodMcpClient:
     ) -> None:
         self.callback_uri = validate_callback_uri(callback_uri)
         self.token_storage = token_storage or KeyringTokenStorage()
-        self.oauth_coordinator = oauth_coordinator or OAuthCallbackCoordinator(
-            self.callback_uri
-        )
+        self.oauth_coordinator = oauth_coordinator or OAuthCallbackCoordinator(self.callback_uri)
         if self.oauth_coordinator.callback_uri != self.callback_uri:
             raise CallbackUriError("OAuth callback components do not match.")
         self._session_factory = session_factory or self._open_oauth_session
@@ -1061,9 +1075,7 @@ class RobinhoodMcpClient:
             self.oauth_coordinator.reset()
             self._catalog = {}
             self._catalog_status = {
-                key: value
-                for key, value in validate_tool_catalog([]).items()
-                if key != "_catalog"
+                key: value for key, value in validate_tool_catalog([]).items() if key != "_catalog"
             }
             self._known_account_numbers.clear()
             self._last_error_code = None
