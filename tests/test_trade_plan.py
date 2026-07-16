@@ -4,14 +4,17 @@ import sys
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID, uuid5
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from optedge.strategy_profile import (  # noqa: E402
+    LEAPS_EVIDENCE_LANE,
+    LEAPS_SWING_POLICY_VERSION,
+    LEAPS_SWING_PROFILE,
+)
 from risk.trade_plan import (  # noqa: E402
-    OPTEDGE_ORDER_REF_NAMESPACE,
     build_manual_robinhood_review_packet,
     build_robinhood_equity_review_plan,
     build_robinhood_option_review_plan,
@@ -57,6 +60,21 @@ def _long_option_plan():
         entry_premium=2.00,
         stop_premium=1.00,
         target_premium=4.00,
+        risk_budget_dollars=200,
+        allocation_cap_dollars=300,
+        round_trip_slippage_per_contract=10,
+    )
+
+
+def _long_leaps_swing_plan():
+    return size_long_option_trade(
+        symbol="AAPL",
+        option_type="call",
+        expiry="2028-01-21",
+        strike=200,
+        entry_premium=2.00,
+        stop_premium=1.50,
+        target_premium=2.70,
         risk_budget_dollars=200,
         allocation_cap_dollars=300,
         round_trip_slippage_per_contract=10,
@@ -377,6 +395,54 @@ def _with_manual_review_context(
     return plan
 
 
+def _with_leaps_review_context(plan):
+    plan = _with_manual_review_context(
+        plan,
+        account_equity=20_000,
+        risk_fraction=0.01,
+        allocation_fraction=0.03,
+        max_spread_fraction=LEAPS_SWING_PROFILE.max_spread_pct,
+    )
+    plan["execution_profile"] = LEAPS_SWING_PROFILE.name
+    plan["profile_policy_version"] = LEAPS_SWING_POLICY_VERSION
+    plan["strategy_evidence_lane"] = LEAPS_EVIDENCE_LANE
+    plan["holding_policy"] = {
+        "planned_hold_sessions": LEAPS_SWING_PROFILE.default_hold_sessions,
+        "review_sessions": list(LEAPS_SWING_PROFILE.review_sessions),
+        "max_hold_sessions": LEAPS_SWING_PROFILE.max_hold_sessions,
+        "contract_dte_is_not_hold_time": True,
+    }
+    plan["management_references"] = {
+        "stop_loss_fraction": LEAPS_SWING_PROFILE.stop_loss_fraction,
+        "target_gain_fraction": LEAPS_SWING_PROFILE.target_gain_fraction,
+        "breakeven_review_trigger_fraction": (
+            LEAPS_SWING_PROFILE.breakeven_review_trigger_fraction
+        ),
+        "manual_management_only": True,
+    }
+    evidence = plan["review_constraints"]["evidence"]
+    evidence.update({
+        "execution_profile": LEAPS_SWING_PROFILE.name,
+        "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
+        "evidence_lane": LEAPS_EVIDENCE_LANE,
+        "required_horizons_sessions": list(
+            LEAPS_SWING_PROFILE.evidence_horizons_sessions
+        ),
+        "require_broker_market_observed": True,
+    })
+    candidate = plan["review_constraints"]["candidate"]
+    candidate.update({
+        "execution_profile": LEAPS_SWING_PROFILE.name,
+        "strategy_evidence_lane": LEAPS_EVIDENCE_LANE,
+        "profile_policy_version": LEAPS_SWING_POLICY_VERSION,
+        "leaps_swing_status": "execution_ready",
+        "leaps_execution_ready": True,
+        "leaps_hard_blockers": [],
+        "leaps_data_blockers": [],
+    })
+    return plan
+
+
 def _fresh_review_kwargs(*, issued_at=None, ttl_minutes=10, external_blockers=None):
     issued = issued_at or datetime.now(UTC)
     return {
@@ -650,10 +716,11 @@ def test_invalid_option_contract_keeps_derived_values_null():
 
 def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
     review = build_robinhood_equity_review_plan(_long_share_plan())
-    assert review["status"] == "review_required_before_any_place_order"
+    assert review["status"] == "preview_required"
     assert review["review_tool"] == "review_equity_order"
-    assert review["place_tool_after_explicit_confirmation"] == "place_equity_order"
-    assert review["requires_explicit_user_confirmation_before_place"] is True
+    assert review["preview_only"] is True
+    assert review["does_not_place_orders"] is True
+    assert review["broker_submission_exposed"] is False
     assert review["requires_short_sale_review"] is False
     assert review["automation_allowed"] is False
     assert review["repeat_orders_allowed"] is False
@@ -667,9 +734,8 @@ def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
     assert args["quantity"] == "40"
     assert args["type"] == "limit"
     assert args["limit_price"] == "50.00"
-    assert review["place_arguments_after_confirmation"]["ref_id"].startswith("<fresh_uuid")
     assert any(
-        "exact quote, and tradability" in rule and "packet-expiry gates" in rule
+        "stop after presenting the broker response" in rule
         for rule in review["hard_rules"]
     )
     assert any("every data.next/cursor page to null" in rule for rule in review["hard_rules"])
@@ -701,9 +767,11 @@ def test_equity_review_plan_uses_current_tools_and_blocks_short_entries():
 
 def test_option_review_plan_requires_exact_lookup_and_review_first():
     review = build_robinhood_option_review_plan(_long_option_plan())
-    assert review["status"] == "review_required_before_any_place_order"
+    assert review["status"] == "preview_required"
     assert review["review_tool"] == "review_option_order"
-    assert review["place_tool_after_explicit_confirmation"] == "place_option_order"
+    assert review["preview_only"] is True
+    assert review["does_not_place_orders"] is True
+    assert review["broker_submission_exposed"] is False
     lookup = review["contract_lookup"]
     assert lookup["chain_symbol"] == "AAPL"
     assert lookup["expiration_date"] == "2027-01-15"
@@ -720,19 +788,15 @@ def test_option_review_plan_requires_exact_lookup_and_review_first():
         "position_effect": "open",
         "ratio_quantity": 1,
     }]
-    place = review["place_arguments_after_confirmation"]
-    assert "chain_symbol" not in place
-    assert place["ref_id"].startswith("<fresh_uuid")
     assert any(
-        "exact instrument, quote, and complete chain proof" in rule
-        and "packet-expiry gates" in rule
+        "stop after presenting the broker response" in rule
         for rule in review["hard_rules"]
     )
     assert any("every option chain containing the exact expiry" in rule for rule in review["hard_rules"])
     assert any("can_open_position true" in rule for rule in review["hard_rules"])
 
 
-def test_manual_packet_and_prompt_forbid_credentials_automation_and_repeats():
+def test_manual_packet_is_deterministic_preview_only_and_has_no_submission_material():
     plan = _with_manual_review_context(
         _long_option_plan(),
         account_equity=20_000,
@@ -751,29 +815,25 @@ def test_manual_packet_and_prompt_forbid_credentials_automation_and_repeats():
         **context,
     )
     assert packet["packet_id"] == duplicate["packet_id"]
-    packet_ref_id = packet["review_plan"]["place_arguments_after_confirmation"]["ref_id"]
-    assert packet_ref_id == duplicate["review_plan"]["place_arguments_after_confirmation"]["ref_id"]
-    assert packet_ref_id == str(uuid5(OPTEDGE_ORDER_REF_NAMESPACE, packet["packet_id"]))
-    assert UUID(packet_ref_id).version == 5
+    assert packet["content_digest_sha256"] == duplicate["content_digest_sha256"]
+    assert packet["prompt_digest_sha256"] == duplicate["prompt_digest_sha256"]
     assert packet["status"] == "manual_review_required"
     assert packet["does_not_place_orders"] is True
+    assert packet["preview_only"] is True
     assert packet["automation_allowed"] is False
     assert packet["repeat_orders_allowed"] is False
     assert packet["contains_credentials"] is False
     assert packet["review_gate_attested"] is True
     assert packet["context_validation"]["ok"] is True
-    assert packet["manual_controls"]["review_must_precede_place"] is True
-    assert packet["manual_controls"]["exact_confirmation_must_follow_review"] is True
+    assert packet["manual_controls"]["one_broker_preview_only"] is True
+    assert packet["manual_controls"]["stop_after_broker_preview"] is True
+    assert packet["manual_controls"]["broker_submission_not_exposed"] is True
     assert packet["manual_controls"]["never_schedule_or_loop"] is True
     prompt = render_manual_robinhood_review_prompt(packet)
     assert "review_option_order FIRST" in prompt
-    assert "exact confirmation" in prompt
     assert "No scheduled task" in prompt
-    assert "Never place or repeat an order" in prompt
-    assert f"One logical-order ref_id: {packet_ref_id}" in prompt
-    assert f"must reuse ref_id {packet_ref_id}" in prompt
+    assert "STOP. The packet ends after the broker preview" in prompt
     assert "Never request, accept, print, or store passwords" in prompt
-    assert "place_option_order" in prompt
     assert "Expected contract multiplier: 100x" in prompt
     assert "Planning stop reference" in prompt
     assert "Exact review template" in prompt
@@ -781,12 +841,24 @@ def test_manual_packet_and_prompt_forbid_credentials_automation_and_repeats():
     assert context["snapshot_id"] not in prompt
     assert json.loads(json.dumps(packet))["packet_id"] == packet["packet_id"]
 
+    serialized = json.dumps(packet, sort_keys=True).lower()
+    for forbidden in (
+        "place_equity_order",
+        "place_option_order",
+        "place_tool_after_explicit_confirmation",
+        "place_arguments_after_confirmation",
+        "ref_id",
+    ):
+        assert forbidden not in serialized
+    assert "call place" not in prompt.lower()
+    assert "invoke place" not in prompt.lower()
+    assert "run place" not in prompt.lower()
+
     renewed = build_manual_robinhood_review_packet(
         plan,
         **_fresh_review_kwargs(issued_at=issued + timedelta(seconds=1)),
     )
     assert renewed["packet_id"] != packet["packet_id"]
-    assert renewed["review_plan"]["place_arguments_after_confirmation"]["ref_id"] != packet_ref_id
 
 
 def test_option_packet_preserves_account_assumptions_and_live_quote_constraints():
@@ -901,7 +973,7 @@ def test_manual_packet_fails_closed_without_trade_desk_context_or_gate_attestati
         "missing_review_constraints",
     } <= codes
     assert "STATUS: BLOCKED" in packet["prompt"]
-    assert "DO NOT CALL any Robinhood review or placement tool" in packet["prompt"]
+    assert "DO NOT CALL any Robinhood review or order-submission tool" in packet["prompt"]
 
 
 def test_manual_packet_rejects_expired_or_overlong_review_windows():
@@ -969,15 +1041,18 @@ def test_ready_packet_detects_post_build_mutation_and_use_after_expiry():
         for row in prompt_validation["errors"]
     )
 
-    changed_ref = deepcopy(packet)
-    changed_ref["review_plan"]["place_arguments_after_confirmation"]["ref_id"] = str(
-        UUID(int=1)
+    changed_submission = deepcopy(packet)
+    changed_submission["review_plan"]["place_arguments_after_confirmation"] = {
+        "account_number": "unsafe",
+    }
+    submission_validation = validate_manual_robinhood_review_packet(
+        changed_submission,
+        now=issued,
     )
-    ref_validation = validate_manual_robinhood_review_packet(changed_ref, now=issued)
-    assert ref_validation["ok"] is False
+    assert submission_validation["ok"] is False
     assert any(
-        row["code"] == "manual_review_order_ref_id_mismatch"
-        for row in ref_validation["errors"]
+        row["code"] == "manual_review_packet_exposes_order_submission"
+        for row in submission_validation["errors"]
     )
 
     after_expiry = issued + timedelta(minutes=11)
@@ -996,7 +1071,7 @@ def test_ready_packet_detects_post_build_mutation_and_use_after_expiry():
     )
 
 
-def test_manual_packet_requires_drawdown_and_post_confirmation_reread_controls():
+def test_manual_packet_requires_drawdown_and_pre_preview_reread_controls():
     issued = datetime.now(UTC)
     packet = build_manual_robinhood_review_packet(
         _with_manual_review_context(
@@ -1009,14 +1084,13 @@ def test_manual_packet_requires_drawdown_and_post_confirmation_reread_controls()
         **_fresh_review_kwargs(issued_at=issued),
     )
     assert packet["manual_controls"]["chained_account_drawdown_interlock_required"] is True
-    assert packet["manual_controls"]["post_confirmation_state_reread_required"] is True
-    assert packet["manual_controls"]["post_confirmation_quote_and_instrument_reread_required"] is True
-    assert packet["manual_controls"]["placement_time_expiry_recheck_required"] is True
+    assert packet["manual_controls"]["pre_preview_state_reread_required"] is True
+    assert packet["manual_controls"]["pre_preview_quote_and_instrument_reread_required"] is True
+    assert packet["manual_controls"]["preview_time_expiry_recheck_required"] is True
     assert packet["manual_controls"]["complete_broker_pagination_required"] is True
     assert packet["manual_controls"]["recent_unreconciled_fill_block_required"] is True
     assert packet["manual_controls"]["fresh_quotes_for_all_open_exposure_required"] is True
-    assert "After that exact confirmation, immediately re-read every page of positions, open orders, portfolio, the exact instrument, and its live quote" in packet["prompt"]
-    assert "Re-check that the packet has not expired" in packet["prompt"]
+    assert "The packet ends after the broker preview" in packet["prompt"]
     assert "follow each data.next/cursor link until it is null" in packet["prompt"]
     assert "lagging position feed is not permission to submit again" in packet["prompt"]
     assert "fresh get_option_quotes result for every held option_id" in packet["prompt"]
@@ -1027,9 +1101,9 @@ def test_manual_packet_requires_drawdown_and_post_confirmation_reread_controls()
         "complete_broker_pagination_required",
         "recent_unreconciled_fill_block_required",
         "fresh_quotes_for_all_open_exposure_required",
-        "post_confirmation_state_reread_required",
-        "post_confirmation_quote_and_instrument_reread_required",
-        "placement_time_expiry_recheck_required",
+        "pre_preview_state_reread_required",
+        "pre_preview_quote_and_instrument_reread_required",
+        "preview_time_expiry_recheck_required",
     ):
         tampered = deepcopy(packet)
         tampered["manual_controls"][field] = False
@@ -1294,6 +1368,59 @@ def test_manual_packet_enforces_asset_specific_spread_hard_caps():
         exact_option,
         **_fresh_review_kwargs(),
     )["status"] == "manual_review_required"
+
+
+def test_leaps_manual_packet_requires_profile_isolated_evidence_and_candidate():
+    plan = _with_leaps_review_context(_long_leaps_swing_plan())
+
+    packet = build_manual_robinhood_review_packet(
+        plan,
+        **_fresh_review_kwargs(),
+    )
+
+    assert packet["status"] == "manual_review_required"
+    assert packet["trade_plan"]["execution_profile"] == "leaps_swing"
+    assert (
+        packet["trade_plan"]["review_constraints"]["evidence"]["evidence_lane"]
+        == LEAPS_EVIDENCE_LANE
+    )
+
+
+def test_generic_option_evidence_cannot_authorize_a_leaps_packet():
+    base = _with_leaps_review_context(_long_leaps_swing_plan())
+    cases = []
+
+    generic_evidence = deepcopy(base)
+    generic_evidence["review_constraints"]["evidence"]["evidence_lane"] = (
+        "current_method_executable"
+    )
+    cases.append((generic_evidence, "non_executable_edge_evidence"))
+
+    research_only = deepcopy(base)
+    candidate = research_only["review_constraints"]["candidate"]
+    candidate["leaps_swing_status"] = "research_only"
+    candidate["leaps_execution_ready"] = False
+    candidate["leaps_data_blockers"] = ["quote is delayed"]
+    candidate["candidate_quote_is_research_only"] = True
+    research_only["review_constraints"]["quote"][
+        "candidate_quote_is_research_only"
+    ] = True
+    cases.append((research_only, "leaps_candidate_not_execution_ready"))
+
+    wrong_hold = deepcopy(base)
+    wrong_hold["holding_policy"]["planned_hold_sessions"] = 30
+    cases.append((wrong_hold, "unsafe_leaps_holding_policy"))
+
+    for plan, expected_code in cases:
+        packet = build_manual_robinhood_review_packet(
+            plan,
+            **_fresh_review_kwargs(),
+        )
+        codes = {
+            row["code"] for row in packet["review_plan"]["validation"]["errors"]
+        }
+        assert packet["status"] == "blocked"
+        assert expected_code in codes
 
 
 def test_manual_packet_rejects_missing_stale_or_tampered_share_candidate():
@@ -1561,7 +1688,7 @@ def test_invalid_trade_plan_builds_blocked_packet_and_blocked_prompt():
     assert packet["status"] == "blocked"
     assert packet["next_step"].startswith("Fix the trade-plan")
     assert "STATUS: BLOCKED" in packet["prompt"]
-    assert "DO NOT CALL any Robinhood review or placement tool" in packet["prompt"]
+    assert "DO NOT CALL any Robinhood review or order-submission tool" in packet["prompt"]
     assert "review_equity_order FIRST" not in packet["prompt"]
     assert "place_equity_order" not in packet["prompt"]
 
@@ -1580,7 +1707,7 @@ def test_external_review_gate_blocker_suppresses_all_broker_call_instructions():
     assert packet["status"] == "blocked"
     assert packet["external_review_gate_blockers"] == ["The source quote is stale."]
     assert "STATUS: BLOCKED" in packet["prompt"]
-    assert "DO NOT CALL any Robinhood review or placement tool" in packet["prompt"]
+    assert "DO NOT CALL any Robinhood review or order-submission tool" in packet["prompt"]
     assert "review_option_order FIRST" not in packet["prompt"]
     assert "place_option_order" not in packet["prompt"]
     assert "get_option_quotes" not in packet["prompt"]
@@ -1661,7 +1788,7 @@ if __name__ == "__main__":
         test_invalid_option_contract_keeps_derived_values_null,
         test_equity_review_plan_uses_current_tools_and_blocks_short_entries,
         test_option_review_plan_requires_exact_lookup_and_review_first,
-        test_manual_packet_and_prompt_forbid_credentials_automation_and_repeats,
+        test_manual_packet_is_deterministic_preview_only_and_has_no_submission_material,
         test_option_packet_preserves_account_assumptions_and_live_quote_constraints,
         test_equity_packet_recomputes_share_stop_notional_and_venue_quote_gates,
         test_manual_packet_fails_closed_without_trade_desk_context_or_gate_attestation,

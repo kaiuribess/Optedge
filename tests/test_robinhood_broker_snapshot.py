@@ -4,17 +4,22 @@ import sys
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import scripts.normalize_robinhood_broker_snapshot as normalizer_module  # noqa: E402
 from risk.portfolio import summarize_broker_account_capital_at_risk  # noqa: E402
 from scripts.local_cockpit import build_broker_reconciliation  # noqa: E402
 from scripts.normalize_robinhood_broker_snapshot import (  # noqa: E402
     RAW_BUNDLE_SCHEMA,
     main,
     normalize_broker_snapshot,
+    persist_broker_snapshot_bundle,
 )
 
 
@@ -407,6 +412,116 @@ def test_v2_raw_account_key_cannot_persist_an_account_number():
     actual = normalize_broker_snapshot(spoofed)["accounts"][0]["account_key"]
     assert actual == expected
     assert actual != "acct_ffffffffffffffff"
+
+
+def test_in_memory_v2_persistence_writes_only_redacted_snapshot_and_ledger():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        raw = _mcp_v2_bundle()
+        account_number = "1234567890"
+        rhs_account_number = "0987654321"
+        account = raw["get_accounts"]["data"]["accounts"][0]
+        account["account_number"] = account_number
+        account["rhs_account_number"] = rhs_account_number
+        account["nickname"] = (
+            f"Agentic account {account_number}; RHS {rhs_account_number}; review 2027-01-15"
+        )
+        raw["account_snapshots"][0]["account_number"] = account_number
+
+        output_path = root / "robinhood_broker_snapshot.json"
+        ledger_dir = root / "ledgers"
+        result = persist_broker_snapshot_bundle(
+            raw,
+            output_path=output_path,
+            ledger_dir=ledger_dir,
+        )
+
+        assert result["raw_bundle_written"] is False
+        assert result["equity_ledger_update"]["observations_appended"] == 1
+        assert output_path.exists()
+        assert not output_path.with_name(f".{output_path.name}.tmp").exists()
+        assert not (root / "robinhood_mcp_snapshot_raw.json").exists()
+
+        saved = json.loads(output_path.read_text(encoding="utf-8"))
+        assert saved == result["snapshot"]
+        assert saved["accounts"][0]["account_mask"] == "...7890"
+        assert saved["accounts"][0]["label"] == (
+            "Agentic account [redacted-account]; RHS [redacted-account]; review 2027-01-15"
+        )
+        assert saved["accounts"][0]["portfolio"]["total_value"] == 1250.0
+        assert saved["option_positions"][0]["expiration_date"] == "2027-01-15"
+        assert saved["option_positions"][0]["strike_price"] == 200.0
+
+        ledger_paths = list(ledger_dir.glob("*.json"))
+        assert len(ledger_paths) == 1
+        for path in (output_path, *ledger_paths):
+            encoded = path.read_text(encoding="utf-8")
+            assert account_number not in encoded
+            assert rhs_account_number not in encoded
+
+
+def test_in_memory_v2_persistence_fails_before_ledger_when_atomic_write_fails(
+):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        output_path = root / "robinhood_broker_snapshot.json"
+        ledger_dir = root / "ledgers"
+        ledger_calls: list[object] = []
+
+        def fail_snapshot_write(path, payload):
+            raise OSError("simulated atomic snapshot failure")
+
+        def record_ledger_call(snapshot, destination):
+            ledger_calls.append((snapshot, destination))
+            return {}
+
+        with (
+            patch.object(normalizer_module, "_write_json_atomic", fail_snapshot_write),
+            patch.object(
+                normalizer_module,
+                "append_account_equity_ledgers",
+                record_ledger_call,
+            ),
+            pytest.raises(OSError, match="simulated atomic snapshot failure"),
+        ):
+            persist_broker_snapshot_bundle(
+                _mcp_v2_bundle(),
+                output_path=output_path,
+                ledger_dir=ledger_dir,
+            )
+
+        assert not output_path.exists()
+        assert not ledger_dir.exists()
+        assert ledger_calls == []
+
+
+def test_in_memory_persistence_rejects_non_v2_or_unredactable_account_data():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        output_path = root / "robinhood_broker_snapshot.json"
+        ledger_dir = root / "ledgers"
+
+        with pytest.raises(ValueError, match=RAW_BUNDLE_SCHEMA):
+            persist_broker_snapshot_bundle(
+                _raw_bundle(),
+                output_path=output_path,
+                ledger_dir=ledger_dir,
+            )
+
+        raw = _mcp_v2_bundle()
+        account_number = raw["get_accounts"]["data"]["accounts"][0]["account_number"]
+        raw["get_accounts"]["data"]["accounts"][0]["nickname"] = (
+            f"prefix{account_number}suffix"
+        )
+        with pytest.raises(ValueError, match="supplied raw account identifier"):
+            persist_broker_snapshot_bundle(
+                raw,
+                output_path=output_path,
+                ledger_dir=ledger_dir,
+            )
+
+        assert not output_path.exists()
+        assert not ledger_dir.exists()
 
 
 def test_v2_invalid_option_quantity_blocks_instead_of_becoming_zero_exposure():

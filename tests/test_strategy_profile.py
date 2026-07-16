@@ -6,11 +6,13 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import config
-import scripts.export_robinhood_agentic_queue as robinhood_queue
-import scripts.local_cockpit as local_cockpit
-from optedge.strategy_profile import (
+import config  # noqa: E402
+import scripts.export_robinhood_agentic_queue as robinhood_queue  # noqa: E402
+import scripts.local_cockpit as local_cockpit  # noqa: E402
+from optedge.strategy_profile import (  # noqa: E402
     DISCOVERY_PROFILE,
+    LEAPS_EVIDENCE_LANE,
+    LEAPS_SWING_PROFILE,
     STRATEGY_VERSION,
     SWING_EXECUTION_PROFILE,
     strategy_version,
@@ -81,7 +83,42 @@ def test_swing_execution_profile_preserves_queue_and_cockpit_policy():
     )
 
 
+def test_leaps_swing_profile_is_true_leaps_with_shorter_manual_hold_policy():
+    assert LEAPS_SWING_PROFILE.name == "leaps_swing"
+    assert LEAPS_SWING_PROFILE.evidence_lane == LEAPS_EVIDENCE_LANE
+    assert LEAPS_EVIDENCE_LANE == "option_leaps_swing"
+    assert LEAPS_SWING_PROFILE.option_min_dte == 365
+    assert LEAPS_SWING_PROFILE.option_max_dte == 900
+    assert LEAPS_SWING_PROFILE.preferred_min_dte == 365
+    assert LEAPS_SWING_PROFILE.preferred_max_dte == 730
+    assert LEAPS_SWING_PROFILE.review_sessions == (3, 5, 10)
+    assert LEAPS_SWING_PROFILE.default_hold_sessions == 10
+    assert LEAPS_SWING_PROFILE.max_hold_sessions == 20
+    assert LEAPS_SWING_PROFILE.min_abs_delta == 0.55
+    assert LEAPS_SWING_PROFILE.max_abs_delta == 0.80
+    assert LEAPS_SWING_PROFILE.max_spread_pct == 0.10
+    assert LEAPS_SWING_PROFILE.min_open_interest == 250
+    assert LEAPS_SWING_PROFILE.preferred_open_interest == 500
+    assert LEAPS_SWING_PROFILE.min_daily_volume == 10
+    assert LEAPS_SWING_PROFILE.min_confidence == 65
+    assert LEAPS_SWING_PROFILE.after_cost_edge_must_be_positive is True
+    assert LEAPS_SWING_PROFILE.max_quote_age_seconds == 120
+    assert LEAPS_SWING_PROFILE.stop_loss_fraction == 0.25
+    assert LEAPS_SWING_PROFILE.target_gain_fraction == 0.35
+    assert LEAPS_SWING_PROFILE.breakeven_review_trigger_fraction == 0.20
+    assert LEAPS_SWING_PROFILE.manual_management_only is True
+
+
+def test_leaps_profile_does_not_mutate_existing_swing_defaults():
+    assert SWING_EXECUTION_PROFILE.option_min_dte == 90
+    assert SWING_EXECUTION_PROFILE.option_max_dte is None
+    assert SWING_EXECUTION_PROFILE.max_option_spread_pct == 0.15
+    assert SWING_EXECUTION_PROFILE.strategy_version == STRATEGY_VERSION
+
+
 if __name__ == "__main__":
     test_discovery_profile_preserves_scanner_policy()
     test_swing_execution_profile_preserves_queue_and_cockpit_policy()
-    print("2/2 strategy profile tests passed")
+    test_leaps_swing_profile_is_true_leaps_with_shorter_manual_hold_policy()
+    test_leaps_profile_does_not_mutate_existing_swing_defaults()
+    print("4/4 strategy profile tests passed")

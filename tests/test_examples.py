@@ -34,5 +34,5 @@ def test_validation_summary_example_matches_current_top_level_contract() -> None
     }
 
     assert required <= set(example)
-    assert example["fixed_horizon"]["methodology_version"] == 6
+    assert example["fixed_horizon"]["methodology_version"] == 7
     assert set(example["assets"]) == {"option", "share", "futures"}

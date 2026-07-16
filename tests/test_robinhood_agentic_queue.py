@@ -77,12 +77,140 @@ def _candidate(**overrides):
     return row
 
 
+def _leaps_candidate(**overrides):
+    values = {
+        "execution_profile": rh_module.LEAPS_SWING_PROFILE.name,
+        "strategy_evidence_lane": rh_module.LEAPS_SWING_PROFILE.evidence_lane,
+        "profile_policy_version": rh_module.LEAPS_SWING_PROFILE.policy_version,
+        "contract": "AAPL 2027-10-24 CALL 200",
+        "expiry": "2027-10-24",
+        "delta": 0.67,
+        "openInterest": 1_000,
+        "volume": 50,
+        "after_cost_edge_pct": 0.04,
+        "planned_hold_sessions": 10,
+        "confidence": 72,
+    }
+    values.update(overrides)
+    return _candidate(**values)
+
+
 def _queue(rows, **kwargs):
     return build_queue_from_candidates(
         pd.DataFrame(rows),
         generated_at="2026-06-11T10:00:00+00:00",
         **kwargs,
     )
+
+
+def test_explicit_leaps_profile_applies_true_leaps_policy_and_metadata():
+    queue = _queue([_leaps_candidate()], execution_profile="leaps_swing")
+
+    assert queue["execution_profile"] == "leaps_swing"
+    assert queue["strategy_evidence_lane"] == "option_leaps_swing"
+    assert queue["min_dte"] == 365
+    assert queue["max_dte"] == 900
+    assert queue["min_confidence"] == 65.0
+    assert queue["max_spread_pct"] == 0.10
+    assert queue["execution_enabled"] is False
+    assert queue["readiness"]["ready_to_submit_count"] == 0
+
+    order = queue["orders"][0]
+    assert order["execution_profile"] == "leaps_swing"
+    assert order["strategy_evidence_lane"] == "option_leaps_swing"
+    assert order["leaps_swing_status"] == "execution_ready"
+    assert order["leaps_execution_ready"] is True
+    assert order["leaps_hard_blockers"] == []
+    assert order["leaps_data_blockers"] == []
+    assert order["delta"] == 0.67
+    assert order["open_interest"] == 1_000
+    assert order["volume"] == 50
+    assert order["after_cost_edge_pct"] == 0.04
+    assert order["leaps_contract_policy"]["after_cost_edge_pct"] == 0.04
+    assert order["review_sessions"] == [3, 5, 10]
+    assert order["default_hold_sessions"] == 10
+    assert order["max_hold_sessions"] == 20
+    assert order["stop_loss_fraction"] == 0.25
+    assert order["target_gain_fraction"] == 0.35
+    assert order["breakeven_review_trigger_fraction"] == 0.20
+    assert order["manual_management_only"] is True
+
+
+def test_delayed_leaps_quote_stays_research_only_and_never_execution_ready():
+    queue = _queue([
+        _leaps_candidate(
+            source_quote_time_basis="provider_response_received_at",
+            quote_quality="free_or_delayed",
+            data_delay="delayed",
+        )
+    ], execution_profile="leaps_swing")
+
+    order = queue["orders"][0]
+    assert order["leaps_swing_status"] == "research_only"
+    assert order["leaps_execution_ready"] is False
+    assert order["leaps_execution_score"] == 0
+    assert any("not broker-live" in reason for reason in order["leaps_data_blockers"])
+    assert queue["readiness"]["profile_execution_ready_count"] == 0
+    assert queue["readiness"]["profile_research_only_count"] == 1
+
+
+def test_delayed_data_label_cannot_be_overridden_by_a_live_quality_label():
+    queue = _queue([
+        _leaps_candidate(
+            quote_quality="live_or_broker",
+            data_delay="delayed_15_minutes",
+        )
+    ], execution_profile="leaps_swing")
+
+    order = queue["orders"][0]
+    assert order["leaps_swing_status"] == "research_only"
+    assert order["leaps_execution_ready"] is False
+    assert any("not broker-live" in reason for reason in order["leaps_data_blockers"])
+
+
+def test_leaps_hard_policy_blockers_are_rejected_with_profile_state():
+    queue = _queue(
+        [_leaps_candidate(delta=0.90)],
+        execution_profile="leaps_swing",
+    )
+
+    assert queue["orders"] == []
+    rejected = queue["rejected"][0]
+    assert rejected["leaps_swing_status"] == "blocked"
+    assert rejected["leaps_execution_ready"] is False
+    assert any("absolute delta" in reason for reason in rejected["leaps_hard_blockers"])
+    assert any("LEAPS policy: absolute delta" in reason for reason in rejected["reasons"])
+
+
+def test_leaps_candidate_requires_exact_profile_lane_and_policy_identity():
+    queue = _queue(
+        [_leaps_candidate(profile_policy_version="stale-policy")],
+        execution_profile="leaps_swing",
+    )
+
+    assert queue["orders"] == []
+    rejected = queue["rejected"][0]
+    assert rejected["leaps_swing_status"] == "blocked"
+    assert rejected["leaps_execution_ready"] is False
+    assert any("policy version" in reason for reason in rejected["leaps_hard_blockers"])
+
+
+def test_dte_alone_never_infers_the_leaps_execution_profile():
+    queue = _queue(
+        [_leaps_candidate(
+            execution_profile="",
+            strategy_evidence_lane="",
+            profile_policy_version="",
+        )],
+        execution_profile="swing_execution",
+        min_dte=365,
+    )
+
+    assert queue["execution_profile"] == "swing_execution"
+    assert queue["min_dte"] == 365
+    assert queue["max_dte"] is None
+    assert queue["max_spread_pct"] == 0.15
+    assert "leaps_swing_status" not in queue["orders"][0]
 
 
 def test_queue_is_options_only():
@@ -797,6 +925,7 @@ def test_build_robinhood_queue_can_refresh_chain_before_loading_candidates():
 
     def fake_refresh(**kwargs):
         calls["refresh"] += 1
+        assert kwargs["execution_profile"] == "swing_execution"
         assert kwargs["preset"] == "swing"
         assert kwargs["min_dte"] == 90
         assert kwargs["max_premium_per_order"] == 150.0
@@ -841,6 +970,46 @@ def test_build_robinhood_queue_can_refresh_chain_before_loading_candidates():
         assert calls == {"refresh": 1, "build": 1}
         assert queue["chain_refresh"]["ok"] is True
         assert queue["orders"][0]["symbol"] == "AAPL"
+    finally:
+        rh_module.refresh_option_chain_shortlist = old_refresh
+        rh_module.build_external_orders = old_build
+
+
+def test_build_robinhood_queue_propagates_explicit_leaps_profile_limits():
+    old_refresh = rh_module.refresh_option_chain_shortlist
+    old_build = rh_module.build_external_orders
+    calls = {"refresh": 0, "build": 0}
+
+    def fake_refresh(**kwargs):
+        calls["refresh"] += 1
+        assert kwargs["execution_profile"] == "leaps_swing"
+        assert kwargs["min_dte"] == 365
+        return {
+            "attempted": True,
+            "ok": True,
+            "applied_to_queue": True,
+            "execution_profile": "leaps_swing",
+            "preset": "leaps",
+        }
+
+    def fake_build_external_orders(**kwargs):
+        calls["build"] += 1
+        assert kwargs["min_option_dte"] == 365
+        return pd.DataFrame([_leaps_candidate()])
+
+    try:
+        rh_module.refresh_option_chain_shortlist = fake_refresh
+        rh_module.build_external_orders = fake_build_external_orders
+        with tempfile.TemporaryDirectory() as td:
+            queue = build_robinhood_queue(
+                data_dir=Path(td),
+                execution_profile="leaps_swing",
+                refresh_chain=True,
+            )
+        assert calls == {"refresh": 1, "build": 1}
+        assert queue["execution_profile"] == "leaps_swing"
+        assert queue["min_dte"] == 365
+        assert queue["max_dte"] == 900
     finally:
         rh_module.refresh_option_chain_shortlist = old_refresh
         rh_module.build_external_orders = old_build

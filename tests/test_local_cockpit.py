@@ -685,6 +685,7 @@ def _run_manual_gate(
         cockpit_module.build_broker_reconciliation = (
             lambda data_dir, snapshot_override=None: broker
         )
+        profile = str(plan.get("execution_profile") or "swing_execution")
         cockpit_module.build_edge_lab_report = lambda data_dir: {
             "schema": "optedge_edge_lab_v1",
             "status": "validated",
@@ -697,6 +698,15 @@ def _run_manual_gate(
                 "evidence_lane": "current_method_executable",
                 "primary_blocker": None,
             }],
+            "leaps_swing": {
+                "schema": "optedge_leaps_swing_evidence_v1",
+                "profile": "leaps_swing",
+                "evidence_lane": "option_leaps_swing",
+                "status": "validated" if profile == "leaps_swing" else "paper_only",
+                "live_capital_eligible": profile == "leaps_swing",
+                "primary_blocker": None if profile == "leaps_swing" else "Not selected",
+                "required_horizons_sessions": [5, 10, 20],
+            },
         }
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
@@ -1838,6 +1848,55 @@ def test_manual_option_review_freezes_exact_cycle_and_queue_candidate_attestatio
     }
 
 
+def test_leaps_option_review_uses_only_the_profile_specific_lane():
+    expiry = "2028-01-21"
+    plan = _manual_gate_option_plan()
+    plan["execution_profile"] = "leaps_swing"
+    plan["order"]["expiry"] = expiry
+    candidate = _manual_gate_option_candidate(
+        expiry=expiry,
+        dte=(
+            datetime.fromisoformat(expiry).date()
+            - datetime.now(timezone.utc).date()
+        ).days,
+        execution_profile="leaps_swing",
+        strategy_evidence_lane="option_leaps_swing",
+        profile_policy_version=cockpit_module.LEAPS_SWING_PROFILE.policy_version,
+        leaps_swing_status="execution_ready",
+        leaps_execution_ready=True,
+        leaps_hard_blockers=[],
+        leaps_data_blockers=[],
+        max_allowed_spread_pct=0.10,
+    )
+    broker = _manual_gate_broker([
+        _manual_gate_account(equity=10_000, buying_power=2_000),
+    ])
+
+    gate = _run_manual_gate("option", plan, broker, candidate=candidate)
+
+    assert gate["review_allowed"] is True
+    evidence = gate["review_constraints"]["evidence"]
+    attestation = gate["review_constraints"]["candidate"]
+    assert evidence["execution_profile"] == "leaps_swing"
+    assert evidence["evidence_lane"] == "option_leaps_swing"
+    assert evidence["required_horizons_sessions"] == [5, 10, 20]
+    assert evidence["require_broker_market_observed"] is True
+    assert attestation["execution_profile"] == "leaps_swing"
+    assert attestation["leaps_swing_status"] == "execution_ready"
+    assert attestation["leaps_data_blockers"] == []
+    assert attestation["max_spread_fraction"] == 0.10
+
+    research_only = dict(candidate)
+    research_only.update({
+        "leaps_swing_status": "research_only",
+        "leaps_execution_ready": False,
+        "leaps_data_blockers": ["quote is delayed"],
+    })
+    blocked = _run_manual_gate("option", plan, broker, candidate=research_only)
+    assert blocked["review_allowed"] is False
+    assert any("research-only or blocked" in value for value in blocked["blockers"])
+
+
 def test_manual_option_review_blocks_missing_duplicate_or_mismatched_queue_candidate():
     broker = _manual_gate_broker([
         _manual_gate_account(equity=10_000, buying_power=2_000),
@@ -2076,7 +2135,12 @@ def test_trade_plan_report_builds_manual_review_without_execution_or_automation(
     assert report["review_packet"]["status"] == "manual_review_required"
     assert report["review_packet"]["review_plan"]["review_tool"] == "review_equity_order"
     assert "No scheduled task" in report["review_prompt"]
-    assert "place_equity_order" in report["review_prompt"]
+    assert "The packet ends after the broker preview" in report["review_prompt"]
+    assert "place_equity_order" not in report["review_prompt"]
+    assert "place_arguments_after_confirmation" not in json.dumps(
+        report["review_packet"],
+        sort_keys=True,
+    )
 
 
 def test_trade_plan_report_blocks_short_option_review():
@@ -2382,6 +2446,38 @@ def test_trade_desk_contract_is_manual_and_versioned():
     assert calls == {"command": 1, "broker": 1, "edge": 1, "best": 1}
 
 
+def test_first_load_climate_is_local_and_fail_closed(monkeypatch, tmp_path):
+    def fail_live_climate(*args, **kwargs):
+        raise AssertionError("first load must not fetch live climate")
+
+    monkeypatch.setattr(cockpit_module, "build_swing_climate", fail_live_climate)
+    monkeypatch.setattr(cockpit_module, "build_best_setups", lambda *args, **kwargs: {
+        "rows": [{
+            "asset": "option",
+            "ticker_or_symbol": "HYG",
+            "setup": "HYG P 75 2026-12-18",
+            "readiness_score": 100,
+            "readiness_label": "ready",
+            "trade_status": "ready",
+            "dte": 365,
+            "spread_pct": 0.05,
+            "suggested_contracts": 1,
+            "swing_fit_label": "clean_swing",
+            "score": 99,
+        }],
+        "asset_summaries": [],
+        "sources": {},
+    })
+
+    climate = cockpit_module._local_first_load_climate(tmp_path)
+    report = build_climate_gated_setups(tmp_path, climate=climate)
+
+    assert climate["context_source"] == "local_first_load_defensive_fallback"
+    assert climate["live_fetch_performed"] is False
+    assert report["climate_label"] == "context_unavailable"
+    assert report["rows"][0]["ticker_or_symbol"] == "HYG"
+
+
 def test_cockpit_html_contains_lookup_controls():
     html = render_cockpit_html()
     assert "__OPTEDGE_CSRF_TOKEN__" not in html
@@ -2620,6 +2716,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert 'id="rh-min-dte" type="number" min="0" max="1200" step="1" value="90"' in html
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
+    assert 'id="rh-check-finalist"' in html
+    assert "/api/robinhood-check-finalist" in html
+    assert "Load checked quote into planner" in html
+    assert "The quote expires after 120 seconds" in html
     assert "loadRobinhoodQueue" in html
     assert "Manual review status" in html
     assert "autopilot-summary" in html
@@ -2661,7 +2761,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Top rejects" in html
     assert "Option chain scan" in html
     assert "3m+ swing preset" in html
-    assert "Long-dated preset" in html
+    assert "LEAPS swing preset" in html
+    assert "Broad 6m+ research" in html
+    assert "True LEAPS swing (365d+)" in html
+    assert "leaps_swing_status" in html
+    assert "LEAPS blockers" in html
     assert "Liquid preset" in html
     assert "applyChainPreset" in html
     assert "/api/option-chain-scan" in html
@@ -2950,6 +3054,206 @@ def test_lookup_http_routes_require_csrf_json_post_and_get_routes_are_inert():
             thread.join(timeout=5)
             cockpit_module.lookup_symbol = original_lookup
             cockpit_module.save_lookup = original_save
+
+
+def test_robinhood_connection_routes_are_explicit_loopback_only_and_secret_safe():
+    original_sync = cockpit_module.sync_robinhood_broker_snapshot
+    original_finalist_check = cockpit_module.check_best_option_finalist
+    sync_calls = []
+    finalist_calls = []
+
+    def fake_sync(manager, *, data_dir):
+        sync_calls.append((manager, Path(data_dir)))
+        return {
+            "schema": "optedge_robinhood_direct_snapshot_sync_v1",
+            "ok": True,
+            "snapshot_ready": True,
+            "account_count": 1,
+            "counts": {"equity_positions": 0, "option_positions": 0},
+            "raw_bundle_written": False,
+            "does_not_place_orders": True,
+        }
+
+    cockpit_module.sync_robinhood_broker_snapshot = fake_sync
+
+    def fake_finalist_check(manager, *, data_dir, write):
+        finalist_calls.append((manager, Path(data_dir), write))
+        return {
+            "schema": "optedge_robinhood_option_finalist_check_v1",
+            "status": "passed",
+            "market_check_passed": True,
+            "ready_for_manual_review": False,
+            "candidate": {"label": "HYG 2026-12-18 P 75"},
+            "quote": {"bid_price": 0.48, "ask_price": 0.50},
+            "does_not_place_orders": True,
+            "does_not_preview_orders": True,
+        }
+
+    cockpit_module.check_best_option_finalist = fake_finalist_check
+
+    class FakeConnectionManager:
+        def __init__(self, callback_uri):
+            self.callback_uri = callback_uri
+            self.connect_calls = 0
+            self.disconnect_calls = 0
+            self.callbacks = []
+
+        @staticmethod
+        def _status(state="authorization_required"):
+            return {
+                "schema": "optedge_robinhood_connection_manager_v1",
+                "connection_state": state,
+                "connect_pending": state == "authorization_required",
+                "authorization_url_ready": state == "authorization_required",
+                "last_error_code": None,
+                "placement_api_exposed": False,
+                "automatic_retry_enabled": False,
+                "background_polling_enabled": False,
+                "client": {
+                    "oauth": {
+                        "status": state,
+                        "authorization_url_ready": state == "authorization_required",
+                        "contains_authorization_url": False,
+                        "contains_code_or_state": False,
+                    },
+                    "credential_storage": {
+                        "backend_ready": True,
+                        "token_present": False,
+                    },
+                    "tool_catalog": {
+                        "ready_for_direct_review": False,
+                        "read_tools": [],
+                    },
+                },
+            }
+
+        def status(self):
+            return self._status()
+
+        def start_connect(self):
+            self.connect_calls += 1
+            return self._status()
+
+        def authorization_url_for_browser(self):
+            return "https://robinhood.example/authorize?state=state-secret"
+
+        def submit_oauth_callback(self, callback_url):
+            self.callbacks.append(callback_url)
+            return self._status("connecting")
+
+        def disconnect(self):
+            self.disconnect_calls += 1
+            return self._status("disconnected")
+
+    with tempfile.TemporaryDirectory() as td:
+        handler = type(
+            "RobinhoodConnectionRouteTestHandler",
+            (cockpit_module.CockpitHandler,),
+            {"data_dir": Path(td), "robinhood_connection_manager": None},
+        )
+        server = cockpit_module.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        port = int(server.server_address[1])
+        origin = f"http://127.0.0.1:{port}"
+        manager = FakeConnectionManager(
+            f"{origin}/oauth/robinhood/callback"
+        )
+        handler.robinhood_connection_manager = manager
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def request(method, path, *, body=None, headers=None):
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request(method, path, body=body, headers=headers or {})
+                response = connection.getresponse()
+                payload = response.read()
+                return response.status, dict(response.getheaders()), payload
+            finally:
+                connection.close()
+
+        post_headers = {
+            "Content-Type": "application/json",
+            "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+            "Origin": origin,
+        }
+        try:
+            status, _, payload = request("GET", "/api/robinhood-connection")
+            assert status == 200
+            public = json.loads(payload.decode("utf-8"))
+            assert public["authorization_url_ready"] is True
+            assert "state-secret" not in payload.decode("utf-8")
+            assert "https://robinhood.example" not in payload.decode("utf-8")
+
+            status, headers, payload = request(
+                "GET", "/auth/robinhood/authorize"
+            )
+            assert status == 302
+            assert headers["Location"].startswith("https://robinhood.example/")
+            assert headers["Referrer-Policy"] == "no-referrer"
+            assert payload == b""
+
+            status, headers, payload = request(
+                "GET",
+                "/oauth/robinhood/callback?code=code-secret&state=state-secret",
+            )
+            assert status == 200
+            assert headers["Referrer-Policy"] == "no-referrer"
+            rendered = payload.decode("utf-8")
+            assert "code-secret" not in rendered
+            assert "state-secret" not in rendered
+            assert manager.callbacks == [
+                f"{origin}/oauth/robinhood/callback?code=code-secret&state=state-secret"
+            ]
+
+            status, _, _ = request(
+                "POST",
+                "/api/robinhood-connect",
+                body="{}",
+                headers={"Content-Type": "application/json", "Origin": origin},
+            )
+            assert status == 403
+            assert manager.connect_calls == 0
+
+            status, _, _ = request(
+                "POST", "/api/robinhood-connect", body="{}", headers=post_headers
+            )
+            assert status == 200
+            assert manager.connect_calls == 1
+
+            status, _, payload = request(
+                "POST",
+                "/api/robinhood-sync-snapshot",
+                body="{}",
+                headers=post_headers,
+            )
+            assert status == 200
+            assert json.loads(payload.decode("utf-8"))["raw_bundle_written"] is False
+            assert sync_calls == [(manager, Path(td))]
+
+            status, _, payload = request(
+                "POST",
+                "/api/robinhood-check-finalist",
+                body="{}",
+                headers=post_headers,
+            )
+            assert status == 200
+            finalist = json.loads(payload.decode("utf-8"))
+            assert finalist["market_check_passed"] is True
+            assert finalist["ready_for_manual_review"] is False
+            assert finalist["does_not_place_orders"] is True
+            assert finalist_calls == [(manager, Path(td), True)]
+
+            status, _, _ = request(
+                "POST", "/api/robinhood-disconnect", body="{}", headers=post_headers
+            )
+            assert status == 200
+            assert manager.disconnect_calls == 1
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            cockpit_module.sync_robinhood_broker_snapshot = original_sync
+            cockpit_module.check_best_option_finalist = original_finalist_check
 
 
 def test_read_only_watchlist_enrichment_does_not_queue_broker_research():
@@ -8498,6 +8802,9 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
                 "spread_pct": 0.04,
                 "openInterest": 1200,
                 "volume": 80,
+                "delta": 0.67,
+                "confidence": 73,
+                "after_cost_edge_pct": 0.04,
                 "breakeven_price": 225.0,
                 "breakeven_move_pct": 0.125,
                 "budget_usage_pct": 1.0,
@@ -8545,6 +8852,8 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert payload["rows"][0]["source_quote_at"] == "2026-06-13T19:59:00+00:00"
         assert payload["rows"][0]["source_quote_time_basis"] == "provider_quote_timestamp"
         assert payload["rows"][0]["chain_source"] == "cboe"
+        assert payload["rows"][0]["confidence"] == 73
+        assert payload["rows"][0]["after_cost_edge_pct"] == 0.04
         assert payload["rows"][0]["breakeven_price"] == 225.0
         assert payload["rows"][0]["budget_fit"] == "inside_budget"
         assert payload["rows"][0]["reward_risk_reference"] == 2.0
@@ -8554,6 +8863,10 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
         assert payload["quality_summary"]["primary_review_count"] == 1
         assert payload["provider_summary"]["source_counts"] == {"cboe": 1}
         assert result["quality_summary"]["status"] == "clean"
+        loaded = cockpit_module._load_option_chain_shortlist(data_dir)
+        assert loaded.iloc[0]["confidence"] == 73
+        assert loaded.iloc[0]["readiness_score"] == 91
+        assert loaded.iloc[0]["after_cost_edge_pct"] == 0.04
         summary = cockpit_module._build_chain_shortlist_summary(data_dir)
         assert summary["quality_summary"]["status"] == "clean"
         assert summary["source_counts"] == {"cboe": 1}
@@ -8562,6 +8875,7 @@ def test_option_chain_shortlist_writer_creates_portable_artifacts():
 
 def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
     original = cockpit_module._fetch_option_chain
+    quote_at = cockpit_module._now_iso()
 
     def fake_fetch(ticker: str, cache_age: int = 600):
         assert ticker == "AAPL"
@@ -8569,9 +8883,11 @@ def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
             "spot": 200.0,
             "source": "cboe",
             "quote_quality": "free_or_delayed",
-            "expirations": ["2027-01-15", "2026-06-18"],
+            "source_quote_at": quote_at,
+            "source_quote_time_basis": "provider_quote_timestamp",
+            "expirations": ["2028-01-21", "2026-08-21"],
             "chains": {
-                "2027-01-15": pd.DataFrame([
+                "2028-01-21": pd.DataFrame([
                     {
                         "strike": 220.0,
                         "side": "call",
@@ -8580,18 +8896,24 @@ def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
                         "lastPrice": 5.00,
                         "volume": 50,
                         "openInterest": 1000,
+                        "delta": 0.65,
+                        "confidence": 72,
+                        "after_cost_edge_pct": 0.08,
                     },
                     {
                         "strike": 180.0,
                         "side": "put",
-                        "bid": 3.00,
-                        "ask": 3.50,
+                        "bid": 3.10,
+                        "ask": 3.30,
                         "lastPrice": 3.20,
                         "volume": 15,
-                        "openInterest": 120,
+                        "openInterest": 500,
+                        "delta": -0.65,
+                        "confidence": 70,
+                        "after_cost_edge_pct": 0.05,
                     },
                 ]),
-                "2026-06-18": pd.DataFrame([
+                "2026-08-21": pd.DataFrame([
                     {
                         "strike": 205.0,
                         "side": "call",
@@ -8622,19 +8944,58 @@ def test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes():
 
     assert report["ok"] is True
     assert report["preset"] == "leaps"
-    assert report["preset_label"] == "Long dated"
-    assert report["filters"]["min_dte"] == 180
+    assert report["preset_label"] == "LEAPS swing"
+    assert report["execution_profile"] == "leaps_swing"
+    assert report["strategy_evidence_lane"] == "option_leaps_swing"
+    assert report["filters"]["min_dte"] == 365
     assert report["filters"]["max_dte"] == 900
-    assert report["filters"]["max_premium"] == 750.0
+    assert report["filters"]["max_spread_pct"] == 0.10
+    assert report["filters"]["max_premium"] == 0.0
+    assert report["filters"]["min_open_interest"] == 250
     assert report["filtered_count"] == 2
     assert {row["side"] for row in report["rows"]} == {"call", "put"}
     assert report["scan_summary"]["long_dated_count"] == 2
     assert report["scan_summary"]["best_call"].startswith("C 220")
     assert report["scan_summary"]["best_put"].startswith("P 180")
-    assert report["scan_summary"]["review_count"] >= 1
+    assert report["scan_summary"]["review_count"] == 0
+    assert report["scan_summary"]["wait_count"] == 2
+    assert report["scan_summary"]["profile_status_counts"] == {"research_only": 2}
+    assert report["scan_summary"]["leaps_execution_ready_count"] == 0
+    assert report["decision"]["status"] == "research_only"
+    assert report["decision"]["saveable_count"] == 0
+    assert report["decision"]["trade_plan"]["action"] == "watch_only"
     assert report["expiry_summary"][0]["contracts"] == 2
     assert report["expiry_summary"][0]["calls"] == 1
     assert report["expiry_summary"][0]["puts"] == 1
+    call = next(row for row in report["rows"] if row["side"] == "call")
+    assert call["execution_profile"] == "leaps_swing"
+    assert call["strategy_evidence_lane"] == "option_leaps_swing"
+    assert call["leaps_swing_status"] == "research_only"
+    assert call["leaps_execution_ready"] is False
+    assert call["leaps_hard_blockers"] == []
+    assert any("delayed" in reason for reason in call["leaps_data_blockers"])
+    assert call["review_sessions"] == [3, 5, 10]
+    assert call["default_hold_sessions"] == 10
+    assert call["max_hold_sessions"] == 20
+    assert call["contract_dte_is_not_hold_time"] is True
+    assert call["stop_price_reference"] == 3.75
+    assert call["target_price_reference"] == 6.75
+    assert call["stop_loss_fraction"] == 0.25
+    assert call["target_gain_fraction"] == 0.35
+    assert call["breakeven_review_trigger_fraction"] == 0.20
+    assert call["manual_management_only"] is True
+
+
+def test_option_chain_long_dated_preset_retains_broad_comparison_window():
+    preset, config = cockpit_module._chain_preset_config("long")
+
+    assert preset == "long_dated"
+    assert config["label"] == "Broad long-dated research"
+    assert config["min_dte"] == 180
+    assert config["max_dte"] == 900
+    assert config["max_spread_pct"] == 0.25
+    assert config["min_open_interest"] == 10
+    assert config["execution_profile"] == "swing_execution"
 
 
 def test_cboe_option_activity_filters_3m_plus_public_contracts():
@@ -9473,6 +9834,7 @@ if __name__ == "__main__":
     test_option_chain_batch_uses_swing_scout_candidates_when_blank()
     test_option_chain_shortlist_writer_creates_portable_artifacts()
     test_option_chain_leaps_preset_overrides_manual_filters_and_summarizes()
+    test_option_chain_long_dated_preset_retains_broad_comparison_window()
     test_cboe_option_activity_filters_3m_plus_public_contracts()
     test_cboe_option_activity_marks_zero_bid_ask_as_context_only()
     test_provider_status_checks_free_sources_without_running_scan()
@@ -9485,4 +9847,4 @@ if __name__ == "__main__":
     test_watchlist_bulk_add_preserves_each_chain_context()
     test_saved_option_contracts_can_refresh_exact_chain_quotes()
     test_research_watchlist_adds_dedupes_removes_and_builds_jobs()
-    print("115/115 local cockpit tests passed")
+    print("116/116 local cockpit tests passed")

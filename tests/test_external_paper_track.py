@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 import json
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -11,12 +11,17 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 
+from optedge.strategy_profile import LEAPS_SWING_PROFILE
 from scripts.export_external_paper_track import (
     _load_option_chain_shortlist,
     build_external_orders,
     export_candidates,
+    write_outputs as write_external_outputs,
 )
-from scripts.export_robinhood_agentic_queue import build_robinhood_queue
+from scripts.export_robinhood_agentic_queue import (
+    build_queue_from_candidates,
+    build_robinhood_queue,
+)
 
 
 def _option(**overrides):
@@ -467,6 +472,102 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     assert queue["readiness"]["manual_review_candidate_count"] == 1
     assert queue["rejection_reason_counts"]["dte below 180"] >= 1
     assert queue["diagnostics"]["reason_groups"]["below_min_dte"] >= 1
+
+
+def test_leaps_shortlist_evidence_survives_external_json_round_trip_into_queue():
+    with tempfile.TemporaryDirectory() as td:
+        data_dir = Path(td)
+        generated = datetime.now(timezone.utc).replace(microsecond=0)
+        generated_at = generated.isoformat()
+        expiry = (generated + timedelta(days=500)).date().isoformat()
+        contract = f"AAPL {expiry} C 200"
+        (data_dir / "option_chain_shortlist.json").write_text(json.dumps({
+            "generated_at": generated_at,
+            "execution_profile": LEAPS_SWING_PROFILE.name,
+            "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
+            "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+            "rows": [{
+                "generated_at": generated_at,
+                "symbol": "AAPL",
+                "underlying_type": "equity",
+                "contract_query": contract,
+                "side": "call",
+                "expiry": expiry,
+                "strike": 200.0,
+                "dte": 500,
+                "mid": 1.20,
+                "bid": 1.17,
+                "ask": 1.23,
+                "source_quote_at": generated_at,
+                "source_quote_time_basis": "provider_response_received_at",
+                "premium_dollars": 120.0,
+                "stop_price_reference": 0.90,
+                "target_price_reference": 1.62,
+                "spread_pct": 0.05,
+                "openInterest": 1_200,
+                "volume": 45,
+                "delta": 0.67,
+                "confidence": 73,
+                "after_cost_edge_pct": 0.04,
+                "planned_hold_sessions": 10,
+                "execution_profile": LEAPS_SWING_PROFILE.name,
+                "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
+                "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+                "contract_grade": "A",
+                "readiness_label": "ready",
+                "readiness_score": 99,
+                "contract_quality_score": 94,
+                "swing_fit_score": 91,
+                "swing_fit_label": "clean_swing",
+                "chain_source": "cboe",
+                "quote_quality": "free_or_delayed",
+                "data_delay": "delayed",
+            }],
+        }), encoding="utf-8")
+
+        shortlist = _load_option_chain_shortlist(data_dir)
+        external = build_external_orders(
+            data_dir,
+            asset="option",
+            query="AAPL",
+            min_option_dte=365,
+        )
+        _, external_json = write_external_outputs(external, data_dir)
+        reloaded = pd.DataFrame(json.loads(external_json.read_text(encoding="utf-8")))
+        queue = build_queue_from_candidates(
+            reloaded,
+            execution_profile=LEAPS_SWING_PROFILE.name,
+            generated_at=generated_at,
+            account_budget=500,
+            max_orders=1,
+            max_candidates=1,
+        )
+
+    assert shortlist.iloc[0]["confidence"] == 73
+    assert shortlist.iloc[0]["readiness_score"] == 99
+    assert external.iloc[0]["confidence"] == 73
+    assert external.iloc[0]["execution_profile"] == LEAPS_SWING_PROFILE.name
+    assert external.iloc[0]["profile_policy_version"] == LEAPS_SWING_PROFILE.policy_version
+    assert external.iloc[0]["delta"] == 0.67
+    assert external.iloc[0]["open_interest"] == 1_200
+    assert external.iloc[0]["volume"] == 45
+    assert external.iloc[0]["after_cost_edge_pct"] == 0.04
+
+    assert len(queue["orders"]) == 1
+    order = queue["orders"][0]
+    assert order["execution_profile"] == LEAPS_SWING_PROFILE.name
+    assert order["profile_policy_version"] == LEAPS_SWING_PROFILE.policy_version
+    assert order["confidence"] == 73
+    assert order["delta"] == 0.67
+    assert order["open_interest"] == 1_200
+    assert order["volume"] == 45
+    assert order["after_cost_edge_pct"] == 0.04
+    assert order["leaps_contract_policy"]["confidence"] == 73
+    assert order["leaps_contract_policy"]["after_cost_edge_pct"] == 0.04
+    assert order["leaps_swing_status"] == "research_only"
+    assert order["leaps_execution_ready"] is False
+    assert order["fresh_robinhood_quote_required"] is True
+    assert any("not broker-live" in reason for reason in order["leaps_data_blockers"])
 
 
 if __name__ == "__main__":

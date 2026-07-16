@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from backtest import edge_lab as edge_lab_module
 from backtest import fixed_horizon
 from backtest.edge_lab import analyze_edge_outcomes, build_edge_lab, evidence_stats
 
@@ -97,6 +98,24 @@ def test_same_day_duplicates_do_not_inflate_independent_entry_days():
     assert stats["n"] == 1000
     assert stats["unique_entry_days"] == 2
     assert stats["signals_per_entry_day"] == 500
+
+
+def test_evidence_lane_freezes_current_provenance_once(monkeypatch):
+    frame = _outcomes(days=12)
+    expected = fixed_horizon.current_evidence_provenance()
+    calls = 0
+
+    def current_provenance():
+        nonlocal calls
+        calls += 1
+        return expected
+
+    monkeypatch.setattr(edge_lab_module, "current_evidence_provenance", current_provenance)
+    lane, selected = edge_lab_module._evidence_lane(frame)
+
+    assert calls == 1
+    assert lane == "current_method_executable"
+    assert len(selected) == len(frame)
 
 
 def test_options_require_broker_observed_outcome_coverage():
