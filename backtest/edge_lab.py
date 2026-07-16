@@ -665,7 +665,11 @@ def _verdict(
 def _evidence_lane(frame: pd.DataFrame) -> tuple[str, pd.DataFrame]:
     if frame is None or frame.empty:
         return "legacy_research_only", frame
-    current_mask = frame.apply(outcome_has_current_provenance, axis=1).astype(bool)
+    expected = current_evidence_provenance()
+    current_mask = frame.apply(
+        lambda row: outcome_has_current_provenance(row, expected=expected),
+        axis=1,
+    ).astype(bool)
     executable = frame[current_mask & _bool_column(frame, "eligible_for_executable_metrics")]
     if not executable.empty:
         return "current_method_executable", executable

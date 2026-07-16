@@ -13,26 +13,27 @@ import hashlib
 import json
 import math
 import re
-import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
 from optedge.strategy_profile import (
+    LEAPS_EVIDENCE_LANE,
+    LEAPS_SWING_POLICY_VERSION,
+    LEAPS_SWING_PROFILE,
     SWING_EXECUTION_MAX_OPTION_SPREAD_PCT,
     SWING_EXECUTION_OPTION_MIN_DTE,
 )
 
 TRADE_PLAN_SCHEMA = "optedge_trade_plan_v1"
 ACCOUNT_LIMITS_SCHEMA = "optedge_account_limits_v1"
-ROBINHOOD_EQUITY_REVIEW_SCHEMA = "optedge_robinhood_equity_review_plan_v1"
-ROBINHOOD_OPTION_REVIEW_SCHEMA = "optedge_robinhood_option_review_plan_v1"
-MANUAL_REVIEW_PACKET_SCHEMA = "optedge_manual_robinhood_review_packet_v2"
+ROBINHOOD_EQUITY_REVIEW_SCHEMA = "optedge_robinhood_equity_review_plan_v2"
+ROBINHOOD_OPTION_REVIEW_SCHEMA = "optedge_robinhood_option_review_plan_v2"
+MANUAL_REVIEW_PACKET_SCHEMA = "optedge_manual_robinhood_review_packet_v3"
 MANUAL_REVIEW_PACKET_INTEGRITY_SCHEMA = "optedge_manual_review_integrity_v1"
 
 ACCOUNT_NUMBER_PLACEHOLDER = "<explicit_user_confirmed_account_number>"
 OPTION_ID_PLACEHOLDER = "<option_id_from_get_option_instruments>"
-REF_ID_PLACEHOLDER = "<fresh_uuid_generated_once_after_exact_confirmation>"
 SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
 MAX_MANUAL_REVIEW_PACKET_TTL_SECONDS = 15 * 60
 MAX_MANUAL_REVIEW_CLOCK_SKEW_SECONDS = 60
@@ -47,7 +48,6 @@ OPTION_CANDIDATE_REVIEW_SCHEMA = "optedge_option_candidate_review_attestation_v1
 ACCOUNT_KEY_DERIVATION_SCHEMA = "optedge_robinhood_account_key_derivation_v1"
 ACCOUNT_KEY_DERIVATION_NAMESPACE = "optedge-robinhood-account-v1|"
 ACCOUNT_KEY_DERIVATION_HEX_LENGTH = 16
-OPTEDGE_ORDER_REF_NAMESPACE = uuid.UUID("60d21b6d-517b-5d2d-b303-6ce65ff6a725")
 
 __all__ = [
     "calculate_account_limits",
@@ -750,19 +750,24 @@ def _review_errors(trade_plan: Any, expected_asset: str) -> list[dict[str, str]]
     return errors
 
 
-def _blocked_review_plan(schema: str, asset: str, review_tool: str, place_tool: str, errors: list[dict[str, str]]) -> dict[str, Any]:
+def _blocked_review_plan(
+    schema: str,
+    asset: str,
+    review_tool: str,
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
     return {
         "schema": schema,
         "broker": "robinhood",
         "asset": asset,
         "status": "blocked",
         "review_allowed": False,
+        "preview_only": True,
+        "does_not_place_orders": True,
         "review_tool": review_tool,
-        "place_tool_after_explicit_confirmation": place_tool,
         "review_arguments_template": None,
-        "place_arguments_after_confirmation": None,
-        "requires_explicit_user_confirmation_before_place": True,
         "script_submits_live_orders": False,
+        "broker_submission_exposed": False,
         "automation_allowed": False,
         "repeat_orders_allowed": False,
         "stores_credentials": False,
@@ -908,7 +913,6 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             ROBINHOOD_EQUITY_REVIEW_SCHEMA,
             "share",
             "review_equity_order",
-            "place_equity_order",
             errors,
         )
 
@@ -923,20 +927,20 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
         "time_in_force": "gfd",
         "market_hours": "regular_hours",
     }
-    place_args = dict(review_args)
-    place_args["ref_id"] = REF_ID_PLACEHOLDER
     return {
         "schema": ROBINHOOD_EQUITY_REVIEW_SCHEMA,
         "broker": "robinhood",
         "asset": "share",
         "capability": "single_equity_limit_order",
         "intent": order.get("intent"),
-        "status": "review_required_before_any_place_order",
+        "status": "preview_required",
         "review_allowed": True,
+        "preview_only": True,
+        "does_not_place_orders": True,
         "requires_agentic_allowed_account": True,
         "requires_short_sale_review": False,
-        "requires_explicit_user_confirmation_before_place": True,
         "script_submits_live_orders": False,
+        "broker_submission_exposed": False,
         "automation_allowed": False,
         "repeat_orders_allowed": False,
         "stores_credentials": False,
@@ -951,10 +955,8 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             "get_option_orders",
         ],
         "review_tool": "review_equity_order",
-        "place_tool_after_explicit_confirmation": "place_equity_order",
         "review_arguments_template": review_args,
-        "place_arguments_after_confirmation": place_args,
-        "confirmation_fields": [
+        "preview_fields": [
             "account_number",
             "symbol",
             "side",
@@ -967,14 +969,11 @@ def build_robinhood_equity_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
         "hard_rules": [
             "The user must choose or clearly identify an agentic_allowed account; never default an account.",
             "Call review_equity_order first and show the market_data_disclosure and every broker alert verbatim.",
-            "Ask the user to confirm the exact reviewed account, symbol, side, quantity, type, and limit price.",
-            "Do not call place_equity_order without that exact confirmation.",
-            "Follow every data.next/cursor page to null for all equity and option position/order reads before preview and after confirmation; stop on a missing link or failed page.",
-            "Fetch a fresh equity quote for every held share symbol and a fresh option quote for every held option_id before either total-open-risk calculation; stop on any missing or stale mark.",
-            "Block a recent matching filled opening order until the corresponding position is visible; broker feed reconciliation uncertainty is not permission to submit again.",
-            "After confirmation, re-read positions, open orders, portfolio, exact quote, and tradability; reapply quote age, bid/ask, spread, ask-at-or-below-limit, tick, and packet-expiry gates immediately before placement.",
-            "Use a limit order only; never change the reviewed fields during placement.",
-            "Do not schedule or automatically retry; query orders on uncertainty and reuse the same packet ref_id for any deliberate retry of this logical order.",
+            "Follow every data.next/cursor page to null for all equity and option position/order reads before preview; stop on a missing link or failed page.",
+            "Fetch a fresh equity quote for every held share symbol and a fresh option quote for every held option_id before the total-open-risk calculation; stop on any missing or stale mark.",
+            "Block a recent matching filled opening order until the corresponding position is visible; broker feed reconciliation uncertainty blocks the preview.",
+            "Use a limit-order preview only and stop after presenting the broker response; this plan cannot submit an order.",
+            "Do not schedule, loop, repeat, or automatically retry this preview.",
         ],
         "validation": _validation([], []),
     }
@@ -1103,7 +1102,6 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             ROBINHOOD_OPTION_REVIEW_SCHEMA,
             "option",
             "review_option_order",
-            "place_option_order",
             errors,
         )
 
@@ -1124,28 +1122,20 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
         "time_in_force": "gfd",
         "market_hours": "regular_hours",
     }
-    place_args = {
-        "account_number": ACCOUNT_NUMBER_PLACEHOLDER,
-        "legs": [dict(leg)],
-        "quantity": str(order["quantity"]),
-        "type": "limit",
-        "price": f"{float(order['limit_price']):.2f}",
-        "time_in_force": "gfd",
-        "market_hours": "regular_hours",
-        "ref_id": REF_ID_PLACEHOLDER,
-    }
     return {
         "schema": ROBINHOOD_OPTION_REVIEW_SCHEMA,
         "broker": "robinhood",
         "asset": "option",
         "capability": "single_leg_long_option_limit_order",
         "intent": "buy_to_open",
-        "status": "review_required_before_any_place_order",
+        "status": "preview_required",
         "review_allowed": True,
+        "preview_only": True,
+        "does_not_place_orders": True,
         "requires_agentic_allowed_account": True,
         "requires_option_level_2_or_higher": True,
-        "requires_explicit_user_confirmation_before_place": True,
         "script_submits_live_orders": False,
+        "broker_submission_exposed": False,
         "automation_allowed": False,
         "repeat_orders_allowed": False,
         "stores_credentials": False,
@@ -1183,10 +1173,8 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             },
         },
         "review_tool": "review_option_order",
-        "place_tool_after_explicit_confirmation": "place_option_order",
         "review_arguments_template": review_args,
-        "place_arguments_after_confirmation": place_args,
-        "confirmation_fields": [
+        "preview_fields": [
             "account_number",
             "option_id",
             "chain_symbol",
@@ -1208,14 +1196,11 @@ def build_robinhood_option_review_plan(trade_plan: dict[str, Any]) -> dict[str, 
             "Require an active buy-to-open-tradable instrument whose exact chain_symbol matches the plan and a chain with can_open_position true; reject numeric adjusted roots and any adjusted or nonstandard deliverable.",
             "Verify the chain trade_value_multiplier is 100, while treating multiplier alone as insufficient proof of a standard contract.",
             "Call review_option_order first and show quotes, fees, collateral, and every broker alert verbatim.",
-            "Ask the user to confirm the exact reviewed account, contract, side, quantity, type, and price.",
-            "Do not call place_option_order without that exact confirmation.",
-            "Follow every data.next/cursor page to null for option chains, instruments, and all equity/option position/order reads before preview and after confirmation; stop on a missing link or failed page.",
-            "Fetch a fresh equity quote for every held share symbol and a fresh option quote for every held option_id before either total-open-risk calculation; stop on any missing or stale mark.",
-            "Block a recent matching filled buy-to-open order until the corresponding option position is visible; broker feed reconciliation uncertainty is not permission to submit again.",
-            "After confirmation, re-read positions, open orders, portfolio, exact instrument, quote, and complete chain proof; reapply quote age, bid/ask, spread, ask-at-or-below-limit, tick, tradability, standard-deliverable, and packet-expiry gates immediately before placement.",
-            "Use a single-leg buy-to-open limit order only; never change reviewed fields during placement.",
-            "Do not schedule or automatically retry; query orders on uncertainty and reuse the same packet ref_id for any deliberate retry of this logical order.",
+            "Follow every data.next/cursor page to null for option chains, instruments, and all equity/option position/order reads before preview; stop on a missing link or failed page.",
+            "Fetch a fresh equity quote for every held share symbol and a fresh option quote for every held option_id before the total-open-risk calculation; stop on any missing or stale mark.",
+            "Block a recent matching filled buy-to-open order until the corresponding option position is visible; broker feed reconciliation uncertainty blocks the preview.",
+            "Use a single-leg buy-to-open limit-order preview only and stop after presenting the broker response; this plan cannot submit an order.",
+            "Do not schedule, loop, repeat, or automatically retry this preview.",
         ],
         "validation": _validation([], []),
     }
@@ -1935,6 +1920,10 @@ def _option_candidate_review_errors(
         if isinstance(trade_plan.get("candidate_request"), dict)
         else {}
     )
+    execution_profile = str(
+        trade_plan.get("execution_profile") or "swing_execution"
+    ).strip().lower()
+    is_leaps_swing = execution_profile == LEAPS_SWING_PROFILE.name
 
     if candidate.get("schema") != OPTION_CANDIDATE_REVIEW_SCHEMA:
         errors.append(_issue("invalid_option_candidate_schema", f"{root}.schema", "The option candidate attestation schema is unsupported."))
@@ -1942,6 +1931,17 @@ def _option_candidate_review_errors(
         errors.append(_issue("option_candidate_not_allowed", f"{root}.allowed", "The exact option candidate must be explicitly allowed."))
     if candidate.get("blockers") != []:
         errors.append(_issue("option_candidate_has_blockers", f"{root}.blockers", "An allowed option candidate must contain an explicit empty blocker list."))
+    if is_leaps_swing:
+        if candidate.get("execution_profile") != LEAPS_SWING_PROFILE.name:
+            errors.append(_issue("leaps_candidate_profile_mismatch", f"{root}.execution_profile", "A LEAPS swing review requires the exact profile-isolated candidate lane."))
+        if candidate.get("strategy_evidence_lane") != LEAPS_EVIDENCE_LANE:
+            errors.append(_issue("leaps_candidate_evidence_lane_mismatch", f"{root}.strategy_evidence_lane", "The LEAPS candidate must use its dedicated evidence lane."))
+        if candidate.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
+            errors.append(_issue("leaps_candidate_policy_version_mismatch", f"{root}.profile_policy_version", "The LEAPS candidate policy version must match the active canonical policy."))
+        if candidate.get("leaps_swing_status") != "execution_ready" or candidate.get("leaps_execution_ready") is not True:
+            errors.append(_issue("leaps_candidate_not_execution_ready", f"{root}.leaps_swing_status", "Research-only or blocked LEAPS candidates cannot enter broker review."))
+        if candidate.get("leaps_hard_blockers") != [] or candidate.get("leaps_data_blockers") != []:
+            errors.append(_issue("leaps_candidate_has_profile_blockers", root, "A LEAPS candidate entering broker review must have explicit empty policy and data blocker lists."))
 
     symbol = str(order.get("symbol") or "").strip().upper()
     option_type = str(order.get("option_type") or "").strip().lower()
@@ -2000,15 +2000,27 @@ def _option_candidate_review_errors(
         expiry_date = date.fromisoformat(expiry)
     except ValueError:
         expiry_date = None
+    dte_floor = (
+        LEAPS_SWING_PROFILE.option_min_dte
+        if is_leaps_swing
+        else SWING_EXECUTION_OPTION_MIN_DTE
+    )
+    dte_ceiling = LEAPS_SWING_PROFILE.option_max_dte if is_leaps_swing else None
     if (
         not isinstance(dte, int)
         or isinstance(dte, bool)
-        or dte < SWING_EXECUTION_OPTION_MIN_DTE
+        or dte < dte_floor
+        or (dte_ceiling is not None and dte > dte_ceiling)
         or expiry_date is None
         or cycle_at is None
         or dte != (expiry_date - cycle_at.date()).days
     ):
-        errors.append(_issue("option_candidate_dte_mismatch", f"{root}.dte", f"Candidate DTE must exactly reconcile the expiry and cycle date and be at least {SWING_EXECUTION_OPTION_MIN_DTE} days."))
+        dte_requirement = (
+            f"between {dte_floor} and {dte_ceiling} days"
+            if dte_ceiling is not None
+            else f"at least {dte_floor} days"
+        )
+        errors.append(_issue("option_candidate_dte_mismatch", f"{root}.dte", f"Candidate DTE must exactly reconcile the expiry and cycle date and be {dte_requirement}."))
 
     if candidate.get("exact_candidate_count_cycle") != 1:
         errors.append(_issue("option_cycle_membership_not_unique", f"{root}.exact_candidate_count_cycle", "The exact contract must occur once in the cycle candidate set."))
@@ -2068,14 +2080,21 @@ def _option_candidate_review_errors(
         if bid is not None and ask is not None and bid > 0 and ask >= bid
         else None
     )
-    if spread_cap is None or spread_cap <= 0 or spread_cap > SWING_EXECUTION_MAX_OPTION_SPREAD_PCT:
-        errors.append(_issue("unsafe_option_candidate_spread_cap", f"{root}.max_spread_fraction", f"The frozen option-candidate spread cap must be positive and no greater than {SWING_EXECUTION_MAX_OPTION_SPREAD_PCT:.0%}."))
+    profile_spread_cap = (
+        LEAPS_SWING_PROFILE.max_spread_pct
+        if is_leaps_swing
+        else SWING_EXECUTION_MAX_OPTION_SPREAD_PCT
+    )
+    if spread_cap is None or spread_cap <= 0 or spread_cap > profile_spread_cap:
+        errors.append(_issue("unsafe_option_candidate_spread_cap", f"{root}.max_spread_fraction", f"The frozen option-candidate spread cap must be positive and no greater than {profile_spread_cap:.0%}."))
     if quote_at is None:
         errors.append(_issue("missing_option_candidate_quote_time", f"{root}.candidate_source_quote_at", "The candidate needs a timezone-aware source quote timestamp."))
     elif issued_at is not None and max_age is not None:
         quote_age = (issued_at - quote_at).total_seconds() / 60.0
         if quote_age < -1 or quote_age > max_age + 1e-9:
             errors.append(_issue("stale_or_future_option_candidate_quote", f"{root}.candidate_source_quote_at", "The candidate source quote must be current at packet issue."))
+        if is_leaps_swing and quote_age * 60.0 > LEAPS_SWING_PROFILE.max_quote_age_seconds + 1e-9:
+            errors.append(_issue("stale_leaps_candidate_quote", f"{root}.candidate_source_quote_at", f"LEAPS broker-review quotes must be no older than {LEAPS_SWING_PROFILE.max_quote_age_seconds:g} seconds."))
     if not quote_basis or (
         quote_basis != "provider_response_received_at"
         and not (
@@ -2096,9 +2115,11 @@ def _option_candidate_review_errors(
         or abs(spread - expected_spread) > 1e-6
         or spread_cap is None
         or spread > spread_cap + 1e-12
-        or spread > SWING_EXECUTION_MAX_OPTION_SPREAD_PCT + 1e-12
+        or spread > profile_spread_cap + 1e-12
     ):
-        errors.append(_issue("unsafe_option_candidate_source_spread", f"{root}.candidate_source_spread_fraction", f"Candidate bid/ask must be positive, ordered, arithmetically consistent, and within the frozen {SWING_EXECUTION_MAX_OPTION_SPREAD_PCT:.0%} hard cap."))
+        errors.append(_issue("unsafe_option_candidate_source_spread", f"{root}.candidate_source_spread_fraction", f"Candidate bid/ask must be positive, ordered, arithmetically consistent, and within the frozen {profile_spread_cap:.0%} hard cap."))
+    if is_leaps_swing and candidate.get("candidate_quote_is_research_only") is not False:
+        errors.append(_issue("leaps_candidate_quote_not_live", f"{root}.candidate_quote_is_research_only", "A delayed, free, indicative, or research-only quote cannot authorize a LEAPS broker review."))
 
     exact_quote_fields = (
         "candidate_source_quote_at",
@@ -2133,6 +2154,52 @@ def _manual_review_context_errors(
     """Require the Trade Desk's bounded account, quote, and gate context."""
     errors: list[dict[str, str]] = []
     asset = trade_plan.get("asset") if isinstance(trade_plan, dict) else None
+    execution_profile = str(
+        trade_plan.get("execution_profile") or "swing_execution"
+    ).strip().lower() if isinstance(trade_plan, dict) else "swing_execution"
+    is_leaps_swing = asset == "option" and execution_profile == LEAPS_SWING_PROFILE.name
+    if execution_profile not in {"swing_execution", LEAPS_SWING_PROFILE.name}:
+        errors.append(
+            _issue(
+                "unsupported_execution_profile",
+                "execution_profile",
+                "The trade plan must use an explicit supported execution profile.",
+            )
+        )
+    if asset != "option" and execution_profile != "swing_execution":
+        errors.append(
+            _issue(
+                "execution_profile_asset_mismatch",
+                "execution_profile",
+                "The LEAPS swing profile is valid only for long equity options.",
+            )
+        )
+    if is_leaps_swing:
+        if trade_plan.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
+            errors.append(_issue("leaps_policy_version_mismatch", "profile_policy_version", "The trade plan must bind the active canonical LEAPS policy version."))
+        if trade_plan.get("strategy_evidence_lane") != LEAPS_EVIDENCE_LANE:
+            errors.append(_issue("leaps_evidence_lane_mismatch", "strategy_evidence_lane", "The trade plan must bind the dedicated LEAPS evidence lane."))
+        holding = trade_plan.get("holding_policy") if isinstance(trade_plan.get("holding_policy"), dict) else {}
+        management = trade_plan.get("management_references") if isinstance(trade_plan.get("management_references"), dict) else {}
+        planned_hold = holding.get("planned_hold_sessions")
+        if (
+            not isinstance(planned_hold, int)
+            or isinstance(planned_hold, bool)
+            or planned_hold <= 0
+            or planned_hold > LEAPS_SWING_PROFILE.max_hold_sessions
+            or holding.get("review_sessions") != list(LEAPS_SWING_PROFILE.review_sessions)
+            or holding.get("max_hold_sessions") != LEAPS_SWING_PROFILE.max_hold_sessions
+            or holding.get("contract_dte_is_not_hold_time") is not True
+        ):
+            errors.append(_issue("unsafe_leaps_holding_policy", "holding_policy", "LEAPS contract runway must remain separate from the bounded 3/5/10-session review and 20-session maximum hold policy."))
+        expected_management = {
+            "stop_loss_fraction": LEAPS_SWING_PROFILE.stop_loss_fraction,
+            "target_gain_fraction": LEAPS_SWING_PROFILE.target_gain_fraction,
+            "breakeven_review_trigger_fraction": LEAPS_SWING_PROFILE.breakeven_review_trigger_fraction,
+            "manual_management_only": True,
+        }
+        if management != expected_management:
+            errors.append(_issue("unsafe_leaps_management_policy", "management_references", "LEAPS management references must match the canonical manual-only policy."))
 
     clean_snapshot_id = _prompt_text(snapshot_id, limit=160)
     if not isinstance(snapshot_id, str) or not snapshot_id.strip() or clean_snapshot_id != snapshot_id.strip():
@@ -2391,10 +2458,20 @@ def _manual_review_context_errors(
         errors.append(_issue("asset_edge_lane_not_validated", "review_constraints.evidence.asset_lane_status", "The proposed asset lane must be validated."))
     if evidence.get("asset_lane_live_capital_eligible") is not True:
         errors.append(_issue("asset_edge_lane_not_eligible", "review_constraints.evidence.asset_lane_live_capital_eligible", "The proposed asset lane must explicitly pass the live-capital evidence gate."))
-    if evidence.get("evidence_lane") != "current_method_executable":
-        errors.append(_issue("non_executable_edge_evidence", "review_constraints.evidence.evidence_lane", "Only current-method executable outcomes can authorize manual review."))
+    expected_evidence_lane = LEAPS_EVIDENCE_LANE if is_leaps_swing else "current_method_executable"
+    if evidence.get("evidence_lane") != expected_evidence_lane:
+        errors.append(_issue("non_executable_edge_evidence", "review_constraints.evidence.evidence_lane", "Only the exact profile-isolated current-method evidence lane can authorize manual review."))
     if evidence.get("require_current_method_executable") is not True:
         errors.append(_issue("missing_current_method_edge_requirement", "review_constraints.evidence.require_current_method_executable", "The review must explicitly require current-method executable evidence."))
+    if is_leaps_swing:
+        if evidence.get("execution_profile") != LEAPS_SWING_PROFILE.name:
+            errors.append(_issue("leaps_evidence_profile_mismatch", "review_constraints.evidence.execution_profile", "LEAPS evidence must be explicitly bound to the LEAPS swing profile."))
+        if evidence.get("profile_policy_version") != LEAPS_SWING_POLICY_VERSION:
+            errors.append(_issue("leaps_evidence_policy_version_mismatch", "review_constraints.evidence.profile_policy_version", "LEAPS evidence must match the active profile policy version."))
+        if evidence.get("required_horizons_sessions") != list(LEAPS_SWING_PROFILE.evidence_horizons_sessions):
+            errors.append(_issue("leaps_evidence_horizons_mismatch", "review_constraints.evidence.required_horizons_sessions", "LEAPS live-capital evidence must independently pass every 5/10/20-session horizon."))
+        if evidence.get("require_broker_market_observed") is not True:
+            errors.append(_issue("leaps_evidence_not_broker_observed", "review_constraints.evidence.require_broker_market_observed", "Modeled option marks cannot authorize LEAPS capital; exact broker-observed outcomes are required."))
     headline_horizon = evidence.get("headline_horizon_sessions")
     if (
         not isinstance(headline_horizon, int)
@@ -2840,26 +2917,6 @@ def _packet_id(
     return "manual-review-" + hashlib.sha256(canonical).hexdigest()[:16]
 
 
-def _packet_order_ref_id(packet_id: str) -> str:
-    """Return the one Robinhood idempotency key for this logical packet order."""
-    return str(uuid.uuid5(OPTEDGE_ORDER_REF_NAMESPACE, packet_id))
-
-
-def _bind_packet_order_ref_id(
-    review_plan: dict[str, Any],
-    packet_id: str,
-) -> dict[str, Any]:
-    """Copy a ready review plan and replace its design-time ref placeholder."""
-    bound = dict(review_plan)
-    place_args = review_plan.get("place_arguments_after_confirmation")
-    if isinstance(place_args, dict):
-        bound["place_arguments_after_confirmation"] = {
-            **place_args,
-            "ref_id": _packet_order_ref_id(packet_id),
-        }
-    return bound
-
-
 def _expected_confirmation_summary(trade_plan: Any) -> dict[str, Any]:
     """Derive the human confirmation fields from the canonical trade plan."""
     order = (
@@ -3023,10 +3080,11 @@ def validate_manual_robinhood_review_packet(
 
     for field, expected in (
         ("does_not_place_orders", True),
+        ("preview_only", True),
         ("automation_allowed", False),
         ("repeat_orders_allowed", False),
         ("contains_credentials", False),
-        ("requires_explicit_user_confirmation", True),
+        ("requires_explicit_account_selection", True),
         ("standalone_broker_authority", False),
     ):
         if packet.get(field) is not expected:
@@ -3074,8 +3132,6 @@ def validate_manual_robinhood_review_packet(
         if asset == "option"
         else {}
     )
-    if expected_review.get("review_allowed") is True:
-        expected_review = _bind_packet_order_ref_id(expected_review, expected_id)
     if review != expected_review:
         errors.append(
             _issue(
@@ -3084,20 +3140,18 @@ def validate_manual_robinhood_review_packet(
                 "Broker review instructions do not match the validated trade plan.",
             )
         )
-    expected_ref_id = _packet_order_ref_id(expected_id)
-    place_arguments = (
-        review.get("place_arguments_after_confirmation")
-        if isinstance(review.get("place_arguments_after_confirmation"), dict)
-        else {}
-    )
-    if place_arguments.get("ref_id") != expected_ref_id:
-        errors.append(
-            _issue(
-                "manual_review_order_ref_id_mismatch",
-                "review_plan.place_arguments_after_confirmation.ref_id",
-                "The one packet-scoped Robinhood idempotency key is missing or changed.",
+    for unsafe_field in (
+        "place_tool_after_explicit_confirmation",
+        "place_arguments_after_confirmation",
+    ):
+        if unsafe_field in review:
+            errors.append(
+                _issue(
+                    "manual_review_packet_exposes_order_submission",
+                    f"review_plan.{unsafe_field}",
+                    "A preview-only packet must not contain broker order-submission tools or arguments.",
+                )
             )
-        )
     if packet.get("confirmation_summary") != _expected_confirmation_summary(trade_plan):
         errors.append(
             _issue(
@@ -3132,11 +3186,9 @@ def validate_manual_robinhood_review_packet(
 
     controls = packet.get("manual_controls") if isinstance(packet.get("manual_controls"), dict) else {}
     for field, expected in (
-        ("one_logical_order_only", True),
-        ("review_must_precede_place", True),
-        ("exact_confirmation_must_follow_review", True),
-        ("place_arguments_must_match_review", True),
-        ("query_order_state_if_result_uncertain", True),
+        ("one_broker_preview_only", True),
+        ("stop_after_broker_preview", True),
+        ("broker_submission_not_exposed", True),
         ("never_collect_credentials", True),
         ("never_schedule_or_loop", True),
         ("entry_order_only", True),
@@ -3149,9 +3201,9 @@ def validate_manual_robinhood_review_packet(
         ("complete_broker_pagination_required", True),
         ("recent_unreconciled_fill_block_required", True),
         ("fresh_quotes_for_all_open_exposure_required", True),
-        ("post_confirmation_state_reread_required", True),
-        ("post_confirmation_quote_and_instrument_reread_required", True),
-        ("placement_time_expiry_recheck_required", True),
+        ("pre_preview_state_reread_required", True),
+        ("pre_preview_quote_and_instrument_reread_required", True),
+        ("preview_time_expiry_recheck_required", True),
         ("live_tick_validation_required", True),
         ("limit_price_may_increase", False),
     ):
@@ -3198,7 +3250,6 @@ def build_manual_robinhood_review_packet(
             "optedge_robinhood_unknown_review_plan_v1",
             str(asset or "unknown"),
             "unknown",
-            "unknown",
             [_issue("unsupported_asset", "asset", "Only share and long-option review packets are supported.")],
         )
 
@@ -3242,7 +3293,6 @@ def build_manual_robinhood_review_packet(
             str(review_plan.get("schema") or "optedge_robinhood_blocked_review_plan_v1"),
             str(asset or "unknown"),
             str(review_plan.get("review_tool") or "unknown"),
-            str(review_plan.get("place_tool_after_explicit_confirmation") or "unknown"),
             [*existing_errors, *context_errors, *external_gate_errors],
         )
 
@@ -3258,8 +3308,6 @@ def build_manual_robinhood_review_packet(
         issued_at,
         expires_at,
     )
-    if ready:
-        review_plan = _bind_packet_order_ref_id(review_plan, packet_id)
     packet = {
         "schema": MANUAL_REVIEW_PACKET_SCHEMA,
         "packet_id": packet_id,
@@ -3269,11 +3317,12 @@ def build_manual_robinhood_review_packet(
         "broker": "robinhood",
         "status": "manual_review_required" if ready else "blocked",
         "does_not_place_orders": True,
+        "preview_only": True,
         "automation_allowed": False,
         "repeat_orders_allowed": False,
         "contains_credentials": False,
         "standalone_broker_authority": False,
-        "requires_explicit_user_confirmation": True,
+        "requires_explicit_account_selection": True,
         "review_gate_attested": review_gate_attested,
         "external_review_gate_blockers": blocker_messages,
         "context_validation": _validation(context_errors, []),
@@ -3282,16 +3331,14 @@ def build_manual_robinhood_review_packet(
         "review_plan": review_plan,
         "confirmation_summary": _expected_confirmation_summary(trade_plan),
         "next_step": (
-            f"Run {review_plan.get('review_tool')} and present its full preview; then ask for exact confirmation."
+            f"Run {review_plan.get('review_tool')} once, present its full preview, and stop. This packet cannot submit an order."
             if ready
             else "Fix the trade-plan and review-plan validation errors. Do not call a broker order tool."
         ),
         "manual_controls": {
-            "one_logical_order_only": True,
-            "review_must_precede_place": True,
-            "exact_confirmation_must_follow_review": True,
-            "place_arguments_must_match_review": True,
-            "query_order_state_if_result_uncertain": True,
+            "one_broker_preview_only": True,
+            "stop_after_broker_preview": True,
+            "broker_submission_not_exposed": True,
             "never_collect_credentials": True,
             "never_schedule_or_loop": True,
             "entry_order_only": True,
@@ -3304,9 +3351,9 @@ def build_manual_robinhood_review_packet(
             "complete_broker_pagination_required": True,
             "recent_unreconciled_fill_block_required": True,
             "fresh_quotes_for_all_open_exposure_required": True,
-            "post_confirmation_state_reread_required": True,
-            "post_confirmation_quote_and_instrument_reread_required": True,
-            "placement_time_expiry_recheck_required": True,
+            "pre_preview_state_reread_required": True,
+            "pre_preview_quote_and_instrument_reread_required": True,
+            "preview_time_expiry_recheck_required": True,
             "live_tick_validation_required": True,
             "limit_price_may_increase": False,
         },
@@ -3343,7 +3390,7 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         return (
             "# Optedge Manual Robinhood Review\n\n"
             "STATUS: BLOCKED\n\n"
-            "DO NOT CALL any Robinhood review or placement tool.\n"
+            "DO NOT CALL any Robinhood review or order-submission tool.\n"
             "Do not schedule, loop, repeat, or automate this packet.\n"
             "Do not request, accept, print, or store Robinhood passwords, tokens, API keys, MFA codes, or cookies.\n\n"
             f"Validation errors:\n{error_lines}\n"
@@ -3351,7 +3398,6 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
 
     order_label = _prompt_text(summary.get("contract") or summary.get("symbol") or "unknown instrument")
     review_tool = _prompt_text(review.get("review_tool"))
-    place_tool = _prompt_text(review.get("place_tool_after_explicit_confirmation"))
     preflight = ", ".join(_prompt_text(value, limit=80) for value in (review.get("preflight_read_tools") or []))
     planned_stop = _number(summary.get("planned_stop_loss_dollars"))
     maximum_loss = _number(summary.get("planned_max_loss_dollars"))
@@ -3527,21 +3573,14 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
     expires_at = _prompt_text(packet.get("expires_at") or "not recorded")
     review_template = json.dumps(review.get("review_arguments_template"), indent=2, sort_keys=True)
     lookup_template = json.dumps(review.get("contract_lookup"), indent=2, sort_keys=True)
-    place_arguments = (
-        review.get("place_arguments_after_confirmation")
-        if isinstance(review.get("place_arguments_after_confirmation"), dict)
-        else {}
-    )
-    packet_ref_id = _prompt_text(place_arguments.get("ref_id"))
     return (
         "# Optedge Manual Robinhood Review\n\n"
-        "MANUAL, ONE-ORDER WORKFLOW ONLY. This packet never authorizes automation.\n\n"
+        "PREVIEW ONLY. This packet can request one broker preview, cannot submit an order, and never authorizes automation.\n\n"
         "## Packet identity\n"
         f"- Packet: {packet_id}\n"
         f"- Content digest: {content_digest}\n"
         f"- Issued: {issued_at}\n"
         f"- Expires: {expires_at}\n"
-        f"- One logical-order ref_id: {packet_ref_id}\n"
         "- The digest detects modification; it is not a signature or broker authorization.\n"
         "- If the expiry is missing or has passed, stop. Recalculate from a fresh Optedge and broker snapshot.\n\n"
         "## Exact local plan\n"
@@ -3552,7 +3591,7 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         f"- Entry order: {_prompt_text(summary.get('order_type'))} at ${float(summary.get('limit_price')):.2f}\n"
         f"{stop_target_lines}{stop_line}{max_loss_line}{notional_line}{debit_line}{multiplier_line}"
         f"{evidence_lines}{candidate_lines}{account_assumption_lines}{portfolio_lines}{drawdown_lines}{quote_policy_lines}"
-        "- Stop and target are planning references only; this packet does not place either exit order.\n\n"
+        "- Stop and target are planning references only; this packet does not submit entry or exit orders.\n\n"
         "## Exact review template\n"
         f"{review_template}\n\n"
         + (
@@ -3575,20 +3614,12 @@ def _render_manual_robinhood_review_prompt_unchecked(packet: dict[str, Any]) -> 
         f"4. Resolve the exact active/tradable instrument. Require its underlying_type to exactly match the packet. {live_quote_rule} Validate the live instrument's minimum tick/tick-size rules before preview. If the packet limit is not valid, STOP and rebuild at an equal or lower valid buy limit; never round upward. If any field or timestamp is missing or the underlying type differs, STOP. If the live ask is above the packet limit, STOP and rebuild; never raise the limit.\n"
         f"5. Call {review_tool} FIRST with the review template. Never send a placeholder account number or option_id.\n"
         "6. Present the complete broker preview, compliance quote disclosure, alerts, fees, collateral, and estimated cost exactly as returned.\n"
-        "7. Ask the user to confirm the exact reviewed account, instrument, side, quantity, type, and limit price.\n"
-        "8. After that exact confirmation, immediately re-read every page of positions, open orders, portfolio, the exact instrument, and its live quote for the same account; for options, also repeat every page of the complete all-expiry-chain instrument proof. Refresh quotes for every held share symbol and option_id again. Recheck recent unmatched fills and recompute duplicate exposure, working-order, buying-power, drawdown, total-open-risk, tradability, tick, quote-age, positive/ordered bid-ask, spread, live ask <= packet limit, and standard-contract checks. Re-check that the packet has not expired. If expiry passed or any page/held-position quote is incomplete, stale, or ambiguous, or any relevant state differs or fails, STOP, rebuild, run a new broker preview, and obtain a new exact confirmation; do not place.\n"
-        f"9. Only if that final re-read is unchanged and still passes every gate, immediately call {place_tool} once with unchanged reviewed fields and the exact packet-scoped ref_id {packet_ref_id}. Never generate a second ref_id for this logical order.\n"
-        "10. Report the broker order ID and state. Submission is not a fill.\n\n"
+        "7. STOP. The packet ends after the broker preview. It contains no order-submission tool or arguments and must not be used to send an order.\n\n"
         "## Hard prohibitions\n"
-        "- No scheduled task, recurring Codex message, heartbeat, loop, batch, or automatic placement.\n"
-        "- Never place or repeat an order without a new exact confirmation after review.\n"
-        "- Never place if the mandatory post-confirmation positions, open-orders, or portfolio re-read changed relevant state.\n"
-        "- Never place if the post-confirmation exact quote, instrument, option-chain proof, or packet-expiry check is missing, stale, changed, or blocked.\n"
-        "- If placement outcome is uncertain, query current broker orders first; do not create another logical order.\n"
-        f"- Any deliberate retry of this same logical order must reuse ref_id {packet_ref_id}; never auto-retry.\n"
+        "- No scheduled task, recurring Codex message, heartbeat, loop, batch, or automatic order submission.\n"
+        "- Never use this preview packet to submit or repeat an order.\n"
         "- Never request, accept, print, or store passwords, tokens, API keys, MFA codes, cookies, or broker credentials.\n"
-        "- Never change account, instrument, side, quantity, order type, or price between review and placement.\n"
-        "- Never describe the planning stop as guaranteed or imply that this entry-only packet placed an exit order.\n"
+        "- Never describe the planning stop as guaranteed or imply that this preview submitted an entry or exit order.\n"
     )
 
 
@@ -3609,7 +3640,7 @@ def render_manual_robinhood_review_prompt(
             return (
                 "# Optedge Manual Robinhood Review\n\n"
                 "STATUS: BLOCKED\n\n"
-                "DO NOT CALL any Robinhood review or placement tool.\n"
+                "DO NOT CALL any Robinhood review or order-submission tool.\n"
                 "Do not schedule, loop, repeat, or automate this packet.\n"
                 "Rebuild it from the current Trade Desk and fresh broker state.\n\n"
                 f"Packet validation errors:\n{error_lines}\n"

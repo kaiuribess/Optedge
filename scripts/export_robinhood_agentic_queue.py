@@ -11,7 +11,7 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +21,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from optedge.strategy_profile import (
+from optedge.leaps_swing import score_leaps_swing_candidate  # noqa: E402
+from optedge.strategy_profile import (  # noqa: E402
+    LEAPS_SWING_PROFILE,
     SWING_EXECUTION_OPTION_UNDERLYING_TYPE,
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
 )
-from scripts.export_external_paper_track import build_external_orders
+from scripts.export_external_paper_track import build_external_orders  # noqa: E402
 
 DATA_DIR = ROOT / "data"
 
@@ -62,6 +64,34 @@ DEFAULT_MAX_SPREAD_PCT = SWING_EXECUTION_PROFILE.max_option_spread_pct
 DEFAULT_LIMIT_BUFFER_PCT = SWING_EXECUTION_PROFILE.limit_buffer_pct
 DEFAULT_MIN_DTE = SWING_EXECUTION_PROFILE.option_min_dte
 DEFAULT_SOURCE_QUOTE_MAX_AGE_MINUTES = SWING_EXECUTION_PROFILE.execution_packet_fresh_minutes
+EXECUTION_PROFILES = frozenset({SWING_EXECUTION_PROFILE.name, LEAPS_SWING_PROFILE.name})
+
+
+def _normalize_execution_profile(value: Any) -> str:
+    profile = _text(value).lower() or SWING_EXECUTION_PROFILE.name
+    if profile not in EXECUTION_PROFILES:
+        allowed = ", ".join(sorted(EXECUTION_PROFILES))
+        raise ValueError(f"execution_profile must be one of: {allowed}")
+    return profile
+
+
+def _profile_queue_limits(
+    execution_profile: str,
+    *,
+    min_dte: int,
+    min_confidence: float,
+    max_spread_pct: float,
+) -> tuple[int, int | None, float, float]:
+    """Apply profile hard limits while preserving stricter caller limits."""
+    profile = _normalize_execution_profile(execution_profile)
+    if profile != LEAPS_SWING_PROFILE.name:
+        return max(0, int(min_dte)), None, float(min_confidence), float(max_spread_pct)
+    return (
+        max(LEAPS_SWING_PROFILE.option_min_dte, int(min_dte)),
+        LEAPS_SWING_PROFILE.option_max_dte,
+        max(LEAPS_SWING_PROFILE.min_confidence, float(min_confidence)),
+        min(LEAPS_SWING_PROFILE.max_spread_pct, float(max_spread_pct)),
+    )
 
 
 def quote_time_basis_is_explicit(value: Any) -> bool:
@@ -346,7 +376,7 @@ def _rejection(
     row: dict[str, Any],
     reasons: list[str],
 ) -> dict[str, Any]:
-    return {
+    rejection = {
         "ticker": _candidate_symbol(row),
         "contract": _text(row.get("contract")),
         "option_side": _text(row.get("option_side")),
@@ -359,6 +389,34 @@ def _rejection(
         "rank_score": row.get("rank_score"),
         "reasons": reasons,
     }
+    for key in (
+        "execution_profile",
+        "strategy_evidence_lane",
+        "profile_policy_version",
+        "delta",
+        "open_interest",
+        "volume",
+        "after_cost_edge_pct",
+        "planned_hold_sessions",
+        "leaps_swing_status",
+        "leaps_execution_ready",
+        "leaps_quality_score",
+        "leaps_execution_score",
+        "leaps_score_breakdown",
+        "leaps_contract_policy",
+        "leaps_hard_blockers",
+        "leaps_data_blockers",
+        "review_sessions",
+        "default_hold_sessions",
+        "max_hold_sessions",
+        "stop_loss_fraction",
+        "target_gain_fraction",
+        "breakeven_review_trigger_fraction",
+        "manual_management_only",
+    ):
+        if key in row:
+            rejection[key] = row.get(key)
+    return rejection
 
 
 def _reason_counts(rejected: list[dict[str, Any]]) -> dict[str, int]:
@@ -580,7 +638,7 @@ def normalize_agent_decision(decision: dict[str, Any], generated_at: str | None 
     ).upper()
     side = _text(decision.get("option_side") or decision.get("side")).lower()
     out = {
-        "timestamp": _text(decision.get("timestamp")) or generated_at or datetime.now(timezone.utc).isoformat(),
+        "timestamp": _text(decision.get("timestamp")) or generated_at or datetime.now(UTC).isoformat(),
         "schema": "optedge_robinhood_agentic_decision_v1",
         "decision": action,
         "symbol": symbol,
@@ -798,12 +856,24 @@ def refresh_option_chain_shortlist(
     symbols_limit: int = 6,
     contracts_per_symbol: int = 4,
     write: bool = True,
+    execution_profile: str = SWING_EXECUTION_PROFILE.name,
 ) -> dict[str, Any]:
     """Refresh the free/provider-stack option-chain shortlist for agent review."""
     data_dir = Path(data_dir)
+    execution_profile = _normalize_execution_profile(execution_profile)
+    min_dte, _, _, _ = _profile_queue_limits(
+        execution_profile,
+        min_dte=min_dte,
+        min_confidence=DEFAULT_MIN_CONFIDENCE,
+        max_spread_pct=DEFAULT_MAX_SPREAD_PCT,
+    )
     preset_norm = str(preset or "auto").strip().lower()
     if preset_norm == "auto":
-        preset_norm = "leaps" if int(min_dte or 0) >= 180 else "swing"
+        preset_norm = (
+            "leaps"
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else "swing"
+        )
     premium_cap = (
         _default_max_premium_per_order(float(account_budget or DEFAULT_ACCOUNT_BUDGET))
         if max_premium_per_order is None
@@ -856,6 +926,8 @@ def refresh_option_chain_shortlist(
             "applied_to_queue": bool(write and export.get("ok")),
             "write": bool(write),
             "max_premium_per_order": round(premium_cap, 2),
+            "execution_profile": execution_profile,
+            "min_dte": min_dte,
             "preset": preset_norm,
             "query": query,
             "symbols_scanned": report.get("symbols_scanned"),
@@ -874,6 +946,8 @@ def refresh_option_chain_shortlist(
             "applied_to_queue": False,
             "write": bool(write),
             "max_premium_per_order": round(premium_cap, 2),
+            "execution_profile": execution_profile,
+            "min_dte": min_dte,
             "preset": preset_norm,
             "query": query,
             "error": str(exc),
@@ -1136,6 +1210,60 @@ def _queue_diagnostics(
     }
 
 
+def _apply_leaps_swing_assessment(
+    row: dict[str, Any],
+    assessment: dict[str, Any],
+) -> None:
+    """Attach stable profile fields used by the Trade Desk's later validator."""
+    holding = assessment.get("holding_policy") or {}
+    management = assessment.get("management_references") or {}
+    entry_price = _float(row.get("entry_price"))
+    stop_loss_fraction = management.get(
+        "stop_loss_fraction", LEAPS_SWING_PROFILE.stop_loss_fraction
+    )
+    target_gain_fraction = management.get(
+        "target_gain_fraction", LEAPS_SWING_PROFILE.target_gain_fraction
+    )
+    if entry_price > 0:
+        row["stop_price"] = _round_option_price(
+            entry_price * (1.0 - float(stop_loss_fraction))
+        )
+        row["target_price"] = _round_option_price(
+            entry_price * (1.0 + float(target_gain_fraction))
+        )
+    row.update({
+        "execution_profile": LEAPS_SWING_PROFILE.name,
+        "strategy_evidence_lane": LEAPS_SWING_PROFILE.evidence_lane,
+        "profile_policy_version": LEAPS_SWING_PROFILE.policy_version,
+        "leaps_swing_status": assessment.get("status"),
+        "leaps_execution_ready": bool(assessment.get("execution_ready")),
+        "leaps_quality_score": int(assessment.get("quality_score") or 0),
+        "leaps_execution_score": int(assessment.get("execution_score") or 0),
+        "leaps_score_breakdown": dict(assessment.get("score_breakdown") or {}),
+        "leaps_contract_policy": dict(assessment.get("contract_policy") or {}),
+        "leaps_hard_blockers": list(assessment.get("hard_blockers") or []),
+        "leaps_data_blockers": list(assessment.get("data_blockers") or []),
+        "review_sessions": list(
+            holding.get("review_sessions") or LEAPS_SWING_PROFILE.review_sessions
+        ),
+        "default_hold_sessions": LEAPS_SWING_PROFILE.default_hold_sessions,
+        "max_hold_sessions": int(
+            holding.get("max_hold_sessions") or LEAPS_SWING_PROFILE.max_hold_sessions
+        ),
+        "stop_loss_fraction": stop_loss_fraction,
+        "target_gain_fraction": target_gain_fraction,
+        "breakeven_review_trigger_fraction": management.get(
+            "breakeven_review_trigger_fraction",
+            LEAPS_SWING_PROFILE.breakeven_review_trigger_fraction,
+        ),
+        "manual_management_only": bool(
+            management.get(
+                "manual_management_only", LEAPS_SWING_PROFILE.manual_management_only
+            )
+        ),
+    })
+
+
 def _order_from_row(
     row: dict[str, Any],
     quantity: int,
@@ -1202,6 +1330,33 @@ def _order_from_row(
             "do not call a broker tool from this row."
         ),
     }
+    if row.get("execution_profile") == LEAPS_SWING_PROFILE.name:
+        for key in (
+            "execution_profile",
+            "strategy_evidence_lane",
+            "profile_policy_version",
+            "delta",
+            "open_interest",
+            "volume",
+            "after_cost_edge_pct",
+            "planned_hold_sessions",
+            "leaps_swing_status",
+            "leaps_execution_ready",
+            "leaps_quality_score",
+            "leaps_execution_score",
+            "leaps_score_breakdown",
+            "leaps_contract_policy",
+            "leaps_hard_blockers",
+            "leaps_data_blockers",
+            "review_sessions",
+            "default_hold_sessions",
+            "max_hold_sessions",
+            "stop_loss_fraction",
+            "target_gain_fraction",
+            "breakeven_review_trigger_fraction",
+            "manual_management_only",
+        ):
+            order[key] = row.get(key)
     order["trade_desk_route"] = robinhood_mcp_option_review_plan(order)
     return order
 
@@ -1222,13 +1377,20 @@ def build_queue_from_candidates(
     chain_refresh: dict[str, Any] | None = None,
     sec_offering_risks: dict[str, list[dict[str, Any]]] | None = None,
     cboe_activity: pd.DataFrame | None = None,
+    execution_profile: str = SWING_EXECUTION_PROFILE.name,
 ) -> dict[str, Any]:
     """Return a loss-capped option execution queue for an external agent."""
-    generated_at = generated_at or datetime.now(timezone.utc).isoformat()
+    generated_at = generated_at or datetime.now(UTC).isoformat()
+    execution_profile = _normalize_execution_profile(execution_profile)
     account_budget = max(0.0, float(account_budget))
     max_orders = max(0, int(max_orders))
     max_candidates = max(0, int(max_candidates))
-    min_dte = max(0, int(min_dte))
+    min_dte, max_dte, min_confidence, max_spread_pct = _profile_queue_limits(
+        execution_profile,
+        min_dte=min_dte,
+        min_confidence=min_confidence,
+        max_spread_pct=max_spread_pct,
+    )
     max_total_premium = (
         _default_max_total_premium(account_budget)
         if max_total_premium is None
@@ -1325,6 +1487,59 @@ def build_queue_from_candidates(
             source_quote_age_minutes = (queue_ts - source_quote_ts).total_seconds() / 60.0
         except Exception:
             source_quote_age_minutes = math.nan
+        row["dte"] = dte
+        if execution_profile == LEAPS_SWING_PROFILE.name:
+            if not _text(row.get("open_interest")):
+                row["open_interest"] = row.get("openInterest")
+            scoring_row = dict(row)
+            profile_blockers: list[str] = []
+            if _text(row.get("execution_profile")).lower() != LEAPS_SWING_PROFILE.name:
+                profile_blockers.append(
+                    f"candidate execution profile must be {LEAPS_SWING_PROFILE.name}"
+                )
+            if _text(row.get("strategy_evidence_lane")) != LEAPS_SWING_PROFILE.evidence_lane:
+                profile_blockers.append(
+                    f"candidate evidence lane must be {LEAPS_SWING_PROFILE.evidence_lane}"
+                )
+            if _text(row.get("profile_policy_version")) != LEAPS_SWING_PROFILE.policy_version:
+                profile_blockers.append(
+                    "candidate LEAPS policy version is missing or does not match the active policy"
+                )
+            delay_label = _text(row.get("data_delay")).lower()
+            if any(
+                token in delay_label
+                for token in ("free", "delayed", "research", "unknown", "indicative")
+            ):
+                scoring_row["quote_quality"] = (
+                    f"{_text(row.get('quote_quality'))}_delayed_or_research"
+                )
+            assessment = score_leaps_swing_candidate(
+                scoring_row,
+                quote_age_seconds=(
+                    source_quote_age_minutes * 60.0
+                    if math.isfinite(source_quote_age_minutes)
+                    else None
+                ),
+                account_budget=account_budget,
+            )
+            if profile_blockers:
+                assessment = dict(assessment)
+                assessment["status"] = "blocked"
+                assessment["execution_ready"] = False
+                assessment["research_only"] = False
+                assessment["execution_score"] = 0
+                assessment["hard_blockers"] = list(dict.fromkeys(
+                    list(assessment.get("hard_blockers") or []) + profile_blockers
+                ))
+            _apply_leaps_swing_assessment(row, assessment)
+            reasons.extend(
+                f"LEAPS policy: {reason}"
+                for reason in assessment.get("hard_blockers") or []
+            )
+            quote_warnings.extend(
+                f"LEAPS research-only: {reason}"
+                for reason in assessment.get("data_blockers") or []
+            )
         if not math.isfinite(source_quote_age_minutes):
             reasons.append("missing source quote timestamp")
         elif source_quote_age_minutes < -5:
@@ -1399,6 +1614,12 @@ def build_queue_from_candidates(
     readiness = {
         "label": status,
         "ready_to_submit_count": 0,
+        "profile_execution_ready_count": sum(
+            1 for order in orders if order.get("leaps_execution_ready") is True
+        ),
+        "profile_research_only_count": sum(
+            1 for order in orders if order.get("leaps_swing_status") == "research_only"
+        ),
         "review_candidate_count": len(orders),
         "manual_review_candidate_count": min(len(orders), max_orders),
         "rejected_count": len(rejected),
@@ -1452,6 +1673,17 @@ def build_queue_from_candidates(
         "status": status,
         "mode": "options_only_loss_capped",
         "does_not_place_orders": True,
+        "execution_profile": execution_profile,
+        "strategy_evidence_lane": (
+            LEAPS_SWING_PROFILE.evidence_lane
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else None
+        ),
+        "profile_policy_version": (
+            LEAPS_SWING_PROFILE.policy_version
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else SWING_EXECUTION_PROFILE.strategy_version
+        ),
         "account_budget": round(account_budget, 2),
         "max_orders": max_orders,
         "max_orders_to_submit": 0,
@@ -1463,6 +1695,7 @@ def build_queue_from_candidates(
         "max_premium_per_order": round(max_premium_per_order, 2),
         "min_confidence": min_confidence,
         "min_dte": min_dte,
+        "max_dte": max_dte,
         "max_spread_pct": max_spread_pct,
         "limit_buffer_pct": limit_buffer_pct,
         "estimated_total_candidate_premium": round(total_premium, 2),
@@ -1528,10 +1761,13 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
         "## Queue Summary",
         f"- Generated: {queue.get('generated_at')}",
         f"- Status: {queue.get('status')}",
+        f"- Execution profile: {queue.get('execution_profile')}",
+        f"- Evidence lane: {queue.get('strategy_evidence_lane') or '-'}",
         f"- Account budget: ${queue.get('account_budget')}",
         f"- Max total premium: ${queue.get('max_total_premium')}",
         f"- Max premium per order: ${queue.get('max_premium_per_order')}",
         f"- Minimum DTE: {queue.get('min_dte')}",
+        f"- Maximum DTE: {queue.get('max_dte') or '-'}",
         f"- Broker orders authorized by this queue: {queue.get('max_orders_to_submit', 0)}",
         f"- Max candidates to compare manually: {queue.get('max_manual_reviews', queue.get('max_orders', 0))}",
         f"- Candidate orders: {len(orders)}",
@@ -1681,8 +1917,19 @@ def render_agent_prompt(queue: dict[str, Any]) -> str:
             "- Next step: if selected, rebuild this candidate in Trade Desk; do not call broker tools from this queue.",
             f"- Stop reference: {order.get('stop_price_reference')}",
             f"- Target reference: {order.get('target_price_reference')}",
-            "",
         ])
+        if order.get("execution_profile") == LEAPS_SWING_PROFILE.name:
+            lines.extend([
+                f"- LEAPS policy state: {order.get('leaps_swing_status')}",
+                f"- LEAPS quality score: {order.get('leaps_quality_score')}",
+                f"- LEAPS data blockers: {_prompt_text(order.get('leaps_data_blockers') or '-')}",
+                f"- Review sessions: {_prompt_text(order.get('review_sessions') or '-')}; "
+                f"max hold {order.get('max_hold_sessions')} sessions",
+                "- Management references are manual only: "
+                f"stop {order.get('stop_loss_fraction')}, target {order.get('target_gain_fraction')}, "
+                f"breakeven review {order.get('breakeven_review_trigger_fraction')}.",
+            ])
+        lines.append("")
     lines.extend([
         "## Agent Output Required",
         "Report each candidate as shortlisted, paper-tracked, or skipped with the exact reason.",
@@ -1706,7 +1953,7 @@ def build_agentic_cycle_packet(
     places orders.
     """
     data_dir = Path(data_dir)
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = datetime.now(UTC).isoformat()
     open_positions_raw = _read_json(data_dir / "open_positions.json", [])
     if not isinstance(open_positions_raw, list):
         open_positions_raw = []
@@ -2142,8 +2389,16 @@ def build_robinhood_queue(
     chain_symbols_limit: int = 6,
     chain_contracts_per_symbol: int = 4,
     chain_refresh_write: bool = True,
+    execution_profile: str = SWING_EXECUTION_PROFILE.name,
 ) -> dict[str, Any]:
     data_dir = Path(data_dir)
+    execution_profile = _normalize_execution_profile(execution_profile)
+    min_dte, _, min_confidence, max_spread_pct = _profile_queue_limits(
+        execution_profile,
+        min_dte=min_dte,
+        min_confidence=min_confidence,
+        max_spread_pct=max_spread_pct,
+    )
     chain_refresh = {"attempted": False}
     effective_max_premium_per_order = (
         _default_max_premium_per_order(float(account_budget or DEFAULT_ACCOUNT_BUDGET))
@@ -2156,6 +2411,7 @@ def build_robinhood_queue(
             query=query,
             preset=chain_preset,
             min_dte=min_dte,
+            execution_profile=execution_profile,
             account_budget=account_budget,
             max_premium_per_order=effective_max_premium_per_order,
             symbols_limit=chain_symbols_limit,
@@ -2178,6 +2434,7 @@ def build_robinhood_queue(
     cboe_activity, cboe_activity_fetch = load_cboe_symbol_activity_for_candidates(candidates)
     queue = build_queue_from_candidates(
         candidates,
+        execution_profile=execution_profile,
         account_budget=account_budget,
         max_orders=max_orders,
         max_candidates=max_candidates,
@@ -2216,6 +2473,12 @@ def write_outputs(queue: dict[str, Any], data_dir: Path = DATA_DIR) -> tuple[Pat
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export Robinhood agentic options queue")
+    parser.add_argument(
+        "--execution-profile",
+        default=SWING_EXECUTION_PROFILE.name,
+        choices=sorted(EXECUTION_PROFILES),
+        help="Explicit queue policy; LEAPS is never inferred from DTE alone",
+    )
     parser.add_argument("--account-budget", type=float, default=DEFAULT_ACCOUNT_BUDGET)
     parser.add_argument("--max-orders", type=int, default=DEFAULT_MAX_ORDERS)
     parser.add_argument("--max-candidates", type=int, default=DEFAULT_MAX_CANDIDATES)
@@ -2229,7 +2492,7 @@ def main() -> int:
     parser.add_argument("--refresh-chain", action="store_true",
                         help="Refresh the free/provider option-chain shortlist before building the queue")
     parser.add_argument("--chain-preset", default="auto", choices=["auto", "swing", "leaps", "liquid", "custom"],
-                        help="Option-chain refresh preset; auto uses leaps for 180+ DTE and swing below that")
+                        help="Option-chain refresh preset; auto follows --execution-profile")
     parser.add_argument("--chain-symbols-limit", type=int, default=6,
                         help="Max symbols to scan when refreshing the chain shortlist")
     parser.add_argument("--chain-contracts-per-symbol", type=int, default=4,
@@ -2238,6 +2501,7 @@ def main() -> int:
     args = parser.parse_args()
 
     queue = build_robinhood_queue(
+        execution_profile=args.execution_profile,
         account_budget=args.account_budget,
         max_orders=args.max_orders,
         max_candidates=args.max_candidates,

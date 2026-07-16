@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,12 +18,20 @@ from typing import Any
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from optedge.strategy_profile import LEAPS_SWING_PROFILE  # noqa: E402
+
 DATA_DIR = ROOT / "data"
 
 NORMALIZED_COLUMNS = [
     "generated_at",
     "source_quote_at",
     "source_quote_time_basis",
+    "execution_profile",
+    "strategy_evidence_lane",
+    "profile_policy_version",
     "asset",
     "ticker_or_symbol",
     "action",
@@ -43,6 +52,11 @@ NORMALIZED_COLUMNS = [
     "stop_price",
     "target_price",
     "confidence",
+    "delta",
+    "open_interest",
+    "volume",
+    "after_cost_edge_pct",
+    "planned_hold_sessions",
     "rank_score",
     "fused_score",
     "trade_status",
@@ -186,10 +200,27 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     target_ref = pd.to_numeric(_series_or_default(df, "target_price_reference", float("nan")), errors="coerce")
     out["stop_price"] = stop_ref.fillna(out["mid"] * 0.50).round(2)
     out["target_price"] = target_ref.fillna(out["mid"] * 2.00).round(2)
+    out["execution_profile"] = _series_or_default(df, "execution_profile")
+    out["strategy_evidence_lane"] = _series_or_default(df, "strategy_evidence_lane")
+    out["profile_policy_version"] = _series_or_default(df, "profile_policy_version")
     readiness = pd.to_numeric(_series_or_default(df, "readiness_score", 0), errors="coerce")
     quality = pd.to_numeric(_series_or_default(df, "contract_quality_score", 0), errors="coerce")
     swing_fit = pd.to_numeric(_series_or_default(df, "swing_fit_score", float("nan")), errors="coerce")
-    out["confidence"] = readiness.fillna(swing_fit).fillna(quality).fillna(0).clip(lower=0, upper=100)
+    signal_confidence = pd.to_numeric(
+        _series_or_default(df, "confidence", float("nan")), errors="coerce"
+    )
+    legacy_confidence = readiness.fillna(swing_fit).fillna(quality).fillna(0)
+    leaps_rows = out["execution_profile"].astype(str).str.strip().str.lower().eq(
+        LEAPS_SWING_PROFILE.name
+    )
+    # A contract-readiness score measures data/contract usability; it is not a
+    # directional signal confidence.  Legacy swing rows retain the historical
+    # fallback, while an explicitly profiled LEAPS row must carry the real
+    # validated-signal confidence or fail closed downstream.
+    out["confidence"] = signal_confidence.where(
+        signal_confidence.notna() | leaps_rows,
+        legacy_confidence,
+    ).clip(lower=0, upper=100)
     out["rank_score"] = (
         quality.fillna(0) / 25.0
         + swing_fit.fillna(0) / 60.0
@@ -211,10 +242,28 @@ def _load_option_chain_shortlist(data_dir: Path) -> pd.DataFrame:
     out["liquidity_label"] = _series_or_default(df, "liquidity_label")
     out["bid"] = pd.to_numeric(_series_or_default(df, "bid", float("nan")), errors="coerce")
     out["ask"] = pd.to_numeric(_series_or_default(df, "ask", float("nan")), errors="coerce")
-    out["openInterest"] = pd.to_numeric(_series_or_default(df, "openInterest", 0), errors="coerce").fillna(0)
-    out["volume"] = pd.to_numeric(_series_or_default(df, "volume", 0), errors="coerce").fillna(0)
+    open_interest = pd.to_numeric(
+        _series_or_default(df, "openInterest", float("nan")), errors="coerce"
+    )
+    open_interest = open_interest.fillna(
+        pd.to_numeric(
+            _series_or_default(df, "open_interest", float("nan")), errors="coerce"
+        )
+    )
+    out["openInterest"] = open_interest
+    out["volume"] = pd.to_numeric(
+        _series_or_default(df, "volume", float("nan")), errors="coerce"
+    )
     out["impliedVolatility"] = pd.to_numeric(_series_or_default(df, "impliedVolatility", float("nan")), errors="coerce")
     out["delta"] = pd.to_numeric(_series_or_default(df, "delta", float("nan")), errors="coerce")
+    out["after_cost_edge_pct"] = pd.to_numeric(
+        _series_or_default(df, "after_cost_edge_pct", float("nan")),
+        errors="coerce",
+    )
+    out["planned_hold_sessions"] = pd.to_numeric(
+        _series_or_default(df, "planned_hold_sessions", float("nan")),
+        errors="coerce",
+    )
     out["breakeven_price"] = pd.to_numeric(_series_or_default(df, "breakeven_price", float("nan")), errors="coerce")
     out["breakeven_move_pct"] = pd.to_numeric(_series_or_default(df, "breakeven_move_pct", float("nan")), errors="coerce")
     out["breakeven_direction"] = _series_or_default(df, "breakeven_direction")
@@ -475,12 +524,29 @@ def _normalize_option(row: pd.Series, generated_at: str, allow_zero_size_placeho
         "spread_pct": round(spread, 6) if math.isfinite(spread) else "",
         "source_quote_at": source_quote_at,
         "source_quote_time_basis": source_quote_time_basis,
+        "execution_profile": _text(row.get("execution_profile")),
+        "strategy_evidence_lane": _text(row.get("strategy_evidence_lane")),
+        "profile_policy_version": _text(row.get("profile_policy_version")),
         "chain_source": _text(row.get("chain_source")),
         "quote_quality": _text(row.get("quote_quality")),
         "data_delay": _text(row.get("data_delay")),
         "stop_price": stop,
         "target_price": target,
         "confidence": _safe_int(row.get("confidence"), ""),
+        "delta": _safe_float(row.get("delta"), ""),
+        "open_interest": _safe_int(
+            row.get("openInterest")
+            if _text(row.get("openInterest"))
+            else row.get("open_interest"),
+            "",
+        ),
+        "volume": _safe_int(row.get("volume"), ""),
+        "after_cost_edge_pct": _safe_float(
+            row.get("after_cost_edge_pct"), ""
+        ),
+        "planned_hold_sessions": _safe_int(
+            row.get("planned_hold_sessions"), ""
+        ),
         "rank_score": _safe_float(row.get("rank_score"), ""),
         "fused_score": _safe_float(row.get("fused_score"), ""),
         "trade_status": _text(row.get("trade_status") or "Trade"),

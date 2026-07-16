@@ -41,7 +41,7 @@ DATA_DIR = ROOT / "data"
 OUTCOMES_PATH = DATA_DIR / "fixed_horizon_outcomes.parquet"
 SUMMARY_PATH = DATA_DIR / "fixed_horizon_summary.json"
 
-METHODOLOGY_VERSION = 6
+METHODOLOGY_VERSION = 7
 DEFAULT_HORIZONS = (1, 3, 5, 10, 20)
 HEADLINE_HORIZON = 10
 MIN_RELIABLE_SAMPLES = 100
@@ -50,7 +50,7 @@ SHARE_SLIPPAGE_PCT = 0.002
 FUTURES_SLIPPAGE_PCT = 0.001
 DEFAULT_SIGNAL_ALLOCATION_PCT = 0.01
 EVIDENCE_PROVENANCE_SCHEMA = "optedge_fixed_horizon_provenance_v1"
-EVIDENCE_ELIGIBILITY_VERSION = "frozen_signal_policy_v2"
+EVIDENCE_ELIGIBILITY_VERSION = "profile_isolated_frozen_signal_policy_v3"
 EVIDENCE_PROVENANCE_COLUMNS = (
     "evidence_provenance_schema",
     "strategy_version",
@@ -150,7 +150,7 @@ def evidence_policy_payload() -> dict[str, Any]:
             "share": SHARE_SLIPPAGE_PCT,
             "futures": FUTURES_SLIPPAGE_PCT,
         },
-        "independence_key": "asset|symbol|direction|utc_entry_date",
+        "independence_key": "execution_profile|asset|symbol|direction|utc_entry_date",
         "outcome_order": "strictly_completed_market_sessions",
         "adaptive_model_policy": {
             "ordinary_scan_training": "disabled",
@@ -265,9 +265,13 @@ def current_evidence_provenance() -> dict[str, Any]:
     }
 
 
-def _provenance_status(row: pd.Series) -> tuple[bool, str]:
+def _provenance_status(
+    row: pd.Series,
+    *,
+    expected: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
     """Require exact log-time provenance before a row can enter current lanes."""
-    expected = current_evidence_provenance()
+    expected = expected or current_evidence_provenance()
     for column in EVIDENCE_PROVENANCE_COLUMNS:
         actual = row.get(column)
         wanted = expected[column]
@@ -295,9 +299,13 @@ def _provenance_status(row: pd.Series) -> tuple[bool, str]:
     return True, "passed"
 
 
-def outcome_has_current_provenance(row: pd.Series) -> bool:
+def outcome_has_current_provenance(
+    row: pd.Series,
+    *,
+    expected: dict[str, Any] | None = None,
+) -> bool:
     """Return whether a persisted outcome is bound to today's full policy."""
-    provenance_ok, _ = _provenance_status(row)
+    provenance_ok, _ = _provenance_status(row, expected=expected)
     methodology = _optional_float(row.get("methodology_version"))
     return bool(
         provenance_ok
@@ -348,10 +356,35 @@ def _contract_key(row: pd.Series, asset: str) -> str:
     return symbol
 
 
+def _execution_profile(row: pd.Series, asset: str) -> str:
+    """Return the frozen strategy lane without inferring LEAPS from DTE alone."""
+    raw = _text(
+        row.get("execution_profile"),
+        row.get("strategy_profile"),
+        row.get("strategy_evidence_lane"),
+    ).lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "option_leaps_swing": "leaps_swing",
+        "leaps": "leaps_swing",
+        "leap": "leaps_swing",
+        "swing": "swing_execution",
+        "option_swing": "swing_execution",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized:
+        return normalized[:64]
+    return {
+        "option": "swing_execution",
+        "share": "share_swing",
+        "futures": "futures_swing",
+    }.get(asset, "unknown")
+
+
 def _signal_id(row: pd.Series) -> str:
     asset = str(row.get("asset") or "").lower()
     entry = pd.to_datetime(row.get("entry_time"), errors="coerce", utc=True)
     parts = [
+        _execution_profile(row, asset),
         asset,
         _contract_key(row, asset),
         _direction(row, asset),
@@ -470,6 +503,10 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
     out["symbol"] = out.apply(_asset_symbol, axis=1)
     out = out[out["symbol"].ne("")].copy()
     out["direction"] = out.apply(lambda row: _direction(row, str(row["asset"])), axis=1)
+    out["execution_profile"] = out.apply(
+        lambda row: _execution_profile(row, str(row["asset"])),
+        axis=1,
+    )
     out["contract_key"] = out.apply(
         lambda row: _contract_key(row, str(row["asset"])),
         axis=1,
@@ -478,7 +515,8 @@ def prepare_signals(signals: pd.DataFrame) -> pd.DataFrame:
     out = out.drop_duplicates("signal_id", keep="first")
     out["entry_date"] = out["entry_time"].dt.date.astype(str)
     out["independent_key"] = (
-        out["asset"] + "|" + out["symbol"] + "|" + out["direction"] + "|" + out["entry_date"]
+        out["execution_profile"] + "|" + out["asset"] + "|" + out["symbol"]
+        + "|" + out["direction"] + "|" + out["entry_date"]
     )
     out = out.sort_values(["entry_time", "signal_id"]).reset_index(drop=True)
     out["is_independent"] = ~out.duplicated("independent_key", keep="first")
@@ -680,6 +718,10 @@ def _carry_fields(row: pd.Series, outcome: dict[str, Any]) -> None:
         "strike",
         "expiry",
         "side",
+        "execution_profile",
+        "strategy_evidence_lane",
+        "intended_hold_sessions",
+        "max_hold_sessions",
         *EVIDENCE_PROVENANCE_COLUMNS,
     }
     for column in row.index:
@@ -1068,6 +1110,8 @@ _OUTCOME_DIGEST_COLUMNS = (
     "methodology_version",
     *EVIDENCE_PROVENANCE_COLUMNS,
     "independent_key",
+    "execution_profile",
+    "strategy_evidence_lane",
     "horizon_sessions",
     "is_scored",
     "resolution_status",
