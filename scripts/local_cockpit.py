@@ -54,6 +54,10 @@ from engines.nasdaq_screener import small_cap_movers  # noqa: E402
 from engines.regsho_threshold import threshold_rows_for_symbols  # noqa: E402
 from engines.short_sale_circuit import circuit_rows_for_symbols  # noqa: E402
 from engines.trading_halts import halt_rows_for_symbols  # noqa: E402
+from optedge.evidence_capture import (  # noqa: E402
+    EvidenceCaptureError,
+    capture_checked_finalist_evidence,
+)
 from optedge.leaps_swing import score_leaps_swing_candidate  # noqa: E402
 from optedge.robinhood_connection import (  # noqa: E402
     RobinhoodConnectionError,
@@ -64,6 +68,10 @@ from optedge.robinhood_finalist import (  # noqa: E402
     apply_finalist_check_to_sources,
     check_best_option_finalist,
     load_finalist_check_status,
+)
+from optedge.robinhood_option_history_sync import (  # noqa: E402
+    RobinhoodOptionHistorySyncError,
+    sync_robinhood_option_histories,
 )
 from optedge.robinhood_snapshot_sync import (  # noqa: E402
     RobinhoodSnapshotSyncError,
@@ -7246,6 +7254,7 @@ def build_robinhood_agentic_queue_report(
     chain_preset: str = "auto",
     chain_symbols_limit: int = 6,
     chain_contracts_per_symbol: int = 4,
+    execution_profile: str = SWING_EXECUTION_PROFILE.name,
     write: bool = False,
 ) -> dict[str, Any]:
     """Build or write the 90d+ option candidate queue for agent review."""
@@ -7261,6 +7270,7 @@ def build_robinhood_agentic_queue_report(
         chain_preset=chain_preset,
         chain_symbols_limit=chain_symbols_limit,
         chain_contracts_per_symbol=chain_contracts_per_symbol,
+        execution_profile=execution_profile,
     )
     try:
         cycle_packet = build_agentic_cycle_packet(queue, data_dir)
@@ -7293,6 +7303,8 @@ def build_robinhood_agentic_queue_report(
         "wrote_files": bool(paths),
         "paths": paths,
         "status": queue.get("status"),
+        "execution_profile": queue.get("execution_profile"),
+        "strategy_evidence_lane": queue.get("strategy_evidence_lane"),
         "account_budget": queue.get("account_budget"),
         "max_candidates": queue.get("max_candidates"),
         "max_orders_to_submit": queue.get("max_orders_to_submit"),
@@ -7320,7 +7332,7 @@ def build_robinhood_agentic_queue_report(
         "orders": queue.get("orders") or [],
         "rejected": (queue.get("rejected") or [])[:25],
         "notes": [
-            "This is a 90d+ options handoff queue for external/manual review.",
+            "This is an explicit 3m+ swing or true-LEAPS evidence queue for external/manual review.",
             "It does not place trades or store broker credentials.",
             "The agent should verify live quotes, spread, positions, buying power, and current news.",
         ],
@@ -15112,6 +15124,170 @@ def build_edge_lab_report(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     return report
 
 
+def build_evidence_mission_control(
+    data_dir: Path = DATA_DIR,
+    *,
+    edge: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize evidence collection, exact option coverage, and quarantines."""
+    from backtest.fixed_horizon import (
+        EVIDENCE_PROVENANCE_COLUMNS,
+        METHODOLOGY_VERSION,
+        current_evidence_provenance,
+    )
+
+    data_dir = Path(data_dir)
+    edge = edge if isinstance(edge, dict) else build_edge_lab_report(data_dir)
+    outcomes_path = data_dir / "fixed_horizon_outcomes.parquet"
+    try:
+        outcomes = pd.read_parquet(outcomes_path) if outcomes_path.exists() else pd.DataFrame()
+    except Exception:
+        outcomes = pd.DataFrame()
+    if outcomes.empty:
+        current = pd.DataFrame()
+    else:
+        expected = current_evidence_provenance()
+        current_mask = pd.Series(True, index=outcomes.index)
+        for column in EVIDENCE_PROVENANCE_COLUMNS:
+            if column not in outcomes:
+                current_mask &= False
+                continue
+            if column == "fixed_horizon_methodology_version":
+                current_mask &= pd.to_numeric(outcomes[column], errors="coerce").eq(
+                    int(expected[column])
+                )
+            else:
+                current_mask &= outcomes[column].fillna("").astype(str).eq(str(expected[column]))
+        if "methodology_version" not in outcomes:
+            current_mask &= False
+        else:
+            current_mask &= pd.to_numeric(outcomes["methodology_version"], errors="coerce").eq(
+                METHODOLOGY_VERSION
+            )
+        current = outcomes[current_mask].copy()
+    scored = (
+        current[
+            current.get("is_scored", pd.Series(False, index=current.index))
+            .fillna(False)
+            .astype(bool)
+        ]
+        if not current.empty
+        else current
+    )
+    executable = (
+        scored[
+            scored.get(
+                "eligible_for_executable_metrics",
+                pd.Series(False, index=scored.index),
+            )
+            .fillna(False)
+            .astype(bool)
+        ]
+        if not scored.empty
+        else scored
+    )
+    shadow = (
+        scored[
+            scored.get(
+                "eligible_for_shadow_metrics",
+                pd.Series(False, index=scored.index),
+            )
+            .fillna(False)
+            .astype(bool)
+        ]
+        if not scored.empty
+        else scored
+    )
+    leaps = edge.get("leaps_swing") if isinstance(edge.get("leaps_swing"), dict) else {}
+    coverage = _read_json(data_dir / "robinhood_option_history_coverage.json")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    requests = _read_json(data_dir / "robinhood_option_history_requests.json")
+    requests = requests if isinstance(requests, dict) else {}
+
+    strategy_rows: list[dict[str, Any]] = []
+    for row in edge.get("asset_rows") or []:
+        if not isinstance(row, dict):
+            continue
+        research = row.get("research_all_outcomes")
+        research = research if isinstance(research, dict) else {}
+        research_n = int(_float_value(research.get("n"), default=0))
+        mean = _float_value(research.get("avg_return_after_costs"), default=math.nan)
+        profit_factor = _float_value(research.get("profit_factor"), default=math.nan)
+        legacy_adverse = bool(
+            row.get("evidence_lane") == "legacy_research_only"
+            and research_n >= 30
+            and (
+                (math.isfinite(mean) and mean <= 0)
+                or (math.isfinite(profit_factor) and profit_factor < 1)
+            )
+        )
+        if row.get("live_capital_eligible") is True:
+            state, label, tone = "manual_review_eligible", "Validated current method", "good"
+        elif legacy_adverse:
+            state, label, tone = (
+                "legacy_quarantined",
+                "Legacy lane quarantined; rebuild on paper",
+                "bad",
+            )
+        else:
+            state, label, tone = "paper_only", "Collect current-method evidence", "warn"
+        strategy_rows.append(
+            {
+                "asset": row.get("asset"),
+                "state": state,
+                "label": label,
+                "tone": tone,
+                "selected_evidence_lane": row.get("evidence_lane"),
+                "selected_outcomes": row.get("n"),
+                "legacy_research_outcomes": research_n,
+                "legacy_after_cost_mean": _clean_value(mean),
+                "legacy_profit_factor": _clean_value(profit_factor),
+                "live_capital_eligible": row.get("live_capital_eligible") is True,
+            }
+        )
+    return {
+        "schema": "optedge_evidence_mission_control_v1",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "current_method": {
+            "scored_outcomes": int(len(scored)),
+            "executable_outcomes": int(len(executable)),
+            "shadow_outcomes": int(len(shadow)),
+            "unique_entry_days": int(
+                pd.to_datetime(
+                    scored.get("entry_time"), errors="coerce", utc=True
+                ).dt.date.nunique()
+            )
+            if not scored.empty and "entry_time" in scored
+            else 0,
+        },
+        "leaps_swing": {
+            "status": leaps.get("status"),
+            "label": leaps.get("label"),
+            "live_capital_eligible": leaps.get("live_capital_eligible") is True,
+            "horizons": list(leaps.get("horizons") or []),
+            "primary_blocker": leaps.get("primary_blocker"),
+        },
+        "option_history": {
+            "cached_contracts": coverage.get("cached_contracts", 0),
+            "non_interpolated_bars": coverage.get("non_interpolated_bars", 0),
+            "broker_observed_option_outcomes": coverage.get("broker_observed_option_outcomes", 0),
+            "option_outcomes": coverage.get("option_outcomes", 0),
+            "broker_observed_coverage_pct": coverage.get("broker_observed_coverage_pct"),
+            "pending_requests": requests.get("request_count", 0),
+        },
+        "strategy_health": strategy_rows,
+        "manual_actions": [
+            "Run a fresh scan to log current-policy signals.",
+            "Build either the 3m+ swing queue or the explicit LEAPS queue.",
+            "Live-check one finalist, then capture it once as immutable paper evidence.",
+            "Sync a small exact option-history batch to replace modeled outcomes.",
+            "Keep quarantined legacy lanes out of live-capital review while the rebuild matures.",
+        ],
+        "automatic_collection_enabled": False,
+        "does_not_place_orders": True,
+    }
+
+
 def build_model_trust_report() -> dict[str, Any]:
     """Return a privacy-safe view of the adaptive-model promotion firewall."""
     from backtest.predictor import model_trust_status
@@ -15183,7 +15359,15 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
             snapshot,
             account_key=account_key,
         )
+        if ledger is None and ledger_error is None:
+            result["baseline_state"] = "missing"
+            result["blockers"] = [
+                "Account equity baseline is not established. Run one explicit broker snapshot now, then another after at least 18 hours on a later New York calendar date.",
+            ]
+        elif ledger_error is None:
+            result["baseline_state"] = "ready" if result.get("allowed") is True else "warming_up"
         if ledger_error:
+            result["baseline_state"] = "unsafe"
             result["status"] = "blocked"
             result["review_ready"] = False
             result["allowed"] = False
@@ -15201,6 +15385,8 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
     allowed_rows = [row for row in rows if row.get("allowed") is True]
     if rows and len(allowed_rows) == len(rows):
         status = "reduced" if any(row.get("status") == "reduced" for row in rows) else "ready"
+    elif rows and all(row.get("baseline_state") in {"missing", "warming_up"} for row in rows):
+        status = "warming_up"
     else:
         status = "blocked"
     drawdowns = [
@@ -15245,6 +15431,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     broker = build_agentic_autopilot_status(data_dir)
     model_trust = build_model_trust_report()
     account_drawdown = build_account_drawdown_overview(data_dir)
+    evidence_mission = build_evidence_mission_control(data_dir, edge=edge)
     robinhood_finalist_check = load_finalist_check_status(data_dir)
     best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
     comparison = build_candidate_comparison(
@@ -15264,6 +15451,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "edge": edge,
         "model_trust": model_trust,
         "account_drawdown": account_drawdown,
+        "evidence_mission": evidence_mission,
         "robinhood": broker,
         "robinhood_finalist_check": robinhood_finalist_check,
         "candidate_comparison": comparison,
@@ -16374,7 +16562,17 @@ def _manual_review_gate(asset: str, data_dir: Path, plan: dict[str, Any]) -> dic
                 snapshot,
                 account_key=account_key,
             )
+            if ledger is None and ledger_error is None:
+                drawdown_result["baseline_state"] = "missing"
+                drawdown_result["blockers"] = [
+                    "Account equity baseline is not established. Run one explicit broker snapshot now, then another after at least 18 hours on a later New York calendar date.",
+                ]
+            elif ledger_error is None:
+                drawdown_result["baseline_state"] = (
+                    "ready" if drawdown_result.get("allowed") is True else "warming_up"
+                )
             if ledger_error:
+                drawdown_result["baseline_state"] = "unsafe"
                 drawdown_result["status"] = "blocked"
                 drawdown_result["review_ready"] = False
                 drawdown_result["allowed"] = False
@@ -20218,6 +20416,17 @@ tr.clickable-row:hover { background:#18201d; }
       <div id="trade-desk-edge" class="edge-grid"></div>
       <div id="trade-desk-edge-foot" class="edge-foot"></div>
     </article>
+    <article class="desk-card edge-lab" aria-labelledby="evidence-mission-title">
+      <div class="edge-head">
+        <div class="edge-head-copy">
+          <h3 id="evidence-mission-title">Evidence Mission Control</h3>
+          <p>Current-method samples, dedicated LEAPS evidence, exact Robinhood option-history coverage, and explicit strategy quarantines. Every collection action is manual and one-shot.</p>
+        </div>
+        <span id="evidence-mission-status" class="pill warn">Loading collection lanes</span>
+      </div>
+      <div id="evidence-mission" class="edge-grid" aria-live="polite"></div>
+      <div id="evidence-mission-foot" class="edge-foot"></div>
+    </article>
     <article class="desk-card firewall-board" aria-labelledby="firewall-title">
       <div class="candidate-board-head">
         <div>
@@ -20259,10 +20468,12 @@ tr.clickable-row:hover { background:#18201d; }
           <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
           <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
           <button class="btn primary" type="button" id="rh-check-finalist" disabled>Live-check best option</button>
+          <button class="btn" type="button" id="rh-capture-evidence">Capture checked evidence</button>
+          <button class="btn" type="button" id="rh-sync-history" disabled>Sync 5 exact histories</button>
           <button class="btn" type="button" id="rh-disconnect">Disconnect</button>
         </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
-        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The live finalist check keeps Optedge&apos;s normal ranking, resolves only its first option candidate, and reads that exact Robinhood chain, contract, and quote. Both actions are bounded and user-triggered. Live placement is not exposed; there is no polling, schedule, automatic retry, or Codex loop.</div>
+        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The finalist check reads one exact chain, contract, and quote. Evidence capture freezes that already-checked quote locally without another broker call. History sync reads at most five exact contracts and commits only a complete batch. Live placement is not exposed; there is no polling, schedule, automatic retry, or Codex loop.</div>
         <div id="rh-finalist-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="trade-desk-robinhood" style="margin-top:12px"></div>
       </article>
@@ -20531,6 +20742,10 @@ tr.clickable-row:hover { background:#18201d; }
       <input id="rh-min-dte" type="number" min="0" max="1200" step="1" value="90" aria-label="Minimum DTE">
       <input id="rh-min-confidence" type="number" min="0" max="100" step="1" value="55" aria-label="Minimum confidence">
       <input id="rh-query" placeholder="Filter ticker/contract">
+      <select id="rh-profile" aria-label="Execution evidence profile">
+        <option value="swing_execution">3m+ swing execution</option>
+        <option value="leaps_swing">True LEAPS swing evidence</option>
+      </select>
       <label class="check"><input id="rh-refresh-chain" type="checkbox"> refresh chain</label>
       <select id="rh-chain-preset" aria-label="Chain refresh preset">
         <option value="auto">Auto chain preset</option>
@@ -20910,6 +21125,50 @@ function tradeDeskEdge(edge) {
     </article>`;
   }).join('');
 }
+function evidenceMissionHtml(mission) {
+  const current = mission.current_method || {};
+  const leaps = mission.leaps_swing || {};
+  const history = mission.option_history || {};
+  const health = Array.isArray(mission.strategy_health) ? mission.strategy_health : [];
+  const healthRows = health.length ? health.map(row => `
+    <div class="edge-metric">
+      <span>${cell(labelText(row.asset || 'lane'))}</span>
+      <strong>${cell(labelText(row.state || 'paper_only'))}</strong>
+      <small>${cell(row.label || '')}</small>
+    </div>`).join('') : '<div class="edge-metric"><span>Strategy state</span><strong>Awaiting evidence</strong></div>';
+  const observed = Number(history.broker_observed_option_outcomes || 0);
+  const total = Number(history.option_outcomes || 0);
+  return `<article class="edge-lane warn">
+      <header><h4>Current frozen method</h4><span class="pill warn">paper evidence</span></header>
+      <div class="edge-metrics">
+        <div class="edge-metric"><span>Scored outcomes</span><strong>${cell(current.scored_outcomes || 0)}</strong></div>
+        <div class="edge-metric"><span>Executable outcomes</span><strong>${cell(current.executable_outcomes || 0)}</strong></div>
+        <div class="edge-metric"><span>Shadow outcomes</span><strong>${cell(current.shadow_outcomes || 0)}</strong></div>
+        <div class="edge-metric"><span>Independent entry days</span><strong>${cell(current.unique_entry_days || 0)}</strong></div>
+      </div>
+    </article>
+    <article class="edge-lane ${leaps.live_capital_eligible === true ? 'good' : 'warn'}">
+      <header><h4>LEAPS swing lane</h4><span class="pill ${leaps.live_capital_eligible === true ? 'good' : 'warn'}">${cell(labelText(leaps.status || 'paper_only'))}</span></header>
+      <p>${cell(leaps.label || 'Dedicated LEAPS evidence has not matured.')} ${cell(leaps.primary_blocker || '')}</p>
+      <div class="edge-metrics">
+        <div class="edge-metric"><span>Mature horizons</span><strong>${cell((leaps.horizons || []).length)}</strong></div>
+        <div class="edge-metric"><span>Live-capital eligible</span><strong>${leaps.live_capital_eligible === true ? 'yes' : 'no'}</strong></div>
+      </div>
+    </article>
+    <article class="edge-lane ${observed && observed === total ? 'good' : 'warn'}">
+      <header><h4>Exact option history</h4><span class="pill ${observed && observed === total ? 'good' : 'warn'}">${cell(observed)} / ${cell(total)}</span></header>
+      <div class="edge-metrics">
+        <div class="edge-metric"><span>Broker-observed coverage</span><strong>${pct(history.broker_observed_coverage_pct)}</strong></div>
+        <div class="edge-metric"><span>Cached contracts</span><strong>${cell(history.cached_contracts || 0)}</strong></div>
+        <div class="edge-metric"><span>Exact daily bars</span><strong>${cell(history.non_interpolated_bars || 0)}</strong></div>
+        <div class="edge-metric"><span>Pending contracts</span><strong>${cell(history.pending_requests || 0)}</strong></div>
+      </div>
+    </article>
+    <article class="edge-lane warn">
+      <header><h4>Strategy quarantine board</h4><span class="pill warn">fail closed</span></header>
+      <div class="edge-metrics">${healthRows}</div>
+    </article>`;
+}
 function tradeDeskFirewalls(model, drawdown) {
   const predictor = model.predictor || {};
   const weights = model.runtime_weights || {};
@@ -20918,7 +21177,8 @@ function tradeDeskFirewalls(model, drawdown) {
   const modelReason = [...(predictor.reasons || []), ...(weights.reasons || [])][0]
     || 'Source-controlled defaults remain active until a promoted challenger clears every guard.';
   const capitalReady = ['ready', 'reduced'].includes(String(drawdown.status || '').toLowerCase());
-  const capitalTone = capitalReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : 'bad';
+  const capitalWarming = String(drawdown.status || '').toLowerCase() === 'warming_up';
+  const capitalTone = capitalReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : capitalWarming ? 'warn' : 'bad';
   const capitalReason = (drawdown.blockers || [])[0]
     || (capitalReady ? 'Every displayed account has a fresh blocker-free chained equity history.' : 'Refresh and normalize explicit Robinhood account reads to establish the equity baseline.');
   return `<article class="firewall-card ${modelTone}">
@@ -21207,6 +21467,11 @@ function renderRobinhoodConnection(data) {
   const state = String((data && data.connection_state) || '').toLowerCase();
   if ($('rh-connect')) $('rh-connect').disabled = ['connecting', 'authorization_required', 'connected', 'connected_limited'].includes(state);
   if ($('rh-sync-snapshot')) $('rh-sync-snapshot').disabled = !['connected', 'connected_limited'].includes(state);
+  if ($('rh-sync-history')) {
+    const reads = (((data || {}).client || {}).tool_catalog || {}).read_tools || [];
+    const historyReadsReady = ['get_option_chains', 'get_option_instruments', 'get_option_historicals'].every(name => reads.includes(name));
+    $('rh-sync-history').disabled = !['connected', 'connected_limited'].includes(state) || !historyReadsReady;
+  }
   if ($('rh-check-finalist')) {
     const reads = (((data || {}).client || {}).tool_catalog || {}).read_tools || [];
     const optionReadsReady = ['get_option_chains', 'get_option_instruments', 'get_option_quotes'].every(name => reads.includes(name));
@@ -21287,6 +21552,48 @@ async function runRobinhoodFinalistCheck() {
     await loadRobinhoodConnection().catch(() => null);
   }
 }
+async function captureFinalistEvidence() {
+  if (!window.confirm('Freeze the still-fresh checked finalist as one local paper-evidence signal? This makes no Robinhood call and places no order.')) return;
+  const button = $('rh-capture-evidence');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Binding the checked quote to one immutable paper-evidence row...';
+  try {
+    const res = await fetch('/api/capture-finalist-evidence', {method:'POST', body:'{}'});
+    const data = await res.json();
+    if (!res.ok || data.ok !== true) {
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `Evidence capture blocked: ${labelText(data.error_code || 'fresh checked finalist required')}.`;
+      return;
+    }
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = data.idempotent === true
+      ? 'That exact finalist was already captured; no duplicate signal was added.'
+      : `Captured ${data.contract || data.symbol} in the ${labelText(data.execution_profile)} paper-evidence lane. No broker call or order occurred.`;
+    await loadTradeDesk(true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+async function syncRobinhoodOptionHistory() {
+  if (!window.confirm('Read daily regular-session history for up to five exact active option contracts once? The batch is all-or-nothing and no order tool is called.')) return;
+  const button = $('rh-sync-history');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Resolving and reading up to five exact option histories once...';
+  try {
+    const res = await fetch('/api/robinhood-sync-option-history', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({max_requests:5})
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok !== true) {
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `History sync blocked: ${labelText(data.error_code || 'safe exact-history failure')}. No partial batch was written.`;
+      return;
+    }
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Exact history batch complete: ${Number(data.completed_count || 0)} contract(s), ${Number(data.bar_count || 0)} daily bar(s). Run validation to upgrade matured modeled outcomes.`;
+    await loadTradeDesk(true);
+  } finally {
+    await loadRobinhoodConnection().catch(() => null);
+  }
+}
 async function loadTradeDesk(force=false) {
   if (!$('trade-desk-status-text')) return;
   $('trade-desk-status-text').textContent = 'Building one decision snapshot...';
@@ -21301,6 +21608,7 @@ async function loadTradeDesk(force=false) {
   const edge = data.edge || {};
   const model = data.model_trust || {};
   const drawdown = data.account_drawdown || {};
+  const mission = data.evidence_mission || {};
   const finalist = data.robinhood_finalist_check || {};
   const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
@@ -21322,10 +21630,17 @@ async function loadTradeDesk(force=false) {
   $('trade-desk-edge-status').className = `pill ${toneClass(edge.tone || edge.status)}`;
   $('trade-desk-edge-status').textContent = labelText(edge.label || edge.status || 'unavailable');
   $('trade-desk-edge-foot').textContent = `${edge.primary_blocker || 'All live-capital evidence requirements are clear.'} Same-day ideas are averaged, then confidence is resampled in circular blocks at least as long as the holding horizon; option live gates use broker-observed outcomes only.`;
+  $('evidence-mission').innerHTML = evidenceMissionHtml(mission);
+  const currentEvidence = mission.current_method || {};
+  const evidenceReady = Number(currentEvidence.executable_outcomes || 0) > 0 && (mission.leaps_swing || {}).live_capital_eligible === true;
+  $('evidence-mission-status').className = `pill ${evidenceReady ? 'good' : 'warn'}`;
+  $('evidence-mission-status').textContent = evidenceReady ? 'Evidence lanes active' : 'Paper evidence building';
+  $('evidence-mission-foot').textContent = 'Fresh scans log the frozen current method. A live finalist can be captured once as paper evidence, and exact history sync replaces modeled option outcomes in bounded batches. Legacy adverse lanes stay quarantined.';
   $('trade-desk-firewalls').innerHTML = tradeDeskFirewalls(model, drawdown);
   const firewallsReady = ['ready', 'reduced'].includes(String(drawdown.status || '').toLowerCase());
-  $('trade-desk-firewall-status').className = `pill ${firewallsReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : 'bad'}`;
-  $('trade-desk-firewall-status').textContent = firewallsReady ? 'Capital history verified' : 'Capital history blocks';
+  const firewallsWarming = String(drawdown.status || '').toLowerCase() === 'warming_up';
+  $('trade-desk-firewall-status').className = `pill ${firewallsReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : firewallsWarming ? 'warn' : 'bad'}`;
+  $('trade-desk-firewall-status').textContent = firewallsReady ? 'Capital history verified' : firewallsWarming ? 'Capital history warming up' : 'Capital history blocks';
   $('trade-desk-firewall-foot').textContent = 'Manual review uses a 1% base risk ceiling, reduced to 0.5% at 5% account drawdown and 0.25% at 8%; 10% high-water drawdown or a 3% New York-session loss blocks new entries.';
   $('trade-desk-candidates').innerHTML = tradeDeskCandidates(comparison);
   const comparisonWinner = (comparison.rows || []).find(row => row && row.candidate_id === comparison.winner_id) || {};
@@ -22721,6 +23036,7 @@ function providerSummaryHtml(data) {
   const trust = data.data_trust || {};
   const fields = [
     ['Status', data.status || '-'],
+    ['Evidence profile', data.execution_profile || '-'],
     ['Data trust', trust.label || '-'],
     ['Trust score', trust.score ?? '-'],
     ['Symbol', data.symbol || '-'],
@@ -24110,6 +24426,7 @@ async function routeAutopilotAction(action) {
     $('rh-min-dte').value = Math.max(parseInt($('rh-min-dte').value || '90', 10) || 90, 90);
     $('rh-refresh-chain').checked = true;
     $('rh-chain-preset').value = 'swing';
+    $('rh-profile').value = 'swing_execution';
     await loadRobinhoodQueue(true);
     await loadAgenticAutopilotStatus();
     return;
@@ -24199,7 +24516,8 @@ async function loadRobinhoodQueue(write=false) {
     min_confidence: $('rh-min-confidence').value || 55,
     query: $('rh-query').value.trim(),
     refresh_chain: $('rh-refresh-chain').checked,
-    chain_preset: $('rh-chain-preset').value || 'auto'
+    chain_preset: $('rh-chain-preset').value || 'auto',
+    execution_profile: $('rh-profile').value || 'swing_execution'
   };
   const res = write
     ? await fetch('/api/build-robinhood-queue', {
@@ -25306,6 +25624,8 @@ $('rh-connect').addEventListener('click', startRobinhoodConnection);
 $('rh-connection-refresh').addEventListener('click', loadRobinhoodConnection);
 $('rh-sync-snapshot').addEventListener('click', syncRobinhoodSnapshot);
 $('rh-check-finalist').addEventListener('click', runRobinhoodFinalistCheck);
+$('rh-capture-evidence').addEventListener('click', captureFinalistEvidence);
+$('rh-sync-history').addEventListener('click', syncRobinhoodOptionHistory);
 $('rh-disconnect').addEventListener('click', disconnectRobinhoodConnection);
 $('autopilot-refresh').addEventListener('click', loadAgenticAutopilotStatus);
 $('autopilot-packet-refresh').addEventListener('click', () => routeAutopilotAction('refresh_autopilot_packet'));
@@ -25862,6 +26182,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
             refresh_chain = _bool_param(params.get("refresh_chain", ["false"])[0])
             chain_preset = params.get("chain_preset", ["auto"])[0]
+            execution_profile = params.get("execution_profile", ["swing_execution"])[0]
+            if execution_profile not in {"swing_execution", "leaps_swing"}:
+                self._send_json({"error": "invalid execution profile"}, status=400)
+                return
             self._send_json(
                 build_robinhood_agentic_queue_report(
                     self.data_dir,
@@ -25873,6 +26197,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     query=query,
                     refresh_chain=refresh_chain,
                     chain_preset=chain_preset,
+                    execution_profile=execution_profile,
                     write=False,
                 )
             )
@@ -26030,7 +26355,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/robinhood-connect",
             "/api/robinhood-disconnect",
             "/api/robinhood-sync-snapshot",
+            "/api/robinhood-sync-option-history",
             "/api/robinhood-check-finalist",
+            "/api/capture-finalist-evidence",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
             return
@@ -26100,6 +26427,52 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(result)
             return
+        if parsed.path == "/api/robinhood-sync-option-history":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "client_unavailable",
+                        "snapshot_written": False,
+                        "does_not_place_orders": True,
+                    },
+                    status=503,
+                )
+                return
+            try:
+                result = sync_robinhood_option_histories(
+                    manager,
+                    data_dir=self.data_dir,
+                    max_requests=_int_param(str(body.get("max_requests") or "5"), 5, 1, 10),
+                )
+            except (RobinhoodConnectionError, RobinhoodOptionHistorySyncError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "snapshot_written": False,
+                        "does_not_place_orders": True,
+                        "does_not_preview_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "option_history_sync_failed",
+                        "snapshot_written": False,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
         if parsed.path == "/api/robinhood-check-finalist":
             manager = self.robinhood_connection_manager
             if manager is None:
@@ -26139,6 +26512,36 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         "does_not_place_orders": True,
                         "does_not_preview_orders": True,
                         "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/capture-finalist-evidence":
+            try:
+                result = capture_checked_finalist_evidence(
+                    data_dir=self.data_dir,
+                    log_dir=ROOT_BOOTSTRAP / "logs",
+                )
+            except EvidenceCaptureError as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "captured": False,
+                        "does_not_place_orders": True,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "evidence_capture_failed",
+                        "captured": False,
+                        "does_not_place_orders": True,
                     },
                     status=500,
                 )
@@ -26279,6 +26682,10 @@ class CockpitHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/build-robinhood-queue":
+            execution_profile = str(body.get("execution_profile") or "swing_execution").strip()
+            if execution_profile not in {"swing_execution", "leaps_swing"}:
+                self._send_json({"error": "invalid execution profile"}, status=400)
+                return
             report = build_robinhood_agentic_queue_report(
                 self.data_dir,
                 account_budget=_float_param(
@@ -26298,6 +26705,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 query=str(body.get("query") or ""),
                 refresh_chain=_bool_param(body.get("refresh_chain"), False),
                 chain_preset=str(body.get("chain_preset") or "auto"),
+                execution_profile=execution_profile,
                 write=True,
             )
             self._send_json(report)

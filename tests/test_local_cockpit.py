@@ -2985,6 +2985,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "addDecisionJournalRow" in html
     assert "rh-refresh-chain" in html
     assert "rh-chain-preset" in html
+    assert "rh-profile" in html
     assert "Premium left" in html
     assert "Top rejects" in html
     assert "Option chain scan" in html
