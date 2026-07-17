@@ -1,10 +1,11 @@
 # Purpose: Read-only Robinhood option-history cache and request queue.
 """Read-only Robinhood option-history cache and request queue.
 
-The authenticated Robinhood MCP connector is available to Codex, not to the
-local Python process. This module defines a small, auditable handoff: Optedge
-queues exact contracts that need history, a connected agent records normalized
-read-only bars, and fixed-horizon validation consumes those bars when present.
+Optedge queues exact contracts that need history. The local cockpit can satisfy
+a small active-contract batch through its official OAuth connection, while a
+separately connected agent remains a manual fallback. Both paths record only
+normalized read-only bars, and fixed-horizon validation consumes those bars
+when present.
 """
 
 from __future__ import annotations
