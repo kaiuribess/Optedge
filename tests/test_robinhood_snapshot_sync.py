@@ -268,6 +268,49 @@ def test_direct_sync_fails_before_writing_on_unprovable_pagination(tmp_path: Pat
     assert not (tmp_path / "robinhood_account_equity_ledgers").exists()
 
 
+def test_direct_sync_accepts_official_omitted_null_terminal_page(tmp_path: Path):
+    manager = FakeManager()
+    manager.schemas["get_option_orders"]["properties"]["cursor"]["description"] = (
+        "Pagination cursor. Omit for the first page; for the next page, pass the "
+        "cursor query param from the prior response's next URL."
+    )
+    manager.responses["get_option_orders"] = {
+        "data": {"orders": []},
+        "guide": "When next is non-null, extract its cursor and call this tool again.",
+    }
+
+    result = sync_robinhood_broker_snapshot(
+        manager,
+        data_dir=tmp_path,
+        now=lambda: FIXED_NOW,
+    )
+
+    assert result["ok"] is True
+    assert result["snapshot_ready"] is True
+    assert (tmp_path / "robinhood_broker_snapshot.json").exists()
+    assert list((tmp_path / "robinhood_account_equity_ledgers").glob("*.json"))
+
+
+def test_direct_sync_rejects_missing_next_without_closed_official_contract(
+    tmp_path: Path,
+):
+    manager = FakeManager()
+    manager.responses["get_option_orders"] = {
+        "data": {"orders": []},
+        "guide": "No pagination contract is documented here.",
+    }
+
+    with pytest.raises(RobinhoodSnapshotSyncError) as exc_info:
+        sync_robinhood_broker_snapshot(
+            manager,
+            data_dir=tmp_path,
+            now=lambda: FIXED_NOW,
+        )
+
+    assert exc_info.value.code == "pagination_proof_missing"
+    assert not (tmp_path / "robinhood_broker_snapshot.json").exists()
+
+
 def test_direct_sync_requires_an_explicit_connected_session(tmp_path: Path):
     manager = FakeManager()
     manager.state = "disconnected"

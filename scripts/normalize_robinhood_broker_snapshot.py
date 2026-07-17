@@ -1108,12 +1108,15 @@ def _pagination_capture_issue(
     response: Any,
     *,
     require_explicit_next: bool = False,
+    contract_tool_name: str = "",
 ) -> str:
     """Validate an ordered capture of one or more decoded MCP pages.
 
     Positions, orders, and instrument reads are paginated contracts. Their
     capture is only provably complete when every decoded page retains an
-    explicit ``data.next`` field and the final value is JSON null.
+    explicit ``data.next`` field and the final value is JSON null. The direct
+    connector may instead attach one narrow proof marker when Robinhood's
+    closed official cursor contract omits a null terminal ``next`` field.
     """
     raw_pages = response if isinstance(response, list) else [response]
     if isinstance(response, list) and any(not isinstance(page, dict) for page in raw_pages):
@@ -1126,7 +1129,19 @@ def _pagination_capture_issue(
             data = page.get("data")
             if not isinstance(data, dict):
                 return f"page {index} is missing its decoded data object"
-            if "next" not in data:
+            proof = page.get("_optedge_pagination")
+            omitted_null_proven = (
+                isinstance(proof, dict)
+                and proof
+                == {
+                    "schema": "optedge_official_mcp_omitted_null_terminal_v1",
+                    "tool": contract_tool_name,
+                    "terminal": True,
+                }
+                and isinstance(page.get("guide"), str)
+                and bool(page.get("guide", "").strip())
+            )
+            if "next" not in data and not omitted_null_proven:
                 return f"page {index} is missing explicit data.next"
     for index, page in enumerate(pages[:-1]):
         data = page.get("data") if isinstance(page.get("data"), dict) else page
@@ -1328,6 +1343,7 @@ def normalize_broker_snapshot(
                     pagination_issue = _pagination_capture_issue(
                         scope.get(section),
                         require_explicit_next=section in scoped_collection_keys,
+                        contract_tool_name=section,
                     )
                     if pagination_issue:
                         normalization_blockers.append(
@@ -1347,6 +1363,7 @@ def normalize_broker_snapshot(
                 pagination_issue = _pagination_capture_issue(
                     bundle.get("get_option_instruments"),
                     require_explicit_next=True,
+                    contract_tool_name="get_option_instruments",
                 )
                 if pagination_issue:
                     normalization_blockers.append(

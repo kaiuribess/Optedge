@@ -991,6 +991,39 @@ def test_v2_one_page_paginated_read_requires_explicit_terminal_next():
     )
 
 
+def test_v2_accepts_direct_connector_official_omitted_null_proof():
+    raw = _mcp_v2_bundle()
+    page = raw["account_snapshots"][0]["get_option_positions"]
+    del page["data"]["next"]
+    page["_optedge_pagination"] = {
+        "schema": "optedge_official_mcp_omitted_null_terminal_v1",
+        "tool": "get_option_positions",
+        "terminal": True,
+    }
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert snapshot["normalization_blockers"] == []
+
+
+def test_v2_rejects_omitted_null_proof_for_the_wrong_tool():
+    raw = _mcp_v2_bundle()
+    page = raw["account_snapshots"][0]["get_option_positions"]
+    del page["data"]["next"]
+    page["_optedge_pagination"] = {
+        "schema": "optedge_official_mcp_omitted_null_terminal_v1",
+        "tool": "get_option_orders",
+        "terminal": True,
+    }
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert any(
+        "get_option_positions capture is incomplete: page 1 is missing explicit data.next" in value
+        for value in snapshot["normalization_blockers"]
+    )
+
+
 def test_v2_final_paginated_page_requires_explicit_terminal_next():
     raw = _mcp_v2_bundle()
     scope = raw["account_snapshots"][0]

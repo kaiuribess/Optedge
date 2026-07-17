@@ -27,6 +27,7 @@ from scripts.normalize_robinhood_broker_snapshot import (
 )
 
 DIRECT_SNAPSHOT_SYNC_SCHEMA = "optedge_robinhood_direct_snapshot_sync_v1"
+OMITTED_NEXT_TERMINAL_PROOF_SCHEMA = "optedge_official_mcp_omitted_null_terminal_v1"
 MAX_ACCOUNTS = 10
 MAX_PAGES_PER_READ = 50
 MAX_OPTION_INSTRUMENT_IDS = 250
@@ -161,6 +162,33 @@ def _cursor_from_next(value: Any) -> str:
     return cursors[0]
 
 
+def _omitted_next_is_proven_terminal(
+    schema: Mapping[str, Any],
+    page: Mapping[str, Any],
+) -> bool:
+    """Accept the official MCP's omitted-null terminal page contract only.
+
+    Robinhood's current Agentic MCP may omit ``data.next`` when it would be
+    null.  That omission is safe to treat as terminal only when the closed
+    input schema explicitly defines a string pagination cursor sourced from
+    the prior response's next URL and the tool returned its guide metadata.
+    Unknown or open-ended schemas still fail closed.
+    """
+
+    if schema.get("additionalProperties") is not False:
+        return False
+    cursor_schema = _field_schema(schema, "cursor")
+    if "string" not in _schema_types(cursor_schema):
+        return False
+    description = " ".join(str(cursor_schema.get("description") or "").lower().split())
+    if not all(
+        phrase in description for phrase in ("pagination cursor", "prior response", "next url")
+    ):
+        return False
+    guide = page.get("guide")
+    return isinstance(guide, str) and bool(guide.strip()) and len(guide) <= 20000
+
+
 def _read_collection_pages(
     manager: Any,
     tool_name: str,
@@ -205,10 +233,21 @@ def _read_collection_pages(
         rows = data.get(collection_key)
         if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
             raise RobinhoodSnapshotSyncError("tool_result_shape_changed")
-        if require_explicit_next and "next" not in data:
+        omitted_next_terminal = (
+            require_explicit_next
+            and "next" not in data
+            and _omitted_next_is_proven_terminal(schema, page)
+        )
+        if require_explicit_next and "next" not in data and not omitted_next_terminal:
             raise RobinhoodSnapshotSyncError("pagination_proof_missing")
 
         captured = copy.deepcopy(page)
+        if omitted_next_terminal:
+            captured["_optedge_pagination"] = {
+                "schema": OMITTED_NEXT_TERMINAL_PROOF_SCHEMA,
+                "tool": tool_name,
+                "terminal": True,
+            }
         if cursor_used is not None:
             captured["request"] = {"cursor": cursor_used}
         pages.append(captured)
