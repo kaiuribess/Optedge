@@ -1388,6 +1388,21 @@ def _order_from_row(
         "risk_dollars_reference": row.get("risk_dollars"),
         "reward_dollars_reference": row.get("reward_dollars"),
         "trade_status": row.get("trade_status"),
+        "is_actionable": row.get("is_actionable"),
+        "execution_profile": (row.get("execution_profile") or SWING_EXECUTION_PROFILE.name),
+        "strategy_evidence_lane": (row.get("strategy_evidence_lane") or "option_swing_execution"),
+        "profile_policy_version": (
+            row.get("profile_policy_version") or SWING_EXECUTION_PROFILE.strategy_version
+        ),
+        "buyer_edge_pct": row.get("buyer_edge_pct"),
+        "pricing_edge_ok": row.get("pricing_edge_ok"),
+        "strategy_qualified_pre_guard": row.get("strategy_qualified_pre_guard"),
+        "pre_guard_suggested_contracts": row.get("pre_guard_suggested_contracts"),
+        "iv_market": row.get("iv_market"),
+        "spot": row.get("spot"),
+        "open_interest": row.get("open_interest"),
+        "volume": row.get("volume"),
+        "delta": row.get("delta"),
         "max_allowed_spread_pct": max_spread_pct,
         "research_instruction": (
             "Compare the exact contract, source quote, spread, duplicate exposure, and current catalyst context; "

@@ -218,7 +218,34 @@ def test_dte_alone_never_infers_the_leaps_execution_profile():
     assert queue["min_dte"] == 365
     assert queue["max_dte"] is None
     assert queue["max_spread_pct"] == 0.15
-    assert "leaps_swing_status" not in queue["orders"][0]
+    order = queue["orders"][0]
+    assert order["execution_profile"] == "swing_execution"
+    assert order["strategy_evidence_lane"] == "option_swing_execution"
+    assert order["profile_policy_version"] == rh_module.SWING_EXECUTION_PROFILE.strategy_version
+    assert "leaps_swing_status" not in order
+
+
+def test_queue_preserves_fields_needed_for_frozen_paper_evidence():
+    queue = _queue(
+        [
+            _candidate(
+                buyer_edge_pct=0.07,
+                pricing_edge_ok=True,
+                strategy_qualified_pre_guard=True,
+                pre_guard_suggested_contracts=1,
+                iv_market=0.28,
+                spot=201.0,
+            )
+        ]
+    )
+    order = queue["orders"][0]
+    assert order["execution_profile"] == "swing_execution"
+    assert order["buyer_edge_pct"] == 0.07
+    assert order["pricing_edge_ok"] is True
+    assert order["strategy_qualified_pre_guard"] is True
+    assert order["pre_guard_suggested_contracts"] == 1
+    assert order["iv_market"] == 0.28
+    assert order["spot"] == 201.0
 
 
 def test_queue_is_options_only():

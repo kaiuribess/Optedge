@@ -563,7 +563,7 @@ def main():
         "--robinhood-chain-preset",
         default="auto",
         choices=["auto", "swing", "leaps", "liquid", "custom"],
-        help="Chain refresh preset for Robinhood queue (auto uses DTE to choose swing/leaps)",
+        help="Chain refresh preset for the normal swing queue; use the dedicated exporter or dashboard selector for the explicit LEAPS profile",
     )
     ap.add_argument(
         "--robinhood-chain-symbols-limit",

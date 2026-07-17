@@ -198,7 +198,7 @@ def _paper_position_from_order(
             _text(order.get("strike")).replace(".", "p"),
         ]
     )
-    return {
+    position = {
         "paper_position_id": paper_id,
         "schema": "optedge_agentic_paper_position_v1",
         "status": "open",
@@ -243,6 +243,36 @@ def _paper_position_from_order(
             "No live broker order was placed by this script.",
         ],
     }
+    for key in (
+        "execution_profile",
+        "strategy_evidence_lane",
+        "profile_policy_version",
+        "planned_hold_sessions",
+        "default_hold_sessions",
+        "max_hold_sessions",
+        "review_sessions",
+        "manual_management_only",
+        "strategy_qualified_pre_guard",
+        "pre_guard_suggested_contracts",
+        "buyer_edge_pct",
+        "pricing_edge_ok",
+        "iv_market",
+        "delta",
+        "open_interest",
+        "volume",
+        "after_cost_edge_pct",
+        "leaps_swing_status",
+        "leaps_execution_ready",
+        "leaps_quality_score",
+        "leaps_execution_score",
+        "leaps_contract_policy",
+        "stop_loss_fraction",
+        "target_gain_fraction",
+        "breakeven_review_trigger_fraction",
+    ):
+        if key in order:
+            position[key] = order.get(key)
+    return position
 
 
 def process_agentic_paper(

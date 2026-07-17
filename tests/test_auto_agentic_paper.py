@@ -49,6 +49,13 @@ def _order(symbol: str = "AAPL", strike: float = 200.0) -> dict:
         "fused_score": 1.8,
         "swing_fit_score": 91,
         "swing_fit_label": "clean_swing",
+        "execution_profile": "leaps_swing",
+        "strategy_evidence_lane": "option_leaps_swing",
+        "profile_policy_version": "2026.07-leaps-swing-v1",
+        "planned_hold_sessions": 10,
+        "max_hold_sessions": 20,
+        "leaps_execution_ready": True,
+        "after_cost_edge_pct": 0.06,
     }
 
 
@@ -114,6 +121,12 @@ def test_allow_blocked_paper_opens_review_only_candidate_without_live_ticket():
         assert positions[0]["estimated_premium_dollars"] == 81.0
         assert positions[0]["paper_fill_assumption"] == "filled_at_full_buy_limit"
         assert positions[0]["paper_fill_slippage_per_contract_dollars"] == 6.0
+        assert positions[0]["execution_profile"] == "leaps_swing"
+        assert positions[0]["strategy_evidence_lane"] == "option_leaps_swing"
+        assert positions[0]["planned_hold_sessions"] == 10
+        assert positions[0]["max_hold_sessions"] == 20
+        assert positions[0]["leaps_execution_ready"] is True
+        assert positions[0]["after_cost_edge_pct"] == 0.06
         assert result["ticket_count"] == 0
         assert any("paper-only" in reason for reason in result["live_ticket_blockers"])
         assert not (data_dir / LIVE_ORDER_TICKETS_JSON).exists()
