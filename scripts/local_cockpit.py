@@ -2184,6 +2184,36 @@ def _scan_args_from_controls(
     return scan_args
 
 
+def _market_refresh_scan_args(
+    mode: str = "full", bankroll: Any = None, aggressive: bool = False
+) -> list[str]:
+    """Refresh the dashboard and its inert 3m+ Robinhood review queue together."""
+    scan_args = _scan_args_from_controls(mode, bankroll, aggressive)
+    try:
+        budget = float(bankroll or 0)
+    except Exception:
+        budget = 0.0
+    if budget <= 0:
+        budget = 500.0
+    scan_args.extend(
+        [
+            "--robinhood-agentic-queue",
+            "--robinhood-budget",
+            str(budget),
+            "--robinhood-min-dte",
+            str(MIN_SWING_OPTION_DTE),
+            "--robinhood-refresh-chain",
+            "--robinhood-chain-preset",
+            "swing",
+            "--robinhood-max-candidates",
+            "5",
+            "--robinhood-max-orders",
+            "1",
+        ]
+    )
+    return scan_args
+
+
 def run_watchlist_scans(
     data_dir: Path = DATA_DIR,
     mode: str = "full",
@@ -4950,6 +4980,332 @@ def _best_setup_record(row: pd.Series, asset: str, source_file: str | None) -> d
     return record
 
 
+DASHBOARD_HANDOFF_SCHEMA = "optedge_dashboard_handoff_v1"
+DASHBOARD_SNAPSHOT_TAG_RE = re.compile(r"_(\d{8}_\d{6})\.[^.]+$")
+DASHBOARD_HANDOFF_LANES = (
+    ("option_call", "option", "Top calls", "top_options", "call"),
+    ("option_put", "option", "Top puts", "top_options", "put"),
+    ("share", "share", "Top shares", "top_shares", None),
+    ("value", "value", "Top value", "top_value", None),
+    ("futures", "futures", "Top futures", "top_futures", None),
+)
+
+
+def _dashboard_snapshot_tag(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    match = DASHBOARD_SNAPSHOT_TAG_RE.search(path.name)
+    return match.group(1) if match else None
+
+
+def _dashboard_snapshot_at(tag: str | None) -> str | None:
+    if not tag:
+        return None
+    try:
+        return datetime.strptime(tag, "%Y%m%d_%H%M%S").replace(tzinfo=UTC).isoformat()
+    except ValueError:
+        return None
+
+
+def _dashboard_source_mode(path: Path | None) -> str:
+    if path is None:
+        return "missing"
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            header = handle.read(32_768)
+    except OSError:
+        return "unreadable"
+    return "demo_hybrid" if "DEMO/HYBRID MODE" in header else "live_or_provider"
+
+
+def _handoff_option_key(record: dict[str, Any]) -> str:
+    planner = record.get("planner_candidate")
+    planner = planner if isinstance(planner, dict) else {}
+    return _agentic_contract_key(
+        {
+            "symbol": planner.get("symbol") or record.get("ticker_or_symbol"),
+            "option_side": planner.get("option_type") or record.get("action"),
+            "strike": planner.get("strike"),
+            "expiry": planner.get("expiry") or record.get("expiry"),
+        }
+    )
+
+
+def _dashboard_handoff_lineage(
+    data_dir: Path,
+    option_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    queue = _read_json(data_dir / "robinhood_agentic_queue.json")
+    cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
+    queue = queue if isinstance(queue, dict) else {}
+    cycle = cycle if isinstance(cycle, dict) else {}
+    orders = queue.get("orders") if isinstance(queue.get("orders"), list) else []
+    finalist = dict(orders[0]) if orders and isinstance(orders[0], dict) else {}
+    finalist_key = _agentic_contract_key(finalist) if finalist else ""
+    dashboard_by_key = {
+        _handoff_option_key(record): record
+        for record in option_records
+        if _handoff_option_key(record).strip("|")
+    }
+    matched = dashboard_by_key.get(finalist_key)
+    lane = None
+    if finalist_key:
+        for lane_name in ("manual_review_candidates", "review_only_entry_candidates"):
+            rows = cycle.get(lane_name) if isinstance(cycle.get(lane_name), list) else []
+            if any(
+                isinstance(row, dict) and _agentic_contract_key(row) == finalist_key
+                for row in rows
+            ):
+                lane = lane_name
+                break
+    queue_age = _iso_age_minutes(queue.get("generated_at"))
+    queue_freshness = _agentic_freshness(queue_age)
+    chain_source = str(finalist.get("chain_source") or "").strip().lower()
+    origin = (
+        "dashboard_top_options"
+        if matched is not None
+        else "swing_chain_enrichment"
+        if finalist and chain_source
+        else "unresolved"
+        if finalist
+        else "missing"
+    )
+    identity_label = None
+    if finalist:
+        side = _agentic_option_side(finalist.get("option_side") or finalist.get("side"))
+        side_code = "C" if side == "call" else "P" if side == "put" else side.upper()
+        identity_label = " ".join(
+            str(value)
+            for value in (
+                finalist.get("symbol") or finalist.get("ticker_or_symbol"),
+                finalist.get("expiry"),
+                side_code,
+                _agentic_strike_key(finalist.get("strike")),
+            )
+            if str(value or "").strip()
+        )
+    if not finalist:
+        detail = "No 3m+ option finalist is bound to the latest local review queue."
+    elif matched is not None:
+        detail = "The Robinhood finalist is the same exact contract shown in the generated dashboard."
+    else:
+        detail = (
+            "The Robinhood finalist came from the 3m+ chain-enrichment stage because the generated "
+            "dashboard shortlist did not contain this exact swing contract."
+        )
+    return {
+        "queue_generated_at": _clean_value(queue.get("generated_at")),
+        "queue_age_minutes": round(queue_age, 1) if queue_age is not None else None,
+        "queue_freshness": queue_freshness,
+        "queue_candidate_count": len(orders),
+        "cycle_lane": lane,
+        "origin": origin,
+        "matches_dashboard_contract": matched is not None,
+        "dashboard_rank": matched.get("dashboard_rank") if matched else None,
+        "dashboard_lane": matched.get("dashboard_lane") if matched else None,
+        "identity_label": identity_label,
+        "symbol": _clean_value(finalist.get("symbol") or finalist.get("ticker_or_symbol")),
+        "option_side": _clean_value(finalist.get("option_side") or finalist.get("side")),
+        "strike": _clean_value(finalist.get("strike")),
+        "expiry": _clean_value(finalist.get("expiry")),
+        "dte": _clean_value(finalist.get("dte")),
+        "chain_source": _clean_value(finalist.get("chain_source")),
+        "quote_quality": _clean_value(finalist.get("quote_quality")),
+        "detail": detail,
+        "read_check_available": bool(
+            finalist and queue_freshness in {"fresh", "aging"} and lane is not None
+        ),
+        "does_not_place_orders": True,
+    }
+
+
+@_memoized_report
+def build_dashboard_handoff(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    """Bind the cockpit to the exact candidate files rendered by one dashboard scan."""
+    data_dir = Path(data_dir)
+    dashboard_path = _latest_file(data_dir, "dashboard_*.html")
+    dashboard_meta = _file_meta(dashboard_path)
+    snapshot_tag = _dashboard_snapshot_tag(dashboard_path)
+    snapshot_at = _dashboard_snapshot_at(snapshot_tag)
+    source_mode = _dashboard_source_mode(dashboard_path)
+    if dashboard_path is None or snapshot_tag is None:
+        return {
+            "schema": DASHBOARD_HANDOFF_SCHEMA,
+            "status": "missing",
+            "tone": "bad",
+            "label": "Dashboard snapshot missing",
+            "snapshot_tag": snapshot_tag,
+            "dashboard": dashboard_meta,
+            "source_mode": source_mode,
+            "count": 0,
+            "by_asset": {},
+            "lanes": [],
+            "source_alignment": [],
+            "option_lineage": _dashboard_handoff_lineage(data_dir, []),
+            "blockers": ["No timestamped generated dashboard is available for cockpit handoff."],
+            "warnings": [],
+            "notes": ["No candidate is promoted when dashboard lineage cannot be proven."],
+        }
+
+    by_asset: dict[str, list[dict[str, Any]]] = {
+        "option": [],
+        "share": [],
+        "value": [],
+        "futures": [],
+    }
+    lanes: list[dict[str, Any]] = []
+    source_alignment: list[dict[str, Any]] = []
+    all_records: list[dict[str, Any]] = []
+    duplicate_keys: set[str] = set()
+    seen_keys: set[str] = set()
+    missing_identity_count = 0
+
+    for lane_key, asset, label, prefix, side in DASHBOARD_HANDOFF_LANES:
+        exact_path = data_dir / f"{prefix}_{snapshot_tag}.parquet"
+        latest_path = _latest_file(data_dir, f"{prefix}_*.parquet")
+        frame = _read_parquet(exact_path if exact_path.exists() else None)
+        if asset == "option" and side is not None and not frame.empty:
+            side_values = frame.get("side", pd.Series("", index=frame.index)).astype(str).str.lower()
+            frame = frame[side_values == side].copy()
+        records: list[dict[str, Any]] = []
+        for dashboard_rank, (_, row) in enumerate(frame.iterrows(), start=1):
+            record = _best_setup_record(row, asset, exact_path.name)
+            record.update(
+                {
+                    "dashboard_rank": dashboard_rank,
+                    "dashboard_lane": lane_key,
+                    "dashboard_lane_label": label,
+                    "dashboard_snapshot_tag": snapshot_tag,
+                    "dashboard_source_mode": source_mode,
+                }
+            )
+            clean = {key: value for key, value in record.items() if not key.startswith("_")}
+            if asset == "option":
+                identity_key = _handoff_option_key(clean)
+            else:
+                identity_key = f"{asset}|{str(clean.get('ticker_or_symbol') or '').upper()}"
+            if not identity_key.strip("|"):
+                missing_identity_count += 1
+            elif identity_key in seen_keys:
+                duplicate_keys.add(identity_key)
+            else:
+                seen_keys.add(identity_key)
+            clean["dashboard_identity_key"] = identity_key or None
+            records.append(clean)
+            by_asset[asset].append(clean)
+            all_records.append(clean)
+        ignored_mixed_snapshot = (
+            latest_path.name
+            if latest_path is not None
+            and _dashboard_snapshot_tag(latest_path) != snapshot_tag
+            and not exact_path.exists()
+            else None
+        )
+        source_alignment.append(
+            {
+                "lane": lane_key,
+                "asset": asset,
+                "snapshot_tag": snapshot_tag,
+                "source_file": exact_path.name if exact_path.exists() else None,
+                "status": "exact" if exact_path.exists() else "empty_for_snapshot",
+                "row_count": len(records),
+                "ignored_mixed_snapshot_file": ignored_mixed_snapshot,
+            }
+        )
+        display_records = [
+            {
+                key: record.get(key)
+                for key in (
+                    "asset",
+                    "ticker_or_symbol",
+                    "setup",
+                    "dashboard_rank",
+                    "dashboard_lane",
+                    "dashboard_source_mode",
+                    "reason_selected",
+                    "trade_status",
+                    "setup_gate_status",
+                    "setup_gate_label",
+                    "setup_gate_reasons",
+                    "setup_gate_next_step",
+                    "readiness_label",
+                    "dte",
+                    "spread_pct",
+                    "quality",
+                )
+            }
+            for record in records
+        ]
+        lanes.append(
+            {
+                "key": lane_key,
+                "asset": asset,
+                "label": label,
+                "side": side,
+                "source_file": exact_path.name if exact_path.exists() else None,
+                "count": len(records),
+                "rows": display_records,
+            }
+        )
+
+    warnings: list[str] = []
+    if source_mode == "demo_hybrid":
+        warnings.append(
+            "This dashboard is demo/hybrid; synthetic option or sentiment inputs remain visible but cannot authorize Robinhood review."
+        )
+    if duplicate_keys:
+        warnings.append(f"{len(duplicate_keys)} duplicate dashboard candidate identity key(s) detected.")
+    if missing_identity_count:
+        warnings.append(f"{missing_identity_count} dashboard candidate row(s) lack a stable identity.")
+    lineage = _dashboard_handoff_lineage(data_dir, by_asset["option"])
+    snapshot_age = _iso_age_minutes(snapshot_at)
+    stale = snapshot_age is None or snapshot_age > STALE_SNAPSHOT_MINUTES
+    if stale:
+        warnings.append("The generated dashboard snapshot is stale for a new trading decision.")
+    status = "synchronized_demo" if source_mode == "demo_hybrid" else "synchronized"
+    tone = "warn" if warnings else "good"
+    label = "Exact scan linked"
+    if source_mode == "demo_hybrid":
+        label = "Demo scan linked; broker blocked"
+    elif stale:
+        label = "Exact scan linked; refresh required"
+    return {
+        "schema": DASHBOARD_HANDOFF_SCHEMA,
+        "status": status,
+        "tone": tone,
+        "label": label,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "snapshot_tag": snapshot_tag,
+        "snapshot_at": snapshot_at,
+        "snapshot_age_minutes": round(snapshot_age, 1) if snapshot_age is not None else None,
+        "dashboard": {
+            **(dashboard_meta or {}),
+            "url": "/artifact/latest-dashboard",
+        },
+        "source_mode": source_mode,
+        "count": len(all_records),
+        "option_count": len(by_asset["option"]),
+        "by_asset": by_asset,
+        "lanes": lanes,
+        "source_alignment": source_alignment,
+        "option_lineage": lineage,
+        "quality": {
+            "candidate_count": len(all_records),
+            "stable_identity_count": len(seen_keys),
+            "duplicate_identity_count": len(duplicate_keys),
+            "missing_identity_count": missing_identity_count,
+            "mixed_snapshot_rows_used": 0,
+        },
+        "blockers": [],
+        "warnings": warnings,
+        "notes": [
+            "Every row is loaded from the exact top_* timestamp rendered by the latest generated dashboard.",
+            "Older per-asset files are ignored when the current dashboard has no candidates in that lane.",
+            "The Robinhood finalist is a separate 3m+ exact-contract stage and is never substituted silently.",
+        ],
+    }
+
+
 @_memoized_report
 def build_best_setups(
     data_dir: Path = DATA_DIR,
@@ -5551,6 +5907,11 @@ def _candidate_comparison_row(
     validation_level = str(guard.get("level") or "missing").strip().lower()
     validation_clear = validation_level == "ok"
     validation_blockers: list[str] = []
+    source_mode = str(record.get("dashboard_source_mode") or "").strip().lower()
+    if source_mode == "demo_hybrid":
+        validation_blockers.append(
+            "dashboard row uses demo/hybrid inputs and cannot authorize Robinhood review"
+        )
     if not validation_clear:
         validation_blockers.append(
             str(guard.get("detail") or "validation guardrail is not cleared")
@@ -5583,6 +5944,7 @@ def _candidate_comparison_row(
         and source["source_gate_pass"]
         and edge_state["eligible"]
         and validation_clear
+        and source_mode != "demo_hybrid"
         and setup_status != "avoid"
         and not overlap["blockers"]
         and not economics["execution_blockers"]
@@ -5638,6 +6000,9 @@ def _candidate_comparison_row(
         "artifact_age_minutes": source["artifact_age_minutes"],
         "artifact_freshness": source["artifact_freshness"],
         "source_file": source["source_file"],
+        "dashboard_rank": _clean_value(record.get("dashboard_rank")),
+        "dashboard_lane": _clean_value(record.get("dashboard_lane")),
+        "dashboard_source_mode": _clean_value(record.get("dashboard_source_mode")),
         "quote_at": source["quote_at"],
         "quote_time_basis": source["quote_time_basis"],
         "quote_age_minutes": source["quote_age_minutes"],
@@ -15434,12 +15799,16 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     evidence_mission = build_evidence_mission_control(data_dir, edge=edge)
     robinhood_finalist_check = load_finalist_check_status(data_dir)
     best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
+    scan_handoff = build_dashboard_handoff(data_dir)
+    comparison_source = scan_handoff if scan_handoff.get("count") else best_setups
     comparison = build_candidate_comparison(
-        best_setups,
+        comparison_source,
         command=command,
         edge=edge,
         broker=broker,
     )
+    scan_handoff_payload = dict(scan_handoff)
+    scan_handoff_payload.pop("by_asset", None)
     return {
         "schema": "optedge_trade_desk_v2",
         "snapshot_id": _local_snapshot_id(data_dir),
@@ -15454,6 +15823,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "evidence_mission": evidence_mission,
         "robinhood": broker,
         "robinhood_finalist_check": robinhood_finalist_check,
+        "scan_handoff": scan_handoff_payload,
         "candidate_comparison": comparison,
         "notes": [
             "This view prepares research and risk context; it does not submit broker orders.",
@@ -20169,6 +20539,22 @@ body.view-desk .wrap > .global-command { display:none; }
 .candidate-why { margin:0; color:var(--muted); font-size:10px; line-height:1.45; overflow-wrap:anywhere; }
 .candidate-blocker { margin:0; border-left:3px solid var(--warn); padding:7px 8px; background:rgba(245,158,11,.07); color:#fde68a; font-size:10px; line-height:1.4; }
 .candidate-card .btn { width:100%; justify-content:center; margin-top:auto; }
+.handoff-flow { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.handoff-stage { border:1px solid var(--border); background:rgba(8,10,9,.72); border-radius:8px; padding:11px; min-width:0; }
+.handoff-stage span { display:block; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.08em; }
+.handoff-stage strong { display:block; margin-top:5px; font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
+.handoff-stage small { display:block; margin-top:5px; color:var(--soft); line-height:1.4; }
+.handoff-lanes { display:grid; gap:8px; margin-top:10px; }
+.handoff-lane { border:1px solid var(--border); border-radius:8px; background:rgba(8,10,9,.55); overflow:hidden; }
+.handoff-lane summary { cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 11px; color:var(--text); font-size:12px; font-weight:700; }
+.handoff-lane summary::-webkit-details-marker { display:none; }
+.handoff-rows { display:grid; gap:0; border-top:1px solid var(--border); }
+.handoff-row { display:grid; grid-template-columns:minmax(170px,1.2fr) minmax(110px,.65fr) minmax(160px,1fr); gap:10px; align-items:center; padding:9px 11px; border-top:1px solid rgba(148,163,184,.10); font-size:11px; }
+.handoff-row:first-child { border-top:0; }
+.handoff-row strong { overflow-wrap:anywhere; }
+.handoff-row .muted { line-height:1.35; }
+.handoff-finalist { border-left:3px solid var(--accent); background:rgba(32,201,151,.07); }
+.handoff-warning { margin-top:10px; border-left:3px solid var(--warn); background:rgba(245,158,11,.07); color:#fde68a; padding:8px 10px; font-size:11px; line-height:1.45; }
 .planner-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin-top:14px; }
 .planner-field { min-width:0; display:grid; gap:5px; }
 .planner-field.wide { grid-column:span 2; }
@@ -20321,8 +20707,8 @@ tr.clickable-row:hover { background:#18201d; }
 .suggestion:hover { border-color:var(--accent); }
 .suggestion span { color:var(--muted); margin-left:6px; }
 .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
-@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow, .candidate-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .edge-grid { grid-template-columns:1fr; } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media (max-width:560px) { .wrap { padding:16px 10px 56px; } .grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics { grid-template-columns:1fr; } .planner-field.wide { grid-column:span 1; } .candidate-board-head { display:grid; grid-template-columns:1fr; } .desk-title { font-size:23px; } .btn { min-height:40px; } .view-tab[data-view="all"] { display:none; } }
+@media (max-width:900px) { header { align-items:flex-start; flex-direction:column; } .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .search { grid-template-columns:1fr; } .command-top { grid-template-columns:1fr; } .global-command { grid-template-columns:1fr; } .global-command-main { grid-template-columns:1fr; } .global-command-actions { justify-content:flex-start; } .decision-strip { grid-template-columns:1fr; } .desk-hero, .desk-grid { grid-template-columns:1fr; } .desk-flow, .candidate-grid, .handoff-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } .edge-grid { grid-template-columns:1fr; } .planner-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .handoff-row { grid-template-columns:1fr 1fr; } }
+@media (max-width:560px) { .wrap { padding:16px 10px 56px; } .grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics, .handoff-flow, .handoff-row { grid-template-columns:1fr; } .planner-field.wide { grid-column:span 1; } .candidate-board-head { display:grid; grid-template-columns:1fr; } .desk-title { font-size:23px; } .btn { min-height:40px; } .view-tab[data-view="all"] { display:none; } }
 </style>
 </head>
 <body class="view-desk">
@@ -20438,11 +20824,22 @@ tr.clickable-row:hover { background:#18201d; }
       <div id="trade-desk-firewalls" class="firewall-grid" aria-live="polite"></div>
       <div id="trade-desk-firewall-foot" class="edge-foot"></div>
     </article>
+    <article class="desk-card candidate-board" aria-labelledby="scan-handoff-title">
+      <div class="candidate-board-head">
+        <div>
+          <h3 id="scan-handoff-title">Optedge scan handoff</h3>
+          <p>The exact candidates from the latest generated dashboard stay visible here in their original lane and order. Cockpit gates and the 3m+ Robinhood finalist are layered on top without silently substituting another idea.</p>
+        </div>
+        <span id="scan-handoff-status" class="pill warn">Linking latest scan</span>
+      </div>
+      <div id="trade-desk-handoff" aria-live="polite"></div>
+      <div id="trade-desk-handoff-foot" class="edge-foot"></div>
+    </article>
     <article class="desk-card candidate-board" aria-labelledby="candidate-board-title">
       <div class="candidate-board-head">
         <div>
-          <h3 id="candidate-board-title">Freshness-gated candidate comparison</h3>
-          <p>Top three exact setups compared in one shared snapshot, plus the no-trade baseline. Ranking is lexicographic: provenance, Edge, blockers, execution, slippage-adjusted R/R, then catalyst/regime. Raw cross-asset scores are never compared.</p>
+          <h3 id="candidate-board-title">Execution-gated candidate comparison</h3>
+          <p>The same exact scan candidates are re-ranked for execution safety, plus the no-trade baseline. Value research remains in the handoff above until it resolves to an exact share or option. Ranking is provenance, Edge, blockers, execution, slippage-adjusted R/R, then catalyst/regime.</p>
         </div>
         <span id="candidate-board-status" class="pill warn">Loading candidates</span>
       </div>
@@ -21218,6 +21615,60 @@ function comparisonIdentity(row) {
   }
   return row.identity_label || identity.label || row.symbol || 'Unknown candidate';
 }
+function handoffRowDetail(row) {
+  const asset = String(row.asset || '').toLowerCase();
+  const parts = [];
+  if (asset === 'option') {
+    if (row.dte !== null && row.dte !== undefined) parts.push(`${cell(row.dte)} DTE`);
+    if (row.spread_pct !== null && row.spread_pct !== undefined) parts.push(`spread ${pct(row.spread_pct)}`);
+  } else if (row.quality && row.quality !== '-') {
+    parts.push(cell(row.quality));
+  }
+  if (row.trade_status) parts.push(cell(labelText(row.trade_status)));
+  return parts.join(' | ') || 'Research row';
+}
+function tradeDeskScanHandoff(handoff) {
+  if (!handoff || !handoff.dashboard) {
+    return '<div class="privacy-note">No timestamped dashboard snapshot is available. Cockpit will not mix candidates from unrelated scan runs.</div>';
+  }
+  const dashboard = handoff.dashboard || {};
+  const quality = handoff.quality || {};
+  const lineage = handoff.option_lineage || {};
+  const finalistLabel = lineage.identity_label || 'No 3m+ finalist';
+  const finalistOrigin = lineage.origin === 'dashboard_top_options'
+    ? 'Exact dashboard contract'
+    : lineage.origin === 'swing_chain_enrichment'
+      ? '3m+ chain-enriched contract'
+      : 'No bound finalist';
+  const lanes = (handoff.lanes || []).map(lane => {
+    const rows = Array.isArray(lane.rows) ? lane.rows : [];
+    const open = lane.key === 'option_call' || lane.key === 'option_put';
+    const body = rows.length ? rows.map(row => {
+      const isFinalist = Boolean(
+        lineage.matches_dashboard_contract
+        && lineage.dashboard_lane === row.dashboard_lane
+        && Number(lineage.dashboard_rank) === Number(row.dashboard_rank)
+      );
+      const mode = String(row.dashboard_source_mode || handoff.source_mode || 'unknown');
+      const gate = row.setup_gate_label || row.readiness_label || row.trade_status || 'research';
+      return `<div class="handoff-row ${isFinalist ? 'handoff-finalist' : ''}">
+        <div><strong>#${cell(row.dashboard_rank)} ${cell(row.setup || row.ticker_or_symbol || '-')}</strong><div class="muted">${cell(row.reason_selected || 'Preserved from generated dashboard')}</div></div>
+        <div><span class="pill ${mode === 'demo_hybrid' ? 'warn' : toneClass(row.setup_gate_status)}">${mode === 'demo_hybrid' ? 'demo / synthetic' : cell(labelText(gate))}</span><div class="muted" style="margin-top:5px">${cell(handoffRowDetail(row))}</div></div>
+        <div><strong>${isFinalist ? 'Robinhood finalist match' : 'Cockpit review'}</strong><div class="muted">${cell((row.setup_gate_reasons || [row.setup_gate_next_step || 'Apply execution gates'])[0])}</div></div>
+      </div>`;
+    }).join('') : '<div class="handoff-row"><div class="muted">No candidates in this lane for the exact dashboard snapshot.</div></div>';
+    return `<details class="handoff-lane" ${open ? 'open' : ''}><summary><span>${cell(lane.label || lane.key)}</span><span>${cell(lane.count || 0)} exact row(s)</span></summary><div class="handoff-rows">${body}</div></details>`;
+  }).join('');
+  const warnings = (handoff.warnings || []).map(value => `<div class="handoff-warning">${cell(value)}</div>`).join('');
+  return `<div class="handoff-flow">
+      <div class="handoff-stage"><span>1 | Generated dashboard</span><strong>${cell(dashboard.name || 'missing')}</strong><small>${cell(handoff.count || 0)} candidate row(s) | ${cell(ageMinutesLabel(handoff.snapshot_age_minutes))} old | ${cell(labelText(handoff.source_mode || 'unknown'))}</small></div>
+      <div class="handoff-stage"><span>2 | Cockpit reconciliation</span><strong>${cell(quality.stable_identity_count || 0)} stable identities</strong><small>${cell(quality.mixed_snapshot_rows_used || 0)} mixed-run row(s) used | ${cell(quality.duplicate_identity_count || 0)} duplicate key(s)</small></div>
+      <div class="handoff-stage"><span>3 | Robinhood finalist</span><strong>${cell(finalistLabel)}</strong><small>${cell(finalistOrigin)} | queue ${cell(ageMinutesLabel(lineage.queue_age_minutes))} old | ${cell(labelText(lineage.cycle_lane || lineage.queue_freshness || 'missing'))}</small></div>
+    </div>
+    <div class="planner-actions" style="margin-top:10px"><a class="btn" href="${escAttr(dashboard.url || '/artifact/latest-dashboard')}" target="_blank" rel="noopener noreferrer">Open exact generated dashboard</a></div>
+    ${warnings}
+    <div class="handoff-lanes">${lanes}</div>`;
+}
 function tradeDeskCandidates(board) {
   const rows = Array.isArray(board.rows) ? board.rows : [];
   if (!rows.length) return '<div class="privacy-note">No candidate rows are available. No trade is the default until a current exact setup exists.</div>';
@@ -21238,6 +21689,7 @@ function tradeDeskCandidates(board) {
         <span class="pill ${recommended ? 'good' : toneClass(row.source_status)}">${recommended ? 'Recommended' : cell(labelText(row.source_status || row.kind))}</span>
       </header>
       <div class="candidate-identity"><strong>Exact identity:</strong> ${cell(comparisonIdentity(row))}</div>
+      ${row.dashboard_rank ? `<div class="candidate-identity"><strong>Dashboard lineage:</strong> ${cell(labelText(row.dashboard_lane || 'scan'))} #${cell(row.dashboard_rank)} | ${cell(labelText(row.dashboard_source_mode || 'provider'))}</div>` : ''}
       <div class="candidate-metrics">
         <div class="candidate-metric"><span>Source artifact</span><strong>${cell(row.source_file || (baseline ? 'n/a' : 'missing'))}</strong></div>
         <div class="candidate-metric"><span>Quote quality</span><strong>${cell(row.quote_quality || (baseline ? 'n/a' : 'missing'))}</strong></div>
@@ -21610,6 +22062,7 @@ async function loadTradeDesk(force=false) {
   const drawdown = data.account_drawdown || {};
   const mission = data.evidence_mission || {};
   const finalist = data.robinhood_finalist_check || {};
+  const handoff = data.scan_handoff || {};
   const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
   latestComparisonCandidates = new Map(
@@ -21642,6 +22095,11 @@ async function loadTradeDesk(force=false) {
   $('trade-desk-firewall-status').className = `pill ${firewallsReady ? (drawdown.status === 'reduced' ? 'warn' : 'good') : firewallsWarming ? 'warn' : 'bad'}`;
   $('trade-desk-firewall-status').textContent = firewallsReady ? 'Capital history verified' : firewallsWarming ? 'Capital history warming up' : 'Capital history blocks';
   $('trade-desk-firewall-foot').textContent = 'Manual review uses a 1% base risk ceiling, reduced to 0.5% at 5% account drawdown and 0.25% at 8%; 10% high-water drawdown or a 3% New York-session loss blocks new entries.';
+  $('trade-desk-handoff').innerHTML = tradeDeskScanHandoff(handoff);
+  $('scan-handoff-status').className = `pill ${toneClass(handoff.tone || handoff.status)}`;
+  $('scan-handoff-status').textContent = labelText(handoff.label || handoff.status || 'unavailable');
+  const handoffLineage = handoff.option_lineage || {};
+  $('trade-desk-handoff-foot').textContent = handoffLineage.detail || 'The generated dashboard, cockpit gates, and Robinhood finalist remain separately labeled and identity-bound.';
   $('trade-desk-candidates').innerHTML = tradeDeskCandidates(comparison);
   const comparisonWinner = (comparison.rows || []).find(row => row && row.candidate_id === comparison.winner_id) || {};
   const comparisonHasWinner = Boolean(comparisonWinner.candidate_id);
@@ -24000,10 +24458,17 @@ function jobHtml(job) {
   const mode = job.scan_mode ? ` | ${job.scan_mode}` : '';
   return `<div class="job" data-status="${escAttr(job.status || '')}"><div><code>${job.symbol || job.query}</code> <span class="${jobClass(job.status)}">${job.status}</span><small>${job.name || job.query || ''}${req}${matchText}${mode} ${job.updated_at || ''}</small></div><div>${dash}${lookup}${match}${chain}<button class="btn job-log-btn" type="button" data-job="${job.job_id}">Log</button></div></div>`;
 }
+let knownJobStatuses = new Map();
 async function loadJobs() {
   const res = await fetch('/api/jobs');
   const data = await res.json();
-  $('jobs').innerHTML = (data.jobs || []).map(jobHtml).join('') || '<div class="empty">No focused scan jobs yet.</div>';
+  const jobs = data.jobs || [];
+  const completedNow = jobs.filter(job => {
+    const prior = knownJobStatuses.get(String(job.job_id || ''));
+    return ['queued', 'running'].includes(prior) && job.status === 'completed' && job.dashboard_path;
+  });
+  knownJobStatuses = new Map(jobs.map(job => [String(job.job_id || ''), String(job.status || '')]));
+  $('jobs').innerHTML = jobs.map(jobHtml).join('') || '<div class="empty">No focused scan jobs yet.</div>';
   document.querySelectorAll('.job-log-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.job;
@@ -24031,6 +24496,10 @@ async function loadJobs() {
       scrollToId('chain-results');
     });
   });
+  if (completedNow.length) {
+    await loadTradeDesk(true);
+    if ($('global-status')) $('global-status').textContent = `Scan ${completedNow[0].job_id || ''} completed. The generated dashboard, cockpit shortlist, and Robinhood review lineage are synchronized.`;
+  }
 }
 async function loadExplorer() {
   $('explorer-status-text').textContent = 'Loading ranked opportunities...';
@@ -26627,7 +27096,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/run-refresh-scan":
             mode = str(body.get("mode") or "full").strip().lower()
-            scan_args = _scan_args_from_controls(
+            scan_args = _market_refresh_scan_args(
                 mode,
                 body.get("bankroll"),
                 _bool_param(body.get("aggressive"), False),

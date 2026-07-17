@@ -32,6 +32,7 @@ from scripts.local_cockpit import (  # noqa: E402
     build_cboe_option_activity,
     build_climate_gated_setups,
     build_command_center,
+    build_dashboard_handoff,
     build_data_health,
     build_exit_review_summary,
     build_free_data_sources,
@@ -2612,6 +2613,128 @@ def test_candidate_comparison_shows_only_top_three_plus_no_trade():
     assert [row["kind"] for row in board["rows"]].count("baseline") == 1
 
 
+def test_dashboard_handoff_preserves_exact_dashboard_snapshot_and_option_lineage(tmp_path):
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    dashboard = tmp_path / f"dashboard_{stamp}.html"
+    dashboard.write_text("<html><body>live scan</body></html>", encoding="utf-8")
+    pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "side": "call",
+                "strike": 100.0,
+                "expiry": "2027-01-15",
+                "dte": 181,
+                "bid": 4.9,
+                "ask": 5.1,
+                "mid": 5.0,
+                "spread_pct": 0.04,
+                "confidence": 80,
+                "rank_score": 3.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "stop_price": 2.5,
+                "target_price": 10.0,
+                "underlying_type": "equity",
+                "quote_quality": "live_or_broker",
+            },
+            {
+                "ticker": "BBB",
+                "side": "put",
+                "strike": 50.0,
+                "expiry": "2027-01-15",
+                "dte": 181,
+                "bid": 2.9,
+                "ask": 3.1,
+                "mid": 3.0,
+                "spread_pct": 0.066,
+                "confidence": 75,
+                "rank_score": 2.0,
+                "trade_status": "Trade",
+                "suggested_contracts": 1,
+                "stop_price": 1.5,
+                "target_price": 6.0,
+                "underlying_type": "equity",
+                "quote_quality": "live_or_broker",
+            },
+        ]
+    ).to_parquet(tmp_path / f"top_options_{stamp}.parquet")
+    pd.DataFrame([{"ticker": "OLD", "spot": 10.0, "rank_score": 99.0}]).to_parquet(
+        tmp_path / "top_shares_20000101_000000.parquet"
+    )
+    generated_at = datetime.now(UTC).isoformat()
+    finalist = {
+        "symbol": "AAA",
+        "ticker_or_symbol": "AAA",
+        "option_side": "call",
+        "strike": 100.0,
+        "expiry": "2027-01-15",
+        "dte": 181,
+        "chain_source": "broker",
+        "quote_quality": "live_or_broker",
+    }
+    (tmp_path / "robinhood_agentic_queue.json").write_text(
+        json.dumps({"generated_at": generated_at, "orders": [finalist]}), encoding="utf-8"
+    )
+    (tmp_path / "robinhood_agentic_cycle.json").write_text(
+        json.dumps({"generated_at": generated_at, "manual_review_candidates": [finalist]}),
+        encoding="utf-8",
+    )
+
+    report = build_dashboard_handoff(tmp_path)
+
+    assert report["status"] == "synchronized"
+    assert report["snapshot_tag"] == stamp
+    assert report["count"] == 2
+    assert [row["ticker_or_symbol"] for row in report["by_asset"]["option"]] == [
+        "AAA",
+        "BBB",
+    ]
+    assert report["by_asset"]["share"] == []
+    share_alignment = next(row for row in report["source_alignment"] if row["lane"] == "share")
+    assert share_alignment["status"] == "empty_for_snapshot"
+    assert share_alignment["ignored_mixed_snapshot_file"] == "top_shares_20000101_000000.parquet"
+    assert report["quality"]["mixed_snapshot_rows_used"] == 0
+    assert report["option_lineage"]["matches_dashboard_contract"] is True
+    assert report["option_lineage"]["dashboard_lane"] == "option_call"
+    assert report["option_lineage"]["dashboard_rank"] == 1
+    assert report["option_lineage"]["read_check_available"] is True
+
+
+def test_candidate_comparison_keeps_demo_dashboard_row_visible_but_blocks_planner():
+    record = _comparison_option_record("DEMO")
+    record["dashboard_source_mode"] = "demo_hybrid"
+    record["dashboard_rank"] = 1
+    record["dashboard_lane"] = "option_call"
+    command, edge, broker = _comparison_context()
+
+    board = cockpit_module.build_candidate_comparison(
+        {"by_asset": {"option": [record]}},
+        command=command,
+        edge=edge,
+        broker=broker,
+    )
+
+    candidate = board["rows"][0]
+    assert candidate["dashboard_rank"] == 1
+    assert candidate["dashboard_lane"] == "option_call"
+    assert candidate["planner_load_allowed"] is False
+    assert any("demo/hybrid" in blocker for blocker in candidate["blockers"])
+    assert board["winner_id"] == "no_trade"
+
+
+def test_market_refresh_scan_args_rebuild_inert_robinhood_lineage():
+    args = cockpit_module._market_refresh_scan_args("quick", bankroll=750, aggressive=True)
+
+    assert args[:4] == ["--minimal", "--aggressive", "--bankroll", "750.0"]
+    assert "--robinhood-agentic-queue" in args
+    assert args[args.index("--robinhood-budget") + 1] == "750.0"
+    assert args[args.index("--robinhood-min-dte") + 1] == str(
+        cockpit_module.MIN_SWING_OPTION_DTE
+    )
+    assert args[args.index("--robinhood-max-orders") + 1] == "1"
+
+
 def test_trade_desk_contract_is_manual_and_versioned():
     old_command = cockpit_module.build_command_center
     old_autopilot = cockpit_module.build_agentic_autopilot_status
@@ -2662,6 +2785,7 @@ def test_trade_desk_contract_is_manual_and_versioned():
     assert desk["account_drawdown"]["base_risk_fraction"] == 0.01
     assert desk["candidate_comparison"]["rows"][-1]["candidate_id"] == "no_trade"
     assert desk["candidate_comparison"]["broker_action_enabled"] is False
+    assert desk["scan_handoff"]["schema"] == cockpit_module.DASHBOARD_HANDOFF_SCHEMA
     assert calls == {"command": 1, "broker": 1, "edge": 1, "best": 1}
 
 
@@ -2764,7 +2888,10 @@ def test_cockpit_html_contains_lookup_controls():
     assert "trust-card" in html
     assert "loadCommandCenter" in html
     assert "loadView('desk')" in html
-    assert "Freshness-gated candidate comparison" in html
+    assert "Optedge scan handoff" in html
+    assert "trade-desk-handoff" in html
+    assert "tradeDeskScanHandoff" in html
+    assert "Execution-gated candidate comparison" in html
     assert "trade-desk-candidates" in html
     assert "tradeDeskCandidates" in html
     assert "desk-comparison-plan" in html
@@ -2773,7 +2900,7 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Quote age" in html
     assert "Slippage R/R" in html
     assert (
-        ".grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics { grid-template-columns:1fr; }"
+        ".grid, .desk-flow, .candidate-grid, .firewall-grid, .planner-grid, .candidate-metrics, .edge-metrics, .handoff-flow, .handoff-row { grid-template-columns:1fr; }"
         in html
     )
     assert "Capital and model firewalls" in html

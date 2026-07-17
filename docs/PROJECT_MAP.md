@@ -221,6 +221,7 @@ that refactor has already happened.
 | `optedge/default_weights/options_put.json` | Ships immutable fallback weights for long-put research. |
 | `optedge/default_weights/shares_long.json` | Ships immutable fallback weights for long-share research. |
 | `optedge/engine_registry.py` | Preserves informational engine-name metadata without claiming dispatch authority. |
+| `optedge/evidence_capture.py` | Freezes one explicitly checked Robinhood finalist into append-only, source-bound paper evidence without placing an order. |
 | `optedge/http_identity.py` | Builds honest versioned HTTP identities and SEC-specific contact headers. |
 | `optedge/leaps_swing.py` | Scores long-option candidates against the canonical LEAPS swing contract, liquidity, quote, edge, and budget gates. |
 | `optedge/modes/__init__.py` | Marks the small command-mode wrapper package. |
@@ -232,6 +233,7 @@ that refactor has already happened.
 | `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle without polling, retries, or placement. |
 | `optedge/robinhood_finalist.py` | Resolves the unchanged top option candidate against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
 | `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, and no placement method. |
+| `optedge/robinhood_option_history_sync.py` | Collects a bounded batch of exact-contract Robinhood option histories through read-only MCP calls and atomically updates the validation cache. |
 | `optedge/robinhood_snapshot_sync.py` | Performs one explicit complete account read, proves bounded pagination, and persists only a redacted broker snapshot and pseudonymous risk ledger. |
 | `optedge/strategy_profile.py` | Defines canonical discovery, ordinary swing-execution, and profile-isolated LEAPS swing policies. |
 
@@ -299,6 +301,7 @@ that refactor has already happened.
 | `tests/test_data_provider_stooq.py` | Protects Stooq history fallback normalization. |
 | `tests/test_drawdown_breaker.py` | Protects validated research-drawdown fallback and risk-reduction behavior. |
 | `tests/test_edge_lab.py` | Protects Edge Lab schema, provenance, statistics, and fail-closed eligibility. |
+| `tests/test_evidence_capture.py` | Protects source-bound manual evidence capture, profile isolation, append-only audits, and fail-closed behavior. |
 | `tests/test_evidence_quarantine.py` | Ensures look-ahead diagnostics cannot promote production models. |
 | `tests/test_examples.py` | Protects sanitized example schemas and privacy boundaries. |
 | `tests/test_exit_learning.py` | Protects conservative exit-policy learning behavior. |
@@ -334,6 +337,7 @@ that refactor has already happened.
 | `tests/test_robinhood_connection.py` | Protects the bounded single-loop Robinhood connection lifecycle, sanitized status, OAuth callback, and tool-call boundaries. |
 | `tests/test_robinhood_finalist.py` | Protects exact top-candidate identity, bounded contract resolution, live quote gates, source-digest binding, and the no-order boundary. |
 | `tests/test_robinhood_mcp.py` | Protects official-endpoint OAuth, keyring-only credential storage, schema checks, redaction, and read-versus-review MCP policies. |
+| `tests/test_robinhood_option_history_sync.py` | Protects bounded exact-contract history collection, read-only tool use, and atomic all-or-nothing cache updates. |
 | `tests/test_robinhood_research_bridge.py` | Protects read-only Robinhood research-cache behavior. |
 | `tests/test_robinhood_snapshot_sync.py` | Protects explicit complete account reads, cursor proofs, option-instrument joins, and redacted-only direct snapshot persistence. |
 | `tests/test_sec_companyfacts.py` | Protects SEC company-facts parsing and honest request use. |
