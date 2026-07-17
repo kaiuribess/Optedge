@@ -408,6 +408,7 @@ def test_catalog_validation_separates_read_review_place_and_unknown_tools():
     assert status["ready_for_direct_review"] is True
     assert status["placement_tools_detected"] is True
     assert status["placement_api_exposed"] is False
+    assert status["confirmed_option_placement_supported"] is True
     assert set(REQUIRED_PREFLIGHT_READ_TOOLS) <= set(status["read_tools"])
     assert set(status["review_tools"]) == set(REVIEW_TOOL_ALLOWLIST)
     assert set(status["place_tools"]) == set(PLACE_TOOL_ALLOWLIST)
@@ -460,7 +461,7 @@ def test_public_sanitizer_removes_account_ids_and_authentication_material():
     assert clean["account_key"] == "acct_0123456789abcdef"
 
 
-def test_client_calls_only_read_or_review_tools_once_and_never_exposes_place():
+def test_client_calls_only_fixed_confirmed_option_placement_and_no_generic_place():
     async def run():
         fake_keyring = _FakeKeyring()
         storage = KeyringTokenStorage(keyring_module=fake_keyring)
@@ -473,6 +474,7 @@ def test_client_calls_only_read_or_review_tools_once_and_never_exposes_place():
         status = await client.connect()
         assert status["connection_state"] == "connected"
         assert status["placement_api_exposed"] is False
+        assert status["confirmed_option_placement_api_exposed"] is True
         assert not hasattr(client, "call_place_tool")
 
         schema = client.read_tool_input_schema("get_accounts")
@@ -487,9 +489,12 @@ def test_client_calls_only_read_or_review_tools_once_and_never_exposes_place():
         assert accounts["data"]["accounts"][0]["account_number"] == "123456789"
         preview = await client.call_review_tool("review_option_order", {})
         assert preview == {"preview_id": "preview-1"}
+        placed = await client.call_confirmed_option_order({"ref_id": "one-order"})
+        assert placed == {"ok": True}
         assert [name for name, _ in session.calls] == [
             "get_accounts",
             "review_option_order",
+            "place_option_order",
         ]
 
         with pytest.raises(ToolPolicyError):
@@ -506,7 +511,7 @@ def test_client_calls_only_read_or_review_tools_once_and_never_exposes_place():
             )
         with pytest.raises(ToolPolicyError):
             await client.call_read_tool("cancel_option_order", {})
-        assert len(session.calls) == 2
+        assert len(session.calls) == 3
 
         public = await client.connection_status()
         rendered = json.dumps(public)

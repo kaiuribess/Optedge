@@ -7,7 +7,8 @@ one daemon thread and exposes bounded, synchronous operations to those request
 threads.  A connection attempt may wait for the browser OAuth callback on the
 private loop without blocking the HTTP server.
 
-There is deliberately no generic tool dispatcher and no placement method.
+There is deliberately no generic tool dispatcher.  Its only placement method
+is fixed to one confirmed option order for the single-use execution service.
 Every network action is a direct method call from the operator; this module has
 no poller, scheduler, retry loop, file credential fallback, or account-data
 cache.
@@ -84,6 +85,7 @@ _SAFE_ERROR_CODES = frozenset(
         "oauth_state_invalid",
         "operation_cancelled",
         "operation_failed",
+        "placement_timeout",
         "read_timeout",
         "review_timeout",
         "shutdown_timeout",
@@ -226,6 +228,9 @@ def _project_client_status(value: Any) -> dict[str, Any]:
             "ready_for_direct_review": (catalog_raw.get("ready_for_direct_review") is True),
             "placement_tools_detected": (catalog_raw.get("placement_tools_detected") is True),
             "placement_api_exposed": False,
+            "confirmed_option_placement_supported": (
+                catalog_raw.get("confirmed_option_placement_supported") is True
+            ),
             "tool_count": tool_count,
             "read_tools": _safe_tool_names(catalog_raw.get("read_tools")),
             "review_tools": _safe_tool_names(catalog_raw.get("review_tools")),
@@ -242,6 +247,9 @@ def _project_client_status(value: Any) -> dict[str, Any]:
         "raw_account_numbers_exposed": False,
         "generic_tool_call_exposed": False,
         "placement_api_exposed": False,
+        "confirmed_option_placement_api_exposed": (
+            cleaned.get("confirmed_option_placement_api_exposed") is True
+        ),
         "automatic_retry_enabled": False,
         "background_polling_enabled": False,
     }
@@ -464,6 +472,9 @@ class RobinhoodConnectionManager:
             "background_polling_enabled": False,
             "generic_tool_call_exposed": False,
             "placement_api_exposed": False,
+            "confirmed_option_placement_api_exposed": bool(
+                client_status.get("confirmed_option_placement_api_exposed") is True
+            ),
             "account_data_persisted": False,
             "client": client_status,
         }
@@ -702,6 +713,27 @@ class RobinhoodConnectionManager:
                 self._review_once(name, arguments),
                 timeout=self._call_timeout(timeout_seconds),
                 timeout_code="review_timeout",
+            )
+        except RobinhoodConnectionError as exc:
+            with self._lock:
+                self._last_error_code = exc.code
+            raise
+
+    async def _place_confirmed_option_once(self, arguments: dict[str, Any]) -> Any:
+        return await self._require_client().call_confirmed_option_order(arguments)
+
+    def place_confirmed_option_order(
+        self,
+        arguments: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        """Place one already-previewed option order once; no retry is performed."""
+        try:
+            return self._submit(
+                self._place_confirmed_option_once(arguments),
+                timeout=self._call_timeout(timeout_seconds),
+                timeout_code="placement_timeout",
             )
         except RobinhoodConnectionError as exc:
             with self._lock:

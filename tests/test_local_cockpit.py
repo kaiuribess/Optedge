@@ -2732,6 +2732,7 @@ def test_market_refresh_scan_args_rebuild_inert_robinhood_lineage():
     assert args[args.index("--robinhood-min-dte") + 1] == str(
         cockpit_module.MIN_SWING_OPTION_DTE
     )
+    assert args[args.index("--robinhood-max-candidates") + 1] == "10"
     assert args[args.index("--robinhood-max-orders") + 1] == "1"
 
 
@@ -3072,7 +3073,12 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
     assert 'id="rh-check-finalist"' in html
-    assert "/api/robinhood-check-finalist" in html
+    assert "Check top 10 on Robinhood" in html
+    assert "/api/robinhood-check-top-options" in html
+    assert "/api/robinhood-review-option" in html
+    assert "/api/robinhood-place-option" in html
+    assert "Place this exact order once" in html
+    assert "confirmation_text:'PLACE'" in html
     assert "Load checked quote into planner" in html
     assert "The quote expires after 120 seconds" in html
     assert "loadRobinhoodQueue" in html
@@ -3610,6 +3616,114 @@ def test_robinhood_connection_routes_are_explicit_loopback_only_and_secret_safe(
             thread.join(timeout=5)
             cockpit_module.sync_robinhood_broker_snapshot = original_sync
             cockpit_module.check_best_option_finalist = original_finalist_check
+
+
+def test_robinhood_top_ten_review_and_place_routes_stay_separate():
+    original_batch = cockpit_module.check_top_option_finalists
+    batch_calls = []
+
+    def fake_batch(manager, *, data_dir, limit, write):
+        batch_calls.append((manager, Path(data_dir), limit, write))
+        return {
+            "schema": "optedge_robinhood_option_finalist_batch_v1",
+            "candidate_count": 1,
+            "market_passed_count": 1,
+            "review_ready_count": 1,
+            "reports": [{"candidate_index": 0, "ready_for_manual_review": True}],
+            "does_not_place_orders": True,
+        }
+
+    class FakeExecutionService:
+        def __init__(self):
+            self.review_calls = []
+            self.place_calls = []
+
+        def account_choices(self):
+            return {
+                "accounts": [
+                    {
+                        "account_key": "acct_test",
+                        "label": "Agentic ••••1234",
+                        "eligible_for_live_options": True,
+                    }
+                ]
+            }
+
+        def review(self, *, candidate_index, account_key):
+            self.review_calls.append((candidate_index, account_key))
+            return {
+                "status": "preview_ready",
+                "confirmation_token": "opaque-token",
+                "confirmation_required": True,
+            }
+
+        def place(self, *, confirmation_token, confirmation_text):
+            self.place_calls.append((confirmation_token, confirmation_text))
+            return {"status": "order_sent", "automatic_retry_enabled": False}
+
+    cockpit_module.check_top_option_finalists = fake_batch
+    service = FakeExecutionService()
+    manager = object()
+    with tempfile.TemporaryDirectory() as td:
+        handler = type(
+            "RobinhoodExecutionRouteTestHandler",
+            (cockpit_module.CockpitHandler,),
+            {
+                "data_dir": Path(td),
+                "robinhood_connection_manager": manager,
+                "robinhood_option_execution_service": service,
+            },
+        )
+        server = cockpit_module.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        origin = f"http://127.0.0.1:{port}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+            "Origin": origin,
+        }
+
+        def post(path, body):
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request("POST", path, body=json.dumps(body), headers=headers)
+                response = connection.getresponse()
+                return response.status, json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+        try:
+            status, batch = post("/api/robinhood-check-top-options", {"limit": 10})
+            assert status == 200
+            assert batch["candidate_count"] == 1
+            assert batch["accounts"][0]["account_key"] == "acct_test"
+            assert service.review_calls == []
+            assert service.place_calls == []
+
+            status, preview = post(
+                "/api/robinhood-review-option",
+                {"candidate_index": 0, "account_key": "acct_test"},
+            )
+            assert status == 200
+            assert preview["status"] == "preview_ready"
+            assert service.review_calls == [(0, "acct_test")]
+            assert service.place_calls == []
+
+            status, placed = post(
+                "/api/robinhood-place-option",
+                {"confirmation_token": "opaque-token", "confirmation_text": "PLACE"},
+            )
+            assert status == 200
+            assert placed["status"] == "order_sent"
+            assert service.place_calls == [("opaque-token", "PLACE")]
+            assert batch_calls == [(manager, Path(td), 10, True)]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            cockpit_module.check_top_option_finalists = original_batch
 
 
 def test_read_only_watchlist_enrichment_does_not_queue_broker_research():

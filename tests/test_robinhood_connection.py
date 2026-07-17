@@ -31,6 +31,7 @@ class _FakeClient:
         self.callback_calls = 0
         self.read_calls: list[tuple[str, dict]] = []
         self.review_calls: list[tuple[str, dict]] = []
+        self.place_calls: list[dict] = []
         self.loop_thread_ids: set[int] = set()
         self.connect_started = threading.Event()
         self.connect_finished = threading.Event()
@@ -80,6 +81,7 @@ class _FakeClient:
             "message": f"Account {RAW_ACCOUNT} is ready",
             "access_token": "access-secret",
             "last_error_code": self.reported_error_code,
+            "confirmed_option_placement_api_exposed": True,
         }
 
     def authorization_url_for_browser(self):
@@ -135,6 +137,11 @@ class _FakeClient:
         self._record_loop()
         self.review_calls.append((name, dict(arguments)))
         return {"preview_id": "preview-1", "disclosure": "review only"}
+
+    async def call_confirmed_option_order(self, arguments: dict):
+        self._record_loop()
+        self.place_calls.append(dict(arguments))
+        return {"order_id": "order-1"}
 
 
 def _manager(client: _FakeClient, **kwargs) -> RobinhoodConnectionManager:
@@ -271,7 +278,7 @@ def test_disconnect_cancels_pending_connect_then_clears_connection_explicitly():
         manager.shutdown()
 
 
-def test_read_and_review_are_one_shot_and_manager_exposes_no_place_or_generic_call():
+def test_read_review_and_fixed_option_place_are_one_shot_without_generic_call():
     client = _FakeClient()
     client.connection_state = "connected"
     manager = _manager(client)
@@ -281,10 +288,13 @@ def test_read_and_review_are_one_shot_and_manager_exposes_no_place_or_generic_ca
             "review_option_order",
             {"quantity": "1"},
         )
+        placed = manager.place_confirmed_option_order({"ref_id": "one-order"})
         assert read["data"]["accounts"][0]["account_number"] == RAW_ACCOUNT
         assert review["preview_id"] == "preview-1"
+        assert placed["order_id"] == "order-1"
         assert client.read_calls == [("get_accounts", {})]
         assert client.review_calls == [("review_option_order", {"quantity": "1"})]
+        assert client.place_calls == [{"ref_id": "one-order"}]
         assert not hasattr(manager, "call_place_tool")
         assert not hasattr(manager, "call_tool")
 

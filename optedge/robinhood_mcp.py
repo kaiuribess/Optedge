@@ -1,10 +1,10 @@
 # Purpose: Provide the official, approval-gated Robinhood MCP client foundation.
 """Official Robinhood Trading MCP client primitives.
 
-This module deliberately stops at read calls and order previews.  It has no
-generic tool-call method and exposes no placement method, so a higher-level
-workflow must implement the explicit confirmation, state revalidation, and
-single-use placement capability before a live order can be sent.
+This module exposes only a fixed option-placement call for a higher-level,
+single-use confirmation workflow.  It has no generic tool-call or generic
+placement method; the dashboard must preview, revalidate, and confirm one exact
+order before this narrow boundary can be reached.
 
 OAuth grants and dynamic client registration data are stored only through the
 operating-system keyring.  There is no file, environment-variable, or plaintext
@@ -804,6 +804,7 @@ def validate_tool_catalog(tools: Iterable[Any]) -> dict[str, Any]:
         "ready_for_direct_review": schema_valid and not missing_reads and not missing_reviews,
         "placement_tools_detected": not missing_places,
         "placement_api_exposed": False,
+        "confirmed_option_placement_supported": schema_valid and not missing_places,
         "tool_count": len(catalog),
         "read_tools": sorted(names & READ_TOOL_ALLOWLIST),
         "review_tools": sorted(names & REVIEW_TOOL_ALLOWLIST),
@@ -928,11 +929,12 @@ SessionFactory = Callable[[], AbstractAsyncContextManager[Any]]
 
 
 class RobinhoodMcpClient:
-    """One-shot official Robinhood MCP read and preview client.
+    """One-shot official Robinhood MCP read, preview, and confirmed-option client.
 
     ``call_read_tool`` cannot call preview or placement tools.
     ``call_review_tool`` can call only the two broker preview tools.
-    No public method can call a placement tool.
+    ``call_confirmed_option_order`` is fixed to one option placement tool and
+    is intended only for the single-use capability service.
     """
 
     def __init__(
@@ -1111,6 +1113,7 @@ class RobinhoodMcpClient:
             "raw_account_numbers_exposed": False,
             "generic_tool_call_exposed": False,
             "placement_api_exposed": False,
+            "confirmed_option_placement_api_exposed": True,
             "automatic_retry_enabled": False,
             "background_polling_enabled": False,
         }
@@ -1157,12 +1160,15 @@ class RobinhoodMcpClient:
         arguments: dict[str, Any],
         *,
         allowed: frozenset[str],
+        confirmed_placement: bool = False,
     ) -> Any:
         tool_name = str(name or "").strip()
-        if tool_name in PLACE_TOOL_ALLOWLIST:
+        if tool_name in PLACE_TOOL_ALLOWLIST and not confirmed_placement:
             raise ToolPolicyError(
                 "Placement is unavailable without a higher-level opaque confirmation capability."
             )
+        if confirmed_placement and tool_name != "place_option_order":
+            raise ToolPolicyError("Only the fixed confirmed option-placement tool is available.")
         if tool_name not in allowed:
             raise ToolPolicyError("MCP tool is not allowed through this method.")
         async with self._operation_lock:
@@ -1226,6 +1232,15 @@ class RobinhoodMcpClient:
             name,
             arguments,
             allowed=REVIEW_TOOL_ALLOWLIST,
+        )
+
+    async def call_confirmed_option_order(self, arguments: dict[str, Any]) -> Any:
+        """Place one exact option order after the caller consumes a confirmation token."""
+        return await self._call_allowed_tool(
+            "place_option_order",
+            arguments,
+            allowed=frozenset({"place_option_order"}),
+            confirmed_placement=True,
         )
 
 

@@ -34,6 +34,9 @@ from optedge.strategy_profile import (
 
 FINALIST_CHECK_SCHEMA = "optedge_robinhood_option_finalist_check_v1"
 FINALIST_CHECK_FILE = "robinhood_finalist_check.json"
+FINALIST_BATCH_SCHEMA = "optedge_robinhood_option_finalist_batch_v1"
+FINALIST_BATCH_FILE = "robinhood_finalist_batch.json"
+MAX_FINALIST_BATCH_SIZE = 10
 QUEUE_SCHEMA = "optedge_robinhood_agentic_options_queue_v1"
 CYCLE_SCHEMA = "optedge_robinhood_agentic_cycle_v1"
 MAX_QUOTE_AGE_SECONDS = 120.0
@@ -666,6 +669,7 @@ def _select_current_finalist(
     queue: Mapping[str, Any],
     cycle: Mapping[str, Any],
     now: datetime,
+    candidate_index: int = 0,
 ) -> tuple[dict[str, Any], str, bool]:
     if queue.get("schema") != QUEUE_SCHEMA or cycle.get("schema") != CYCLE_SCHEMA:
         raise RobinhoodFinalistCheckError("finalist_source_schema_invalid")
@@ -674,9 +678,20 @@ def _select_current_finalist(
         if age is None or age < -1 or age > MAX_SOURCE_AGE_MINUTES:
             raise RobinhoodFinalistCheckError(f"{label}_stale_or_invalid")
     orders = queue.get("orders")
-    if not isinstance(orders, list) or not orders or not isinstance(orders[0], Mapping):
+    if (
+        not isinstance(candidate_index, int)
+        or isinstance(candidate_index, bool)
+        or candidate_index < 0
+        or candidate_index >= MAX_FINALIST_BATCH_SIZE
+    ):
+        raise RobinhoodFinalistCheckError("finalist_index_invalid")
+    if (
+        not isinstance(orders, list)
+        or candidate_index >= len(orders)
+        or not isinstance(orders[candidate_index], Mapping)
+    ):
         raise RobinhoodFinalistCheckError("no_option_finalist")
-    candidate = dict(orders[0])
+    candidate = dict(orders[candidate_index])
     identity = _option_identity(candidate)
     if (
         identity.get("symbol") == ""
@@ -721,13 +736,19 @@ def check_best_option_finalist(
     data_dir: Path,
     now: datetime | None = None,
     write: bool = True,
+    candidate_index: int = 0,
 ) -> dict[str, Any]:
-    """Check the current first Optedge option finalist through Robinhood once."""
+    """Check one of the first ten Optedge option finalists through Robinhood once."""
     current = _utc_now(now)
     data_dir = Path(data_dir)
     queue = _read_json(data_dir / "robinhood_agentic_queue.json")
     cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
-    candidate, candidate_lane, local_entry_allowed = _select_current_finalist(queue, cycle, current)
+    candidate, candidate_lane, local_entry_allowed = _select_current_finalist(
+        queue,
+        cycle,
+        current,
+        candidate_index,
+    )
     identity = _option_identity(candidate)
     symbol = str(identity["symbol"])
     expiry = str(identity["expiry"])
@@ -977,9 +998,93 @@ def check_best_option_finalist(
         contract=contract,
         quote=quote,
     )
+    report["candidate_index"] = candidate_index
+    report["artifact_digest_sha256"] = canonical_digest(
+        {key: value for key, value in report.items() if key != "artifact_digest_sha256"}
+    )
     if write:
         _atomic_write_json(data_dir / FINALIST_CHECK_FILE, report)
     return report
+
+
+def check_top_option_finalists(
+    manager: Any,
+    *,
+    data_dir: Path,
+    limit: int = MAX_FINALIST_BATCH_SIZE,
+    now: datetime | None = None,
+    write: bool = True,
+) -> dict[str, Any]:
+    """Live-check up to ten ranked Optedge candidates once, without broker writes."""
+    current = _utc_now(now)
+    data_dir = Path(data_dir)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise RobinhoodFinalistCheckError("finalist_batch_limit_invalid")
+    limit = max(1, min(limit, MAX_FINALIST_BATCH_SIZE))
+    queue = _read_json(data_dir / "robinhood_agentic_queue.json")
+    orders = queue.get("orders")
+    if not isinstance(orders, list) or not orders:
+        raise RobinhoodFinalistCheckError("no_option_finalist")
+
+    reports: list[dict[str, Any]] = []
+    for candidate_index in range(min(limit, len(orders))):
+        try:
+            report = check_best_option_finalist(
+                manager,
+                data_dir=data_dir,
+                now=current,
+                write=False,
+                candidate_index=candidate_index,
+            )
+        except RobinhoodFinalistCheckError as exc:
+            candidate = orders[candidate_index] if isinstance(orders[candidate_index], Mapping) else {}
+            identity = _option_identity(candidate)
+            report = {
+                "schema": FINALIST_CHECK_SCHEMA,
+                "candidate_index": candidate_index,
+                "generated_at": current.isoformat(),
+                "expires_at": (current + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)).isoformat(),
+                "status": "blocked",
+                "market_check_passed": False,
+                "ready_for_manual_review": False,
+                "candidate": {
+                    **identity,
+                    "label": _candidate_label(identity),
+                    "candidate_digest_sha256": canonical_digest(candidate),
+                },
+                "contract": {},
+                "quote": {},
+                "blockers": [f"Robinhood live check stopped safely ({exc.code})."],
+                "warnings": [],
+                "does_not_place_orders": True,
+                "does_not_preview_orders": True,
+                "automatic_retry_enabled": False,
+                "background_polling_enabled": False,
+                "broker_writes_authorized": 0,
+            }
+            report["artifact_digest_sha256"] = canonical_digest(report)
+        reports.append(report)
+
+    result = {
+        "schema": FINALIST_BATCH_SCHEMA,
+        "generated_at": current.isoformat(),
+        "expires_at": (current + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)).isoformat(),
+        "requested_limit": limit,
+        "candidate_count": len(reports),
+        "market_passed_count": sum(row.get("market_check_passed") is True for row in reports),
+        "review_ready_count": sum(row.get("ready_for_manual_review") is True for row in reports),
+        "reports": reports,
+        "one_shot": True,
+        "does_not_place_orders": True,
+        "does_not_preview_orders": True,
+        "automatic_retry_enabled": False,
+        "background_polling_enabled": False,
+        "broker_writes_authorized": 0,
+    }
+    result["artifact_digest_sha256"] = canonical_digest(result)
+    if write:
+        _atomic_write_json(data_dir / FINALIST_BATCH_FILE, result)
+    return result
 
 
 def load_finalist_check_status(

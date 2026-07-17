@@ -31,6 +31,11 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _launcher_scan_args(args: list[str] | None) -> list[str]:
+    """Encode passthrough values so argparse accepts values beginning with ``--``."""
+    return [f"--scan-arg={arg}" for arg in args or []]
+
+
 def jobs_dir(data_dir: Path = DATA_DIR) -> Path:
     path = data_dir / JOBS_DIRNAME
     path.mkdir(parents=True, exist_ok=True)
@@ -352,8 +357,7 @@ def create_job(
             "--data-dir",
             str(data_dir),
         ]
-        for arg in extra_scan_args or []:
-            launcher.extend(["--scan-arg", arg])
+        launcher.extend(_launcher_scan_args(extra_scan_args))
         kwargs: dict[str, Any] = {
             "cwd": str(ROOT),
             "stdout": subprocess.DEVNULL,
@@ -402,8 +406,7 @@ def create_refresh_job(
             "--data-dir",
             str(data_dir),
         ]
-        for arg in extra_scan_args or []:
-            launcher.extend(["--scan-arg", arg])
+        launcher.extend(_launcher_scan_args(extra_scan_args))
         kwargs: dict[str, Any] = {
             "cwd": str(ROOT),
             "stdout": subprocess.DEVNULL,

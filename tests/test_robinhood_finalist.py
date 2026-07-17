@@ -13,6 +13,7 @@ from optedge.robinhood_finalist import (
     apply_finalist_check_to_sources,
     canonical_digest,
     check_best_option_finalist,
+    check_top_option_finalists,
 )
 
 NOW = datetime(2026, 7, 16, 20, 40, tzinfo=UTC)
@@ -213,6 +214,33 @@ def test_happy_path_checks_only_exact_finalist_and_returns_loadable_live_plan(tm
     assert manager.calls[2][1] == {"ids": [OPTION_ID]}
     assert report["does_not_place_orders"] is True
     assert report["does_not_preview_orders"] is True
+
+
+def test_top_ten_check_is_bounded_and_preserves_ranked_candidate_identity(tmp_path: Path):
+    import json
+
+    queue, cycle = _sources()
+    queue["orders"] = []
+    cycle["manual_review_candidates"] = []
+    for index in range(12):
+        candidate = _candidate()
+        candidate["max_limit_price"] = 0.52 + index / 100
+        candidate["contract"] = f"HYG 2026-12-18 P 75 rank {index + 1}"
+        queue["orders"].append(copy.deepcopy(candidate))
+        cycle["manual_review_candidates"].append(copy.deepcopy(candidate))
+    (tmp_path / "robinhood_agentic_queue.json").write_text(json.dumps(queue), encoding="utf-8")
+    (tmp_path / "robinhood_agentic_cycle.json").write_text(json.dumps(cycle), encoding="utf-8")
+
+    manager = _Manager()
+    batch = check_top_option_finalists(manager, data_dir=tmp_path, limit=99, now=NOW)
+    assert batch["candidate_count"] == 10
+    assert batch["requested_limit"] == 10
+    assert [row["candidate_index"] for row in batch["reports"]] == list(range(10))
+    assert batch["one_shot"] is True
+    assert batch["does_not_place_orders"] is True
+    assert len(manager.calls) == 30
+    saved = json.loads((tmp_path / "robinhood_finalist_batch.json").read_text())
+    assert saved["artifact_digest_sha256"] == batch["artifact_digest_sha256"]
 
 
 def test_market_check_can_pass_while_local_optedge_gate_still_blocks_review(tmp_path: Path):

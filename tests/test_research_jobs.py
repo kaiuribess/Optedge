@@ -91,6 +91,33 @@ def test_create_refresh_job_without_launching():
         assert stored["status"] == "queued"
 
 
+def test_refresh_launcher_preserves_option_style_scan_arguments():
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    with tempfile.TemporaryDirectory() as td:
+        original = jobs_module.subprocess.Popen
+        jobs_module.subprocess.Popen = fake_popen
+        try:
+            create_refresh_job(
+                Path(td),
+                launch=True,
+                extra_scan_args=["--robinhood-agentic-queue", "--robinhood-min-dte", "90"],
+            )
+        finally:
+            jobs_module.subprocess.Popen = original
+
+    command = captured["command"]
+    assert "--scan-arg=--robinhood-agentic-queue" in command
+    assert "--scan-arg=--robinhood-min-dte" in command
+    assert "--scan-arg=90" in command
+    assert "--scan-arg" not in command
+
+
 def test_create_refresh_job_does_not_overwrite_same_second_jobs():
     class FrozenDateTime:
         @classmethod

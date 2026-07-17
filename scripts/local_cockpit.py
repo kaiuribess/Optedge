@@ -1,8 +1,9 @@
 # Purpose: Serve the local swing-trading research cockpit.
 """Free local Optedge cockpit server.
 
-This is a lightweight browser UI for existing Optedge artifacts. It does not
-place trades or require paid dashboard services.  An explicit official
+This is a lightweight browser UI for existing Optedge artifacts. It can place
+one explicitly previewed and confirmed option order through the official
+Agentic account, and requires no paid dashboard services.  An explicit official
 Robinhood OAuth connection can store revocable tokens in the operating-system
 credential vault; passwords, MFA codes, cookies, and raw tokens never belong in
 the cockpit.
@@ -67,7 +68,12 @@ from optedge.robinhood_finalist import (  # noqa: E402
     RobinhoodFinalistCheckError,
     apply_finalist_check_to_sources,
     check_best_option_finalist,
+    check_top_option_finalists,
     load_finalist_check_status,
+)
+from optedge.robinhood_option_execution import (  # noqa: E402
+    RobinhoodOptionExecutionError,
+    RobinhoodOptionExecutionService,
 )
 from optedge.robinhood_option_history_sync import (  # noqa: E402
     RobinhoodOptionHistorySyncError,
@@ -2206,7 +2212,7 @@ def _market_refresh_scan_args(
             "--robinhood-chain-preset",
             "swing",
             "--robinhood-max-candidates",
-            "5",
+            "10",
             "--robinhood-max-orders",
             "1",
         ]
@@ -15288,7 +15294,7 @@ def build_command_center(
             robinhood_queue = build_robinhood_agentic_queue_report(
                 data_dir,
                 account_budget=500,
-                max_candidates=5,
+                max_candidates=10,
                 max_orders=1,
                 min_dte=MIN_SWING_OPTION_DTE,
             )
@@ -20857,21 +20863,25 @@ tr.clickable-row:hover { background:#18201d; }
         <p>Connect through Robinhood&apos;s official OAuth page, keep revocable tokens in the operating-system vault, then prepare one explicit broker-review packet. Passwords, MFA codes, cookies, and raw tokens never enter Optedge.</p>
         <div id="rh-connection" class="plan-callout warn" style="margin-top:12px" aria-live="polite">
           <h3>Connection status loading</h3>
-          <p>No order can be placed from this connection panel.</p>
+          <p>No order is sent until a Robinhood preview and a second explicit confirmation.</p>
         </div>
         <div class="planner-actions">
           <button class="btn primary" type="button" id="rh-connect">Connect Robinhood</button>
           <a class="btn" id="rh-authorize" href="/auth/robinhood/authorize" target="_blank" rel="noopener noreferrer" hidden>Open Robinhood approval</a>
           <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
           <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
-          <button class="btn primary" type="button" id="rh-check-finalist" disabled>Live-check best option</button>
+          <button class="btn primary" type="button" id="rh-check-finalist" disabled>Check top 10 on Robinhood</button>
           <button class="btn" type="button" id="rh-capture-evidence">Capture checked evidence</button>
           <button class="btn" type="button" id="rh-sync-history" disabled>Sync 5 exact histories</button>
           <button class="btn" type="button" id="rh-disconnect">Disconnect</button>
         </div>
+        <div class="planner-grid" style="margin-top:12px">
+          <div class="planner-field"><label for="rh-execution-account">Robinhood account for preview</label><select id="rh-execution-account" disabled><option value="">Run the top-10 check first</option></select></div>
+        </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
-        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The finalist check reads one exact chain, contract, and quote. Evidence capture freezes that already-checked quote locally without another broker call. History sync reads at most five exact contracts and commits only a complete batch. Live placement is not exposed; there is no polling, schedule, automatic retry, or Codex loop.</div>
+        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The top-10 check verifies only Optedge&apos;s ranked candidates against exact Robinhood chains, contracts, and quotes. A Review button requests a broker preview; only a separate confirmed Place button can send that exact order once. There is no polling, schedule, automatic retry, unattended trading, or Codex loop.</div>
         <div id="rh-finalist-results" style="margin-top:12px" aria-live="polite"></div>
+        <div id="rh-order-preview" style="margin-top:12px" aria-live="polite"></div>
         <div id="trade-desk-robinhood" style="margin-top:12px"></div>
       </article>
     </div>
@@ -21826,7 +21836,7 @@ function robinhoodConnectionHtml(data) {
   const authReady = Boolean(data && data.authorization_url_ready);
   const errorCode = (data && (data.last_error_code || data.status_probe_error_code)) || null;
   const detail = ready
-    ? 'Robinhood OAuth is connected. Direct tools remain allowlisted and placement remains unavailable.'
+    ? 'Robinhood OAuth is connected. Live reads are allowlisted; option placement requires a broker preview and a separate one-time confirmation.'
     : (authReady
       ? 'Robinhood approval is ready. Open it once, approve there, then return and refresh status.'
       : (state === 'connecting' || state === 'authorization_required'
@@ -21842,13 +21852,15 @@ function robinhoodConnectionHtml(data) {
       <div class="brief-tile"><span>Revocable token</span><strong>${vault.token_present === true ? 'present' : 'not stored'}</strong></div>
       <div class="brief-tile"><span>Read tools</span><strong>${cell((catalog.read_tools || []).length)}</strong></div>
       <div class="brief-tile"><span>Review tools</span><strong>${catalog.ready_for_direct_review === true ? 'detected' : 'not detected'}</strong></div>
-      <div class="brief-tile"><span>Direct preview UI</span><strong>not exposed</strong></div>
-      <div class="brief-tile"><span>Live placement</span><strong>not exposed</strong></div>
+      <div class="brief-tile"><span>Direct preview UI</span><strong>${catalog.ready_for_direct_review === true ? 'available' : 'not ready'}</strong></div>
+      <div class="brief-tile"><span>Live placement</span><strong>${catalog.confirmed_option_placement_supported === true ? 'two-click option only' : 'not ready'}</strong></div>
     </div>
     ${error}
   </div>`;
 }
 let latestRobinhoodFinalistCheck = null;
+let latestRobinhoodFinalistBatch = null;
+let robinhoodConfirmationToken = null;
 function robinhoodFinalistHtml(data) {
   const report = data || {};
   const status = String(report.status || 'missing').toLowerCase();
@@ -21910,6 +21922,78 @@ function renderRobinhoodFinalist(data) {
     const candidate = latestRobinhoodFinalistCheck && latestRobinhoodFinalistCheck.planner_candidate;
     loadCandidateIntoPlanner(candidate, 'the exact live Robinhood finalist check');
   });
+}
+function robinhoodBatchHtml(data) {
+  const reports = Array.isArray(data && data.reports) ? data.reports : [];
+  if (!reports.length) return '<div class="privacy-note">No ranked option candidates were available to verify.</div>';
+  return `<div class="plan-callout ${Number(data.review_ready_count || 0) > 0 ? 'good' : 'warn'}">
+    <h3>Robinhood live shortlist: ${cell(reports.length)} checked</h3>
+    <p>${cell(data.market_passed_count || 0)} passed Robinhood market checks; ${cell(data.review_ready_count || 0)} also cleared every Optedge gate.</p>
+    <div class="candidate-grid" style="margin-top:12px">
+      ${reports.map((report, index) => {
+        const candidate = report.candidate || {};
+        const quote = report.quote || {};
+        const market = report.market_check_passed === true;
+        const ready = report.ready_for_manual_review === true;
+        const reason = (report.blockers || [])[0] || (ready ? 'All local and live gates cleared.' : 'Optedge validation still blocks broker review.');
+        return `<article class="candidate-card ${ready ? 'good' : (market ? 'warn' : 'bad')}">
+          <div class="candidate-rank">#${index + 1}</div>
+          <h4>${cell(candidate.label || 'Unresolved option')}</h4>
+          <div class="brief-grid">
+            <div class="brief-tile"><span>Robinhood bid / ask</span><strong>${compactMoney(quote.bid_price, 2)} / ${compactMoney(quote.ask_price, 2)}</strong></div>
+            <div class="brief-tile"><span>Spread</span><strong>${pct(quote.spread_fraction)}</strong></div>
+            <div class="brief-tile"><span>OI / volume</span><strong>${cell(quote.open_interest)} / ${cell(quote.volume)}</strong></div>
+            <div class="brief-tile"><span>Decision</span><strong>${ready ? 'review eligible' : (market ? 'research only' : 'blocked')}</strong></div>
+          </div>
+          <p class="muted">${cell(reason)}</p>
+          <div class="planner-actions"><button class="btn primary rh-review-option" type="button" data-candidate-index="${index}" ${ready ? '' : 'disabled'}>Review exact order</button></div>
+        </article>`;
+      }).join('')}
+    </div>
+    <div class="privacy-note">This was one bounded read pass over up to 10 Optedge finalists. It did not create a Robinhood scan, preview an order, or place anything.</div>
+  </div>`;
+}
+function renderRobinhoodBatch(data) {
+  latestRobinhoodFinalistBatch = data || null;
+  robinhoodConfirmationToken = null;
+  if ($('rh-finalist-results')) $('rh-finalist-results').innerHTML = robinhoodBatchHtml(data || {});
+  const select = $('rh-execution-account');
+  const accounts = Array.isArray(data && data.accounts) ? data.accounts : [];
+  if (select) {
+    select.innerHTML = '<option value="">Choose an eligible Agentic account</option>' + accounts.map(account =>
+      `<option value="${escAttr(account.account_key || '')}" ${account.eligible_for_live_options === true ? '' : 'disabled'}>${cell(account.label || 'Robinhood account')} · options level ${cell(account.options_level || 0)}</option>`
+    ).join('');
+    select.disabled = !accounts.some(account => account.eligible_for_live_options === true);
+  }
+  document.querySelectorAll('.rh-review-option').forEach(button => button.addEventListener('click', () => reviewRobinhoodOption(Number(button.dataset.candidateIndex || 0))));
+  if ($('rh-order-preview')) $('rh-order-preview').innerHTML = '';
+}
+function renderRobinhoodOrderPreview(data) {
+  const target = $('rh-order-preview');
+  if (!target) return;
+  if (!data || data.status !== 'preview_ready') {
+    robinhoodConfirmationToken = null;
+    target.innerHTML = `<div class="plan-callout bad"><h3>Order preview blocked</h3><p>${cell((data && data.error_code) || (data && data.blockers && data.blockers[0]) || 'Robinhood did not clear this preview.')}</p><div class="privacy-note">No order was sent.</div></div>`;
+    return;
+  }
+  robinhoodConfirmationToken = data.confirmation_token || null;
+  const order = data.order || {};
+  const capacity = data.capacity || {};
+  target.innerHTML = `<div class="plan-callout warn">
+    <h3>Robinhood preview ready — not placed</h3>
+    <p>${cell(order.contract)} · ${cell(order.quantity)} contract · buy to open · limit ${compactMoney(order.limit_price, 2)}</p>
+    <div class="brief-grid">
+      <div class="brief-tile"><span>Maximum debit</span><strong>${compactMoney(order.maximum_debit, 2)}</strong></div>
+      <div class="brief-tile"><span>Buying power</span><strong>${compactMoney(capacity.conservative_buying_power, 2)}</strong></div>
+      <div class="brief-tile"><span>Account risk cap</span><strong>${compactMoney(capacity.risk_cap, 2)}</strong></div>
+      <div class="brief-tile"><span>Confirmation expires</span><strong>60 seconds</strong></div>
+    </div>
+    <label class="privacy-note" style="display:block;margin-top:12px"><input id="rh-place-confirm" type="checkbox"> I reviewed the exact Robinhood preview and understand this sends a real-money order.</label>
+    <div class="planner-actions"><button class="btn primary" id="rh-place-option" type="button" disabled>Place this exact order once</button></div>
+    <div class="privacy-note">The confirmation is single-use. Optedge refreshes account eligibility, capacity, positions, working orders, the exact contract, and its quote once more before sending, and never retries placement automatically.</div>
+  </div>`;
+  $('rh-place-confirm').addEventListener('change', () => { $('rh-place-option').disabled = !$('rh-place-confirm').checked; });
+  $('rh-place-option').addEventListener('click', placeRobinhoodOption);
 }
 function renderRobinhoodConnection(data) {
   if (!$('rh-connection')) return;
@@ -21980,29 +22064,67 @@ async function syncRobinhoodSnapshot() {
 async function runRobinhoodFinalistCheck() {
   const button = $('rh-check-finalist');
   if (button) button.disabled = true;
-  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Resolving the exact top option and reading one fresh Robinhood quote...';
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Checking up to 10 ranked Optedge options against exact Robinhood contracts and live quotes...';
   try {
-    const res = await fetch('/api/robinhood-check-finalist', {method:'POST', body:'{}'});
+    const res = await fetch('/api/robinhood-check-top-options', {method:'POST', body:JSON.stringify({limit:10})});
     const data = await res.json();
     if (!res.ok || data.ok === false || data.error_code) {
-      renderRobinhoodFinalist({
-        status: 'blocked',
-        market_check_passed: false,
-        blockers: [`Safe check error: ${labelText(data.error_code || 'finalist check failed')}.`],
-        does_not_place_orders: true
-      });
-      if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Live finalist check stopped safely. Nothing was previewed or sent.';
+      renderRobinhoodBatch({reports:[]});
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `Robinhood shortlist check stopped safely: ${labelText(data.error_code || 'check failed')}. Nothing was previewed or sent.`;
       return;
     }
-    renderRobinhoodFinalist(data);
-    if ($('rh-sync-status')) $('rh-sync-status').textContent = data.market_check_passed === true
-      ? (data.ready_for_manual_review === true
-        ? 'Exact live market check passed. Review the checked quote and calculate the risk plan; nothing was sent.'
-        : 'Exact live market check passed, but normal Optedge gates still block broker review; nothing was sent.')
-      : 'The live finalist check found a blocking market condition. Optedge kept the candidate in research status.';
+    renderRobinhoodBatch(data);
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Checked ${Number(data.candidate_count || 0)} exact option candidate(s): ${Number(data.market_passed_count || 0)} passed Robinhood market checks and ${Number(data.review_ready_count || 0)} cleared every Optedge gate. Nothing was previewed or sent.`;
   } finally {
     await loadRobinhoodConnection().catch(() => null);
   }
+}
+async function reviewRobinhoodOption(candidateIndex) {
+  const select = $('rh-execution-account');
+  const accountKey = select && select.value;
+  if (!accountKey) {
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Choose the eligible Agentic account before requesting an order preview.';
+    return;
+  }
+  if (!window.confirm('Request a Robinhood broker preview for this exact option? This does not place the order.')) return;
+  robinhoodConfirmationToken = null;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Rechecking the exact finalist, account capacity, positions, and working orders before Robinhood preview...';
+  const res = await fetch('/api/robinhood-review-option', {
+    method:'POST',
+    body:JSON.stringify({candidate_index:candidateIndex, account_key:accountKey})
+  });
+  const data = await res.json();
+  if (!res.ok || data.ok === false || data.error_code) {
+    renderRobinhoodOrderPreview(data);
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Order preview blocked: ${labelText(data.error_code || 'review failed')}. No order was sent.`;
+    return;
+  }
+  renderRobinhoodOrderPreview(data);
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = data.status === 'preview_ready'
+    ? 'Robinhood preview is ready. Review it carefully; the order is still not placed.'
+    : 'Robinhood preview returned blockers. No order was sent.';
+}
+async function placeRobinhoodOption() {
+  const checkbox = $('rh-place-confirm');
+  if (!checkbox || checkbox.checked !== true || !robinhoodConfirmationToken) return;
+  if (!window.confirm('Final confirmation: send this real-money option order to Robinhood now?')) return;
+  const token = robinhoodConfirmationToken;
+  robinhoodConfirmationToken = null;
+  const button = $('rh-place-option');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Refreshing the exact live quote once and sending the already-previewed order once...';
+  const res = await fetch('/api/robinhood-place-option', {
+    method:'POST',
+    body:JSON.stringify({confirmation_token:token, confirmation_text:'PLACE'})
+  });
+  const data = await res.json();
+  if (!res.ok || data.status !== 'order_sent') {
+    if ($('rh-order-preview')) $('rh-order-preview').innerHTML = `<div class="plan-callout bad"><h3>Placement not confirmed</h3><p>${cell(labelText(data.error_code || 'placement result unknown'))}</p><div class="privacy-note">The one-time token was consumed and Optedge will not retry. Check Robinhood order history before doing anything else.</div></div>`;
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Placement was not confirmed. Optedge did not retry; check Robinhood order history.';
+    return;
+  }
+  if ($('rh-order-preview')) $('rh-order-preview').innerHTML = '<div class="plan-callout good"><h3>Order sent to Robinhood</h3><p>The exact previewed option order was submitted once. Monitor its status in Robinhood; no automatic retry or follow-up order is running.</p></div>';
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'The exact option order was sent once. No automatic retry, polling, or follow-up trade is active.';
 }
 async function captureFinalistEvidence() {
   if (!window.confirm('Freeze the still-fresh checked finalist as one local paper-evidence signal? This makes no Robinhood call and places no order.')) return;
@@ -26254,6 +26376,7 @@ def _robinhood_oauth_page(*, accepted: bool, detail: str) -> bytes:
 class CockpitHandler(BaseHTTPRequestHandler):
     data_dir = DATA_DIR
     robinhood_connection_manager: RobinhoodConnectionManager | None = None
+    robinhood_option_execution_service: RobinhoodOptionExecutionService | None = None
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -26826,6 +26949,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/robinhood-sync-snapshot",
             "/api/robinhood-sync-option-history",
             "/api/robinhood-check-finalist",
+            "/api/robinhood-check-top-options",
+            "/api/robinhood-review-option",
+            "/api/robinhood-place-option",
             "/api/capture-finalist-evidence",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
@@ -26987,6 +27113,115 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(result)
             return
+        if parsed.path == "/api/robinhood-check-top-options":
+            manager = self.robinhood_connection_manager
+            service = self.robinhood_option_execution_service
+            if manager is None or service is None:
+                self._send_json({"ok": False, "error_code": "client_unavailable"}, status=503)
+                return
+            try:
+                result = check_top_option_finalists(
+                    manager,
+                    data_dir=self.data_dir,
+                    limit=_int_param(str(body.get("limit") or "10"), 10, 1, 10),
+                    write=True,
+                )
+                result["accounts"] = service.account_choices().get("accounts", [])
+            except (RobinhoodConnectionError, RobinhoodFinalistCheckError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "top_option_check_failed",
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-review-option":
+            service = self.robinhood_option_execution_service
+            if service is None:
+                self._send_json({"ok": False, "error_code": "client_unavailable"}, status=503)
+                return
+            try:
+                result = service.review(
+                    candidate_index=_int_param(str(body.get("candidate_index") or "0"), 0, 0, 9),
+                    account_key=str(body.get("account_key") or ""),
+                )
+            except (RobinhoodConnectionError, RobinhoodOptionExecutionError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "order_previewed": False,
+                        "order_placed": False,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "option_review_failed",
+                        "order_previewed": False,
+                        "order_placed": False,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-place-option":
+            service = self.robinhood_option_execution_service
+            if service is None:
+                self._send_json({"ok": False, "error_code": "client_unavailable"}, status=503)
+                return
+            try:
+                result = service.place(
+                    confirmation_token=str(body.get("confirmation_token") or ""),
+                    confirmation_text=str(body.get("confirmation_text") or ""),
+                )
+            except (RobinhoodConnectionError, RobinhoodOptionExecutionError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "order_placed": False,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "option_placement_failed",
+                        "order_placed": "unknown",
+                        "automatic_retry_enabled": False,
+                        "do_not_retry": True,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
         if parsed.path == "/api/capture-finalist-evidence":
             try:
                 result = capture_checked_finalist_evidence(
@@ -27036,6 +27271,9 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     status=409,
                 )
                 return
+            service = self.robinhood_option_execution_service
+            if service is not None:
+                service.clear()
             self._send_json(result)
             return
         if parsed.path == "/api/lookup":
@@ -27216,13 +27454,21 @@ def run_server(
     handler = type(
         "OptedgeCockpitHandler",
         (CockpitHandler,),
-        {"data_dir": data_dir, "robinhood_connection_manager": None},
+        {
+            "data_dir": data_dir,
+            "robinhood_connection_manager": None,
+            "robinhood_option_execution_service": None,
+        },
     )
     server = ThreadingHTTPServer((host, port), handler)
     bound_port = int(server.server_address[1])
     url = f"http://{host}:{bound_port}"
     manager = RobinhoodConnectionManager(f"{url}/oauth/robinhood/callback")
     handler.robinhood_connection_manager = manager
+    handler.robinhood_option_execution_service = RobinhoodOptionExecutionService(
+        manager,
+        data_dir=data_dir,
+    )
     print(f"Optedge cockpit: {url}")
     print("Press Ctrl+C to stop.")
     if open_browser:

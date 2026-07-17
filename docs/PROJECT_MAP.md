@@ -230,9 +230,10 @@ that refactor has already happened.
 | `optedge/modes/loop.py` | Runs repeated local research scans at an operator-selected interval. |
 | `optedge/modes/scan.py` | Runs one local research scan. |
 | `optedge/orchestrator.py` | Coordinates engines, fusion, risk controls, tracking, reports, and outputs. |
-| `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle without polling, retries, or placement. |
-| `optedge/robinhood_finalist.py` | Resolves the unchanged top option candidate against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
-| `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, and no placement method. |
+| `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle with fixed confirmed-option placement and no generic dispatcher, polling, or retries. |
+| `optedge/robinhood_finalist.py` | Resolves up to ten unchanged ranked option candidates against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
+| `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, plus one fixed confirmed-option placement boundary with no generic dispatcher. |
+| `optedge/robinhood_option_execution.py` | Provides a two-click, single-use Robinhood option preview and placement boundary with final live revalidation and no automatic retry. |
 | `optedge/robinhood_option_history_sync.py` | Collects a bounded batch of exact-contract Robinhood option histories through read-only MCP calls and atomically updates the validation cache. |
 | `optedge/robinhood_snapshot_sync.py` | Performs one explicit complete account read, proves bounded pagination, and persists only a redacted broker snapshot and pseudonymous risk ledger. |
 | `optedge/strategy_profile.py` | Defines canonical discovery, ordinary swing-execution, and profile-isolated LEAPS swing policies. |
@@ -335,8 +336,9 @@ that refactor has already happened.
 | `tests/test_robinhood_agentic_queue.py` | Protects explicit ordinary-swing and LEAPS queue identity, geometry, evidence metadata, and eligibility. |
 | `tests/test_robinhood_broker_snapshot.py` | Protects account-scoped broker snapshot redaction, atomic persistence, ledger integrity, and fail-closed parsing. |
 | `tests/test_robinhood_connection.py` | Protects the bounded single-loop Robinhood connection lifecycle, sanitized status, OAuth callback, and tool-call boundaries. |
-| `tests/test_robinhood_finalist.py` | Protects exact top-candidate identity, bounded contract resolution, live quote gates, source-digest binding, and the no-order boundary. |
-| `tests/test_robinhood_mcp.py` | Protects official-endpoint OAuth, keyring-only credential storage, schema checks, redaction, and read-versus-review MCP policies. |
+| `tests/test_robinhood_finalist.py` | Protects exact ranked-candidate identity, the ten-row cap, bounded contract resolution, live quote gates, source-digest binding, and the no-order research boundary. |
+| `tests/test_robinhood_mcp.py` | Protects official-endpoint OAuth, keyring-only credential storage, schema checks, redaction, read/review separation, and fixed confirmed-option placement policy. |
+| `tests/test_robinhood_option_execution.py` | Protects Robinhood option preview, confirmation-token, placement, redaction, and fail-closed execution behavior. |
 | `tests/test_robinhood_option_history_sync.py` | Protects bounded exact-contract history collection, read-only tool use, and atomic all-or-nothing cache updates. |
 | `tests/test_robinhood_research_bridge.py` | Protects read-only Robinhood research-cache behavior. |
 | `tests/test_robinhood_snapshot_sync.py` | Protects explicit complete account reads, cursor proofs, option-instrument joins, and redacted-only direct snapshot persistence. |
