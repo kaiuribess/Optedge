@@ -36,6 +36,8 @@ FINALIST_CHECK_SCHEMA = "optedge_robinhood_option_finalist_check_v1"
 FINALIST_CHECK_FILE = "robinhood_finalist_check.json"
 FINALIST_BATCH_SCHEMA = "optedge_robinhood_option_finalist_batch_v1"
 FINALIST_BATCH_FILE = "robinhood_finalist_batch.json"
+TICKER_EDGE_SCAN_SCHEMA = "optedge_robinhood_ticker_edge_scan_v1"
+TICKER_EDGE_SCAN_FILE = "robinhood_ticker_edge_scan.json"
 MAX_FINALIST_BATCH_SIZE = 10
 QUEUE_SCHEMA = "optedge_robinhood_agentic_options_queue_v1"
 CYCLE_SCHEMA = "optedge_robinhood_agentic_cycle_v1"
@@ -737,12 +739,24 @@ def check_best_option_finalist(
     now: datetime | None = None,
     write: bool = True,
     candidate_index: int = 0,
+    source_queue: Mapping[str, Any] | None = None,
+    source_cycle: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Check one of the first ten Optedge option finalists through Robinhood once."""
     current = _utc_now(now)
     data_dir = Path(data_dir)
-    queue = _read_json(data_dir / "robinhood_agentic_queue.json")
-    cycle = _read_json(data_dir / "robinhood_agentic_cycle.json")
+    if (source_queue is None) != (source_cycle is None):
+        raise RobinhoodFinalistCheckError("finalist_source_override_incomplete")
+    queue = (
+        dict(source_queue)
+        if source_queue is not None
+        else _read_json(data_dir / "robinhood_agentic_queue.json")
+    )
+    cycle = (
+        dict(source_cycle)
+        if source_cycle is not None
+        else _read_json(data_dir / "robinhood_agentic_cycle.json")
+    )
     candidate, candidate_lane, local_entry_allowed = _select_current_finalist(
         queue,
         cycle,
@@ -1087,6 +1101,265 @@ def check_top_option_finalists(
     return result
 
 
+def _ticker_scan_contract_candidate(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize one provider-ranked 3m+ contract for an exact Robinhood read."""
+    raw = dict(row)
+    raw["option_side"] = raw.get("option_side") or raw.get("side")
+    identity = _option_identity(raw)
+    ask = _number(row.get("ask"))
+    mid = _number(row.get("mid"))
+    reference = ask if ask is not None and ask > 0 else mid
+    if reference is None or reference <= 0:
+        raise RobinhoodFinalistCheckError("ticker_scan_price_missing")
+    execution_profile = _text(row.get("execution_profile") or SWING_EXECUTION_PROFILE.name)
+    return {
+        **raw,
+        "asset": "option",
+        "symbol": identity.get("symbol"),
+        "ticker_or_symbol": identity.get("symbol"),
+        "action": "BUY_TO_OPEN",
+        "order_type": "limit",
+        "time_in_force": "day",
+        "quantity": 1,
+        "option_side": identity.get("option_type"),
+        "underlying_type": identity.get("underlying_type"),
+        "strike": identity.get("strike"),
+        "expiry": identity.get("expiry"),
+        "contract": _candidate_label(identity),
+        "reference_entry_price": round(reference, 4),
+        "source_bid": _number(row.get("bid")),
+        "source_ask": ask,
+        "max_limit_price": round(reference * 1.08, 2),
+        "max_allowed_spread_pct": (
+            LEAPS_SWING_PROFILE.max_spread_pct
+            if execution_profile == LEAPS_SWING_PROFILE.name
+            else SWING_EXECUTION_PROFILE.max_option_spread_pct
+        ),
+        "execution_profile": execution_profile,
+    }
+
+
+def _ticker_scan_empty_report(
+    ticker: Mapping[str, Any],
+    *,
+    current: datetime,
+    reason: str,
+) -> dict[str, Any]:
+    symbol = _text(ticker.get("symbol")).upper()
+    return {
+        "schema": FINALIST_CHECK_SCHEMA,
+        "generated_at": current.isoformat(),
+        "expires_at": (current + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)).isoformat(),
+        "status": "no_contract",
+        "market_check_passed": False,
+        "edge_check_passed": False,
+        "ready_for_manual_review": False,
+        "candidate": {
+            "asset": "option",
+            "symbol": symbol,
+            "label": f"{symbol} - no qualifying 3m+ contract",
+        },
+        "ticker_thesis": {
+            "source": ticker.get("source"),
+            "score": ticker.get("score"),
+            "reason": ticker.get("reason"),
+        },
+        "contract": {},
+        "quote": {},
+        "research_edge": {
+            "after_cost_edge_pct": None,
+            "status": "unproven",
+            "exact_contract_required": True,
+        },
+        "blockers": [reason],
+        "warnings": [],
+        "does_not_place_orders": True,
+        "does_not_preview_orders": True,
+        "automatic_retry_enabled": False,
+        "background_polling_enabled": False,
+        "broker_writes_authorized": 0,
+    }
+
+
+def check_top_ticker_option_edges(
+    manager: Any,
+    *,
+    data_dir: Path,
+    ticker_candidates: list[Mapping[str, Any]],
+    contract_rows: list[Mapping[str, Any]],
+    limit: int = MAX_FINALIST_BATCH_SIZE,
+    now: datetime | None = None,
+    write: bool = True,
+) -> dict[str, Any]:
+    """Check one exact 3m+ contract for each of ten Optedge ticker ideas.
+
+    This is a read-only discovery lane.  It can confirm Robinhood contract and
+    quote quality, and it preserves any model-estimated after-cost edge already
+    attached to that exact provider row.  It never promotes a discovered row to
+    the execution queue or clears the normal validation gate.
+    """
+    current = _utc_now(now)
+    data_dir = Path(data_dir)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        raise RobinhoodFinalistCheckError("ticker_scan_limit_invalid")
+    limit = max(1, min(limit, MAX_FINALIST_BATCH_SIZE))
+
+    tickers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in ticker_candidates:
+        if not isinstance(raw, Mapping):
+            continue
+        symbol = _text(raw.get("symbol")).upper()
+        if not symbol or symbol in seen or is_known_index_option_symbol(symbol):
+            continue
+        seen.add(symbol)
+        tickers.append(dict(raw))
+        if len(tickers) >= limit:
+            break
+    if not tickers:
+        raise RobinhoodFinalistCheckError("no_ticker_scan_candidates")
+
+    best_by_symbol: dict[str, Mapping[str, Any]] = {}
+    for row in contract_rows:
+        if not isinstance(row, Mapping):
+            continue
+        symbol = _text(row.get("symbol") or row.get("ticker")).upper()
+        if symbol in seen and symbol not in best_by_symbol:
+            best_by_symbol[symbol] = row
+
+    normalized: list[dict[str, Any]] = []
+    index_by_symbol: dict[str, int] = {}
+    normalization_errors: dict[str, str] = {}
+    for ticker in tickers:
+        symbol = _text(ticker.get("symbol")).upper()
+        row = best_by_symbol.get(symbol)
+        if row is None:
+            continue
+        try:
+            candidate = _ticker_scan_contract_candidate(row)
+        except RobinhoodFinalistCheckError as exc:
+            normalization_errors[symbol] = exc.code
+            continue
+        index_by_symbol[symbol] = len(normalized)
+        normalized.append(candidate)
+
+    source_queue = {
+        "schema": QUEUE_SCHEMA,
+        "generated_at": current.isoformat(),
+        "execution_enabled": False,
+        "max_orders_to_submit": 0,
+        "does_not_place_orders": True,
+        "orders": copy.deepcopy(normalized),
+    }
+    source_cycle = {
+        "schema": CYCLE_SCHEMA,
+        "generated_at": current.isoformat(),
+        "auto_submit_allowed": False,
+        "does_not_place_orders": True,
+        "entry_gate": {"new_entries_allowed_after_live_checks": False},
+        "manual_review_candidates": [],
+        "review_only_entry_candidates": copy.deepcopy(normalized),
+    }
+
+    reports: list[dict[str, Any]] = []
+    for ticker in tickers:
+        symbol = _text(ticker.get("symbol")).upper()
+        row = best_by_symbol.get(symbol)
+        candidate_index = index_by_symbol.get(symbol)
+        if row is None:
+            reports.append(
+                _ticker_scan_empty_report(
+                    ticker,
+                    current=current,
+                    reason="The provider scan found no qualifying 3m+ contract for this ticker.",
+                )
+            )
+            continue
+        if candidate_index is None:
+            reports.append(
+                _ticker_scan_empty_report(
+                    ticker,
+                    current=current,
+                    reason=(
+                        "The exact contract could not be normalized safely "
+                        f"({normalization_errors.get(symbol, 'ticker_scan_contract_invalid')})."
+                    ),
+                )
+            )
+            continue
+        try:
+            report = check_best_option_finalist(
+                manager,
+                data_dir=data_dir,
+                now=current,
+                write=False,
+                candidate_index=candidate_index,
+                source_queue=source_queue,
+                source_cycle=source_cycle,
+            )
+        except RobinhoodFinalistCheckError as exc:
+            report = _ticker_scan_empty_report(
+                ticker,
+                current=current,
+                reason=f"Robinhood exact-contract check stopped safely ({exc.code}).",
+            )
+        edge = _number(row.get("after_cost_edge_pct"))
+        edge_status = "positive" if edge is not None and edge > 0 else "negative" if edge is not None else "unproven"
+        report["ticker_thesis"] = {
+            "source": ticker.get("source"),
+            "score": ticker.get("score"),
+            "reason": ticker.get("reason"),
+            "candidate_rank": ticker.get("candidate_rank"),
+        }
+        report["research_edge"] = {
+            "after_cost_edge_pct": edge,
+            "status": edge_status,
+            "exact_contract_required": True,
+            "source": row.get("chain_source") or row.get("batch_source"),
+            "quote_quality": row.get("quote_quality") or row.get("batch_quote_quality"),
+            "contract_quality_score": _number(row.get("contract_quality_score")),
+            "swing_fit_score": _number(row.get("swing_fit_score")),
+        }
+        report["edge_check_passed"] = bool(
+            report.get("market_check_passed") is True and edge is not None and edge > 0
+        )
+        report["ready_for_manual_review"] = False
+        report["candidate_lane"] = "ticker_research_scan"
+        report["local_entry_gate_allowed"] = False
+        report["artifact_digest_sha256"] = canonical_digest(
+            {key: value for key, value in report.items() if key != "artifact_digest_sha256"}
+        )
+        reports.append(report)
+
+    result = {
+        "schema": TICKER_EDGE_SCAN_SCHEMA,
+        "generated_at": current.isoformat(),
+        "expires_at": (current + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)).isoformat(),
+        "requested_limit": limit,
+        "ticker_count": len(tickers),
+        "contract_candidate_count": len(normalized),
+        "market_passed_count": sum(row.get("market_check_passed") is True for row in reports),
+        "positive_edge_count": sum(
+            (row.get("research_edge") or {}).get("status") == "positive" for row in reports
+        ),
+        "live_edge_count": sum(row.get("edge_check_passed") is True for row in reports),
+        "review_ready_count": 0,
+        "reports": reports,
+        "one_shot": True,
+        "research_only": True,
+        "does_not_promote_candidates": True,
+        "does_not_place_orders": True,
+        "does_not_preview_orders": True,
+        "automatic_retry_enabled": False,
+        "background_polling_enabled": False,
+        "broker_writes_authorized": 0,
+    }
+    result["artifact_digest_sha256"] = canonical_digest(result)
+    if write:
+        _atomic_write_json(data_dir / TICKER_EDGE_SCAN_FILE, result)
+    return result
+
+
 def load_finalist_check_status(
     data_dir: Path,
     *,
@@ -1248,9 +1521,13 @@ __all__ = [
     "FINALIST_CHECK_FILE",
     "FINALIST_CHECK_SCHEMA",
     "MAX_QUOTE_AGE_SECONDS",
+    "TICKER_EDGE_SCAN_FILE",
+    "TICKER_EDGE_SCAN_SCHEMA",
     "RobinhoodFinalistCheckError",
     "apply_finalist_check_to_sources",
     "canonical_digest",
     "check_best_option_finalist",
+    "check_top_option_finalists",
+    "check_top_ticker_option_edges",
     "load_finalist_check_status",
 ]

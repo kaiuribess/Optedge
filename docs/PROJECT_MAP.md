@@ -231,7 +231,7 @@ that refactor has already happened.
 | `optedge/modes/scan.py` | Runs one local research scan. |
 | `optedge/orchestrator.py` | Coordinates engines, fusion, risk controls, tracking, reports, and outputs. |
 | `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle with fixed confirmed-option placement and no generic dispatcher, polling, or retries. |
-| `optedge/robinhood_finalist.py` | Resolves up to ten unchanged ranked option candidates against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
+| `optedge/robinhood_finalist.py` | Resolves research-only contracts from ten Optedge ticker ideas and separately verifies up to ten unchanged execution-queue candidates against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
 | `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, plus one fixed confirmed-option placement boundary with no generic dispatcher. |
 | `optedge/robinhood_option_execution.py` | Provides a two-click, single-use Robinhood option preview and placement boundary with final live revalidation and no automatic retry. |
 | `optedge/robinhood_option_history_sync.py` | Collects a bounded batch of exact-contract Robinhood option histories through read-only MCP calls and atomically updates the validation cache. |

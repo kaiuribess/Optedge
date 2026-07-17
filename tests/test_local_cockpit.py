@@ -3073,7 +3073,9 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/robinhood-queue" in html
     assert "/api/build-robinhood-queue" in html
     assert 'id="rh-check-finalist"' in html
-    assert "Check top 10 on Robinhood" in html
+    assert "Verify queued contracts" in html
+    assert 'id="rh-scan-tickers"' in html
+    assert "Scan 10 ticker ideas on Robinhood" in html
     assert "/api/robinhood-check-top-options" in html
     assert "/api/robinhood-review-option" in html
     assert "/api/robinhood-place-option" in html
@@ -6301,6 +6303,9 @@ def test_symbol_suggestions_include_local_contracts_positions_and_aliases():
             assert any("broker snapshots" in note for note in robn["notes"])
 
             hood = build_symbol_suggestions(data_dir, query="HOOD")
+            assert hood["query"] == "HOOD"
+            assert hood["rows"]
+            assert all(row["symbol"] == "HOOD" for row in hood["rows"])
             assert any(
                 row["symbol"] == "HOOD" and row["kind"] == "broker_equity" for row in hood["rows"]
             )
@@ -9997,6 +10002,82 @@ def test_option_chain_batch_uses_swing_scout_candidates_when_blank():
         "swing scout option",
     }
     assert "swing scout winners" in report["notes"][1]
+
+
+def test_option_chain_batch_fills_ten_ticker_research_universe_from_ranked_snapshot():
+    original_scan = cockpit_module.build_option_chain_scan
+    original_gated = cockpit_module.build_climate_gated_setups
+    original_scout = cockpit_module.build_swing_scout
+    original_best = cockpit_module.build_best_setups
+
+    def fake_scan(query: str, *args, **kwargs):
+        symbol = str(query).upper()
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "source": "cboe",
+            "quote_quality": "free_or_delayed",
+            "data_delay": "delayed",
+            "total_contracts": 1,
+            "rejected_count": 0,
+            "top_rejection_reasons": [],
+            "filtered_count": 1,
+            "scan_summary": {"grade_counts": {"B": 1}},
+            "rows": [
+                {
+                    "symbol": symbol,
+                    "side": "call",
+                    "underlying_type": "equity",
+                    "expiry": "2027-01-15",
+                    "dte": 180,
+                    "strike": 10.0,
+                    "bid": 0.95,
+                    "ask": 1.05,
+                    "mid": 1.0,
+                    "premium_dollars": 100.0,
+                    "spread_pct": 0.10,
+                    "openInterest": 200,
+                    "volume": 25,
+                    "contract_quality_score": 75.0,
+                    "contract_grade": "B",
+                    "review_lane": "secondary_review",
+                    "contract_query": f"{symbol} 2027-01-15 C 10",
+                }
+            ],
+        }
+
+    cockpit_module.build_option_chain_scan = fake_scan
+    cockpit_module.build_climate_gated_setups = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_swing_scout = lambda *args, **kwargs: {"rows": []}
+    cockpit_module.build_best_setups = lambda *args, **kwargs: {"rows": []}
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            data_dir = Path(td)
+            symbols = ["AAPL", "MSFT", "NVDA", "HOOD", "META", "AMZN", "GOOG", "TSLA", "NFLX", "PLTR"]
+            pd.DataFrame(
+                {
+                    "ticker": symbols,
+                    "trade_status": ["Watch"] * 10,
+                    "fused_score": [1.0 - index / 20 for index in range(10)],
+                    "signal": ["ranked option thesis"] * 10,
+                }
+            ).to_parquet(data_dir / "top_options_20260717_200000.parquet")
+            report = build_option_chain_batch(
+                data_dir,
+                symbols_limit=10,
+                contracts_per_symbol=1,
+                limit=10,
+            )
+    finally:
+        cockpit_module.build_option_chain_scan = original_scan
+        cockpit_module.build_climate_gated_setups = original_gated
+        cockpit_module.build_swing_scout = original_scout
+        cockpit_module.build_best_setups = original_best
+
+    assert report["candidate_count"] == 10
+    assert len({row["symbol"] for row in report["candidates"]}) == 10
+    assert any(row["symbol"] == "HOOD" for row in report["candidates"])
+    assert all(row["candidate_source"] == "latest ranked option" for row in report["rows"])
 
 
 def test_option_chain_shortlist_writer_creates_portable_artifacts():

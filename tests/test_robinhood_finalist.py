@@ -14,6 +14,7 @@ from optedge.robinhood_finalist import (
     canonical_digest,
     check_best_option_finalist,
     check_top_option_finalists,
+    check_top_ticker_option_edges,
 )
 
 NOW = datetime(2026, 7, 16, 20, 40, tzinfo=UTC)
@@ -250,6 +251,45 @@ def test_market_check_can_pass_while_local_optedge_gate_still_blocks_review(tmp_
     assert report["ready_for_manual_review"] is False
     assert report["candidate_lane"] == "review_only_entry_candidates"
     assert report["local_entry_gate_allowed"] is False
+
+
+def test_ten_ticker_research_scan_reports_missing_tickers_and_never_promotes(tmp_path: Path):
+    manager = _Manager()
+    contract = {
+        "symbol": "HYG",
+        "side": "put",
+        "underlying_type": "equity",
+        "strike": 75.0,
+        "expiry": "2026-12-18",
+        "bid": 0.48,
+        "ask": 0.49,
+        "mid": 0.485,
+        "after_cost_edge_pct": 0.12,
+        "execution_profile": "swing_execution",
+        "chain_source": "cboe",
+        "quote_quality": "free_or_delayed",
+    }
+    result = check_top_ticker_option_edges(
+        manager,
+        data_dir=tmp_path,
+        ticker_candidates=[
+            {"symbol": "HYG", "source": "swing scout", "score": 88},
+            {"symbol": "AAPL", "source": "swing scout", "score": 84},
+        ],
+        contract_rows=[contract],
+        now=NOW,
+    )
+    assert result["ticker_count"] == 2
+    assert result["contract_candidate_count"] == 1
+    assert result["market_passed_count"] == 1
+    assert result["live_edge_count"] == 1
+    assert result["review_ready_count"] == 0
+    assert result["reports"][0]["candidate_lane"] == "ticker_research_scan"
+    assert result["reports"][0]["ready_for_manual_review"] is False
+    assert result["reports"][1]["status"] == "no_contract"
+    assert result["does_not_promote_candidates"] is True
+    assert result["does_not_place_orders"] is True
+    assert (tmp_path / "robinhood_ticker_edge_scan.json").exists()
 
 
 def test_exact_chain_symbol_binds_one_stable_underlying_reference(tmp_path: Path):

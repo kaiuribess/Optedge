@@ -69,6 +69,7 @@ from optedge.robinhood_finalist import (  # noqa: E402
     apply_finalist_check_to_sources,
     check_best_option_finalist,
     check_top_option_finalists,
+    check_top_ticker_option_edges,
     load_finalist_check_status,
 )
 from optedge.robinhood_option_execution import (  # noqa: E402
@@ -4129,6 +4130,35 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
         if len(rows) >= limit:
             return {"candidates": rows, "excluded_candidates": excluded}
 
+    # The action-oriented views can legitimately contain fewer than ten rows
+    # when validation is blocked.  Fill the research universe from the latest
+    # ranked snapshots so a ten-ticker chain comparison still covers ten
+    # distinct underlyings without weakening any execution gate.
+    for asset_name in ("option", "share", "value"):
+        spec = OPPORTUNITY_SPECS.get(asset_name) or {}
+        frame = _read_parquet(_latest_file(data_dir, str(spec.get("pattern") or "")))
+        symbol_col = str(spec.get("symbol_col") or "ticker")
+        if frame.empty or symbol_col not in frame.columns:
+            continue
+        for _, raw in frame.head(max(limit * 8, 80)).iterrows():
+            item = {str(key): value for key, value in raw.to_dict().items()}
+            item.setdefault("asset", asset_name)
+            reason = str(
+                item.get("reason_selected")
+                or item.get("signal")
+                or item.get("reasoning")
+                or f"latest ranked {asset_name} idea"
+            )
+            add(
+                item.get(symbol_col),
+                f"latest ranked {asset_name}",
+                _opportunity_score(raw),
+                reason,
+                item,
+            )
+            if len(rows) >= limit:
+                return {"candidates": rows, "excluded_candidates": excluded}
+
     for item in load_watchlist(data_dir).get("entries", []):
         add(item.get("symbol"), "research watchlist", 0.75, item.get("query") or "")
         if len(rows) >= limit:
@@ -4290,7 +4320,7 @@ def build_option_chain_batch(
         "rows": [{k: _clean_value(v) for k, v in row.items()} for row in rows],
         "notes": [
             "Bulk chain scan ranks contracts across a small shortlist so free sources are not hammered.",
-            "Blank symbol input uses climate-gated setups, swing scout winners, latest best setups, and the research watchlist.",
+            "Blank symbol input uses climate-gated setups, swing scout winners, latest best setups, ranked snapshot fallbacks, and the research watchlist.",
             "Free/keyless chain quotes may be delayed or incomplete; verify before any manual paper entry.",
         ],
     }
@@ -7111,7 +7141,7 @@ def build_swing_scout(
 
 def _suggestion_text(row: dict[str, Any]) -> str:
     return " ".join(
-        str(row.get(key) or "") for key in ("symbol", "label", "name", "query", "source")
+        str(row.get(key) or "") for key in ("symbol", "label", "name", "query")
     ).lower()
 
 
@@ -7424,7 +7454,9 @@ def build_symbol_suggestions(
             normalized = _normalize_position(item, asset_name)
             symbol = normalized.get("ticker_or_symbol")
             label = normalized.get("position_label") or str(symbol or "")
-            query = _option_query_from_row(item) if asset_name == "option" else str(symbol or "")
+            lookup_query = (
+                _option_query_from_row(item) if asset_name == "option" else str(symbol or "")
+            )
             _add_suggestion(
                 rows,
                 seen,
@@ -7432,7 +7464,7 @@ def build_symbol_suggestions(
                 label,
                 f"open_{asset_name}",
                 "open positions",
-                query=query or str(symbol or ""),
+                query=lookup_query or str(symbol or ""),
                 score=0.5,
                 trade_status=normalized.get("trade_status"),
             )
@@ -20870,7 +20902,8 @@ tr.clickable-row:hover { background:#18201d; }
           <a class="btn" id="rh-authorize" href="/auth/robinhood/authorize" target="_blank" rel="noopener noreferrer" hidden>Open Robinhood approval</a>
           <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
           <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
-          <button class="btn primary" type="button" id="rh-check-finalist" disabled>Check top 10 on Robinhood</button>
+          <button class="btn primary" type="button" id="rh-scan-tickers" disabled>Scan 10 ticker ideas on Robinhood</button>
+          <button class="btn" type="button" id="rh-check-finalist" disabled>Verify queued contracts</button>
           <button class="btn" type="button" id="rh-capture-evidence">Capture checked evidence</button>
           <button class="btn" type="button" id="rh-sync-history" disabled>Sync 5 exact histories</button>
           <button class="btn" type="button" id="rh-disconnect">Disconnect</button>
@@ -20879,7 +20912,8 @@ tr.clickable-row:hover { background:#18201d; }
           <div class="planner-field"><label for="rh-execution-account">Robinhood account for preview</label><select id="rh-execution-account" disabled><option value="">Run the top-10 check first</option></select></div>
         </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
-        <div class="privacy-note" style="margin-top:10px">A snapshot sync reads every account&apos;s portfolio, positions, and orders once. The top-10 check verifies only Optedge&apos;s ranked candidates against exact Robinhood chains, contracts, and quotes. A Review button requests a broker preview; only a separate confirmed Place button can send that exact order once. There is no polling, schedule, automatic retry, unattended trading, or Codex loop.</div>
+        <div class="privacy-note" style="margin-top:10px">The ticker scan starts with ten Optedge underlying ideas, finds one 3m+ provider-ranked contract per ticker when available, and checks each exact identity and quote on Robinhood. Verify queued contracts is the stricter execution-attested lane. A Review button requests a broker preview; only a separate confirmed Place button can send that exact order once. There is no polling, schedule, automatic retry, unattended trading, or Codex loop.</div>
+        <div id="rh-ticker-scan-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="rh-finalist-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="rh-order-preview" style="margin-top:12px" aria-live="polite"></div>
         <div id="trade-desk-robinhood" style="margin-top:12px"></div>
@@ -21968,6 +22002,47 @@ function renderRobinhoodBatch(data) {
   document.querySelectorAll('.rh-review-option').forEach(button => button.addEventListener('click', () => reviewRobinhoodOption(Number(button.dataset.candidateIndex || 0))));
   if ($('rh-order-preview')) $('rh-order-preview').innerHTML = '';
 }
+function robinhoodTickerEdgeScanHtml(data) {
+  const reports = Array.isArray(data && data.reports) ? data.reports : [];
+  if (!reports.length) return '<div class="privacy-note">No Optedge ticker ideas were available for the Robinhood research scan.</div>';
+  return `<div class="plan-callout ${Number(data.live_edge_count || 0) > 0 ? 'good' : 'warn'}">
+    <h3>Ten-ticker Robinhood edge scan</h3>
+    <p>${cell(data.ticker_count || reports.length)} tickers scanned; ${cell(data.contract_candidate_count || 0)} produced an exact 3m+ contract, ${cell(data.market_passed_count || 0)} passed Robinhood market checks, and ${cell(data.live_edge_count || 0)} retained positive model-estimated after-cost edge.</p>
+    <div class="candidate-grid" style="margin-top:12px">
+      ${reports.map((report, index) => {
+        const candidate = report.candidate || {};
+        const quote = report.quote || {};
+        const edge = report.research_edge || {};
+        const thesis = report.ticker_thesis || {};
+        const market = report.market_check_passed === true;
+        const liveEdge = report.edge_check_passed === true;
+        const edgeLabel = edge.status === 'positive' ? pct(edge.after_cost_edge_pct) : (edge.status === 'negative' ? pct(edge.after_cost_edge_pct) : 'not proven');
+        const reason = (report.blockers || [])[0] || (liveEdge
+          ? 'Live quote passed and the exact contract retained positive estimated edge.'
+          : market
+            ? 'Robinhood market quality passed, but positive exact-contract edge is not proven.'
+            : 'No qualifying exact Robinhood contract passed.');
+        return `<article class="candidate-card ${liveEdge ? 'good' : (market ? 'warn' : 'bad')}">
+          <div class="candidate-rank">#${index + 1}</div>
+          <h4>${cell(candidate.label || candidate.symbol || 'Ticker unavailable')}</h4>
+          <div class="brief-grid">
+            <div class="brief-tile"><span>Optedge ticker thesis</span><strong>${cell(thesis.score ?? '-')}</strong></div>
+            <div class="brief-tile"><span>Exact-contract edge</span><strong>${cell(edgeLabel)}</strong></div>
+            <div class="brief-tile"><span>Robinhood bid / ask</span><strong>${compactMoney(quote.bid_price, 2)} / ${compactMoney(quote.ask_price, 2)}</strong></div>
+            <div class="brief-tile"><span>Spread</span><strong>${pct(quote.spread_fraction)}</strong></div>
+            <div class="brief-tile"><span>OI / volume</span><strong>${cell(quote.open_interest)} / ${cell(quote.volume)}</strong></div>
+            <div class="brief-tile"><span>Verdict</span><strong>${liveEdge ? 'live edge research' : (market ? 'market fit only' : 'no qualifying contract')}</strong></div>
+          </div>
+          <p class="muted">${cell(reason)}</p>
+        </article>`;
+      }).join('')}
+    </div>
+    <div class="privacy-note">This is a one-shot research scan, not an execution queue. A result must independently enter the normal Optedge queue and clear validation, account, exposure, and risk checks before broker review.</div>
+  </div>`;
+}
+function renderRobinhoodTickerEdgeScan(data) {
+  if ($('rh-ticker-scan-results')) $('rh-ticker-scan-results').innerHTML = robinhoodTickerEdgeScanHtml(data || {});
+}
 function renderRobinhoodOrderPreview(data) {
   const target = $('rh-order-preview');
   if (!target) return;
@@ -22012,6 +22087,7 @@ function renderRobinhoodConnection(data) {
     const reads = (((data || {}).client || {}).tool_catalog || {}).read_tools || [];
     const optionReadsReady = ['get_option_chains', 'get_option_instruments', 'get_option_quotes'].every(name => reads.includes(name));
     $('rh-check-finalist').disabled = !['connected', 'connected_limited'].includes(state) || !optionReadsReady;
+    if ($('rh-scan-tickers')) $('rh-scan-tickers').disabled = !['connected', 'connected_limited'].includes(state) || !optionReadsReady;
   }
   if ($('rh-disconnect')) $('rh-disconnect').disabled = state === 'shutdown';
 }
@@ -22064,7 +22140,7 @@ async function syncRobinhoodSnapshot() {
 async function runRobinhoodFinalistCheck() {
   const button = $('rh-check-finalist');
   if (button) button.disabled = true;
-  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Checking up to 10 ranked Optedge options against exact Robinhood contracts and live quotes...';
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Verifying the exact contracts already present in the Optedge execution queue...';
   try {
     const res = await fetch('/api/robinhood-check-top-options', {method:'POST', body:JSON.stringify({limit:10})});
     const data = await res.json();
@@ -22075,6 +22151,24 @@ async function runRobinhoodFinalistCheck() {
     }
     renderRobinhoodBatch(data);
     if ($('rh-sync-status')) $('rh-sync-status').textContent = `Checked ${Number(data.candidate_count || 0)} exact option candidate(s): ${Number(data.market_passed_count || 0)} passed Robinhood market checks and ${Number(data.review_ready_count || 0)} cleared every Optedge gate. Nothing was previewed or sent.`;
+  } finally {
+    await loadRobinhoodConnection().catch(() => null);
+  }
+}
+async function runRobinhoodTickerEdgeScan() {
+  const button = $('rh-scan-tickers');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Scanning ten Optedge ticker ideas for 3m+ contracts, then checking each exact finalist on Robinhood...';
+  try {
+    const res = await fetch('/api/robinhood-scan-top-tickers', {method:'POST', body:JSON.stringify({limit:10})});
+    const data = await res.json();
+    if (!res.ok || data.ok === false || data.error_code) {
+      renderRobinhoodTickerEdgeScan({reports:[]});
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `Ten-ticker scan stopped safely: ${labelText(data.error_code || 'scan failed')}. Nothing was previewed or sent.`;
+      return;
+    }
+    renderRobinhoodTickerEdgeScan(data);
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Scanned ${Number(data.ticker_count || 0)} ticker idea(s): ${Number(data.contract_candidate_count || 0)} exact 3m+ contract(s), ${Number(data.market_passed_count || 0)} Robinhood market pass(es), ${Number(data.live_edge_count || 0)} live positive-edge research result(s). Nothing was previewed or sent.`;
   } finally {
     await loadRobinhoodConnection().catch(() => null);
   }
@@ -26215,6 +26309,7 @@ $('rh-connect').addEventListener('click', startRobinhoodConnection);
 $('rh-connection-refresh').addEventListener('click', loadRobinhoodConnection);
 $('rh-sync-snapshot').addEventListener('click', syncRobinhoodSnapshot);
 $('rh-check-finalist').addEventListener('click', runRobinhoodFinalistCheck);
+$('rh-scan-tickers').addEventListener('click', runRobinhoodTickerEdgeScan);
 $('rh-capture-evidence').addEventListener('click', captureFinalistEvidence);
 $('rh-sync-history').addEventListener('click', syncRobinhoodOptionHistory);
 $('rh-disconnect').addEventListener('click', disconnectRobinhoodConnection);
@@ -26950,6 +27045,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/robinhood-sync-option-history",
             "/api/robinhood-check-finalist",
             "/api/robinhood-check-top-options",
+            "/api/robinhood-scan-top-tickers",
             "/api/robinhood-review-option",
             "/api/robinhood-place-option",
             "/api/capture-finalist-evidence",
@@ -27144,6 +27240,67 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         "ok": False,
                         "error_code": "top_option_check_failed",
                         "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-scan-top-tickers":
+            manager = self.robinhood_connection_manager
+            if manager is None:
+                self._send_json(
+                    {"ok": False, "error_code": "client_unavailable"}, status=503
+                )
+                return
+            try:
+                limit = _int_param(str(body.get("limit") or "10"), 10, 1, 10)
+                provider_report = build_option_chain_batch(
+                    self.data_dir,
+                    symbols_limit=limit,
+                    contracts_per_symbol=1,
+                    limit=limit,
+                    preset="swing",
+                    min_dte=SWING_EXECUTION_PROFILE.option_min_dte,
+                    max_dte=900,
+                    max_spread_pct=0.25,
+                    max_premium=500.0,
+                    min_open_interest=0,
+                )
+                result = check_top_ticker_option_edges(
+                    manager,
+                    data_dir=self.data_dir,
+                    ticker_candidates=provider_report.get("candidates") or [],
+                    contract_rows=provider_report.get("rows") or [],
+                    limit=limit,
+                    write=True,
+                )
+                result["provider_summary"] = {
+                    "symbols_scanned": provider_report.get("symbols_scanned"),
+                    "successful_scans": provider_report.get("successful_scans"),
+                    "error_count": provider_report.get("error_count"),
+                    "source_counts": provider_report.get("source_counts") or {},
+                }
+            except (RobinhoodConnectionError, RobinhoodFinalistCheckError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "does_not_place_orders": True,
+                        "does_not_preview_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "ticker_edge_scan_failed",
+                        "does_not_place_orders": True,
+                        "does_not_preview_orders": True,
                         "automatic_retry_enabled": False,
                     },
                     status=500,
