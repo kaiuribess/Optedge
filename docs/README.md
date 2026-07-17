@@ -14,7 +14,7 @@ This directory explains how Optedge works, where its evidence comes from, and ho
 | [LEAPS Swing Profile](LEAPS_SWING.md) | Separate `365-900` DTE contract, liquidity, evidence, holding, and risk policy for short-horizon LEAPS swing review. |
 | [Data Sources](DATA_SOURCES.md) | Provider hierarchy, freshness, fallback behavior, and reliability. |
 | [Factor Library](FACTOR_LIBRARY.md) | Research factors and the information each engine contributes. |
-| [Third-Party Forward Testing](THIRD_PARTY_FORWARD_TESTING.md) | Direct Robinhood OAuth/snapshot sync, manual capture fallback, equity-ledger baselines, exact option attestations, broker previews, and reproducible external verification. |
+| [Third-Party Forward Testing](THIRD_PARTY_FORWARD_TESTING.md) | Direct Robinhood OAuth/snapshot sync, manual capture fallback, equity-ledger baselines, exact option attestations, guarded review/execution boundaries, and reproducible external verification. |
 | [Free Data Roadmap](FREE_DATA_ROADMAP.md) | Planned improvements to the no-subscription research stack. |
 | [Limitations](LIMITATIONS.md) | Known statistical, market-data, execution, and operational constraints. |
 

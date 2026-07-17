@@ -2929,8 +2929,8 @@ def test_cockpit_html_contains_lookup_controls():
     assert "plan-download" in html
     assert "/api/trade-plan" in html
     assert "calculateTradePlan" in html
-    assert "manual Robinhood review" in html
-    assert "no automation" in html
+    assert "choose-and-buy" in html
+    assert "guarded Robinhood automation" in html
     assert "Equity and ETF options only" in html
     assert "command-center-action-btn" in html
     assert "Best swing radar" in html
@@ -3079,6 +3079,15 @@ def test_cockpit_html_contains_lookup_controls():
     assert "/api/robinhood-check-top-options" in html
     assert "/api/robinhood-review-option" in html
     assert "/api/robinhood-place-option" in html
+    assert "/api/robinhood-automation-status" in html
+    assert "/api/robinhood-automation-configure" in html
+    assert "/api/robinhood-automation-run" in html
+    assert 'id="rh-automation-mode"' in html
+    assert "Analyze &amp; ask me" in html
+    assert "Guarded automatic" in html
+    assert "Choose &amp; Preview Buy" in html
+    assert "ENABLE GUARDED AUTO" in html
+    assert "runRobinhoodAutomationOnce" in html
     assert "Place this exact order once" in html
     assert "confirmation_text:'PLACE'" in html
     assert "Load checked quote into planner" in html
@@ -3726,6 +3735,88 @@ def test_robinhood_top_ten_review_and_place_routes_stay_separate():
             server.server_close()
             thread.join(timeout=5)
             cockpit_module.check_top_option_finalists = original_batch
+
+
+def test_robinhood_automation_routes_keep_configuration_and_cycle_explicit():
+    class FakeAutomationController:
+        def __init__(self):
+            self.configure_calls = []
+            self.run_calls = []
+
+        def status(self):
+            return {"mode": "off", "session_armed": False}
+
+        def configure(self, body):
+            self.configure_calls.append(dict(body))
+            return {"mode": body.get("mode"), "session_armed": False}
+
+        def run_once(self, *, trigger):
+            self.run_calls.append(trigger)
+            return {
+                "status": "analysis_complete",
+                "action": "choose_candidate",
+                "automatic_retry_enabled": False,
+            }
+
+    controller = FakeAutomationController()
+    with tempfile.TemporaryDirectory() as td:
+        handler = type(
+            "RobinhoodAutomationRouteTestHandler",
+            (cockpit_module.CockpitHandler,),
+            {
+                "data_dir": Path(td),
+                "robinhood_automation_controller": controller,
+            },
+        )
+        server = cockpit_module.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = int(server.server_address[1])
+        origin = f"http://127.0.0.1:{port}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Optedge-CSRF": cockpit_module.COCKPIT_CSRF_TOKEN,
+            "Origin": origin,
+        }
+
+        def request(method, path, body=None):
+            connection = HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                connection.request(
+                    method,
+                    path,
+                    body=json.dumps(body) if body is not None else None,
+                    headers=headers if method == "POST" else {},
+                )
+                response = connection.getresponse()
+                return response.status, json.loads(response.read().decode("utf-8"))
+            finally:
+                connection.close()
+
+        try:
+            status, current = request("GET", "/api/robinhood-automation-status")
+            assert status == 200
+            assert current["mode"] == "off"
+
+            status, configured = request(
+                "POST",
+                "/api/robinhood-automation-configure",
+                {"mode": "approval_required", "account_key": "acct_test"},
+            )
+            assert status == 200
+            assert configured["ok"] is True
+            assert controller.configure_calls == [
+                {"mode": "approval_required", "account_key": "acct_test"}
+            ]
+
+            status, cycle = request("POST", "/api/robinhood-automation-run", {})
+            assert status == 200
+            assert cycle["action"] == "choose_candidate"
+            assert controller.run_calls == ["manual"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 def test_read_only_watchlist_enrichment_does_not_queue_broker_research():

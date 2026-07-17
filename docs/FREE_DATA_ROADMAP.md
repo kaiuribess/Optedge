@@ -120,7 +120,7 @@ Why it helps:
 
 Notes:
 - This is Cboe venue activity, not consolidated OPRA and not a live execution quote.
-- A user-triggered Robinhood preview must still verify the exact contract, current bid/ask, liquidity, buying power, and news. Optedge itself does not place the order.
+- A Robinhood preview must still verify the exact contract, current bid/ask, liquidity, buying power, and news. Any Optedge placement is limited to the separate fixed option-order boundary after explicit confirmation or temporary guarded arming.
 
 ### Nasdaq public stock screener
 

@@ -54,8 +54,11 @@ class _Manager:
             return {
                 "data": {
                     "total_value": 10_000,
-                    "buying_power": 500,
-                    "unleveraged_buying_power": 500,
+                    "buying_power": {
+                        "buying_power": "500.00",
+                        "unleveraged_buying_power": "500.00",
+                        "display_currency": "USD",
+                    },
                 }
             }
         if name in {"get_option_positions", "get_equity_positions"}:
@@ -67,6 +70,13 @@ class _Manager:
     def call_review_tool(self, name: str, arguments: dict, *, timeout_seconds: float):
         self.review_calls.append((name, dict(arguments)))
         return {"estimated_cost": "50.00", "order_checks": []}
+
+    def read_tool_input_schema(self, name: str):
+        assert name == "get_option_quotes"
+        return {
+            "type": "object",
+            "properties": {"option_ids": {"type": "array", "items": {"type": "string"}}},
+        }
 
     def place_confirmed_option_order(self, arguments: dict, *, timeout_seconds: float):
         self.place_calls.append(dict(arguments))
@@ -117,5 +127,108 @@ def test_preview_refuses_blocked_optedge_gate_before_broker_review(monkeypatch, 
     choice = service.account_choices()["accounts"][0]
     with pytest.raises(RobinhoodOptionExecutionError, match="optedge_or_robinhood_gate_blocked"):
         service.review(candidate_index=0, account_key=choice["account_key"], now=NOW)
+    assert manager.review_calls == []
+    assert manager.place_calls == []
+
+
+class _PositionManager(_Manager):
+    def call_read_tool(self, name: str, arguments: dict, *, timeout_seconds: float):
+        if name == "get_option_positions":
+            return {
+                "data": {
+                    "positions": [
+                        {
+                            "option_id": "option-1",
+                            "chain_symbol": "HYG",
+                            "type": "long",
+                            "quantity": "1.0000",
+                            "average_price": "100.00",
+                            "expiration_date": "2026-12-18",
+                            "pending_buy_quantity": "0",
+                            "pending_sell_quantity": "0",
+                            "pending_exercise_quantity": "0",
+                            "pending_assignment_quantity": "0",
+                            "pending_expiration_quantity": "0",
+                        }
+                    ],
+                    "next": None,
+                }
+            }
+        if name == "get_option_quotes":
+            return {
+                "data": {
+                    "quotes": [
+                        {
+                            "option_id": "option-1",
+                            "bid_price": "1.40",
+                            "ask_price": "1.50",
+                            "mark_price": "1.45",
+                            "updated_at": NOW.isoformat(),
+                        }
+                    ],
+                    "next": None,
+                }
+            }
+        return super().call_read_tool(name, arguments, timeout_seconds=timeout_seconds)
+
+
+def test_portfolio_analysis_requires_fresh_profit_or_hard_risk_signal(tmp_path: Path):
+    manager = _PositionManager()
+    service = RobinhoodOptionExecutionService(manager, data_dir=tmp_path)
+    choice = service.account_choices()["accounts"][0]
+
+    analysis = service.portfolio_analysis(account_key=choice["account_key"], now=NOW)
+
+    assert analysis["new_option_entry_allowed"] is False
+    assert analysis["automatic_exit_candidate_count"] == 0
+    assert analysis["holdings"][0]["action"] == "hold"
+    assert analysis["holdings"][0]["position_type"] == "long"
+    assert analysis["holdings"][0]["broker_reference_action"] == "take_profit"
+    assert analysis["holdings"][0]["broker_close_ready"] is True
+    assert analysis["holdings"][0]["unrealized_return_fraction"] == 0.45
+
+
+def test_automated_exit_still_reviews_and_places_exact_close_once(tmp_path: Path):
+    manager = _PositionManager()
+    service = RobinhoodOptionExecutionService(manager, data_dir=tmp_path)
+    choice = service.account_choices()["accounts"][0]
+
+    result = service.execute_automated_exit(
+        account_key=choice["account_key"],
+        option_id="option-1",
+        authorization_text=execution.AUTOMATION_AUTHORIZATION_TEXT,
+        optedge_exit_action="hard_target",
+        optedge_decision_digest="a" * 64,
+        now=NOW,
+    )
+
+    assert result["status"] == "exit_order_sent"
+    assert len(manager.review_calls) == 1
+    assert manager.review_calls[0][1]["legs"][0] == {
+        "option_id": "option-1",
+        "side": "sell",
+        "position_effect": "close",
+        "ratio_quantity": 1,
+    }
+    assert len(manager.place_calls) == 1
+    assert manager.place_calls[0]["ref_id"]
+    assert result["automatic_retry_enabled"] is False
+
+
+def test_automated_exit_requires_normal_optedge_decision_capability(tmp_path: Path):
+    manager = _PositionManager()
+    service = RobinhoodOptionExecutionService(manager, data_dir=tmp_path)
+    choice = service.account_choices()["accounts"][0]
+
+    with pytest.raises(RobinhoodOptionExecutionError, match="optedge_exit_action_required"):
+        service.execute_automated_exit(
+            account_key=choice["account_key"],
+            option_id="option-1",
+            authorization_text=execution.AUTOMATION_AUTHORIZATION_TEXT,
+            optedge_exit_action="take_profit_reference",
+            optedge_decision_digest="a" * 64,
+            now=NOW,
+        )
+
     assert manager.review_calls == []
     assert manager.place_calls == []

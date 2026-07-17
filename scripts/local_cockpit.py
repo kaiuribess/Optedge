@@ -1,12 +1,12 @@
 # Purpose: Serve the local swing-trading research cockpit.
 """Free local Optedge cockpit server.
 
-This is a lightweight browser UI for existing Optedge artifacts. It can place
-one explicitly previewed and confirmed option order through the official
-Agentic account, and requires no paid dashboard services.  An explicit official
-Robinhood OAuth connection can store revocable tokens in the operating-system
-credential vault; passwords, MFA codes, cookies, and raw tokens never belong in
-the cockpit.
+This is a lightweight browser UI for existing Optedge artifacts. It supports a
+manual choose-and-buy flow plus an explicitly armed, guarded Agentic-account
+mode. Both use Robinhood's official preview before any order and require no paid
+dashboard services or Codex automation. An explicit official Robinhood OAuth
+connection can store revocable tokens in the operating-system credential vault;
+passwords, MFA codes, cookies, and raw tokens never belong in the cockpit.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import struct
 import sys
 import time
 import webbrowser
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,9 +61,16 @@ from optedge.evidence_capture import (  # noqa: E402
     capture_checked_finalist_evidence,
 )
 from optedge.leaps_swing import score_leaps_swing_candidate  # noqa: E402
+from optedge.robinhood_automation import (  # noqa: E402
+    RobinhoodAutomationController,
+    RobinhoodAutomationError,
+)
 from optedge.robinhood_connection import (  # noqa: E402
     RobinhoodConnectionError,
     RobinhoodConnectionManager,
+)
+from optedge.robinhood_exit_analysis import (  # noqa: E402
+    analyze_robinhood_holdings_with_optedge,
 )
 from optedge.robinhood_finalist import (  # noqa: E402
     RobinhoodFinalistCheckError,
@@ -154,6 +162,7 @@ from scripts.research_jobs import (  # noqa: E402
     list_jobs,
     read_job,
     read_job_log,
+    run_refresh_job,
 )
 from scripts.sec_filings import companyfacts_for_symbol, recent_filings_for_symbol  # noqa: E402
 from scripts.symbol_resolver import (  # noqa: E402
@@ -20754,7 +20763,7 @@ tr.clickable-row:hover { background:#18201d; }
   <header>
     <div>
       <h1>Optedge Local Cockpit</h1>
-      <div class="muted">Swing Desk &middot; risk-first plans &middot; manual Robinhood review &middot; no automation</div>
+      <div class="muted">Swing Desk &middot; risk-first plans &middot; choose-and-buy &middot; guarded Robinhood automation</div>
     </div>
     <div class="muted" id="asof">Loading...</div>
   </header>
@@ -20892,7 +20901,7 @@ tr.clickable-row:hover { background:#18201d; }
       </article>
       <article class="desk-card">
         <h3>Robinhood connection and handoff</h3>
-        <p>Connect through Robinhood&apos;s official OAuth page, keep revocable tokens in the operating-system vault, then prepare one explicit broker-review packet. Passwords, MFA codes, cookies, and raw tokens never enter Optedge.</p>
+        <p>Connect through Robinhood&apos;s official OAuth page, keep revocable tokens in the operating-system vault, then choose approval-required or explicitly armed automation. Passwords, MFA codes, cookies, and raw tokens never enter Optedge.</p>
         <div id="rh-connection" class="plan-callout warn" style="margin-top:12px" aria-live="polite">
           <h3>Connection status loading</h3>
           <p>No order is sent until a Robinhood preview and a second explicit confirmation.</p>
@@ -20912,7 +20921,28 @@ tr.clickable-row:hover { background:#18201d; }
           <div class="planner-field"><label for="rh-execution-account">Robinhood account for preview</label><select id="rh-execution-account" disabled><option value="">Run the top-10 check first</option></select></div>
         </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
-        <div class="privacy-note" style="margin-top:10px">The ticker scan starts with ten Optedge underlying ideas, finds one 3m+ provider-ranked contract per ticker when available, and checks each exact identity and quote on Robinhood. Verify queued contracts is the stricter execution-attested lane. A Review button requests a broker preview; only a separate confirmed Place button can send that exact order once. There is no polling, schedule, automatic retry, unattended trading, or Codex loop.</div>
+        <div class="privacy-note" style="margin-top:10px">The ticker scan starts with ten Optedge underlying ideas, finds one 3m+ provider-ranked contract per ticker when available, and checks each exact identity and quote on Robinhood. Verify queued contracts is the stricter execution-attested lane and exposes Choose &amp; Preview Buy only after every gate passes. Automatic mode is separate, session-armed, and never uses Codex or retries a broker order.</div>
+        <div class="brief-list" style="margin-top:12px">
+          <h4>Trading control mode</h4>
+          <div class="muted">Every cycle runs the normal Optedge research pipeline, then re-reads the selected Agentic account. One existing option is analyzed before any new entry. Automatic selling requires an exact lifecycle match and Optedge hard stop, hard target, or high-pressure close decision plus a fresh executable Robinhood quote.</div>
+          <div class="planner-grid" style="margin-top:10px">
+            <div class="planner-field"><label for="rh-automation-mode">Mode</label><select id="rh-automation-mode"><option value="off">Off</option><option value="approval_required">Analyze &amp; ask me</option><option value="automatic">Guarded automatic</option></select></div>
+            <div class="planner-field"><label for="rh-automation-interval">Scan interval (minutes)</label><input id="rh-automation-interval" type="number" min="5" max="60" step="5" value="15"></div>
+            <div class="planner-field"><label for="rh-automation-daily-orders">Max orders per day</label><input id="rh-automation-daily-orders" type="number" min="1" max="3" step="1" value="1"></div>
+            <div class="planner-field wide"><label for="rh-automation-phrase">Automatic-mode phrase</label><input id="rh-automation-phrase" autocomplete="off" placeholder="ENABLE GUARDED AUTO"></div>
+          </div>
+          <label class="privacy-note" style="display:block;margin-top:10px"><input id="rh-automation-unattended-ack" type="checkbox"> I understand automatic mode can place trades without asking on each transaction.</label>
+          <label class="privacy-note" style="display:block;margin-top:6px"><input id="rh-automation-loss-ack" type="checkbox"> I understand losses, slippage, and total option-premium loss are possible.</label>
+          <div class="planner-actions">
+            <button class="btn" type="button" id="rh-automation-save">Save mode</button>
+            <button class="btn primary" type="button" id="rh-automation-run">Analyze / run once</button>
+            <button class="btn" type="button" id="rh-automation-stop">Stop automation</button>
+          </div>
+          <div class="status" id="rh-automation-status" role="status" aria-live="polite"></div>
+          <div id="rh-automation-summary" class="brief-grid" style="margin-top:10px"></div>
+          <div id="rh-automation-holdings" style="margin-top:10px"></div>
+          <div id="rh-automation-choices" style="margin-top:10px"></div>
+        </div>
         <div id="rh-ticker-scan-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="rh-finalist-results" style="margin-top:12px" aria-live="polite"></div>
         <div id="rh-order-preview" style="margin-top:12px" aria-live="polite"></div>
@@ -21895,6 +21925,7 @@ function robinhoodConnectionHtml(data) {
 let latestRobinhoodFinalistCheck = null;
 let latestRobinhoodFinalistBatch = null;
 let robinhoodConfirmationToken = null;
+let latestRobinhoodAutomationStatus = null;
 function robinhoodFinalistHtml(data) {
   const report = data || {};
   const status = String(report.status || 'missing').toLowerCase();
@@ -21980,7 +22011,7 @@ function robinhoodBatchHtml(data) {
             <div class="brief-tile"><span>Decision</span><strong>${ready ? 'review eligible' : (market ? 'research only' : 'blocked')}</strong></div>
           </div>
           <p class="muted">${cell(reason)}</p>
-          <div class="planner-actions"><button class="btn primary rh-review-option" type="button" data-candidate-index="${index}" ${ready ? '' : 'disabled'}>Review exact order</button></div>
+          <div class="planner-actions"><button class="btn primary rh-review-option" type="button" data-candidate-index="${index}" ${ready ? '' : 'disabled'}>Choose &amp; Preview Buy</button></div>
         </article>`;
       }).join('')}
     </div>
@@ -22069,6 +22100,136 @@ function renderRobinhoodOrderPreview(data) {
   </div>`;
   $('rh-place-confirm').addEventListener('change', () => { $('rh-place-option').disabled = !$('rh-place-confirm').checked; });
   $('rh-place-option').addEventListener('click', placeRobinhoodOption);
+}
+function robinhoodAutomationSummaryHtml(data) {
+  const policy = data.policy || {};
+  const today = data.today || {};
+  const market = data.market_window || {};
+  const fields = [
+    ['Mode', labelText(data.mode || 'off')],
+    ['Session armed', data.session_armed ? 'yes' : 'no'],
+    ['Market window', market.inside ? 'open' : 'closed'],
+    ['Cycle running', data.cycle_running ? 'yes' : 'no'],
+    ['Orders today', `${Number(today.orders_sent || 0)} / ${Number(policy.max_daily_orders || 1)}`],
+    ['Scan interval', `${Number(policy.scan_interval_minutes || 15)} min`],
+    ['Concurrent positions', policy.single_concurrent_position ? 'one' : '-'],
+    ['Automatic retry', data.automatic_retry_enabled ? 'on' : 'off'],
+    ['Codex automation', data.codex_automation_created ? 'created' : 'none'],
+    ['Kill switch', data.kill_switch ? 'active' : 'clear']
+  ];
+  return fields.map(([label, value]) => `<div class="brief-tile"><span>${cell(label)}</span><strong>${cell(value)}</strong></div>`).join('');
+}
+function renderRobinhoodAutomationCycle(cycle) {
+  const analysis = (cycle && cycle.portfolio_analysis) || {};
+  const holdings = Array.isArray(analysis.holdings) ? analysis.holdings : [];
+  const choices = Array.isArray(cycle && cycle.choices) ? cycle.choices : [];
+  if ($('rh-automation-holdings')) {
+    $('rh-automation-holdings').innerHTML = holdings.length
+      ? `<div class="brief-list"><h4>Current holdings analysis</h4>${table(holdings.map(row => ({
+          asset: row.asset,
+          symbol: row.symbol,
+          quantity: row.quantity,
+          dte: row.dte,
+          return_pct: row.unrealized_return_fraction === null || row.unrealized_return_fraction === undefined ? null : Number(row.unrealized_return_fraction) * 100,
+          action: row.action,
+          optedge_pressure: row.optedge_exit_pressure,
+          optedge_source: row.optedge_lifecycle_source,
+          signals: (row.optedge_exit_reasons || row.signals || []).join(', ') || 'none',
+          auto_exit_eligible: row.auto_exit_eligible,
+          blocker: (row.blockers || [])[0] || null
+        })), true)}</div>`
+      : '<div class="privacy-note">No nonzero holding was found in the selected Agentic account during the latest cycle.</div>';
+  }
+  if ($('rh-automation-choices')) {
+    $('rh-automation-choices').innerHTML = choices.length
+      ? `<div class="brief-list"><h4>Scanned buy choices</h4>${table(choices.map(row => ({
+          rank: Number(row.candidate_index || 0) + 1,
+          contract: row.label,
+          symbol: row.symbol,
+          after_cost_edge_pct: row.after_cost_edge_pct,
+          market_passed: row.market_check_passed,
+          eligible: row.eligible,
+          blocker: (row.blockers || [])[0] || null
+        })), true)}<div class="privacy-note">Use Verify queued contracts above to choose and preview any eligible row manually. Automatic mode selects only the highest positive after-cost edge among rows that cleared every gate.</div></div>`
+      : '<div class="privacy-note">No buy choice cleared the current exact-contract and evidence gates.</div>';
+  }
+}
+function renderRobinhoodAutomationStatus(data) {
+  latestRobinhoodAutomationStatus = data || {};
+  const policy = (data && data.policy) || {};
+  if ($('rh-automation-mode')) $('rh-automation-mode').value = data.mode || policy.mode || 'off';
+  if ($('rh-automation-interval')) $('rh-automation-interval').value = Number(policy.scan_interval_minutes || 15);
+  if ($('rh-automation-daily-orders')) $('rh-automation-daily-orders').value = Number(policy.max_daily_orders || 1);
+  if ($('rh-automation-summary')) $('rh-automation-summary').innerHTML = robinhoodAutomationSummaryHtml(data || {});
+  const last = (data && data.last_cycle) || {};
+  renderRobinhoodAutomationCycle(last);
+  if ($('rh-automation-status')) {
+    const rearm = data.rearm_required_after_restart ? ' Re-arm is required after this cockpit restart.' : '';
+    const lastText = last.status ? ` Last cycle: ${labelText(last.status)} / ${labelText(last.action || 'hold')}.` : '';
+    const research = last.research_refresh || {};
+    const researchText = research.status ? ` Normal Optedge refresh: ${labelText(research.status)}.` : '';
+    $('rh-automation-status').textContent = `${labelText(data.mode || 'off')} mode; ${data.session_armed ? 'armed for this session' : 'not armed'}.${rearm}${researchText}${lastText}`;
+  }
+}
+async function loadRobinhoodAutomationStatus() {
+  if (!$('rh-automation-status')) return;
+  const res = await fetch('/api/robinhood-automation-status');
+  const data = await res.json();
+  if (!res.ok || data.error) {
+    $('rh-automation-status').textContent = `Automation status unavailable: ${labelText(data.error_code || data.error || 'unknown error')}.`;
+    return;
+  }
+  renderRobinhoodAutomationStatus(data);
+}
+async function saveRobinhoodAutomationMode(forceOff=false) {
+  const mode = forceOff ? 'off' : ($('rh-automation-mode').value || 'off');
+  const accountKey = ($('rh-execution-account').value || '').trim();
+  if (mode !== 'off' && !accountKey) {
+    $('rh-automation-status').textContent = 'Verify queued contracts, then choose the eligible Agentic account before saving this mode.';
+    return;
+  }
+  if (mode === 'automatic' && !confirm('Enable unattended Robinhood option trading for this cockpit session? It can place real-money trades after all gates pass and losses are possible.')) return;
+  $('rh-automation-status').textContent = mode === 'automatic' ? 'Arming guarded automatic mode...' : 'Saving trading control mode...';
+  const res = await fetch('/api/robinhood-automation-configure', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      mode,
+      account_key: accountKey,
+      scan_interval_minutes: $('rh-automation-interval').value || 15,
+      max_daily_orders: $('rh-automation-daily-orders').value || 1,
+      arming_phrase: $('rh-automation-phrase').value || '',
+      acknowledge_unattended_trading: $('rh-automation-unattended-ack').checked,
+      acknowledge_losses_possible: $('rh-automation-loss-ack').checked
+    })
+  });
+  const data = await res.json();
+  if (!res.ok || data.error || data.ok === false) {
+    $('rh-automation-status').textContent = `Mode change blocked: ${labelText(data.error_code || data.error || 'unknown error')}.`;
+    return;
+  }
+  $('rh-automation-phrase').value = '';
+  $('rh-automation-unattended-ack').checked = false;
+  $('rh-automation-loss-ack').checked = false;
+  renderRobinhoodAutomationStatus(data);
+}
+async function runRobinhoodAutomationOnce() {
+  const status = latestRobinhoodAutomationStatus || {};
+  if (status.mode === 'automatic' && status.session_armed && !confirm('Run the armed automation cycle now? A passing candidate or hard exit rule can submit one real-money order after Robinhood preview.')) return;
+  $('rh-automation-status').textContent = 'Running normal Optedge, re-reading the account, analyzing every holding, and checking the exact buy shortlist once...';
+  const res = await fetch('/api/robinhood-automation-run', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({trigger: 'manual'})
+  });
+  const data = await res.json();
+  if (!res.ok || data.error || data.ok === false) {
+    $('rh-automation-status').textContent = `Automation cycle stopped safely: ${labelText(data.error_code || data.error || 'unknown error')}.`;
+    return;
+  }
+  renderRobinhoodAutomationCycle(data);
+  $('rh-automation-status').textContent = `${labelText(data.status || 'complete')}: ${data.detail || labelText(data.action || 'hold')}`;
+  await loadRobinhoodAutomationStatus();
 }
 function renderRobinhoodConnection(data) {
   if (!$('rh-connection')) return;
@@ -26284,7 +26445,7 @@ $('global-chain').addEventListener('click', globalScanChain);
 $('global-save').addEventListener('click', globalSaveWatchlist);
 $('global-query').addEventListener('keydown', (e) => { if (e.key === 'Enter') globalLookup(); });
 $('global-query').addEventListener('input', () => scheduleSuggestions('global-query', 'global-suggestions', false));
-$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadRobinhoodConnection(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadLookupHistory(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
+$('refresh').addEventListener('click', () => { loadSummary(); loadCommandCenter(); loadRobinhoodConnection(); loadRobinhoodAutomationStatus(); if ($('swing-packet-results').innerHTML.trim()) loadSwingPacket(false); loadTodayReview(); loadSwingClimate(); loadBestSetups(); loadSwingScout(); loadClimateGatedSetups(); loadActionQueue(); loadMarketPulse(); loadBreadthPulse(); loadSectorPulse(); loadMacroStress(); loadRiskSummary(); loadExitReviews(); loadPositionHygiene(false); loadPerformanceSummary(); loadFreeDataSources(); loadWatchlistSecFilings(); loadLookupHistory(); loadSavedContracts(); loadCboeActivity(); loadDecisionJournal(); loadAgenticAutopilotStatus(); });
 $('swing-packet-preview').addEventListener('click', () => loadSwingPacket(false));
 $('swing-packet-write').addEventListener('click', () => loadSwingPacket(true));
 $('swing-packet-chain').addEventListener('click', () => loadSwingPacket(true, true));
@@ -26313,6 +26474,9 @@ $('rh-scan-tickers').addEventListener('click', runRobinhoodTickerEdgeScan);
 $('rh-capture-evidence').addEventListener('click', captureFinalistEvidence);
 $('rh-sync-history').addEventListener('click', syncRobinhoodOptionHistory);
 $('rh-disconnect').addEventListener('click', disconnectRobinhoodConnection);
+$('rh-automation-save').addEventListener('click', () => saveRobinhoodAutomationMode(false));
+$('rh-automation-run').addEventListener('click', runRobinhoodAutomationOnce);
+$('rh-automation-stop').addEventListener('click', () => saveRobinhoodAutomationMode(true));
 $('autopilot-refresh').addEventListener('click', loadAgenticAutopilotStatus);
 $('autopilot-packet-refresh').addEventListener('click', () => routeAutopilotAction('refresh_autopilot_packet'));
 $('broker-normalize').addEventListener('click', normalizeBrokerSnapshot);
@@ -26364,6 +26528,7 @@ togglePlannerAsset();
 loadSummary().catch(err => { $('asof').textContent = 'Status failed'; console.error(err); });
 loadJobs().catch(err => console.error(err));
 loadRobinhoodConnection().catch(err => console.error(err));
+loadRobinhoodAutomationStatus().catch(err => console.error(err));
 loadView('desk').catch(err => { $('trade-desk-status-text').textContent = 'Trade Desk failed'; console.error(err); });
 setInterval(() => {
   const running = document.querySelector('.job[data-status="running"], .job[data-status="queued"]');
@@ -26472,6 +26637,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
     data_dir = DATA_DIR
     robinhood_connection_manager: RobinhoodConnectionManager | None = None
     robinhood_option_execution_service: RobinhoodOptionExecutionService | None = None
+    robinhood_automation_controller: RobinhoodAutomationController | None = None
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -26897,6 +27063,16 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/agentic-autopilot-status":
             self._send_json(build_agentic_autopilot_status(self.data_dir))
             return
+        if parsed.path == "/api/robinhood-automation-status":
+            controller = self.robinhood_automation_controller
+            if controller is None:
+                self._send_json(
+                    {"ok": False, "error_code": "automation_controller_unavailable"},
+                    status=503,
+                )
+                return
+            self._send_json(controller.status())
+            return
         if parsed.path == "/api/broker-reconciliation":
             params = parse_qs(parsed.query)
             limit = _int_param(params.get("limit", ["80"])[0], 80, 1, 250)
@@ -27048,6 +27224,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/robinhood-scan-top-tickers",
             "/api/robinhood-review-option",
             "/api/robinhood-place-option",
+            "/api/robinhood-automation-configure",
+            "/api/robinhood-automation-run",
             "/api/capture-finalist-evidence",
         }:
             self._send(404, b"Not found", "text/plain; charset=utf-8")
@@ -27379,6 +27557,78 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(result)
             return
+        if parsed.path == "/api/robinhood-automation-configure":
+            controller = self.robinhood_automation_controller
+            if controller is None:
+                self._send_json(
+                    {"ok": False, "error_code": "automation_controller_unavailable"},
+                    status=503,
+                )
+                return
+            try:
+                result = controller.configure(body)
+            except RobinhoodAutomationError as exc:
+                self._send_json(
+                    {"ok": False, "error_code": exc.code, "mode_changed": False},
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "automation_configuration_failed",
+                        "mode_changed": False,
+                    },
+                    status=500,
+                )
+                return
+            result["ok"] = True
+            self._send_json(result)
+            return
+        if parsed.path == "/api/robinhood-automation-run":
+            controller = self.robinhood_automation_controller
+            if controller is None:
+                self._send_json(
+                    {"ok": False, "error_code": "automation_controller_unavailable"},
+                    status=503,
+                )
+                return
+            try:
+                result = controller.run_once(trigger="manual")
+            except (RobinhoodAutomationError, RobinhoodOptionExecutionError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except (RobinhoodConnectionError, RobinhoodFinalistCheckError) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "automation_cycle_failed",
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            result["ok"] = True
+            self._send_json(result)
+            return
         if parsed.path == "/api/capture-finalist-evidence":
             try:
                 result = capture_checked_finalist_evidence(
@@ -27431,6 +27681,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
             service = self.robinhood_option_execution_service
             if service is not None:
                 service.clear()
+            controller = self.robinhood_automation_controller
+            if controller is not None:
+                try:
+                    controller.configure({"mode": "off"})
+                except RobinhoodAutomationError:
+                    pass
             self._send_json(result)
             return
         if parsed.path == "/api/lookup":
@@ -27603,6 +27859,59 @@ class CockpitHandler(BaseHTTPRequestHandler):
         return
 
 
+def _run_guarded_automation_research_refresh(
+    data_dir: Path,
+    portfolio_analysis: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Run the normal Optedge pipeline before an automation decision."""
+    busy = [
+        row
+        for row in list_jobs(data_dir, limit=25)
+        if str(row.get("status") or "").lower() in {"queued", "running"}
+    ]
+    if busy:
+        return {
+            "ok": False,
+            "status": "research_busy",
+            "detail": "Another Optedge research job is still running.",
+        }
+    total_value = _float_value(portfolio_analysis.get("total_value"), default=500.0)
+    buying_power = _float_value(
+        portfolio_analysis.get("conservative_buying_power"), default=total_value
+    )
+    budget = max(1.0, min(total_value, buying_power))
+    scan_args = _market_refresh_scan_args("full", budget, False)
+    job = create_refresh_job(
+        data_dir,
+        launch=False,
+        extra_scan_args=scan_args,
+        scan_mode="full",
+    )
+    job_id = str(job.get("job_id") or "")
+    if not job_id:
+        return {"ok": False, "status": "research_job_creation_failed"}
+    try:
+        exit_code = run_refresh_job(
+            job_id,
+            data_dir,
+            extra_scan_args=scan_args,
+        )
+    except Exception:
+        return {
+            "ok": False,
+            "status": "normal_optedge_refresh_failed",
+            "job_id": job_id,
+        }
+    return {
+        "ok": exit_code == 0,
+        "status": "completed" if exit_code == 0 else "failed",
+        "job_id": job_id,
+        "exit_code": int(exit_code),
+        "engine": "normal_optedge_full_scan",
+        "codex_used": False,
+    }
+
+
 def run_server(
     host: str = "127.0.0.1", port: int = 8765, data_dir: Path = DATA_DIR, open_browser: bool = True
 ) -> None:
@@ -27615,6 +27924,7 @@ def run_server(
             "data_dir": data_dir,
             "robinhood_connection_manager": None,
             "robinhood_option_execution_service": None,
+            "robinhood_automation_controller": None,
         },
     )
     server = ThreadingHTTPServer((host, port), handler)
@@ -27622,10 +27932,45 @@ def run_server(
     url = f"http://{host}:{bound_port}"
     manager = RobinhoodConnectionManager(f"{url}/oauth/robinhood/callback")
     handler.robinhood_connection_manager = manager
-    handler.robinhood_option_execution_service = RobinhoodOptionExecutionService(
+    execution_service = RobinhoodOptionExecutionService(
         manager,
         data_dir=data_dir,
     )
+    handler.robinhood_option_execution_service = execution_service
+    automation = RobinhoodAutomationController(
+        execution_service=execution_service,
+        data_dir=data_dir,
+        snapshot_syncer=lambda: sync_robinhood_broker_snapshot(manager, data_dir=data_dir),
+        research_refresher=lambda analysis: _run_guarded_automation_research_refresh(
+            data_dir,
+            analysis,
+        ),
+        exit_analyzer=lambda analysis, now: analyze_robinhood_holdings_with_optedge(
+            analysis,
+            data_dir=data_dir,
+            now=now,
+        ),
+        shortlist_builder=lambda: build_robinhood_agentic_queue_report(
+            data_dir,
+            account_budget=500.0,
+            max_candidates=10,
+            max_orders=1,
+            min_dte=MIN_SWING_OPTION_DTE,
+            min_confidence=55.0,
+            refresh_chain=False,
+            chain_preset="swing",
+            execution_profile="swing_execution",
+            write=True,
+        ),
+        finalist_checker=lambda: check_top_option_finalists(
+            manager,
+            data_dir=data_dir,
+            limit=10,
+            write=True,
+        ),
+    )
+    handler.robinhood_automation_controller = automation
+    automation.start()
     print(f"Optedge cockpit: {url}")
     print("Press Ctrl+C to stop.")
     if open_browser:
@@ -27639,6 +27984,7 @@ def run_server(
         print("\nCockpit stopped.")
     finally:
         server.server_close()
+        automation.shutdown()
         manager.shutdown()
 
 

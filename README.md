@@ -14,7 +14,7 @@ Optedge turns free and locally configured market data into a decision-first work
 The goal is not to manufacture a high score or imply guaranteed profit. The goal is to make each idea traceable from source evidence to exact instrument, expose when the evidence is stale or adverse, size risk before capital is committed, and stop the workflow when a required fact cannot be verified.
 
 > [!IMPORTANT]
-> Optedge is research and decision-support software. It does not guarantee returns, does not autonomously trade, and does not make an order safe merely because Robinhood accepts it. The current local connection exposes allowlisted one-shot reads and broker previews, but no placement API. Any later order decision remains outside Optedge's current release and requires explicit review in a Robinhood-supported surface.
+> Optedge is research and decision-support software with an optional guarded Robinhood Agentic execution mode. It does not guarantee returns and does not make an order safe merely because Robinhood accepts it. Live execution is **off by default**. Approval-required mode keeps every order behind a user choice; automatic mode must be explicitly armed for the current cockpit session and can still act only after the same model, account, portfolio, quote, liquidity, risk, exact-contract, and Robinhood preview gates pass.
 
 [Quick start](#quick-start) · [Decision workflow](#decision-workflow) · [Model firewall](#model-promotion-firewall) · [Edge Lab](#edge-lab) · [Dashboard](#dashboard) · [Robinhood review](#manual-robinhood-review) · [Project map](#project-layout) · [Documentation](#documentation)
 
@@ -27,7 +27,7 @@ The goal is not to manufacture a high score or imply guaranteed profit. The goal
 | Edge Lab | Fails closed unless independent, current-method, after-cost evidence passes every live-review requirement. |
 | Model firewall | Keeps ordinary scans inference-only and rejects adaptive artifacts that lack exact, fresh, purged out-of-sample promotion evidence. |
 | Capital firewall | Applies a chained same-account equity history, drawdown-scaled risk, and fail-closed portfolio checks before a review packet can exist. |
-| Robinhood connection | Direct official MCP OAuth, allowlisted one-shot reads and reviews, and a manual packet fallback; no placement API or unattended loop. |
+| Robinhood connection | Direct official MCP OAuth, allowlisted reads/reviews, manual one-order placement, and a separately armed guarded option loop for the dedicated Agentic account. |
 | Live-capital readiness | Determined by current local evidence and broker state at review time, never by this README or an account permission alone. |
 
 ## What Optedge Is
@@ -43,8 +43,8 @@ The goal is not to manufacture a high score or imply guaranteed profit. The goal
 
 - Not financial advice.
 - Not a profit guarantee.
-- Not an autonomous execution engine.
-- Not a replacement for human review.
+- Not an always-on or unrestricted execution engine; automation is off by default, session-expiring, single-position, limit-only, and fail-closed.
+- Not a replacement for monitoring the Robinhood account and its orders.
 - Not production-ready for live capital without strong validation evidence.
 - Not a broker, exchange, market-data guarantee, tax service, or portfolio-management service.
 
@@ -92,9 +92,10 @@ Discover candidates
   -> calculate stop-based risk and proposed capital at risk
   -> apply the same-account high-water/session drawdown interlock
   -> prove same-account broker exposure and post-trade headroom
-  -> request one broker preview
-  -> stop inside Optedge; the current release has no placement API
-  -> if you still choose to trade, re-review and confirm in a Robinhood-supported surface
+  -> choose approval-required or explicitly arm guarded automatic mode
+  -> request Robinhood's broker preview for the exact order
+  -> in approval-required mode, choose the candidate and confirm the exact order
+  -> in automatic mode, require positive exact-contract after-cost edge and every normal gate
   -> monitor any resulting broker order or position in Robinhood
 ```
 
@@ -118,7 +119,7 @@ Every boundary is intentional. A high research score cannot bypass Edge Lab, sta
 - Free local cockpit server with symbol lookup across latest scan artifacts.
 - Exact candidate handoff for options: symbol, call/put side, strike, expiration, underlying type, quote provenance, and a deterministic candidate fingerprint stay attached to the plan.
 - Separate option profiles: the normal swing lane keeps its `90+` DTE default, while explicit `leaps_swing` candidates use a profile-isolated `365-900` DTE policy and evidence lane.
-- A direct official Robinhood MCP connection with browser OAuth, operating-system-vault token storage, a narrow read/review allowlist, and no exposed placement method.
+- A direct official Robinhood MCP connection with browser OAuth, operating-system-vault token storage, a narrow read/review allowlist, one fixed option-placement boundary, and no generic broker dispatcher.
 - Safe archive/reset tool for generated research artifacts.
 - Research guardrails for sample size, drawdown, spreads, stale models, and data health.
 - A same-account total-open portfolio gate that separates real broker exposure from research and paper state.
@@ -464,7 +465,10 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 - An **Edge Lab** stage that makes adverse, fragile, insufficient, and validated evidence visually distinct and shows the data timestamp behind the decision.
 - A stop-based trade planner for whole shares and long calls/puts, with risk budget, proposed capital at risk, a total-open same-account allocation cap, slippage, planned stop loss, reward/risk, and breakeven win rate.
 - Side-by-side model and capital firewalls showing whether source-controlled defaults or a trusted champion are active, whether ordinary-scan training is off, and whether current same-account drawdown evidence allows full, reduced, or zero new-entry risk.
-- One short-lived manual Robinhood review packet you can copy or save as an inspection copy, plus a direct two-click option path. The direct path first requests Robinhood's complete preview, then issues a 60-second single-use confirmation for that exact order. It explicitly forbids loops, scheduled tasks, repeated orders, and automatic retries.
+- One short-lived manual Robinhood review packet you can copy or save as an inspection copy, plus a direct **Choose & Preview Buy** path. The manual path first requests Robinhood's complete preview, then issues a 60-second single-use confirmation for that exact order. It never retries an ambiguous or failed placement.
+- Three trading-control modes: **Off**, **Analyze & ask me**, and **Guarded automatic**. Approval-required mode reads the selected Agentic account and returns eligible buy choices without placement. Automatic mode requires two loss/unattended-trading acknowledgements plus the phrase `ENABLE GUARDED AUTO`, expires after eight hours, and must be re-armed after every cockpit restart.
+- Optedge-first position management. Each cycle runs the normal full Optedge pipeline, re-syncs Robinhood afterward, checks every nonzero holding and working order, and permits only one concurrent option position. An automatic sell requires an exact broker-to-lifecycle contract match and a normal Optedge `hard_stop`, `hard_target`, or fresh high-pressure `close_early` decision plus an executable Robinhood quote; otherwise the action is Hold.
+- A local 5-60 minute automation cadence, defaulting to 15 minutes and at most one order per day. It runs inside the cockpit process, creates no Codex task, uses limit orders only, operates only from 9:45 AM through 3:45 PM New York time, records each candidate before a broker call, and never automatically retries that candidate.
 - Exact candidate preservation from research card to planner. Options and shares both need a fresh, actionable source candidate before a broker packet can be copied; an incomplete option identity is blocked instead of being converted into a share plan.
 - Instant symbol lookup across latest option, share, value, futures, and open-position artifacts.
 - Read-only Robinhood ticker and exact-option context when the connector cache has a matching record, with explicit quote age and source labels.
@@ -475,7 +479,7 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 - Quick links to the latest dashboard, validation report, validation JSON, option-history and broker-research queues, equity curve, and external paper-order export.
 - A browser UI that does not rerun engines until you choose to run a new scan.
 - A local-only first screen that never waits on free live market providers. It uses a fresh saved Swing Climate snapshot when one exists; otherwise it shows a conservative `context_unavailable` posture and keeps defensive gates active until you explicitly refresh the deeper research view.
-- A direct connection panel for Robinhood's official Trading MCP. OAuth opens in the browser, grants are kept only in the operating-system credential vault, and the cockpit exposes explicit connect, status-refresh, one-shot complete snapshot-sync, shortlist-check, order-preview, confirmed option-placement, and disconnect actions. The client has no generic broker-tool dispatcher and the fixed placement boundary is reachable only through a consumed single-use confirmation.
+- A direct connection panel for Robinhood's official Trading MCP. OAuth opens in the browser, grants are kept only in the operating-system credential vault, and the cockpit exposes connect, status-refresh, complete snapshot-sync, shortlist-check, order-preview, confirmed option placement, guarded automation controls, and disconnect actions. The client has no generic broker-tool dispatcher; both manual and automatic placement pass through the same fixed previewed option boundary.
 - A **Scan 10 ticker ideas on Robinhood** research action that starts with ten Optedge-ranked underlyings, uses the existing free provider stack to select at most one exact 90-900 DTE contract per ticker, and checks those identities and quotes once through Robinhood. It reports every ticker, including symbols with no qualifying contract, and separately labels live market quality, exact-contract after-cost edge, and missing edge evidence. Discovery results never enter the execution queue automatically.
 - A separate **Verify queued contracts** action that preserves the stricter execution queue and inspects up to its first ten exact candidates through bounded Robinhood chain/instrument/quote reads. Each row shows contract uniqueness, quote age, spread, frozen price cap, liquidity, Greeks, and every blocker. A passed market result expires after 120 seconds and cannot override normal evidence, validation, account, drawdown, or exposure gates.
 - A **Capture checked evidence** action that freezes one still-fresh, source-bound live finalist as an immutable paper signal. It makes no additional broker call, is idempotent for the same finalist digest, stamps the complete current evidence/model policy, and keeps portfolio-blocked rows in the shadow lane rather than pretending they were executable.
@@ -485,7 +489,7 @@ The cockpit opens at `http://127.0.0.1:8765` by default and reads local files fr
 
 Optedge connects to Robinhood's official Trading MCP endpoint through browser OAuth. The dashboard never asks for a Robinhood password, MFA code, cookie, or API key. OAuth tokens and dynamic client-registration material are stored only in the operating-system credential vault, with no plaintext file or environment-variable fallback. On Windows, an OAuth envelope that exceeds Credential Manager's single-entry limit is split into integrity-checked, generation-bound vault entries and committed through a small vault-resident manifest; no chunk is written to the repository or another plaintext location. The public client surface is intentionally limited to allowlisted one-shot reads and order reviews plus one fixed confirmed-option placement call; there is no generic tool dispatcher or generic placement method.
 
-This is a direct connection: Codex is not required to hold the Robinhood connection open. Codex can still be used as a manual fallback by copying one short-lived review packet into a separately connected Robinhood task. Neither path creates a schedule, polling trade loop, batch, or automatic retry.
+This is a direct connection: Codex is not required to hold the Robinhood connection open. Codex can still be used as a manual fallback by copying one short-lived review packet into a separately connected Robinhood task. The optional guarded loop runs locally inside the cockpit, never creates or messages a Codex task, and never automatically retries a broker order or previously attempted candidate.
 
 #### Options permissions
 
@@ -499,11 +503,12 @@ A long call or put requires one same active, funded, Agentic-accessible Robinhoo
 6. Choose **Verify queued contracts** for the execution-attested lane. Optedge keeps queue order unchanged and checks at most `orders[0:10]`; it does not hunt for replacement contracts after seeing live prices. Every row must be identical in the fresh cycle and queue, resolve through bounded pages to exactly one active, tradable, standard 100-share contract, and pass a quote no older than 120 seconds, the frozen price cap, profile spread ceiling, liquidity minimums, and LEAPS delta rules when applicable. A passed Robinhood quote is market evidence only and cannot clear a blocked local Optedge entry gate. The saved batch contains sanitized public contract/quote evidence, not credentials, raw account identity, an order, or broker authority.
 7. Choose **Sync 5 exact histories** to work down the active-contract history queue in a bounded all-or-nothing batch. Then run validation to upgrade matching modeled option outcomes to exact broker-observed market bars. A history bar is still not proof of an Optedge fill.
 8. In **Trade Desk**, load the checked option candidate or an exact fresh, actionable `top_shares_*.parquet` candidate, verify the account-equity/risk/allocation assumptions and proposed entry, stop, and target, then click **Calculate plan**. Free-form share inputs can still calculate local sizing, but they cannot produce a copyable Robinhood packet. An ordinary share scan preserves the last history-bar close and its market session, then derives deterministic entry, stop, and target geometry from that reference. The reference is not a live quote: its attestation may explicitly say `candidate_quote_available=false`, and the direct preview client or manual fallback task must still obtain a fresh bid/ask before review. The manual gate binds the share symbol, direction, geometry, size cap, price-reference provenance, source digest, row fingerprint, actionability, guard status, and artifact freshness so an arbitrary planner symbol cannot borrow another share's evidence. It also requires current Edge Lab and validation evidence plus one same active account that satisfies the chained drawdown interlock, portfolio value, permissions, conservative buying power, per-trade risk, and the total-open allocation check. It recomputes `current broker capital at risk + proposed capital at risk` against `min(planner equity, same-account live equity) x allocation fraction`; it never mixes capacity, loss history, or exposure across accounts.
-9. If one row clears every gate, choose the eligible masked Agentic account and click **Review exact order**. Optedge refreshes the exact contract, quote, portfolio capacity, positions, and working orders, then calls Robinhood's review tool. The direct placement path currently requires the selected Agentic account to have no open positions or working orders; use the inspection/manual review path when managing an already invested account. It does not place the order during this step.
+9. If one row clears every gate, choose the eligible masked Agentic account and click **Choose & Preview Buy**. Optedge refreshes the exact contract, quote, portfolio capacity, positions, and working orders, then calls Robinhood's review tool. The entry lane permits only one concurrent option position and no working order. It does not place the order during this step.
 10. The direct client or fallback task must independently refresh the exact derived account identity, portfolio, positions, working orders, instrument, tradability, and live quote immediately before review. Every collection must reach an explicit final page. A failed, missing, stale, or ambiguous read blocks review. For an option, all matching chains and instruments must resolve to exactly one active buy-to-open standard contract with the planned underlying. The review uses a quote no older than 120 seconds and a spread no wider than the packet cap: at most `1%` for shares, `15%` for normal swing options, and `10%` for `leaps_swing`. The limit cannot rise. Only then may the review tool show the complete preview, disclosures, alerts, fees, collateral, and estimated cost.
 11. Stop at the preview unless you deliberately want the real-money order. To submit, check the explicit acknowledgement and press **Place this exact order once**, then accept the final browser confirmation. The 60-second in-memory capability is consumed before placement; Optedge rechecks the selected Agentic account, capacity, positions, working orders, exact candidate, contract, and ask, calls only `place_option_order` once, and never retries an ambiguous or failed result. A submission is still not a fill, so verify order status in Robinhood.
+12. To use automation, choose **Analyze & ask me** first and run one cycle. This syncs the complete account, analyzes holdings before entries, refreshes the queue, checks up to ten exact contracts, and shows every eligible choice without placing. Only after reviewing that behavior should you choose **Guarded automatic**, enter `ENABLE GUARDED AUTO`, accept both risk acknowledgements, and save. Arming is scoped to the current cockpit process for eight hours. Restarting or disconnecting disarms it.
 
-The broker boundary is manual and on demand. Optedge does not create a recurring Codex task or automatic trade loop. The Robinhood queue and local auto-paper script are research/paper artifacts; neither is broker authorization. A direct placement requires an immediately preceding clean broker preview and its unexpired single-use in-memory capability. Packet v2 remains inspection-only and includes canonical semantic and prompt digests; those digests detect modification but are not signatures, authentication, or standalone authority.
+The broker boundary is mode-specific. Approval-required placement needs an immediately preceding clean broker preview and an unexpired single-use in-memory confirmation. Guarded automatic placement needs an active session arm plus that same broker preview and final state revalidation. The research queue, inspection packet, and local auto-paper script are never broker authorization. Packet v2 remains inspection-only and includes canonical semantic and prompt digests; those digests detect modification but are not signatures, authentication, or standalone authority.
 
 Each direct live order receives a fresh UUID `ref_id` only after the broker preview clears. The same identifier is used for that one logical placement attempt and is never recycled into another order. It is idempotency context, not placement authority. Optedge never automatically retries.
 
@@ -533,7 +538,7 @@ The total-open portfolio gate derives current exposure only from one immutable i
 
 The entry packet does not place a stop or target order. Those values are planning references only. For a long option, the maximum capital-loss reference is the full debit; for a long share, the capital-at-risk basis is full entry notional. The proposal must fit the per-trade risk rules, conservative buying power, and remaining total-open same-account headroom. A stop is not guaranteed to limit a gap loss.
 
-Optedge's current packet is an **entry review**, not a complete position-management system. Order cancellation, exercise, assignment, expiry handling, sell-to-close decisions, and emergency exits must be verified and managed through Robinhood's supported surfaces. Never assume the planning stop exists at the broker.
+Optedge's packet is an **entry review**. Guarded automation adds only a narrow single-leg long-option management lane. The normal scanner remains the decision authority: it reprices the exact tracked contract, checks its stored stop and target, compares current fused confidence and score with the entry thesis, applies regime, news, sentiment, research-guard, earnings, spread, DTE, age, repricing-failure, and learned exit-pressure rules, and emits Hold/Watch/Tighten/Close decisions. A sell-to-close limit order can proceed only for an exact fresh broker/lifecycle match with `hard_stop`, `hard_target`, or fully supported `close_early`, after Robinhood quote, spread, pending-transition, working-order, and preview checks. It does not manage short options, shares, spreads, exercise, assignment, replacement orders, or partial exits. Never assume the planning stop exists at the broker, and always monitor Robinhood activity.
 
 Use another port or keep it from opening a browser:
 
@@ -756,15 +761,15 @@ Read the complete [contribution guide](CONTRIBUTING.md), [security policy](SECUR
 4. Run the full test and lint commands above.
 5. Describe what changed, why it is safe, what evidence supports it, and what remains unverified.
 
-Do not promote a factor from look-ahead results, label modeled option marks as fills, weaken a blocker to make the dashboard look ready, add credential scraping, or introduce unattended order loops. A broker or evidence failure should produce a visible unavailable/blocked state, not a guessed value.
+Do not promote a factor from look-ahead results, label modeled option marks as fills, weaken a blocker to make the dashboard look ready, add credential scraping, or introduce an unbounded/generic execution loop. A broker or evidence failure should produce a visible unavailable/blocked state, not a guessed value.
 
 Commit messages should explain the complete logical change (for example, `Validate edge by independent entry day`), not act as per-file captions. The project layout and module documentation explain individual file purposes.
 
 ## Limitations
 
-Optedge is a research and decision-support tool, not financial advice and not an autonomous trading system.
+Optedge is research and decision-support software with an optional guarded execution mode; it is not financial advice, a fiduciary, or a profit guarantee.
 
-Signals require human review. Performance depends on data quality, actual fills, spreads, slippage, liquidity, borrow and assignment behavior, regime changes, news shocks, earnings gaps, taxes, and sample size. Free providers can be delayed, incomplete, inconsistent, or unavailable. Model scores, backtests, forward tests, confidence intervals, drawdown interlocks, risk caps, and broker previews are evidence or controls with uncertainty—not promises and never a guarantee of profit.
+Every mode requires human monitoring. Performance depends on data quality, actual fills, spreads, slippage, liquidity, assignment behavior, regime changes, news shocks, earnings gaps, taxes, and sample size. Automatic action can amplify an error or act before you notice it. Free providers can be delayed, incomplete, inconsistent, or unavailable. Model scores, backtests, forward tests, confidence intervals, drawdown interlocks, risk caps, and broker previews are evidence or controls with uncertainty—not promises and never a guarantee of profit.
 
 See [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 

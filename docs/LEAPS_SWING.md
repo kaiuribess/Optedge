@@ -91,16 +91,17 @@ silently authorize the new one.
 
 The profile can prepare one long-call or long-put entry for the same explicit,
 active, funded, options-approved account used by every risk check. It does not
-support short options, spreads, index options, adjusted contracts, batches, or
-unattended placement.
+support short options, spreads, index options, adjusted contracts, or batches.
+Unattended placement is available only through the separately armed guarded
+controller and retains the same profile, evidence, quote, account, and risk gates.
 
 Before a broker preview, Optedge still requires the exact fresh candidate,
 profile-specific evidence, a complete account snapshot, intact drawdown
 history, conservative buying power, no conflicting exposure or working order,
 standard-contract proof, and a current live quote. The order limit cannot rise
-after the packet is built. A broker preview is not an order. If the user later
-submits through a Robinhood-supported surface, an accepted order is still not
-a fill.
+after the packet is built. A broker preview is not an order. Manual or guarded
+placement revalidates state before using Robinhood's supported order tool, and
+an accepted order is still not a fill.
 
 The direct Robinhood connection uses the official Trading MCP endpoint and
 browser OAuth. Optedge never asks for a Robinhood password, MFA code, cookie,
