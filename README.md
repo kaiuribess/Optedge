@@ -104,6 +104,7 @@ Every boundary is intentional. A high research score cannot bypass Edge Lab, sta
 ## Core Features
 
 - Options mispricing, chain analytics, surface checks, and contract ranking.
+- A one-shot ten-ticker Robinhood full-chain funnel that enumerates returned 90-900 DTE contracts, applies liquidity/delta/premium filters, prices every survivor with Black-Scholes, CRR, and Bjerksund-Stensland, shows raw and confidence-adjusted after-cost EV plus a low-model bound and theoretical profit probability, and rechecks up to three finalists per ticker without promoting or trading them. Stale after-hours quotes may remain visible as theoretical research, but freshness, a live Robinhood underlying quote, and a passed normal Optedge research guard are mandatory for conservative-positive status.
 - Share and value ranking using the full non-option factor stack.
 - Futures ranking using futures trend, macro, risk, volatility, and cross-asset context.
 - Multi-factor fusion across sentiment, news, fundamentals, filings, macro, technicals, market structure, and retail attention.
@@ -684,7 +685,7 @@ operator-focused overview.
 | `optedge/leaps_swing.py` | Scores explicit `365-900` DTE LEAPS swing candidates against liquidity, quote, risk, and policy requirements. |
 | `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-vault credential storage, and the narrow read/review policy. |
 | `optedge/robinhood_connection.py` | Bridges the cockpit to one bounded private MCP event loop without polling, retries, or placement. |
-| `optedge/robinhood_finalist.py` | Runs the research-only ten-ticker exact-contract comparison and separately verifies unchanged queued option candidates against fresh Robinhood chain, instrument, and quote evidence before planner promotion. |
+| `optedge/robinhood_finalist.py` | Runs the research-only ten-ticker Robinhood full-chain EV funnel and separately verifies unchanged queued option candidates against fresh Robinhood chain, instrument, and quote evidence before planner promotion. |
 | `optedge/evidence_capture.py` | Freezes one fresh, source-bound Robinhood finalist into an idempotent current-policy paper-evidence signal without another broker call. |
 | `optedge/robinhood_option_history_sync.py` | Resolves and atomically caches a bounded batch of exact Robinhood option daily histories using read-only calls. |
 | `optedge/robinhood_snapshot_sync.py` | Performs one complete account-scoped read and atomically persists only redacted broker state and the pseudonymous risk ledger. |

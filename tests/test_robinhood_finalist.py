@@ -9,10 +9,12 @@ import pytest
 
 from optedge.robinhood_finalist import (
     FINALIST_CHECK_SCHEMA,
+    FULL_CHAIN_EDGE_SCAN_SCHEMA,
     RobinhoodFinalistCheckError,
     apply_finalist_check_to_sources,
     canonical_digest,
     check_best_option_finalist,
+    check_full_chain_option_edges,
     check_top_option_finalists,
     check_top_ticker_option_edges,
 )
@@ -157,6 +159,15 @@ class _Manager:
                 },
                 "additionalProperties": False,
             }
+        if name == "get_equity_quotes":
+            return {
+                "type": "object",
+                "required": ["symbols"],
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}}
+                },
+                "additionalProperties": False,
+            }
         raise AssertionError(name)
 
     def call_read_tool(self, name: str, arguments: dict, *, timeout_seconds: float) -> dict:
@@ -173,7 +184,9 @@ class _Manager:
                             "cash_component": None,
                             "expiration_dates": ["2026-12-18"],
                             "trade_value_multiplier": "100.0000",
-                            "underlying_instruments": [{"symbol": "HYG", "instrument": "equity-1"}],
+                            "underlying_instruments": [
+                                {"symbol": "HYG", "instrument": "equity-1"}
+                            ],
                         }
                     ],
                     "next": None,
@@ -185,6 +198,171 @@ class _Manager:
             return {"data": {"quotes": [{"quote": copy.deepcopy(self.quote)}], "next": None}}
         raise AssertionError(name)
 
+
+class _FullChainManager:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.instruments = [
+            {
+                "id": "call-1",
+                "chain_id": CHAIN_ID,
+                "chain_symbol": "HYG",
+                "underlying_type": "equity",
+                "expiration_date": "2026-12-18",
+                "strike_price": "70",
+                "type": "call",
+                "state": "active",
+                "tradability": "tradable",
+            },
+            {
+                "id": "put-1",
+                "chain_id": CHAIN_ID,
+                "chain_symbol": "HYG",
+                "underlying_type": "equity",
+                "expiration_date": "2026-12-18",
+                "strike_price": "80",
+                "type": "put",
+                "state": "active",
+                "tradability": "tradable",
+            },
+            {
+                "id": "dead-1",
+                "chain_id": CHAIN_ID,
+                "chain_symbol": "HYG",
+                "underlying_type": "equity",
+                "expiration_date": "2026-12-18",
+                "strike_price": "75",
+                "type": "call",
+                "state": "active",
+                "tradability": "tradable",
+            },
+        ]
+        self.quotes = {
+            "call-1": {
+                "instrument_id": "call-1",
+                "ask_price": "0.50",
+                "bid_price": "0.48",
+                "mark_price": "0.49",
+                "open_interest": 1200,
+                "volume": 90,
+                "delta": "0.70",
+                "implied_volatility": "0.22",
+                "updated_at": (NOW - timedelta(seconds=2)).isoformat(),
+            },
+            "put-1": {
+                "instrument_id": "put-1",
+                "ask_price": "0.50",
+                "bid_price": "0.48",
+                "mark_price": "0.49",
+                "open_interest": 1100,
+                "volume": 80,
+                "delta": "-0.70",
+                "implied_volatility": "0.23",
+                "updated_at": (NOW - timedelta(seconds=2)).isoformat(),
+            },
+            "dead-1": {
+                "instrument_id": "dead-1",
+                "ask_price": "1.00",
+                "bid_price": "0.99",
+                "mark_price": "0.995",
+                "open_interest": 2,
+                "volume": 0,
+                "delta": "0.65",
+                "implied_volatility": "0.20",
+                "updated_at": (NOW - timedelta(seconds=2)).isoformat(),
+            },
+        }
+
+    def read_tool_input_schema(self, name: str) -> dict:
+        if name == "get_option_chains":
+            return {
+                "type": "object",
+                "required": ["underlying_symbol"],
+                "properties": {"underlying_symbol": {"type": "string"}},
+                "additionalProperties": False,
+            }
+        if name == "get_option_instruments":
+            return {
+                "type": "object",
+                "required": ["chain_id", "expiration_dates"],
+                "properties": {
+                    "chain_id": {"type": "string"},
+                    "expiration_dates": {"type": "array", "items": {"type": "string"}},
+                    "type": {"type": "string"},
+                    "state": {"type": "string"},
+                    "tradability": {"type": "string"},
+                },
+                "additionalProperties": False,
+            }
+        if name == "get_option_quotes":
+            return {
+                "type": "object",
+                "required": ["ids"],
+                "properties": {"ids": {"type": "array", "items": {"type": "string"}}},
+                "additionalProperties": False,
+            }
+        if name == "get_equity_quotes":
+            return {
+                "type": "object",
+                "required": ["symbols"],
+                "properties": {
+                    "symbols": {"type": "array", "items": {"type": "string"}}
+                },
+                "additionalProperties": False,
+            }
+        raise AssertionError(name)
+
+    def call_read_tool(self, name: str, arguments: dict, *, timeout_seconds: float) -> dict:
+        self.calls.append((name, copy.deepcopy(arguments)))
+        if name == "get_option_chains":
+            return {
+                "data": {
+                    "chains": [
+                        {
+                            "id": CHAIN_ID,
+                            "symbol": "HYG",
+                            "can_open_position": True,
+                            "cash_component": None,
+                            "expiration_dates": ["2026-12-18"],
+                            "trade_value_multiplier": "100",
+                            "underlying_instruments": [
+                                {"symbol": "HYG", "instrument": "equity-1"}
+                            ],
+                        }
+                    ],
+                    "next": None,
+                }
+            }
+        if name == "get_option_instruments":
+            return {"data": {"instruments": copy.deepcopy(self.instruments), "next": None}}
+        if name == "get_option_quotes":
+            ids = arguments["ids"]
+            return {
+                "data": {
+                    "quotes": [
+                        {"quote": copy.deepcopy(self.quotes[option_id])}
+                        for option_id in ids
+                    ],
+                    "next": None,
+                }
+            }
+        if name == "get_equity_quotes":
+            return {
+                "data": {
+                    "results": [
+                        {
+                            "quote": {
+                                "symbol": symbol,
+                                "bid_price": "74.95",
+                                "ask_price": "75.05",
+                                "state": "active",
+                            }
+                        }
+                        for symbol in arguments["symbols"]
+                    ]
+                }
+            }
+        raise AssertionError(name)
 
 def test_happy_path_checks_only_exact_finalist_and_returns_loadable_live_plan(tmp_path: Path):
     _write_sources(tmp_path)
@@ -290,6 +468,134 @@ def test_ten_ticker_research_scan_reports_missing_tickers_and_never_promotes(tmp
     assert result["does_not_promote_candidates"] is True
     assert result["does_not_place_orders"] is True
     assert (tmp_path / "robinhood_ticker_edge_scan.json").exists()
+
+
+def test_full_chain_scan_prices_every_hard_filter_survivor_and_rechecks_finalists(
+    tmp_path: Path,
+):
+    manager = _FullChainManager()
+    result = check_full_chain_option_edges(
+        manager,
+        data_dir=tmp_path,
+        ticker_candidates=[{"symbol": "HYG", "source": "normal Optedge", "score": 82}],
+        pricing_context={
+            "HYG": {
+                "spot": 75,
+                "fair_vol": 0.30,
+                "fair_vol_source": "top_options_test.parquet",
+                "option_side": "call",
+                "confidence": 80,
+                "research_guard_status": "passed",
+            }
+        },
+        now=NOW,
+    )
+
+    assert result["schema"] == FULL_CHAIN_EDGE_SCAN_SCHEMA
+    assert result["ticker_count"] == 1
+    assert result["total_instruments"] == 3
+    assert result["total_option_quotes"] == 3
+    assert result["hard_filter_survivor_count"] == 2
+    assert result["rechecked_finalist_count"] == 2
+    assert result["decision"] == "research_candidates_available"
+    assert result["conservative_positive_count"] == 1
+    assert result["does_not_promote_candidates"] is True
+    assert result["does_not_place_orders"] is True
+    assert result["no_trade_is_valid"] is True
+    assert result["rejection_counts"]["daily volume below 10"] == 1
+    call = next(row for row in result["results"] if row["option_type"] == "call")
+    put = next(row for row in result["results"] if row["option_type"] == "put")
+    assert call["exact_recheck_passed"] is True
+    assert call["conservative_positive_edge"] is True
+    assert call["spot_source"] == "robinhood_equity_quote"
+    assert call["theoretical_ev_pct"] > 0
+    assert call["after_cost_ev_pct"] > 0
+    assert call["ev_lower_bound_pct"] > 0
+    assert set(call["theoretical_models"]) == {
+        "black_scholes",
+        "crr",
+        "bjerksund_stensland",
+        "low",
+        "high",
+    }
+    assert 0 < call["theoretical_profit_probability"] < 1
+    assert put["thesis_aligned"] is False
+    assert put["conservative_positive_edge"] is False
+    quote_calls = [arguments for name, arguments in manager.calls if name == "get_option_quotes"]
+    assert len(quote_calls) == 2
+    assert set(quote_calls[0]["ids"]) == {"call-1", "put-1", "dead-1"}
+    assert set(quote_calls[1]["ids"]) == {"call-1", "put-1"}
+    assert (tmp_path / "robinhood_full_chain_edge_scan.json").exists()
+
+
+def test_full_chain_scan_keeps_theoretical_iv_proxy_out_of_conservative_lane(tmp_path: Path):
+    result = check_full_chain_option_edges(
+        _FullChainManager(),
+        data_dir=tmp_path,
+        ticker_candidates=[{"symbol": "HYG", "source": "normal Optedge", "score": 82}],
+        pricing_context={
+            "HYG": {"spot": 75, "option_side": "call", "confidence": 80}
+        },
+        now=NOW,
+        write=False,
+    )
+    assert result["decision"] == "no_trade"
+    assert result["conservative_positive_count"] == 0
+    assert result["theoretical_positive_count"] >= 1
+    assert all(row["fair_vol_independent"] is False for row in result["results"])
+    assert all(row["conservative_positive_edge"] is False for row in result["results"])
+
+
+def test_full_chain_scan_keeps_stale_quotes_visible_only_as_theoretical_research(
+    tmp_path: Path,
+):
+    manager = _FullChainManager()
+    for quote in manager.quotes.values():
+        quote["updated_at"] = (NOW - timedelta(hours=2)).isoformat()
+    result = check_full_chain_option_edges(
+        manager,
+        data_dir=tmp_path,
+        ticker_candidates=[{"symbol": "HYG"}],
+        pricing_context={
+            "HYG": {
+                "spot": 75,
+                "fair_vol": 0.30,
+                "option_side": "call",
+                "confidence": 80,
+                "research_guard_status": "passed",
+            }
+        },
+        now=NOW,
+        write=False,
+    )
+    assert result["decision"] == "no_trade"
+    assert result["hard_filter_survivor_count"] == 2
+    assert result["theoretical_positive_count"] >= 1
+    assert result["conservative_positive_count"] == 0
+    assert all(row["quote_is_fresh"] is False for row in result["results"])
+    assert all(row["exact_recheck_passed"] is False for row in result["results"])
+
+
+def test_full_chain_scan_fails_closed_when_live_schema_requires_a_strike(tmp_path: Path):
+    class StrikeRequiredManager(_FullChainManager):
+        def read_tool_input_schema(self, name: str) -> dict:
+            schema = super().read_tool_input_schema(name)
+            if name == "get_option_instruments":
+                schema["required"].append("strike_price")
+                schema["properties"]["strike_price"] = {"type": "string"}
+            return schema
+
+    result = check_full_chain_option_edges(
+        StrikeRequiredManager(),
+        data_dir=tmp_path,
+        ticker_candidates=[{"symbol": "HYG"}],
+        pricing_context={"HYG": {"spot": 75, "fair_vol": 0.30, "option_side": "call"}},
+        now=NOW,
+        write=False,
+    )
+    assert result["decision"] == "no_trade"
+    assert result["ticker_summaries"][0]["error_code"] == "full_chain_schema_requires_strike"
+    assert result["total_option_quotes"] == 0
 
 
 def test_exact_chain_symbol_binds_one_stable_underlying_reference(tmp_path: Path):

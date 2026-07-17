@@ -3075,7 +3075,11 @@ def test_cockpit_html_contains_lookup_controls():
     assert 'id="rh-check-finalist"' in html
     assert "Verify queued contracts" in html
     assert 'id="rh-scan-tickers"' in html
-    assert "Scan 10 ticker ideas on Robinhood" in html
+    assert "Full-chain EV scan: 10 tickers" in html
+    assert "Robinhood full-chain" in html
+    assert "Raw theoretical EV" in html
+    assert "Conservative EV" in html
+    assert "Theoretical profit odds" in html
     assert "/api/robinhood-check-top-options" in html
     assert "/api/robinhood-review-option" in html
     assert "/api/robinhood-place-option" in html
@@ -11215,6 +11219,49 @@ def test_research_watchlist_adds_dedupes_removes_and_builds_jobs():
         remaining = load_watchlist(data_dir)
         assert remaining["count"] == 1
         assert remaining["entries"][0]["symbol"] == "NVDA"
+
+
+def test_robinhood_full_chain_pricing_context_uses_latest_normal_optedge_snapshot(
+    tmp_path: Path,
+):
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "HYG",
+                "side": "call",
+                "spot": 75.0,
+                "fair_vol": 0.28,
+                "confidence": 72,
+                "trade_score": 9.0,
+                "research_guard_status": "blocked",
+                "days_to_earnings": 20,
+            },
+            {
+                "ticker": "HYG",
+                "side": "put",
+                "spot": 75.1,
+                "fair_vol": 0.30,
+                "confidence": 60,
+                "trade_score": 4.0,
+                "research_guard_status": "blocked",
+                "days_to_earnings": 20,
+            },
+        ]
+    )
+    snapshot = tmp_path / "top_options_20260717_200000.parquet"
+    frame.to_parquet(snapshot, index=False)
+
+    context = cockpit_module._robinhood_full_chain_pricing_context(
+        tmp_path,
+        [{"symbol": "HYG", "source": "normal Optedge options"}],
+    )["HYG"]
+
+    assert context["spot"] == 75.0
+    assert abs(context["fair_vol"] - 0.29) < 1e-9
+    assert context["option_side"] == "call"
+    assert context["confidence"] == 72
+    assert context["research_guard_status"] == "blocked"
+    assert context["fair_vol_source"] == snapshot.name
 
 
 if __name__ == "__main__":

@@ -76,8 +76,8 @@ from optedge.robinhood_finalist import (  # noqa: E402
     RobinhoodFinalistCheckError,
     apply_finalist_check_to_sources,
     check_best_option_finalist,
+    check_full_chain_option_edges,
     check_top_option_finalists,
-    check_top_ticker_option_edges,
     load_finalist_check_status,
 )
 from optedge.robinhood_option_execution import (  # noqa: E402
@@ -271,6 +271,10 @@ ARTIFACTS = {
     ),
     "robinhood-finalist-check": (
         "robinhood_finalist_check.json",
+        "application/json; charset=utf-8",
+    ),
+    "robinhood-full-chain-edge-scan": (
+        "robinhood_full_chain_edge_scan.json",
         "application/json; charset=utf-8",
     ),
     "robinhood-research-coverage": (
@@ -4039,6 +4043,20 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
                 if isinstance(row, dict)
                 else None
             ),
+            "option_side": (
+                _clean_value(row.get("option_side") or row.get("side"))
+                if isinstance(row, dict)
+                else None
+            ),
+            "direction": _clean_value(row.get("direction"))
+            if isinstance(row, dict)
+            else None,
+            "confidence": _clean_value(row.get("confidence"))
+            if isinstance(row, dict)
+            else None,
+            "research_guard_status": _clean_value(row.get("research_guard_status"))
+            if isinstance(row, dict)
+            else None,
         }
         candidate.update(_chain_candidate_fit(source, score, row, manual=manual))
         if clean in blocked_auto and not manual:
@@ -4181,6 +4199,104 @@ def _bulk_chain_symbol_candidates(
 ) -> list[dict[str, Any]]:
     """Compatibility wrapper for callers that only need the accepted queue."""
     return _bulk_chain_symbol_selection(data_dir, query=query, limit=limit)["candidates"]
+
+
+def _robinhood_full_chain_pricing_context(
+    data_dir: Path,
+    candidates: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Bind each ticker thesis to the latest normal-Optedge pricing context."""
+    frames: list[tuple[pd.DataFrame, Path | None]] = []
+    for pattern in ("top_options_*.parquet", "ranked_options_*.parquet", "contracts_*.parquet"):
+        path = _latest_file(data_dir, pattern)
+        frame = _read_parquet(path)
+        if not frame.empty and "ticker" in frame.columns:
+            frames.append((frame, path))
+    share_frames: list[pd.DataFrame] = []
+    for pattern in ("top_shares_*.parquet", "top_value_*.parquet"):
+        frame = _read_parquet(_latest_file(data_dir, pattern))
+        if not frame.empty and "ticker" in frame.columns:
+            share_frames.append(frame)
+
+    context: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        matched = pd.DataFrame()
+        source_path: Path | None = None
+        for frame, path in frames:
+            subset = frame[frame["ticker"].astype(str).str.upper() == symbol].copy()
+            if subset.empty:
+                continue
+            matched = subset
+            source_path = path
+            break
+        preferred: dict[str, Any] = {}
+        if not matched.empty:
+            sort_col = next(
+                (column for column in ("trade_score", "rank_score", "fused_score") if column in matched),
+                None,
+            )
+            if sort_col:
+                matched = matched.sort_values(sort_col, ascending=False, na_position="last")
+            preferred = {str(key): value for key, value in matched.iloc[0].to_dict().items()}
+
+        if not preferred:
+            for frame in share_frames:
+                subset = frame[frame["ticker"].astype(str).str.upper() == symbol]
+                if subset.empty:
+                    continue
+                preferred = {
+                    str(key): value for key, value in subset.iloc[0].to_dict().items()
+                }
+                break
+
+        def finite_median(frame: pd.DataFrame, column: str) -> float | None:
+            if frame.empty or column not in frame:
+                return None
+            values = pd.to_numeric(frame[column], errors="coerce")
+            values = values[values.map(lambda item: math.isfinite(float(item)))]
+            return float(values.median()) if not values.empty else None
+
+        signal = str(preferred.get("signal") or "").strip().lower()
+        option_side = str(
+            candidate.get("option_side")
+            or preferred.get("side")
+            or preferred.get("option_side")
+            or ("put" if "put" in signal or "short" in signal else "call" if signal else "")
+        ).strip().lower()
+        if option_side.startswith("c"):
+            option_side = "call"
+        elif option_side.startswith("p"):
+            option_side = "put"
+        elif option_side not in {"call", "put"}:
+            option_side = ""
+        spot = _optional_float_value(preferred.get("spot")) or finite_median(matched, "spot")
+        fair_vol = finite_median(matched, "fair_vol")
+        confidence = (
+            _optional_float_value(preferred.get("confidence"))
+            or _optional_float_value(candidate.get("confidence"))
+            or _optional_float_value(candidate.get("score"))
+        )
+        guard_status = str(
+            preferred.get("research_guard_status")
+            or candidate.get("research_guard_status")
+            or "unknown"
+        ).strip().lower()
+        context[symbol] = {
+            "spot": spot,
+            "fair_vol": fair_vol,
+            "fair_vol_source": source_path.name if source_path is not None else None,
+            "option_side": option_side,
+            "confidence": confidence,
+            "research_guard_status": guard_status,
+            "days_to_earnings": _clean_value(preferred.get("days_to_earnings")),
+            "regime": _clean_value(preferred.get("regime") or preferred.get("vix_regime")),
+            "normal_optedge_source": str(source_path) if source_path is not None else None,
+            "ticker_thesis_source": candidate.get("source"),
+        }
+    return context
 
 
 def _chain_grade_rank(row: dict[str, Any]) -> int:
@@ -20792,6 +20908,7 @@ tr.clickable-row:hover { background:#18201d; }
     <a class="btn" href="/artifact/robinhood-agentic-cycle" target="_blank">Cycle packet</a>
     <a class="btn" href="/artifact/robinhood-agentic-cycle-prompt" target="_blank">Cycle prompt</a>
     <a class="btn" href="/artifact/robinhood-live-order-tickets" target="_blank">Live tickets</a>
+    <a class="btn" href="/artifact/robinhood-full-chain-edge-scan" target="_blank">RH full-chain EV</a>
     <a class="btn" href="/artifact/agentic-paper-positions" target="_blank">Agentic paper</a>
     <button class="btn" type="button" id="refresh">Refresh status</button>
   </div>
@@ -20911,7 +21028,7 @@ tr.clickable-row:hover { background:#18201d; }
           <a class="btn" id="rh-authorize" href="/auth/robinhood/authorize" target="_blank" rel="noopener noreferrer" hidden>Open Robinhood approval</a>
           <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
           <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
-          <button class="btn primary" type="button" id="rh-scan-tickers" disabled>Scan 10 ticker ideas on Robinhood</button>
+          <button class="btn primary" type="button" id="rh-scan-tickers" disabled>Full-chain EV scan: 10 tickers</button>
           <button class="btn" type="button" id="rh-check-finalist" disabled>Verify queued contracts</button>
           <button class="btn" type="button" id="rh-capture-evidence">Capture checked evidence</button>
           <button class="btn" type="button" id="rh-sync-history" disabled>Sync 5 exact histories</button>
@@ -20921,7 +21038,7 @@ tr.clickable-row:hover { background:#18201d; }
           <div class="planner-field"><label for="rh-execution-account">Robinhood account for preview</label><select id="rh-execution-account" disabled><option value="">Run the top-10 check first</option></select></div>
         </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
-        <div class="privacy-note" style="margin-top:10px">The ticker scan starts with ten Optedge underlying ideas, finds one 3m+ provider-ranked contract per ticker when available, and checks each exact identity and quote on Robinhood. Verify queued contracts is the stricter execution-attested lane and exposes Choose &amp; Preview Buy only after every gate passes. Automatic mode is separate, session-armed, and never uses Codex or retries a broker order.</div>
+        <div class="privacy-note" style="margin-top:10px">The full-chain scan starts with ten normal Optedge ticker theses, enumerates Robinhood&apos;s returned 90-900 DTE contracts, rejects weak liquidity/delta/budget rows, runs every survivor through BS, CRR, Bjerksund-Stensland, spread-cost, confidence, lower-bound, and theoretical profit-probability checks, then rechecks the best three per ticker. Verify queued contracts is the stricter execution-attested lane and exposes Choose &amp; Preview Buy only after every normal gate passes. Automatic mode is separate, session-armed, and never uses Codex or retries a broker order.</div>
         <div class="brief-list" style="margin-top:12px">
           <h4>Trading control mode</h4>
           <div class="muted">Every cycle runs the normal Optedge research pipeline, then re-reads the selected Agentic account. One existing option is analyzed before any new entry. Automatic selling requires an exact lifecycle match and Optedge hard stop, hard target, or high-pressure close decision plus a fresh executable Robinhood quote.</div>
@@ -22034,41 +22151,70 @@ function renderRobinhoodBatch(data) {
   if ($('rh-order-preview')) $('rh-order-preview').innerHTML = '';
 }
 function robinhoodTickerEdgeScanHtml(data) {
-  const reports = Array.isArray(data && data.reports) ? data.reports : [];
-  if (!reports.length) return '<div class="privacy-note">No Optedge ticker ideas were available for the Robinhood research scan.</div>';
-  return `<div class="plan-callout ${Number(data.live_edge_count || 0) > 0 ? 'good' : 'warn'}">
-    <h3>Ten-ticker Robinhood edge scan</h3>
-    <p>${cell(data.ticker_count || reports.length)} tickers scanned; ${cell(data.contract_candidate_count || 0)} produced an exact 3m+ contract, ${cell(data.market_passed_count || 0)} passed Robinhood market checks, and ${cell(data.live_edge_count || 0)} retained positive model-estimated after-cost edge.</p>
+  const results = Array.isArray(data && data.results) ? data.results : [];
+  const summaries = Array.isArray(data && data.ticker_summaries) ? data.ticker_summaries : [];
+  const positive = Number(data && data.conservative_positive_count || 0);
+  const decision = data && data.decision === 'research_candidates_available';
+  const decisionLabel = data && data.decision_label
+    ? data.decision_label
+    : 'No full-chain result is available yet.';
+  return `<div class="plan-callout ${decision ? 'good' : 'warn'}">
+    <h3>Robinhood full-chain &rarr; Optedge EV funnel</h3>
+    <p><strong>${cell(decisionLabel)}</strong></p>
+    <div class="brief-grid">
+      <div class="brief-tile"><span>Optedge ticker theses</span><strong>${cell(data.ticker_count || summaries.length || 0)}</strong></div>
+      <div class="brief-tile"><span>RH instruments enumerated</span><strong>${cell(data.total_instruments || 0)}</strong></div>
+      <div class="brief-tile"><span>RH option quotes checked</span><strong>${cell(data.total_option_quotes || 0)}</strong></div>
+      <div class="brief-tile"><span>Hard-filter survivors</span><strong>${cell(data.hard_filter_survivor_count || 0)}</strong></div>
+      <div class="brief-tile"><span>Exact finalists rechecked</span><strong>${cell(data.rechecked_finalist_count || 0)}</strong></div>
+      <div class="brief-tile"><span>Conservative positive EV</span><strong>${cell(positive)}</strong></div>
+    </div>
     <div class="candidate-grid" style="margin-top:12px">
-      ${reports.map((report, index) => {
-        const candidate = report.candidate || {};
-        const quote = report.quote || {};
-        const edge = report.research_edge || {};
-        const thesis = report.ticker_thesis || {};
-        const market = report.market_check_passed === true;
-        const liveEdge = report.edge_check_passed === true;
-        const edgeLabel = edge.status === 'positive' ? pct(edge.after_cost_edge_pct) : (edge.status === 'negative' ? pct(edge.after_cost_edge_pct) : 'not proven');
-        const reason = (report.blockers || [])[0] || (liveEdge
-          ? 'Live quote passed and the exact contract retained positive estimated edge.'
-          : market
-            ? 'Robinhood market quality passed, but positive exact-contract edge is not proven.'
-            : 'No qualifying exact Robinhood contract passed.');
-        return `<article class="candidate-card ${liveEdge ? 'good' : (market ? 'warn' : 'bad')}">
-          <div class="candidate-rank">#${index + 1}</div>
-          <h4>${cell(candidate.label || candidate.symbol || 'Ticker unavailable')}</h4>
+      ${results.slice(0, 10).map((row, index) => {
+        const passed = row.exact_recheck_passed === true;
+        const conservative = passed && row.conservative_positive_edge === true;
+        const theoryOnly = Number(row.theoretical_ev_pct || 0) > 0 && !conservative;
+        const models = row.theoretical_models || {};
+        const reason = (row.recheck_blockers || [])[0] || row.pricing_blocker || (conservative
+          ? 'All displayed pricing checks are positive; normal Optedge execution gates still apply.'
+          : theoryOnly
+            ? 'Raw theoretical EV is positive, but the conservative lower-bound test did not clear.'
+            : 'Cash beats this contract under the current theoretical and cost checks.');
+        return `<article class="candidate-card ${conservative ? 'good' : (theoryOnly ? 'warn' : 'bad')}">
+          <div class="candidate-rank">#${cell(row.overall_rank || index + 1)}</div>
+          <h4>${cell(row.contract || row.symbol || 'Ticker unavailable')}</h4>
           <div class="brief-grid">
-            <div class="brief-tile"><span>Optedge ticker thesis</span><strong>${cell(thesis.score ?? '-')}</strong></div>
-            <div class="brief-tile"><span>Exact-contract edge</span><strong>${cell(edgeLabel)}</strong></div>
-            <div class="brief-tile"><span>Robinhood bid / ask</span><strong>${compactMoney(quote.bid_price, 2)} / ${compactMoney(quote.ask_price, 2)}</strong></div>
-            <div class="brief-tile"><span>Spread</span><strong>${pct(quote.spread_fraction)}</strong></div>
-            <div class="brief-tile"><span>OI / volume</span><strong>${cell(quote.open_interest)} / ${cell(quote.volume)}</strong></div>
-            <div class="brief-tile"><span>Verdict</span><strong>${liveEdge ? 'live edge research' : (market ? 'market fit only' : 'no qualifying contract')}</strong></div>
+            <div class="brief-tile"><span>Robinhood bid / ask</span><strong>${compactMoney(row.bid, 2)} / ${compactMoney(row.ask, 2)}</strong></div>
+            <div class="brief-tile"><span>Spread</span><strong>${pct(row.spread_fraction)}</strong></div>
+            <div class="brief-tile"><span>Quote age / fresh</span><strong>${row.quote_age_seconds == null ? '-' : Math.round(Number(row.quote_age_seconds)) + 's'} / ${row.quote_is_fresh ? 'yes' : 'no'}</strong></div>
+            <div class="brief-tile"><span>DTE / delta</span><strong>${cell(row.dte)} / ${Number(row.delta || 0).toFixed(2)}</strong></div>
+            <div class="brief-tile"><span>OI / volume</span><strong>${cell(row.open_interest)} / ${cell(row.volume)}</strong></div>
+            <div class="brief-tile"><span>Raw theoretical EV</span><strong>${pct(row.theoretical_ev_pct)}</strong></div>
+            <div class="brief-tile"><span>After-cost EV</span><strong>${pct(row.after_cost_ev_pct)}</strong></div>
+            <div class="brief-tile"><span>Conservative EV</span><strong>${pct(row.confidence_adjusted_after_cost_ev_pct)}</strong></div>
+            <div class="brief-tile"><span>Low-model bound</span><strong>${pct(row.ev_lower_bound_pct)}</strong></div>
+            <div class="brief-tile"><span>Theoretical profit odds</span><strong>${pct(row.theoretical_profit_probability)}</strong></div>
+            <div class="brief-tile"><span>BS / CRR / BJS</span><strong>${compactMoney(models.black_scholes, 2)} / ${compactMoney(models.crr, 2)} / ${compactMoney(models.bjerksund_stensland, 2)}</strong></div>
+            <div class="brief-tile"><span>Thesis match / confidence</span><strong>${row.thesis_aligned ? 'yes' : 'no'} / ${pct(row.thesis_confidence)}</strong></div>
+            <div class="brief-tile"><span>Verdict</span><strong>${conservative ? 'conservative positive EV' : (theoryOnly ? 'theoretical only' : 'no trade')}</strong></div>
+            <div class="brief-tile"><span>Exact recheck</span><strong>${passed ? 'passed' : 'blocked'}</strong></div>
           </div>
           <p class="muted">${cell(reason)}</p>
         </article>`;
       }).join('')}
     </div>
-    <div class="privacy-note">This is a one-shot research scan, not an execution queue. A result must independently enter the normal Optedge queue and clear validation, account, exposure, and risk checks before broker review.</div>
+    ${results.length ? '' : '<div class="privacy-note">No contract survived the full liquidity, DTE, delta, premium, and pricing funnel.</div>'}
+    ${summaries.length ? `<details style="margin-top:12px"><summary>Per-ticker chain coverage</summary>${table(summaries.map(row => ({
+      symbol: row.symbol,
+      status: row.status,
+      expirations: row.expirations,
+      instruments: row.instruments,
+      quotes: row.quotes,
+      survivors: row.hard_filter_survivors,
+      finalists: row.finalists,
+      blocker: row.error_code || (row.warnings || [])[0] || null
+    })), true)}</details>` : ''}
+    <div class="privacy-note">This one-shot lane enumerates Robinhood contracts, applies cheap hard filters, runs BS/CRR/BJS theoretical checks, subtracts spread cost, shrinks positive edge by Optedge confidence, uses the lowest model as a bound, and rechecks up to three finalists per ticker. A stale after-hours quote may remain visible as theoretical research but can never clear conservative EV. The scan never promotes a result or previews or places an order; an exact contract must still enter the normal queue and clear every evidence, account, exposure, risk, and broker-review gate.</div>
   </div>`;
 }
 function renderRobinhoodTickerEdgeScan(data) {
@@ -22319,7 +22465,7 @@ async function runRobinhoodFinalistCheck() {
 async function runRobinhoodTickerEdgeScan() {
   const button = $('rh-scan-tickers');
   if (button) button.disabled = true;
-  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Scanning ten Optedge ticker ideas for 3m+ contracts, then checking each exact finalist on Robinhood...';
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Enumerating the 3m+ Robinhood chains for ten Optedge ticker theses, filtering every returned quote, pricing survivors, and rechecking the best three per ticker...';
   try {
     const res = await fetch('/api/robinhood-scan-top-tickers', {method:'POST', body:JSON.stringify({limit:10})});
     const data = await res.json();
@@ -22329,7 +22475,7 @@ async function runRobinhoodTickerEdgeScan() {
       return;
     }
     renderRobinhoodTickerEdgeScan(data);
-    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Scanned ${Number(data.ticker_count || 0)} ticker idea(s): ${Number(data.contract_candidate_count || 0)} exact 3m+ contract(s), ${Number(data.market_passed_count || 0)} Robinhood market pass(es), ${Number(data.live_edge_count || 0)} live positive-edge research result(s). Nothing was previewed or sent.`;
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Scanned ${Number(data.ticker_count || 0)} ticker idea(s): enumerated ${Number(data.total_instruments || 0)} Robinhood instruments, checked ${Number(data.total_option_quotes || 0)} quotes, rechecked ${Number(data.rechecked_finalist_count || 0)} finalists, and found ${Number(data.conservative_positive_count || 0)} conservative positive-EV research result(s). ${data.decision === 'no_trade' ? 'No trade won this scan.' : 'Normal Optedge gates still apply.'} Nothing was previewed or sent.`;
   } finally {
     await loadRobinhoodConnection().catch(() => null);
   }
@@ -27434,32 +27580,23 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 return
             try:
                 limit = _int_param(str(body.get("limit") or "10"), 10, 1, 10)
-                provider_report = build_option_chain_batch(
+                selection = _bulk_chain_symbol_selection(
                     self.data_dir,
-                    symbols_limit=limit,
-                    contracts_per_symbol=1,
                     limit=limit,
-                    preset="swing",
-                    min_dte=SWING_EXECUTION_PROFILE.option_min_dte,
-                    max_dte=900,
-                    max_spread_pct=0.25,
-                    max_premium=500.0,
-                    min_open_interest=0,
                 )
-                result = check_top_ticker_option_edges(
+                candidates = selection.get("candidates") or []
+                result = check_full_chain_option_edges(
                     manager,
                     data_dir=self.data_dir,
-                    ticker_candidates=provider_report.get("candidates") or [],
-                    contract_rows=provider_report.get("rows") or [],
+                    ticker_candidates=candidates,
+                    pricing_context=_robinhood_full_chain_pricing_context(
+                        self.data_dir,
+                        candidates,
+                    ),
                     limit=limit,
                     write=True,
                 )
-                result["provider_summary"] = {
-                    "symbols_scanned": provider_report.get("symbols_scanned"),
-                    "successful_scans": provider_report.get("successful_scans"),
-                    "error_count": provider_report.get("error_count"),
-                    "source_counts": provider_report.get("source_counts") or {},
-                }
+                result["excluded_ticker_candidates"] = selection.get("excluded_candidates") or []
             except (RobinhoodConnectionError, RobinhoodFinalistCheckError) as exc:
                 self._send_json(
                     {

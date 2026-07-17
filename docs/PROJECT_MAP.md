@@ -232,7 +232,7 @@ that refactor has already happened.
 | `optedge/orchestrator.py` | Coordinates engines, fusion, risk controls, tracking, reports, and outputs. |
 | `optedge/robinhood_connection.py` | Bridges the synchronous cockpit to one bounded private asyncio lifecycle with fixed confirmed-option placement and no generic dispatcher, polling, or retries. |
 | `optedge/robinhood_exit_analysis.py` | Binds exact live broker holdings to fresh normal-Optedge lifecycle, ranked-thesis, stop/target, and learned exit-pressure decisions before any guarded close. |
-| `optedge/robinhood_finalist.py` | Resolves research-only contracts from ten Optedge ticker ideas and separately verifies up to ten unchanged execution-queue candidates against exact, short-lived Robinhood chain, contract, quote, price-cap, and liquidity evidence without broker writes. |
+| `optedge/robinhood_finalist.py` | Enumerates and EV-ranks bounded Robinhood chains for ten Optedge ticker theses, rechecks the best few exact quotes, and separately verifies up to ten unchanged execution-queue candidates without broker writes. |
 | `optedge/robinhood_mcp.py` | Implements official Robinhood MCP OAuth, OS-keyring credential storage, allowlisted reads and previews, plus one fixed confirmed-option placement boundary with no generic dispatcher. |
 | `optedge/robinhood_automation.py` | Runs the opt-in local account-analysis, approval, and guarded-automatic policy with expiring arming, daily limits, no generic broker access, and no automatic order retry. |
 | `optedge/robinhood_option_execution.py` | Provides exact-account portfolio analysis plus two-click or guarded single-option review and placement, final live revalidation, and narrowly gated long-option exits. |
@@ -339,7 +339,7 @@ that refactor has already happened.
 | `tests/test_robinhood_broker_snapshot.py` | Protects account-scoped broker snapshot redaction, atomic persistence, ledger integrity, and fail-closed parsing. |
 | `tests/test_robinhood_connection.py` | Protects the bounded single-loop Robinhood connection lifecycle, sanitized status, OAuth callback, and tool-call boundaries. |
 | `tests/test_robinhood_exit_analysis.py` | Protects exact broker/lifecycle identity, normal-Optedge stop/target authority, fresh research provenance, and fail-closed handling of unmanaged positions. |
-| `tests/test_robinhood_finalist.py` | Protects exact ranked-candidate identity, the ten-row cap, bounded contract resolution, live quote gates, source-digest binding, and the no-order research boundary. |
+| `tests/test_robinhood_finalist.py` | Protects full-chain enumeration, hard filters, theoretical/conservative EV, finalist rechecks, exact ranked-candidate identity, source-digest binding, and the no-order research boundary. |
 | `tests/test_robinhood_mcp.py` | Protects official-endpoint OAuth, keyring-only credential storage, schema checks, redaction, read/review separation, and fixed confirmed-option placement policy. |
 | `tests/test_robinhood_automation.py` | Protects approval-only choices, explicit arming, account-first analysis, one-shot automatic entry/exit, daily limits, restart disarming, and no candidate retry. |
 | `tests/test_robinhood_option_execution.py` | Protects Robinhood option preview, confirmation-token, placement, redaction, and fail-closed execution behavior. |
