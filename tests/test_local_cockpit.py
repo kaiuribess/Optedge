@@ -2769,7 +2769,18 @@ def test_trade_desk_contract_is_manual_and_versioned():
         cockpit_module.build_edge_lab_report = edge_builder
         cockpit_module.build_best_setups = best_builder
         with tempfile.TemporaryDirectory() as td:
-            desk = build_trade_desk(Path(td))
+            data_dir = Path(td)
+            full_chain_scan = {
+                "schema": "optedge_robinhood_full_chain_edge_scan_v1",
+                "decision": "no_trade",
+                "ticker_count": 10,
+                "results": [],
+            }
+            (data_dir / "robinhood_full_chain_edge_scan.json").write_text(
+                json.dumps(full_chain_scan),
+                encoding="utf-8",
+            )
+            desk = build_trade_desk(data_dir)
     finally:
         cockpit_module.build_command_center = old_command
         cockpit_module.build_agentic_autopilot_status = old_autopilot
@@ -2787,6 +2798,7 @@ def test_trade_desk_contract_is_manual_and_versioned():
     assert desk["candidate_comparison"]["rows"][-1]["candidate_id"] == "no_trade"
     assert desk["candidate_comparison"]["broker_action_enabled"] is False
     assert desk["scan_handoff"]["schema"] == cockpit_module.DASHBOARD_HANDOFF_SCHEMA
+    assert desk["robinhood_full_chain_edge_scan"] == full_chain_scan
     assert calls == {"command": 1, "broker": 1, "edge": 1, "best": 1}
 
 

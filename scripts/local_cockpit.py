@@ -73,6 +73,8 @@ from optedge.robinhood_exit_analysis import (  # noqa: E402
     analyze_robinhood_holdings_with_optedge,
 )
 from optedge.robinhood_finalist import (  # noqa: E402
+    FULL_CHAIN_EDGE_SCAN_FILE,
+    FULL_CHAIN_EDGE_SCAN_SCHEMA,
     RobinhoodFinalistCheckError,
     apply_finalist_check_to_sources,
     check_best_option_finalist,
@@ -15961,6 +15963,12 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     account_drawdown = build_account_drawdown_overview(data_dir)
     evidence_mission = build_evidence_mission_control(data_dir, edge=edge)
     robinhood_finalist_check = load_finalist_check_status(data_dir)
+    full_chain_scan = _read_json(data_dir / FULL_CHAIN_EDGE_SCAN_FILE)
+    if (
+        not isinstance(full_chain_scan, dict)
+        or full_chain_scan.get("schema") != FULL_CHAIN_EDGE_SCAN_SCHEMA
+    ):
+        full_chain_scan = {}
     best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
     scan_handoff = build_dashboard_handoff(data_dir)
     comparison_source = scan_handoff if scan_handoff.get("count") else best_setups
@@ -15986,6 +15994,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "evidence_mission": evidence_mission,
         "robinhood": broker,
         "robinhood_finalist_check": robinhood_finalist_check,
+        "robinhood_full_chain_edge_scan": full_chain_scan,
         "scan_handoff": scan_handoff_payload,
         "candidate_comparison": comparison,
         "notes": [
@@ -22585,6 +22594,7 @@ async function loadTradeDesk(force=false) {
   const drawdown = data.account_drawdown || {};
   const mission = data.evidence_mission || {};
   const finalist = data.robinhood_finalist_check || {};
+  const fullChainScan = data.robinhood_full_chain_edge_scan || {};
   const handoff = data.scan_handoff || {};
   const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
@@ -22632,6 +22642,7 @@ async function loadTradeDesk(force=false) {
   $('trade-desk-focus').innerHTML = tradeDeskFocus(command, comparison);
   $('trade-desk-robinhood').innerHTML = tradeDeskRobinhood(broker);
   renderRobinhoodFinalist(finalist);
+  if (Object.keys(fullChainScan).length) renderRobinhoodTickerEdgeScan(fullChainScan);
   $('trade-desk-status-text').textContent = `Snapshot ${cell(data.snapshot_id || 'local')} | strategy ${cell(data.strategy_version || 'current')} | ${cell(data.generated_at || '')}`;
   document.querySelectorAll('.desk-focus-action').forEach(btn => btn.addEventListener('click', () => routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '')));
   document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => loadCandidateIntoPlanner(latestTradeDeskCandidate)));
