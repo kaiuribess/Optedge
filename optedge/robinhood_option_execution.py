@@ -236,7 +236,9 @@ class RobinhoodOptionExecutionService:
             key = _account_key(number)
             ephemeral[key] = number
             agentic = _truth(account.get("agentic_allowed"))
-            active = account.get("active") is not False and _text(account.get("state")).lower() not in {
+            active = account.get("active") is not False and _text(
+                account.get("state")
+            ).lower() not in {
                 "closed",
                 "disabled",
                 "inactive",
@@ -262,7 +264,12 @@ class RobinhoodOptionExecutionService:
             "account_data_persisted": False,
         }
 
-    def _selected_account(self, account_key: str) -> tuple[str, dict[str, Any]]:
+    def _selected_account(
+        self,
+        account_key: str,
+        *,
+        require_live_options: bool = True,
+    ) -> tuple[str, dict[str, Any]]:
         listing = self.account_choices()
         choice = next(
             (row for row in listing["accounts"] if row.get("account_key") == account_key),
@@ -272,7 +279,9 @@ class RobinhoodOptionExecutionService:
             number = self._accounts.get(account_key)
         if not isinstance(choice, dict) or not number:
             raise RobinhoodOptionExecutionError("account_choice_invalid")
-        if choice.get("eligible_for_live_options") is not True:
+        if choice.get("active") is not True:
+            raise RobinhoodOptionExecutionError("active_account_required")
+        if require_live_options and choice.get("eligible_for_live_options") is not True:
             raise RobinhoodOptionExecutionError("agentic_options_account_required")
         return number, choice
 
@@ -322,7 +331,9 @@ class RobinhoodOptionExecutionService:
                 if quantity is None:
                     raise RobinhoodOptionExecutionError("broker_position_quantity_invalid")
                 if abs(quantity) > 1e-12:
-                    raise RobinhoodOptionExecutionError("direct_option_placement_requires_flat_account")
+                    raise RobinhoodOptionExecutionError(
+                        "direct_option_placement_requires_flat_account"
+                    )
         return {
             "total_value": round(total_value, 2),
             "conservative_buying_power": round(available, 2),
@@ -335,10 +346,19 @@ class RobinhoodOptionExecutionService:
         *,
         account_key: str,
         now: datetime | None = None,
+        allow_read_only_account: bool = False,
     ) -> dict[str, Any]:
-        """Read one live Agentic account and classify every nonzero holding once."""
+        """Read one active account and classify every nonzero holding once.
+
+        Standard accounts are accepted only through the explicit read-only lane.
+        Review and placement callers retain the Agentic-account requirement.
+        """
         current = _now(now)
-        account_number, account = self._selected_account(account_key)
+        account_number, account = self._selected_account(
+            account_key,
+            require_live_options=not allow_read_only_account,
+        )
+        account_execution_eligible = account.get("eligible_for_live_options") is True
         arguments = {"account_number": account_number}
         portfolio = _portfolio_values(
             self.manager.call_read_tool("get_portfolio", arguments, timeout_seconds=12)
@@ -418,10 +438,17 @@ class RobinhoodOptionExecutionService:
             bid = _number(quote.get("bid_price") or quote.get("bid"))
             ask = _number(quote.get("ask_price") or quote.get("ask"))
             mark = _number(
-                quote.get("mark_price")
-                or quote.get("adjusted_mark_price")
-                or quote.get("mark")
+                quote.get("mark_price") or quote.get("adjusted_mark_price") or quote.get("mark")
             )
+            implied_volatility = _number(
+                quote.get("implied_volatility") or quote.get("impliedVolatility")
+            )
+            delta = _number(quote.get("delta"))
+            gamma = _number(quote.get("gamma"))
+            theta = _number(quote.get("theta"))
+            vega = _number(quote.get("vega"))
+            open_interest = _number(quote.get("open_interest") or quote.get("openInterest"))
+            volume = _number(quote.get("volume") or quote.get("daily_volume"))
             quote_at = _parse_timestamp(quote.get("updated_at") or quote.get("quote_at"))
             quote_age_seconds = (
                 (current - quote_at).total_seconds() if quote_at is not None else None
@@ -459,7 +486,7 @@ class RobinhoodOptionExecutionService:
                 signals.append("hard_loss_limit")
             if dte is not None and dte <= AUTOMATED_EXPIRY_EXIT_DAYS:
                 signals.append("expiration_risk")
-            broker_close_ready = bool(
+            broker_market_ready = bool(
                 exact_identity
                 and quote_ready
                 and position_type == "long"
@@ -469,6 +496,7 @@ class RobinhoodOptionExecutionService:
                 and pending_quantity <= 1e-12
                 and not working_orders
             )
+            broker_close_ready = bool(account_execution_eligible and broker_market_ready)
             action = (
                 "take_profit"
                 if "profit_target" in signals
@@ -489,6 +517,10 @@ class RobinhoodOptionExecutionService:
                 blockers.append("account has a working order")
             if position_type != "long":
                 blockers.append("only long option positions are supported")
+            if not account_execution_eligible:
+                blockers.append(
+                    "standard account is read-only in Optedge; Robinhood preview and placement are disabled"
+                )
             holdings.append(
                 {
                     "asset": "option",
@@ -505,6 +537,18 @@ class RobinhoodOptionExecutionService:
                     "bid": round(bid, 4) if bid is not None else None,
                     "ask": round(ask, 4) if ask is not None else None,
                     "mark": round(mark, 4) if mark is not None else None,
+                    "implied_volatility": (
+                        round(implied_volatility, 6) if implied_volatility is not None else None
+                    ),
+                    "delta": round(delta, 6) if delta is not None else None,
+                    "gamma": round(gamma, 6) if gamma is not None else None,
+                    "theta": round(theta, 6) if theta is not None else None,
+                    "vega": round(vega, 6) if vega is not None else None,
+                    "open_interest": (
+                        int(round(open_interest)) if open_interest is not None else None
+                    ),
+                    "volume": int(round(volume)) if volume is not None else None,
+                    "quote_updated_at": quote_at.isoformat() if quote_at is not None else None,
                     "spread_fraction": round(spread, 6) if spread is not None else None,
                     "quote_age_seconds": (
                         round(quote_age_seconds, 1) if quote_age_seconds is not None else None
@@ -517,6 +561,7 @@ class RobinhoodOptionExecutionService:
                     "signals": [],
                     "broker_reference_action": action,
                     "broker_reference_signals": signals,
+                    "broker_market_ready": broker_market_ready,
                     "broker_close_ready": broker_close_ready,
                     "auto_exit_eligible": False,
                     "blockers": blockers,
@@ -547,11 +592,19 @@ class RobinhoodOptionExecutionService:
             "option_position_count": len(option_positions),
             "equity_position_count": len(equity_positions),
             "working_order_count": len(working_orders),
-            "new_option_entry_allowed": not option_positions
+            "new_option_entry_allowed": account_execution_eligible
+            and not option_positions
             and not equity_positions
             and not working_orders,
             "holdings": holdings,
             "automatic_exit_candidate_count": 0,
+            "analysis_scope": (
+                "agentic_execution_account"
+                if account_execution_eligible
+                else "standard_account_read_only"
+            ),
+            "read_only_account_analysis": not account_execution_eligible,
+            "broker_actions_authorized": 0,
             "does_not_place_orders": True,
         }
         return sanitize_public_data(analysis, account_numbers=[account_number])

@@ -188,6 +188,54 @@ def test_portfolio_analysis_requires_fresh_profit_or_hard_risk_signal(tmp_path: 
     assert analysis["holdings"][0]["unrealized_return_fraction"] == 0.45
 
 
+class _StandardPositionManager(_PositionManager):
+    def call_read_tool(self, name: str, arguments: dict, *, timeout_seconds: float):
+        if name == "get_accounts":
+            return {
+                "data": {
+                    "accounts": [
+                        {
+                            "account_number": RAW_ACCOUNT,
+                            "agentic_allowed": False,
+                            "active": True,
+                            "option_level": "option_level_2",
+                        }
+                    ]
+                }
+            }
+        return super().call_read_tool(name, arguments, timeout_seconds=timeout_seconds)
+
+
+def test_standard_account_has_explicit_read_only_analysis_lane(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(execution, "check_best_option_finalist", lambda *args, **kwargs: _report())
+    manager = _StandardPositionManager()
+    service = RobinhoodOptionExecutionService(manager, data_dir=tmp_path)
+    choice = service.account_choices()["accounts"][0]
+
+    with pytest.raises(RobinhoodOptionExecutionError, match="agentic_options_account_required"):
+        service.portfolio_analysis(account_key=choice["account_key"], now=NOW)
+
+    analysis = service.portfolio_analysis(
+        account_key=choice["account_key"],
+        now=NOW,
+        allow_read_only_account=True,
+    )
+    holding = analysis["holdings"][0]
+    assert analysis["analysis_scope"] == "standard_account_read_only"
+    assert analysis["read_only_account_analysis"] is True
+    assert analysis["new_option_entry_allowed"] is False
+    assert analysis["broker_actions_authorized"] == 0
+    assert holding["broker_market_ready"] is True
+    assert holding["broker_close_ready"] is False
+    assert holding["auto_exit_eligible"] is False
+    assert any("read-only" in blocker for blocker in holding["blockers"])
+
+    with pytest.raises(RobinhoodOptionExecutionError, match="agentic_options_account_required"):
+        service.review(candidate_index=0, account_key=choice["account_key"], now=NOW)
+    assert manager.review_calls == []
+    assert manager.place_calls == []
+
+
 def test_automated_exit_still_reviews_and_places_exact_close_once(tmp_path: Path):
     manager = _PositionManager()
     service = RobinhoodOptionExecutionService(manager, data_dir=tmp_path)

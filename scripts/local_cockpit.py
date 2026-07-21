@@ -25,6 +25,7 @@ import secrets
 import shutil
 import struct
 import sys
+import threading
 import time
 import webbrowser
 from collections.abc import Mapping
@@ -48,6 +49,7 @@ if str(ROOT_BOOTSTRAP) not in sys.path:
     sys.path.insert(0, str(ROOT_BOOTSTRAP))
 
 import data_provider  # noqa: E402
+from config import RISK_FREE_RATE_DEFAULT  # noqa: E402
 from engines import cboe_symbol_data as cboe_symbol_data_engine  # noqa: E402
 from engines import dark_pool as dark_pool_engine  # noqa: E402
 from engines import sec_ftd as sec_ftd_engine  # noqa: E402
@@ -101,6 +103,7 @@ from optedge.strategy_profile import (  # noqa: E402
     SWING_EXECUTION_PROFILE,
     is_known_index_option_symbol,
 )
+from pricing_models import all_models, ensemble_theo  # noqa: E402
 from risk.account_drawdown import (  # noqa: E402
     POLICY_VERSION as ACCOUNT_DRAWDOWN_POLICY_VERSION,
 )
@@ -188,6 +191,11 @@ LIVE_QUOTE_MAX_AGE_SECONDS = 120
 EQUITY_REVIEW_MAX_SPREAD_PCT = 0.01
 ACCOUNT_EQUITY_OVERSTATEMENT_TOLERANCE_PCT = 0.01
 COCKPIT_CSRF_TOKEN = secrets.token_urlsafe(32)
+ROBINHOOD_ALL_ACCOUNT_ANALYSIS_SCHEMA = "optedge_robinhood_all_account_analysis_v1"
+ROBINHOOD_ALL_ACCOUNT_ANALYSIS_FILE = "robinhood_all_account_position_analysis.json"
+ROBINHOOD_POSITION_RESEARCH_DIRNAME = "robinhood_position_analysis"
+MAX_ROBINHOOD_POSITION_RESEARCH_SYMBOLS = 25
+_ROBINHOOD_POSITION_ANALYSIS_LOCK = threading.Lock()
 _REPORT_MEMO: contextvars.ContextVar[dict[tuple[str, str], Any] | None] = contextvars.ContextVar(
     "optedge_report_memo", default=None
 )
@@ -4050,12 +4058,8 @@ def _bulk_chain_symbol_selection(data_dir: Path, query: str = "", limit: int = 8
                 if isinstance(row, dict)
                 else None
             ),
-            "direction": _clean_value(row.get("direction"))
-            if isinstance(row, dict)
-            else None,
-            "confidence": _clean_value(row.get("confidence"))
-            if isinstance(row, dict)
-            else None,
+            "direction": _clean_value(row.get("direction")) if isinstance(row, dict) else None,
+            "confidence": _clean_value(row.get("confidence")) if isinstance(row, dict) else None,
             "research_guard_status": _clean_value(row.get("research_guard_status"))
             if isinstance(row, dict)
             else None,
@@ -4237,7 +4241,11 @@ def _robinhood_full_chain_pricing_context(
         preferred: dict[str, Any] = {}
         if not matched.empty:
             sort_col = next(
-                (column for column in ("trade_score", "rank_score", "fused_score") if column in matched),
+                (
+                    column
+                    for column in ("trade_score", "rank_score", "fused_score")
+                    if column in matched
+                ),
                 None,
             )
             if sort_col:
@@ -4249,9 +4257,7 @@ def _robinhood_full_chain_pricing_context(
                 subset = frame[frame["ticker"].astype(str).str.upper() == symbol]
                 if subset.empty:
                     continue
-                preferred = {
-                    str(key): value for key, value in subset.iloc[0].to_dict().items()
-                }
+                preferred = {str(key): value for key, value in subset.iloc[0].to_dict().items()}
                 break
 
         def finite_median(frame: pd.DataFrame, column: str) -> float | None:
@@ -4262,12 +4268,16 @@ def _robinhood_full_chain_pricing_context(
             return float(values.median()) if not values.empty else None
 
         signal = str(preferred.get("signal") or "").strip().lower()
-        option_side = str(
-            candidate.get("option_side")
-            or preferred.get("side")
-            or preferred.get("option_side")
-            or ("put" if "put" in signal or "short" in signal else "call" if signal else "")
-        ).strip().lower()
+        option_side = (
+            str(
+                candidate.get("option_side")
+                or preferred.get("side")
+                or preferred.get("option_side")
+                or ("put" if "put" in signal or "short" in signal else "call" if signal else "")
+            )
+            .strip()
+            .lower()
+        )
         if option_side.startswith("c"):
             option_side = "call"
         elif option_side.startswith("p"):
@@ -4281,11 +4291,15 @@ def _robinhood_full_chain_pricing_context(
             or _optional_float_value(candidate.get("confidence"))
             or _optional_float_value(candidate.get("score"))
         )
-        guard_status = str(
-            preferred.get("research_guard_status")
-            or candidate.get("research_guard_status")
-            or "unknown"
-        ).strip().lower()
+        guard_status = (
+            str(
+                preferred.get("research_guard_status")
+                or candidate.get("research_guard_status")
+                or "unknown"
+            )
+            .strip()
+            .lower()
+        )
         context[symbol] = {
             "spot": spot,
             "fair_vol": fair_vol,
@@ -5216,8 +5230,7 @@ def _dashboard_handoff_lineage(
         for lane_name in ("manual_review_candidates", "review_only_entry_candidates"):
             rows = cycle.get(lane_name) if isinstance(cycle.get(lane_name), list) else []
             if any(
-                isinstance(row, dict) and _agentic_contract_key(row) == finalist_key
-                for row in rows
+                isinstance(row, dict) and _agentic_contract_key(row) == finalist_key for row in rows
             ):
                 lane = lane_name
                 break
@@ -5250,7 +5263,9 @@ def _dashboard_handoff_lineage(
     if not finalist:
         detail = "No 3m+ option finalist is bound to the latest local review queue."
     elif matched is not None:
-        detail = "The Robinhood finalist is the same exact contract shown in the generated dashboard."
+        detail = (
+            "The Robinhood finalist is the same exact contract shown in the generated dashboard."
+        )
     else:
         detail = (
             "The Robinhood finalist came from the 3m+ chain-enrichment stage because the generated "
@@ -5328,7 +5343,9 @@ def build_dashboard_handoff(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         latest_path = _latest_file(data_dir, f"{prefix}_*.parquet")
         frame = _read_parquet(exact_path if exact_path.exists() else None)
         if asset == "option" and side is not None and not frame.empty:
-            side_values = frame.get("side", pd.Series("", index=frame.index)).astype(str).str.lower()
+            side_values = (
+                frame.get("side", pd.Series("", index=frame.index)).astype(str).str.lower()
+            )
             frame = frame[side_values == side].copy()
         records: list[dict[str, Any]] = []
         for dashboard_rank, (_, row) in enumerate(frame.iterrows(), start=1):
@@ -5417,9 +5434,13 @@ def build_dashboard_handoff(data_dir: Path = DATA_DIR) -> dict[str, Any]:
             "This dashboard is demo/hybrid; synthetic option or sentiment inputs remain visible but cannot authorize Robinhood review."
         )
     if duplicate_keys:
-        warnings.append(f"{len(duplicate_keys)} duplicate dashboard candidate identity key(s) detected.")
+        warnings.append(
+            f"{len(duplicate_keys)} duplicate dashboard candidate identity key(s) detected."
+        )
     if missing_identity_count:
-        warnings.append(f"{missing_identity_count} dashboard candidate row(s) lack a stable identity.")
+        warnings.append(
+            f"{missing_identity_count} dashboard candidate row(s) lack a stable identity."
+        )
     lineage = _dashboard_handoff_lineage(data_dir, by_asset["option"])
     snapshot_age = _iso_age_minutes(snapshot_at)
     stale = snapshot_age is None or snapshot_age > STALE_SNAPSHOT_MINUTES
@@ -7267,9 +7288,7 @@ def build_swing_scout(
 
 
 def _suggestion_text(row: dict[str, Any]) -> str:
-    return " ".join(
-        str(row.get(key) or "") for key in ("symbol", "label", "name", "query")
-    ).lower()
+    return " ".join(str(row.get(key) or "") for key in ("symbol", "label", "name", "query")).lower()
 
 
 def _add_suggestion(
@@ -10614,6 +10633,18 @@ def _atomic_json_list_write(path: Path, rows: list[Any]) -> None:
     temp.replace(path)
     verified = _read_json(path)
     if not isinstance(verified, list) or verified != rows:
+        raise OSError(f"atomic JSON verification failed for {path.name}")
+
+
+def _atomic_json_object_write(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    serialized = json.dumps(value, indent=2, sort_keys=True, default=str)
+    normalized = json.loads(serialized)
+    temp.write_text(serialized, encoding="utf-8")
+    temp.replace(path)
+    verified = _read_json(path)
+    if not isinstance(verified, dict) or verified != normalized:
         raise OSError(f"atomic JSON verification failed for {path.name}")
 
 
@@ -15955,6 +15986,681 @@ def build_account_drawdown_overview(data_dir: Path = DATA_DIR) -> dict[str, Any]
     }
 
 
+_ROBINHOOD_POSITION_LAYER_FIELDS: dict[str, tuple[str, ...]] = {
+    "news": (
+        "n_24h",
+        "n_7d",
+        "news_sent_24h",
+        "news_sent_7d",
+        "news_delta",
+        "news_velocity",
+        "top_headline",
+        "news_source",
+        "news_provider_count",
+    ),
+    "sentiment": (
+        "mentions",
+        "sentiment_now",
+        "sentiment_prev",
+        "sentiment_delta",
+        "velocity",
+        "ups",
+    ),
+    "earnings": (
+        "next_earnings_date",
+        "days_to_earnings",
+        "last_eps_surprise_pct",
+        "earnings_score",
+        "post_earnings_window",
+    ),
+    "fundamentals": (
+        "rev_growth",
+        "gross_margin",
+        "op_margin",
+        "pe",
+        "fwd_pe",
+        "ps",
+        "ev_ebitda",
+        "fcf_yield",
+        "market_cap",
+        "classification",
+        "fund_score",
+    ),
+    "insider": (
+        "insider_score",
+        "buys_value",
+        "sells_value",
+        "n_buys",
+        "n_sells",
+    ),
+    "analyst": (
+        "analyst_score",
+        "analyst_strong_buy",
+        "analyst_buy",
+        "analyst_hold",
+        "analyst_sell",
+        "analyst_strong_sell",
+        "analyst_total",
+        "analyst_avg",
+        "analyst_momentum",
+        "analyst_period",
+    ),
+    "value": (
+        "value_score",
+        "value_bucket",
+        "earnings_yield",
+        "fcf_yield",
+        "graham_score",
+        "magic_rank",
+    ),
+    "congress": (
+        "congress_score",
+        "congress_buys_n",
+        "congress_sells_n",
+        "congress_buys_dollar",
+        "congress_sells_dollar",
+        "congress_n_reps",
+        "congress_n_sens",
+        "congress_top_buyer",
+    ),
+    "social": (
+        "social_score",
+        "stocktwits_n",
+        "stocktwits_avg_sent",
+        "stocktwits_n_bull",
+        "stocktwits_n_bear",
+        "twitter_score",
+        "twitter_n",
+        "twitter_excerpt",
+    ),
+    "sec_ftd": (
+        "sec_ftd_score",
+        "sec_ftd_latest_date",
+        "sec_ftd_fails",
+        "sec_ftd_dollars",
+        "sec_ftd_active_days",
+        "sec_ftd_note",
+    ),
+    "ranked_options": (
+        "side",
+        "strike",
+        "expiry",
+        "dte",
+        "spot",
+        "bid",
+        "ask",
+        "mid",
+        "spread_pct",
+        "open_interest",
+        "volume",
+        "delta",
+        "iv_market",
+        "fair_vol",
+        "regime",
+        "theo_bs",
+        "theo_crr",
+        "theo_bjs",
+        "net_edge_pct",
+        "buyer_edge_pct",
+        "prob_win",
+        "confidence",
+        "fused_score",
+        "rank_score",
+        "trade_score",
+        "trade_status",
+        "trade_gate_reason",
+        "stop_price",
+        "target_price",
+        "next_catalyst_date",
+        "days_to_catalyst",
+        "catalyst_type",
+        "tech_score",
+        "rsi",
+        "short_int_score",
+        "dark_pool_score",
+        "sector_rs_score",
+        "gtrends_score",
+        "top_headline",
+        "news_sent_24h",
+        "news_delta",
+        "insider_score",
+        "reasoning",
+        "risks",
+    ),
+}
+
+
+def _latest_position_research_layer(
+    data_dir: Path,
+    layer: str,
+    symbol: str,
+    *,
+    holding: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    paths = sorted(
+        Path(data_dir).glob(f"{layer}_*.parquet"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not paths:
+        return {"available": False, "source": None, "match_quality": "missing"}
+    path = paths[0]
+    try:
+        frame = pd.read_parquet(path)
+    except Exception:
+        return {"available": False, "source": path.name, "match_quality": "unreadable"}
+    symbol_column = next(
+        (column for column in ("ticker", "symbol", "chain_symbol") if column in frame.columns),
+        None,
+    )
+    if symbol_column is None:
+        return {"available": False, "source": path.name, "match_quality": "no_symbol_column"}
+    matches = frame[
+        frame[symbol_column].astype(str).str.strip().str.upper().eq(str(symbol).upper())
+    ].copy()
+    symbol_row_count = len(matches)
+    match_quality = "symbol"
+    if layer == "ranked_options" and not matches.empty and holding:
+        exact = matches.copy()
+        side = str(holding.get("option_type") or holding.get("side") or "").strip().lower()
+        expiry = str(holding.get("expiry") or "").strip()[:10]
+        strike = _float_value(holding.get("strike"), default=math.nan)
+        if side and "side" in exact.columns:
+            exact = exact[exact["side"].astype(str).str.strip().str.lower().eq(side)]
+        if expiry and "expiry" in exact.columns:
+            exact = exact[exact["expiry"].astype(str).str.slice(0, 10).eq(expiry)]
+        if math.isfinite(strike) and "strike" in exact.columns:
+            exact_strikes = pd.to_numeric(exact["strike"], errors="coerce")
+            exact = exact[(exact_strikes - strike).abs() <= 1e-6]
+        if not exact.empty:
+            matches = exact
+            match_quality = "exact_contract"
+        else:
+            match_quality = "symbol_best_only"
+    if matches.empty:
+        return {
+            "available": False,
+            "source": path.name,
+            "match_quality": "missing",
+            "symbol_row_count": symbol_row_count,
+        }
+    for sort_column in ("trade_score", "rank_score", "confidence"):
+        if sort_column in matches.columns:
+            matches[sort_column] = pd.to_numeric(matches[sort_column], errors="coerce")
+            matches = matches.sort_values(sort_column, ascending=False, kind="mergesort")
+            break
+    row = matches.iloc[0].to_dict()
+    fields = _ROBINHOOD_POSITION_LAYER_FIELDS[layer]
+    values = {
+        field: _clean_value(row.get(field))
+        for field in fields
+        if field in row and _clean_value(row.get(field)) is not None
+    }
+    try:
+        age_minutes = max(0.0, (time.time() - path.stat().st_mtime) / 60.0)
+    except OSError:
+        age_minutes = None
+    return {
+        "available": True,
+        "source": path.name,
+        "age_minutes": round(age_minutes, 2) if age_minutes is not None else None,
+        "match_quality": match_quality,
+        "symbol_row_count": symbol_row_count,
+        "values": values,
+    }
+
+
+def _position_symbol_research(
+    symbol: str,
+    data_dir: Path,
+    *,
+    holding: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    layers = {
+        layer: _latest_position_research_layer(
+            data_dir,
+            layer,
+            symbol,
+            holding=holding,
+        )
+        for layer in _ROBINHOOD_POSITION_LAYER_FIELDS
+    }
+    available = [name for name, row in layers.items() if row.get("available") is True]
+    return {
+        "symbol": symbol,
+        "available_layer_count": len(available),
+        "checked_layer_count": len(layers),
+        "available_layers": available,
+        "missing_layers": [name for name in layers if name not in available],
+        "layers": layers,
+    }
+
+
+def _exact_held_contract_theoretical(
+    holding: Mapping[str, Any],
+    symbol_research: Mapping[str, Any],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Price the exact held identity when the bounded chain snapshot omitted it."""
+    if str(holding.get("asset") or "").lower() != "option":
+        return {"available": False, "reason": "not_an_option"}
+    layers = symbol_research.get("layers")
+    layers = layers if isinstance(layers, Mapping) else {}
+    ranked = layers.get("ranked_options")
+    ranked = ranked if isinstance(ranked, Mapping) else {}
+    if ranked.get("match_quality") == "exact_contract":
+        return {
+            "available": True,
+            "status": "exact_scan_contract",
+            "identity_source": "normal_optedge_ranked_options",
+            "models": ranked.get("values") or {},
+            "theoretical_only": True,
+            "broker_actions_authorized": 0,
+        }
+    context = ranked.get("values")
+    context = context if isinstance(context, Mapping) else {}
+    spot = _float_value(context.get("spot"), default=math.nan)
+    fair_vol = _float_value(context.get("fair_vol"), default=math.nan)
+    strike = _float_value(holding.get("strike"), default=math.nan)
+    option_type = str(holding.get("option_type") or "").strip().lower()
+    expiry_text = str(holding.get("expiry") or "").strip()[:10]
+    try:
+        expiry = datetime.fromisoformat(expiry_text).date()
+        dte = (expiry - now.date()).days
+    except ValueError:
+        dte = 0
+    if (
+        not math.isfinite(spot)
+        or spot <= 0
+        or not math.isfinite(fair_vol)
+        or not 0.05 <= fair_vol <= 3.0
+        or not math.isfinite(strike)
+        or strike <= 0
+        or option_type not in {"call", "put"}
+        or dte <= 0
+    ):
+        return {
+            "available": False,
+            "status": "inputs_missing",
+            "reason": "Exact held-contract pricing needs valid spot, fair volatility, strike, side, and expiry inputs.",
+            "theoretical_only": True,
+        }
+    models = all_models(
+        spot,
+        strike,
+        max(dte / 365.25, 1 / 365.25),
+        RISK_FREE_RATE_DEFAULT,
+        fair_vol,
+        0.0,
+        option_type == "call",
+    )
+    models = {name: round(value, 6) for name, value in models.items() if name != "heston"}
+    ensemble = ensemble_theo(models)
+    ask = _float_value(holding.get("ask"), default=math.nan)
+    bid = _float_value(holding.get("bid"), default=math.nan)
+    mark = _float_value(holding.get("mark"), default=math.nan)
+    raw_ev = ensemble / ask - 1.0 if math.isfinite(ask) and ask > 0 else None
+    spread = ask - bid if math.isfinite(ask) and math.isfinite(bid) and ask >= bid else None
+    after_spread_ev = (
+        (ensemble - spread / 2.0) / ask - 1.0 if raw_ev is not None and spread is not None else None
+    )
+    return {
+        "available": True,
+        "status": "exact_identity_repriced",
+        "identity": {
+            "symbol": str(holding.get("symbol") or "").upper(),
+            "option_type": option_type,
+            "strike": strike,
+            "expiry": expiry_text,
+            "dte": dte,
+        },
+        "models": {
+            "black_scholes": models.get("bs"),
+            "crr": models.get("crr"),
+            "bjerksund_stensland": models.get("bjs"),
+            "ensemble": round(ensemble, 6) if math.isfinite(ensemble) else None,
+        },
+        "market": {
+            "bid": bid if math.isfinite(bid) else None,
+            "ask": ask if math.isfinite(ask) else None,
+            "mark": mark if math.isfinite(mark) else None,
+        },
+        "inputs": {
+            "spot": spot,
+            "spot_source": "normal_optedge_option_chain_context",
+            "fair_vol": fair_vol,
+            "fair_vol_source": "normal_optedge_historical_volatility",
+            "risk_free_rate": RISK_FREE_RATE_DEFAULT,
+            "dividend_yield_assumption": 0.0,
+        },
+        "raw_theoretical_ev_fraction": round(raw_ev, 6) if raw_ev is not None else None,
+        "after_half_spread_ev_fraction": (
+            round(after_spread_ev, 6) if after_spread_ev is not None else None
+        ),
+        "theoretical_only": True,
+        "conservative_edge_proven": False,
+        "broker_actions_authorized": 0,
+        "warnings": [
+            "The exact held contract was absent from the bounded normal chain snapshot, so Optedge repriced its exact identity from symbol-level spot and fair-volatility context.",
+            "This is theoretical management context, not a fresh executable edge or an order signal.",
+        ],
+    }
+
+
+def _position_lookup_summary(report: Mapping[str, Any], report_url: str) -> dict[str, Any]:
+    brief = report.get("brief") if isinstance(report.get("brief"), Mapping) else {}
+    return {
+        "generated_at": report.get("generated_at"),
+        "report_url": report_url,
+        "total_hits": int(report.get("total_hits") or 0),
+        "best_idea": brief.get("best_idea"),
+        "price_snapshot": brief.get("price_snapshot"),
+        "data_coverage": brief.get("data_coverage"),
+        "market_structure": brief.get("market_structure"),
+        "recent_sec_filings": brief.get("recent_sec_filings"),
+        "sec_fundamentals": brief.get("sec_fundamentals"),
+        "positive_factors": brief.get("top_positive_factors") or [],
+        "negative_factors": brief.get("top_negative_factors") or [],
+        "risk_warnings": brief.get("risk_warnings") or [],
+        "research_action": brief.get("research_action"),
+        "swing_verdict": brief.get("swing_verdict"),
+        "validation": brief.get("validation"),
+        "sources": report.get("sources") or {},
+    }
+
+
+def load_robinhood_all_account_analysis(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+    report = _read_json(Path(data_dir) / ROBINHOOD_ALL_ACCOUNT_ANALYSIS_FILE)
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != ROBINHOOD_ALL_ACCOUNT_ANALYSIS_SCHEMA
+    ):
+        return {}
+    return report
+
+
+def analyze_all_robinhood_accounts_with_optedge(
+    manager: Any,
+    execution_service: RobinhoodOptionExecutionService,
+    *,
+    data_dir: Path = DATA_DIR,
+    snapshot_syncer: Any = None,
+    research_job_creator: Any = None,
+    research_runner: Any = None,
+    lookup_builder: Any = None,
+    lookup_saver: Any = None,
+    exit_analyzer: Any = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Analyze every active Robinhood holding through one isolated full Optedge pass."""
+    if not _ROBINHOOD_POSITION_ANALYSIS_LOCK.acquire(blocking=False):
+        raise RobinhoodOptionExecutionError("position_analysis_already_running")
+    try:
+        data_dir = Path(data_dir)
+        current = (now or datetime.now(UTC)).astimezone(UTC)
+        snapshot_syncer = snapshot_syncer or sync_robinhood_broker_snapshot
+        research_job_creator = research_job_creator or create_refresh_job
+        research_runner = research_runner or run_refresh_job
+        lookup_builder = lookup_builder or lookup_symbol
+        lookup_saver = lookup_saver or save_lookup
+        exit_analyzer = exit_analyzer or analyze_robinhood_holdings_with_optedge
+
+        listing = execution_service.account_choices()
+        accounts = [
+            dict(row)
+            for row in listing.get("accounts", [])
+            if isinstance(row, Mapping) and row.get("active") is True
+        ]
+        initial: list[dict[str, Any]] = []
+        account_errors: list[dict[str, str]] = []
+        for account in accounts:
+            try:
+                initial.append(
+                    execution_service.portfolio_analysis(
+                        account_key=str(account.get("account_key") or ""),
+                        now=current,
+                        allow_read_only_account=True,
+                    )
+                )
+            except Exception as exc:
+                account_errors.append(
+                    {
+                        "account_key": str(account.get("account_key") or ""),
+                        "error_code": str(getattr(exc, "code", "account_read_failed")),
+                    }
+                )
+
+        symbols = sorted(
+            {
+                str(holding.get("symbol") or "").strip().upper()
+                for analysis in initial
+                for holding in analysis.get("holdings", [])
+                if isinstance(holding, Mapping) and str(holding.get("symbol") or "").strip()
+            }
+        )[:MAX_ROBINHOOD_POSITION_RESEARCH_SYMBOLS]
+        run_stamp = current.strftime("%Y%m%d_%H%M%S_%f")
+        research_dir = data_dir / ROBINHOOD_POSITION_RESEARCH_DIRNAME / run_stamp
+        research_dir.mkdir(parents=True, exist_ok=True)
+        research_job: dict[str, Any] = {}
+        research_error: str | None = None
+        if symbols:
+            bankroll = max(
+                500.0,
+                sum(_float_value(row.get("total_value"), default=0.0) for row in initial),
+            )
+            scan_args = ["--universe", *symbols, "--bankroll", str(round(bankroll, 2))]
+            research_job = research_job_creator(
+                research_dir,
+                launch=False,
+                extra_scan_args=scan_args,
+                scan_mode="full",
+            )
+            if research_job.get("ok") is not True:
+                research_error = "position_research_job_not_created"
+            else:
+                exit_code = research_runner(
+                    str(research_job.get("job_id") or ""),
+                    research_dir,
+                    scan_args,
+                )
+                research_job = (
+                    read_job(str(research_job.get("job_id") or ""), research_dir) or research_job
+                )
+                if int(exit_code or 0) != 0:
+                    research_error = "position_research_scan_failed"
+
+        snapshot_result: dict[str, Any] = {}
+        snapshot_error: str | None = None
+        try:
+            snapshot_result = snapshot_syncer(manager, data_dir=data_dir)
+        except Exception as exc:
+            snapshot_error = str(getattr(exc, "code", "snapshot_sync_failed"))
+        final_now = current if now is not None else datetime.now(UTC)
+
+        for filename in (
+            "robinhood_broker_snapshot.json",
+            "open_positions.json",
+            "closed_positions.json",
+            "open_share_positions.json",
+            "open_futures_positions.json",
+        ):
+            source = data_dir / filename
+            if source.exists() and source.is_file():
+                shutil.copy2(source, research_dir / filename)
+
+        final_accounts: list[dict[str, Any]] = []
+        flat_holdings: list[dict[str, Any]] = []
+        lookup_summaries: dict[str, dict[str, Any]] = {}
+        lookup_errors: dict[str, str] = {}
+        for symbol in symbols:
+            try:
+                lookup_report = lookup_builder(
+                    symbol,
+                    research_dir,
+                    include_sec=True,
+                    queue_broker_request=False,
+                    **rich_lookup_kwargs(),
+                )
+                saved = lookup_saver(lookup_report, data_dir)
+                report_url = f"/lookup-report?file={quote(Path(saved['html']).name)}"
+                lookup_summaries[symbol] = _position_lookup_summary(lookup_report, report_url)
+            except Exception as exc:
+                lookup_errors[symbol] = str(exc)[:240]
+
+        for account in accounts:
+            account_key = str(account.get("account_key") or "")
+            try:
+                live = execution_service.portfolio_analysis(
+                    account_key=account_key,
+                    now=final_now,
+                    allow_read_only_account=True,
+                )
+                analyzed = exit_analyzer(live, data_dir=research_dir, now=final_now)
+                portfolio = (
+                    dict(analyzed.get("portfolio_analysis"))
+                    if isinstance(analyzed.get("portfolio_analysis"), Mapping)
+                    else dict(live)
+                )
+                enriched_holdings: list[dict[str, Any]] = []
+                for raw_holding in portfolio.get("holdings", []):
+                    if not isinstance(raw_holding, Mapping):
+                        continue
+                    holding = dict(raw_holding)
+                    symbol = str(holding.get("symbol") or "").strip().upper()
+                    symbol_layers = (
+                        _position_symbol_research(
+                            symbol,
+                            research_dir,
+                            holding=holding,
+                        )
+                        if symbol
+                        else {}
+                    )
+                    holding["research"] = {
+                        "lookup": lookup_summaries.get(symbol, {}),
+                        "optedge_layers": symbol_layers,
+                        "exact_contract_theoretical": _exact_held_contract_theoretical(
+                            holding,
+                            symbol_layers,
+                            now=final_now,
+                        ),
+                    }
+                    holding["analysis_only"] = True
+                    holding["broker_actions_authorized"] = 0
+                    holding["action"] = "hold"
+                    holding["auto_exit_eligible"] = False
+                    enriched_holdings.append(holding)
+                    flat_holdings.append(
+                        {
+                            "account": portfolio.get("account") or account,
+                            **holding,
+                        }
+                    )
+                portfolio["holdings"] = enriched_holdings
+                portfolio["automatic_exit_candidate_count"] = 0
+                portfolio["broker_actions_authorized"] = 0
+                final_accounts.append(
+                    {
+                        "account": portfolio.get("account") or account,
+                        "portfolio_analysis": portfolio,
+                        "exit_reviews": analyzed.get("reviews") or [],
+                    }
+                )
+            except Exception as exc:
+                account_errors.append(
+                    {
+                        "account_key": account_key,
+                        "error_code": str(getattr(exc, "code", "account_analysis_failed")),
+                    }
+                )
+
+        news_covered = {
+            str(row.get("symbol") or "")
+            for row in flat_holdings
+            if (((row.get("research") or {}).get("optedge_layers") or {}).get("layers") or {})
+            .get("news", {})
+            .get("available")
+            is True
+        }
+        exact_contract_matches = sum(
+            1
+            for row in flat_holdings
+            if (((row.get("research") or {}).get("optedge_layers") or {}).get("layers") or {})
+            .get("ranked_options", {})
+            .get("match_quality")
+            == "exact_contract"
+        )
+        exact_contract_theoretical = sum(
+            1
+            for row in flat_holdings
+            if (
+                ((row.get("research") or {}).get("exact_contract_theoretical") or {}).get(
+                    "available"
+                )
+            )
+            is True
+        )
+        errors = [
+            *([research_error] if research_error else []),
+            *([snapshot_error] if snapshot_error else []),
+            *[f"{symbol}: {error}" for symbol, error in lookup_errors.items()],
+            *[f"{row['account_key']}: {row['error_code']}" for row in account_errors],
+        ]
+        report = {
+            "schema": ROBINHOOD_ALL_ACCOUNT_ANALYSIS_SCHEMA,
+            "ok": bool(final_accounts) and research_error is None,
+            "status": "complete" if not errors else "partial",
+            "generated_at": final_now.isoformat(),
+            "summary": {
+                "active_account_count": len(accounts),
+                "analyzed_account_count": len(final_accounts),
+                "agentic_account_count": sum(
+                    row.get("eligible_for_live_options") is True for row in accounts
+                ),
+                "standard_read_only_account_count": sum(
+                    row.get("eligible_for_live_options") is not True for row in accounts
+                ),
+                "open_holding_count": len(flat_holdings),
+                "researched_symbol_count": len(symbols),
+                "news_covered_symbol_count": len(news_covered),
+                "exact_contract_model_match_count": exact_contract_matches,
+                "exact_contract_theoretical_count": exact_contract_theoretical,
+                "error_count": len(errors),
+            },
+            "symbols": symbols,
+            "accounts": final_accounts,
+            "holdings": flat_holdings,
+            "lookup_reports": lookup_summaries,
+            "research": {
+                "mode": "full_normal_optedge",
+                "isolated_from_main_dashboard": True,
+                "run_directory": str(research_dir.relative_to(data_dir)),
+                "job": research_job,
+                "error_code": research_error,
+                "checked_layers": list(_ROBINHOOD_POSITION_LAYER_FIELDS),
+            },
+            "snapshot": {
+                "result": snapshot_result,
+                "error_code": snapshot_error,
+            },
+            "errors": errors,
+            "safety": {
+                "read_only_analysis": True,
+                "broker_actions_authorized": 0,
+                "does_not_preview_orders": True,
+                "does_not_place_orders": True,
+                "automatic_retry_enabled": False,
+                "codex_used": False,
+            },
+        }
+        normalized = json.loads(json.dumps(report, default=str))
+        _atomic_json_object_write(data_dir / ROBINHOOD_ALL_ACCOUNT_ANALYSIS_FILE, normalized)
+        return normalized
+    finally:
+        _ROBINHOOD_POSITION_ANALYSIS_LOCK.release()
+
+
 def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
     """Build the focused, read-only first screen from one local refresh pass."""
     data_dir = Path(data_dir)
@@ -15975,6 +16681,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         or full_chain_scan.get("schema") != FULL_CHAIN_EDGE_SCAN_SCHEMA
     ):
         full_chain_scan = {}
+    all_account_analysis = load_robinhood_all_account_analysis(data_dir)
     best_setups = build_best_setups(data_dir, per_asset=3, limit=12)
     scan_handoff = build_dashboard_handoff(data_dir)
     comparison_source = scan_handoff if scan_handoff.get("count") else best_setups
@@ -16001,6 +16708,7 @@ def build_trade_desk(data_dir: Path = DATA_DIR) -> dict[str, Any]:
         "robinhood": broker,
         "robinhood_finalist_check": robinhood_finalist_check,
         "robinhood_full_chain_edge_scan": full_chain_scan,
+        "robinhood_all_account_position_analysis": all_account_analysis,
         "scan_handoff": scan_handoff_payload,
         "candidate_comparison": comparison,
         "notes": [
@@ -21043,6 +21751,7 @@ tr.clickable-row:hover { background:#18201d; }
           <a class="btn" id="rh-authorize" href="/auth/robinhood/authorize" target="_blank" rel="noopener noreferrer" hidden>Open Robinhood approval</a>
           <button class="btn" type="button" id="rh-connection-refresh">Refresh status</button>
           <button class="btn" type="button" id="rh-sync-snapshot" disabled>Sync broker snapshot once</button>
+          <button class="btn primary" type="button" id="rh-analyze-all-accounts" disabled>Analyze every account position</button>
           <button class="btn primary" type="button" id="rh-scan-tickers" disabled>Full-chain EV scan: 10 tickers</button>
           <button class="btn" type="button" id="rh-check-finalist" disabled>Verify queued contracts</button>
           <button class="btn" type="button" id="rh-capture-evidence">Capture checked evidence</button>
@@ -21054,6 +21763,11 @@ tr.clickable-row:hover { background:#18201d; }
         </div>
         <div class="status" id="rh-sync-status" role="status" aria-live="polite"></div>
         <div class="privacy-note" style="margin-top:10px">The full-chain scan starts with ten normal Optedge ticker theses, enumerates Robinhood&apos;s returned 90-900 DTE contracts, rejects weak liquidity/delta/budget rows, runs every survivor through BS, CRR, Bjerksund-Stensland, spread-cost, confidence, lower-bound, and theoretical profit-probability checks, then rechecks the best three per ticker. Verify queued contracts is the stricter execution-attested lane and exposes Choose &amp; Preview Buy only after every normal gate passes. Automatic mode is separate, session-armed, and never uses Codex or retries a broker order.</div>
+        <div class="brief-list" style="margin-top:12px">
+          <h4>All-account position intelligence</h4>
+          <div class="muted">One click reads every active Robinhood account, runs each open-position ticker through an isolated full Optedge scan, then joins live holdings and option quotes to news, earnings, catalysts, SEC context, trend, factors, theoretical pricing, and normal Optedge exit rules. Standard accounts remain strictly read-only.</div>
+          <div id="rh-all-account-analysis" style="margin-top:10px" aria-live="polite"><div class="empty">Run an all-account analysis to review every live holding with fresh Optedge research.</div></div>
+        </div>
         <div class="brief-list" style="margin-top:12px">
           <h4>Trading control mode</h4>
           <div class="muted">Every cycle runs the normal Optedge research pipeline, then re-reads the selected Agentic account. One existing option is analyzed before any new entry. Automatic selling requires an exact lifecycle match and Optedge hard stop, hard target, or high-pressure close decision plus a fresh executable Robinhood quote.</div>
@@ -22392,6 +23106,93 @@ async function runRobinhoodAutomationOnce() {
   $('rh-automation-status').textContent = `${labelText(data.status || 'complete')}: ${data.detail || labelText(data.action || 'hold')}`;
   await loadRobinhoodAutomationStatus();
 }
+function renderRobinhoodAllAccountAnalysis(data) {
+  const target = $('rh-all-account-analysis');
+  if (!target) return;
+  if (!data || !data.schema) {
+    target.innerHTML = '<div class="empty">Run an all-account analysis to review every live holding with fresh Optedge research.</div>';
+    return;
+  }
+  const summary = data.summary || {};
+  const holdings = Array.isArray(data.holdings) ? data.holdings : [];
+  const safety = data.safety || {};
+  const cards = holdings.map(holding => {
+    const account = holding.account || {};
+    const research = holding.research || {};
+    const lookup = research.lookup || {};
+    const layers = ((research.optedge_layers || {}).layers) || {};
+    const exactModel = research.exact_contract_theoretical || {};
+    const news = (layers.news || {}).values || {};
+    const earnings = (layers.earnings || {}).values || {};
+    const contract = (layers.ranked_options || {}).values || {};
+    const contractModels = exactModel.models || contract;
+    const price = lookup.price_snapshot || {};
+    const verdict = lookup.swing_verdict || {};
+    const researchAction = lookup.research_action || {};
+    const positives = (lookup.positive_factors || []).slice(0, 3);
+    const negatives = (lookup.negative_factors || []).slice(0, 3);
+    const blockers = (holding.blockers || []).slice(0, 5);
+    const contractLabel = holding.asset === 'option'
+      ? `${holding.symbol || '-'} ${String(holding.option_type || contract.side || '').toUpperCase().slice(0,1)} ${holding.strike ?? contract.strike ?? '-'} ${holding.expiry || contract.expiry || '-'}`
+      : `${holding.symbol || '-'} shares`;
+    const lookupLink = lookup.report_url
+      ? `<a class="btn" href="${escAttr(lookup.report_url)}" target="_blank" rel="noopener noreferrer">Open full research</a>`
+      : '';
+    const factorList = items => items.length
+      ? `<ul class="plan-list">${items.map(item => `<li>${cell(item.factor || item.column || 'factor')}: ${cell(item.value)}</li>`).join('')}</ul>`
+      : '<div class="muted">No ranked factor row.</div>';
+    return `<article class="candidate-card">
+      <header><div><span class="desk-kicker">${cell(account.label || account.mask || 'Robinhood account')}</span><h3>${cell(contractLabel)}</h3></div><span class="pill ${account.eligible_for_live_options === true ? 'good' : 'warn'}">${account.eligible_for_live_options === true ? 'Agentic eligible' : 'Standard · read only'}</span></header>
+      <div class="brief-grid" style="margin-top:10px">
+        <div><span>Quantity</span><strong>${cell(holding.quantity)}</strong></div>
+        <div><span>Robinhood bid / ask</span><strong>${compactMoney(holding.bid, 2)} / ${compactMoney(holding.ask, 2)}</strong></div>
+        <div><span>Mark</span><strong>${compactMoney(holding.mark, 2)}</strong></div>
+        <div><span>Unrealized return</span><strong>${pct(holding.unrealized_return_fraction)}</strong></div>
+        <div><span>Optedge management read</span><strong>${cell(labelText(holding.optedge_exit_action || 'hold'))}</strong></div>
+        <div><span>Swing verdict</span><strong>${cell(verdict.label || verdict.decision || 'No ranked verdict')}</strong></div>
+        <div><span>Price trend</span><strong>${cell(price.trend_label || 'Unavailable')}</strong></div>
+        <div><span>Research layers</span><strong>${cell((research.optedge_layers || {}).available_layer_count || 0)} / ${cell((research.optedge_layers || {}).checked_layer_count || 0)}</strong></div>
+      </div>
+      <div class="two-col" style="margin-top:10px">
+        <div class="brief-list"><h4>News and events</h4><div>${cell(news.top_headline || contract.top_headline || 'No current headline returned')}</div><div class="muted">24h sentiment ${cell(news.news_sent_24h ?? contract.news_sent_24h)} · delta ${cell(news.news_delta ?? contract.news_delta)} · ${cell(news.news_provider_count || 0)} provider(s)</div><div class="muted">Earnings ${cell(earnings.next_earnings_date || 'unknown')} · ${cell(earnings.days_to_earnings ?? '-')} days · catalyst ${cell(contract.next_catalyst_date || 'unknown')}</div></div>
+        <div class="brief-list"><h4>Exact held-contract model</h4><div>${cell(labelText(exactModel.status || (layers.ranked_options || {}).match_quality || 'missing'))}</div><div class="muted">BS ${compactMoney(contractModels.black_scholes ?? contractModels.theo_bs, 2)} · CRR ${compactMoney(contractModels.crr ?? contractModels.theo_crr, 2)} · BJS ${compactMoney(contractModels.bjerksund_stensland ?? contractModels.theo_bjs, 2)}</div><div class="muted">Theoretical EV ${pct(exactModel.after_half_spread_ev_fraction)} · win model ${pct(contract.prob_win)} · live spread ${pct(holding.spread_fraction)}</div></div>
+      </div>
+      <div class="two-col" style="margin-top:10px"><div class="brief-list"><h4>Positive factors</h4>${factorList(positives)}</div><div class="brief-list"><h4>Negative factors</h4>${factorList(negatives)}</div></div>
+      <div class="brief-list" style="margin-top:10px"><h4>Decision and blockers</h4><div>${cell(researchAction.label || verdict.playbook || 'Manual review')}</div>${blockers.length ? `<ul class="plan-list">${blockers.map(item => `<li>${cell(item)}</li>`).join('')}</ul>` : '<div class="muted">No research blocker was returned.</div>'}</div>
+      <div class="planner-actions">${lookupLink}</div>
+    </article>`;
+  }).join('');
+  const errors = (data.errors || []).slice(0, 6);
+  target.innerHTML = `<div class="brief-grid">
+      <div><span>Accounts analyzed</span><strong>${cell(summary.analyzed_account_count || 0)} / ${cell(summary.active_account_count || 0)}</strong></div>
+      <div><span>Standard read-only</span><strong>${cell(summary.standard_read_only_account_count || 0)}</strong></div>
+      <div><span>Open holdings</span><strong>${cell(summary.open_holding_count || 0)}</strong></div>
+      <div><span>Symbols refreshed</span><strong>${cell(summary.researched_symbol_count || 0)}</strong></div>
+      <div><span>News coverage</span><strong>${cell(summary.news_covered_symbol_count || 0)} symbol(s)</strong></div>
+      <div><span>Exact held-contract models</span><strong>${cell(summary.exact_contract_theoretical_count || 0)}</strong></div>
+    </div>
+    <div class="privacy-note" style="margin-top:10px">${cell(labelText(data.status || 'complete'))} at ${cell(data.generated_at || '')}. Full normal Optedge research ran separately from the main dashboard. Broker actions authorized: ${cell(safety.broker_actions_authorized ?? 0)}; no preview, placement, retry, or Codex task was used.</div>
+    ${errors.length ? `<div class="plan-callout warn" style="margin-top:10px"><h3>Coverage gaps</h3><p>${errors.map(cell).join(' · ')}</p></div>` : ''}
+    <div class="candidate-grid" style="margin-top:10px">${cards || '<div class="empty">No nonzero live holding was returned.</div>'}</div>`;
+}
+async function runRobinhoodAllAccountAnalysis() {
+  const button = $('rh-analyze-all-accounts');
+  if (button) button.disabled = true;
+  if ($('rh-sync-status')) $('rh-sync-status').textContent = 'Reading every active Robinhood account, running a full isolated Optedge scan for each open-position symbol, and joining news, events, factors, pricing, and exit rules...';
+  try {
+    const res = await fetch('/api/robinhood-analyze-all-accounts', {method:'POST', body:'{}'});
+    const data = await res.json();
+    if (!res.ok || data.error_code) {
+      if ($('rh-sync-status')) $('rh-sync-status').textContent = `All-account analysis stopped safely: ${labelText(data.error_code || 'analysis failed')}. Nothing was previewed or placed.`;
+      return;
+    }
+    renderRobinhoodAllAccountAnalysis(data);
+    const summary = data.summary || {};
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `Analyzed ${Number(summary.open_holding_count || 0)} live holding(s) across ${Number(summary.analyzed_account_count || 0)} account(s), refreshed ${Number(summary.researched_symbol_count || 0)} symbol(s), and attached news to ${Number(summary.news_covered_symbol_count || 0)} symbol(s). Nothing was previewed or placed.`;
+  } finally {
+    await loadRobinhoodConnection().catch(() => null);
+  }
+}
 function renderRobinhoodConnection(data) {
   if (!$('rh-connection')) return;
   $('rh-connection').outerHTML = `<div id="rh-connection" aria-live="polite">${robinhoodConnectionHtml(data || {})}</div>`;
@@ -22400,6 +23201,7 @@ function renderRobinhoodConnection(data) {
   const state = String((data && data.connection_state) || '').toLowerCase();
   if ($('rh-connect')) $('rh-connect').disabled = ['connecting', 'authorization_required', 'connected', 'connected_limited'].includes(state);
   if ($('rh-sync-snapshot')) $('rh-sync-snapshot').disabled = !['connected', 'connected_limited'].includes(state);
+  if ($('rh-analyze-all-accounts')) $('rh-analyze-all-accounts').disabled = !['connected', 'connected_limited'].includes(state);
   if ($('rh-sync-history')) {
     const reads = (((data || {}).client || {}).tool_catalog || {}).read_tools || [];
     const historyReadsReady = ['get_option_chains', 'get_option_instruments', 'get_option_historicals'].every(name => reads.includes(name));
@@ -22601,6 +23403,7 @@ async function loadTradeDesk(force=false) {
   const mission = data.evidence_mission || {};
   const finalist = data.robinhood_finalist_check || {};
   const fullChainScan = data.robinhood_full_chain_edge_scan || {};
+  const allAccountAnalysis = data.robinhood_all_account_position_analysis || {};
   const handoff = data.scan_handoff || {};
   const comparison = data.candidate_comparison || {};
   latestTradeDeskBroker = broker;
@@ -22649,6 +23452,7 @@ async function loadTradeDesk(force=false) {
   $('trade-desk-robinhood').innerHTML = tradeDeskRobinhood(broker);
   renderRobinhoodFinalist(finalist);
   if (Object.keys(fullChainScan).length) renderRobinhoodTickerEdgeScan(fullChainScan);
+  renderRobinhoodAllAccountAnalysis(allAccountAnalysis);
   $('trade-desk-status-text').textContent = `Snapshot ${cell(data.snapshot_id || 'local')} | strategy ${cell(data.strategy_version || 'current')} | ${cell(data.generated_at || '')}`;
   document.querySelectorAll('.desk-focus-action').forEach(btn => btn.addEventListener('click', () => routeQueueAction(btn.dataset.action || '', btn.dataset.query || '', btn.dataset.symbol || '')));
   document.querySelectorAll('.desk-plan-action').forEach(btn => btn.addEventListener('click', () => loadCandidateIntoPlanner(latestTradeDeskCandidate)));
@@ -26632,6 +27436,7 @@ $('rh-write').addEventListener('click', () => loadRobinhoodQueue(true));
 $('rh-connect').addEventListener('click', startRobinhoodConnection);
 $('rh-connection-refresh').addEventListener('click', loadRobinhoodConnection);
 $('rh-sync-snapshot').addEventListener('click', syncRobinhoodSnapshot);
+$('rh-analyze-all-accounts').addEventListener('click', runRobinhoodAllAccountAnalysis);
 $('rh-check-finalist').addEventListener('click', runRobinhoodFinalistCheck);
 $('rh-scan-tickers').addEventListener('click', runRobinhoodTickerEdgeScan);
 $('rh-capture-evidence').addEventListener('click', captureFinalistEvidence);
@@ -27381,6 +28186,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
             "/api/robinhood-connect",
             "/api/robinhood-disconnect",
             "/api/robinhood-sync-snapshot",
+            "/api/robinhood-analyze-all-accounts",
             "/api/robinhood-sync-option-history",
             "/api/robinhood-check-finalist",
             "/api/robinhood-check-top-options",
@@ -27414,6 +28220,56 @@ class CockpitHandler(BaseHTTPRequestHandler):
             result = manager.start_connect()
             status = 503 if result.get("connection_state") == "error" else 200
             self._send_json(result, status=status)
+            return
+        if parsed.path == "/api/robinhood-analyze-all-accounts":
+            manager = self.robinhood_connection_manager
+            service = self.robinhood_option_execution_service
+            if manager is None or service is None:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "client_unavailable",
+                        "does_not_preview_orders": True,
+                        "does_not_place_orders": True,
+                    },
+                    status=503,
+                )
+                return
+            try:
+                result = analyze_all_robinhood_accounts_with_optedge(
+                    manager,
+                    service,
+                    data_dir=self.data_dir,
+                )
+            except (
+                RobinhoodConnectionError,
+                RobinhoodSnapshotSyncError,
+                RobinhoodOptionExecutionError,
+            ) as exc:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "does_not_preview_orders": True,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=409,
+                )
+                return
+            except Exception:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error_code": "all_account_position_analysis_failed",
+                        "does_not_preview_orders": True,
+                        "does_not_place_orders": True,
+                        "automatic_retry_enabled": False,
+                    },
+                    status=500,
+                )
+                return
+            self._send_json(result)
             return
         if parsed.path == "/api/robinhood-sync-snapshot":
             manager = self.robinhood_connection_manager
@@ -27591,9 +28447,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/robinhood-scan-top-tickers":
             manager = self.robinhood_connection_manager
             if manager is None:
-                self._send_json(
-                    {"ok": False, "error_code": "client_unavailable"}, status=503
-                )
+                self._send_json({"ok": False, "error_code": "client_unavailable"}, status=503)
                 return
             try:
                 limit = _int_param(str(body.get("limit") or "10"), 10, 1, 10)

@@ -14,7 +14,12 @@ NOW = datetime(2026, 7, 17, 18, 0, tzinfo=UTC)
 ACCOUNT_KEY = "acct_0123456789abcdef"
 
 
-def _write_inputs(tmp_path: Path, *, include_lifecycle: bool = True) -> dict:
+def _write_inputs(
+    tmp_path: Path,
+    *,
+    include_lifecycle: bool = True,
+    account_execution_eligible: bool = True,
+) -> dict:
     snapshot = {
         "schema": "optedge_robinhood_broker_snapshot_v1",
         "generated_at": NOW.isoformat(),
@@ -30,9 +35,7 @@ def _write_inputs(tmp_path: Path, *, include_lifecycle: bool = True) -> dict:
             }
         ],
     }
-    (tmp_path / "robinhood_broker_snapshot.json").write_text(
-        json.dumps(snapshot), encoding="utf-8"
-    )
+    (tmp_path / "robinhood_broker_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
     lifecycle = [
         {
             "ticker": "HYG",
@@ -70,7 +73,10 @@ def _write_inputs(tmp_path: Path, *, include_lifecycle: bool = True) -> dict:
     ranked_path.touch()
     os.utime(ranked_path, (timestamp, timestamp))
     return {
-        "account": {"account_key": ACCOUNT_KEY},
+        "account": {
+            "account_key": ACCOUNT_KEY,
+            "eligible_for_live_options": account_execution_eligible,
+        },
         "holdings": [
             {
                 "asset": "option",
@@ -90,14 +96,10 @@ def _write_inputs(tmp_path: Path, *, include_lifecycle: bool = True) -> dict:
 def test_normal_optedge_hard_target_authorizes_exact_broker_exit(tmp_path: Path):
     analysis = _write_inputs(tmp_path)
 
-    result = analyze_robinhood_holdings_with_optedge(
-        analysis, data_dir=tmp_path, now=NOW
-    )
+    result = analyze_robinhood_holdings_with_optedge(analysis, data_dir=tmp_path, now=NOW)
 
     holding = result["portfolio_analysis"]["holdings"][0]
-    assert result["portfolio_analysis"]["exit_decision_source"].endswith(
-        "compute_exit_pressure"
-    )
+    assert result["portfolio_analysis"]["exit_decision_source"].endswith("compute_exit_pressure")
     assert holding["optedge_exit_action"] == "hard_target"
     assert holding["auto_exit_eligible"] is True
     assert holding["action"] == "hard_target"
@@ -106,11 +108,22 @@ def test_normal_optedge_hard_target_authorizes_exact_broker_exit(tmp_path: Path)
 def test_unmanaged_broker_contract_is_analyzed_but_held(tmp_path: Path):
     analysis = _write_inputs(tmp_path, include_lifecycle=False)
 
-    result = analyze_robinhood_holdings_with_optedge(
-        analysis, data_dir=tmp_path, now=NOW
-    )
+    result = analyze_robinhood_holdings_with_optedge(analysis, data_dir=tmp_path, now=NOW)
 
     holding = result["portfolio_analysis"]["holdings"][0]
     assert holding["action"] == "hold"
     assert holding["auto_exit_eligible"] is False
     assert any("lifecycle" in blocker for blocker in holding["blockers"])
+
+
+def test_standard_account_never_authorizes_an_optedge_exit(tmp_path: Path):
+    analysis = _write_inputs(tmp_path, account_execution_eligible=False)
+
+    result = analyze_robinhood_holdings_with_optedge(analysis, data_dir=tmp_path, now=NOW)
+
+    holding = result["portfolio_analysis"]["holdings"][0]
+    assert holding["optedge_exit_action"] == "hard_target"
+    assert holding["action"] == "hold"
+    assert holding["auto_exit_eligible"] is False
+    assert result["portfolio_analysis"]["broker_actions_authorized"] == 0
+    assert any("read-only" in blocker for blocker in holding["blockers"])

@@ -12,6 +12,7 @@ config_runtime.py
 data/_cache/
 data/cockpit_jobs/
 data/robinhood_account_equity_ledgers/
+data/robinhood_position_analysis/
 data/weights/*.json
 data/*.parquet
 data/*.json

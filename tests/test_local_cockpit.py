@@ -21,6 +21,7 @@ from scripts.export_robinhood_agentic_queue import robinhood_mcp_option_review_p
 from scripts.local_cockpit import (  # noqa: E402
     add_watchlist_queries,
     add_watchlist_query,
+    analyze_all_robinhood_accounts_with_optedge,
     apply_position_hygiene,
     artifact_path,
     build_action_queue,
@@ -2729,11 +2730,176 @@ def test_market_refresh_scan_args_rebuild_inert_robinhood_lineage():
     assert args[:4] == ["--minimal", "--aggressive", "--bankroll", "750.0"]
     assert "--robinhood-agentic-queue" in args
     assert args[args.index("--robinhood-budget") + 1] == "750.0"
-    assert args[args.index("--robinhood-min-dte") + 1] == str(
-        cockpit_module.MIN_SWING_OPTION_DTE
-    )
+    assert args[args.index("--robinhood-min-dte") + 1] == str(cockpit_module.MIN_SWING_OPTION_DTE)
     assert args[args.index("--robinhood-max-candidates") + 1] == "10"
     assert args[args.index("--robinhood-max-orders") + 1] == "1"
+
+
+def test_all_account_position_analysis_runs_full_isolated_optedge_research(tmp_path: Path):
+    account_key = "acct_standard"
+    analysis_now = datetime(2026, 7, 21, 22, 0, tzinfo=UTC)
+    scan_calls = []
+
+    class FakeExecutionService:
+        def account_choices(self):
+            return {
+                "accounts": [
+                    {
+                        "account_key": account_key,
+                        "label": "Standard ••••1234",
+                        "active": True,
+                        "agentic_allowed": False,
+                        "options_level": 2,
+                        "eligible_for_live_options": False,
+                    },
+                    {
+                        "account_key": "acct_agentic",
+                        "label": "Agentic ••••5678",
+                        "active": True,
+                        "agentic_allowed": True,
+                        "options_level": 2,
+                        "eligible_for_live_options": True,
+                    },
+                ]
+            }
+
+        def portfolio_analysis(self, *, account_key, now, allow_read_only_account):
+            assert allow_read_only_account is True
+            account = next(
+                row
+                for row in self.account_choices()["accounts"]
+                if row["account_key"] == account_key
+            )
+            holdings = []
+            if account_key == "acct_standard":
+                holdings = [
+                    {
+                        "asset": "option",
+                        "symbol": "RKLB",
+                        "option_id": "option-rklb",
+                        "option_type": "call",
+                        "strike": 95.0,
+                        "expiry": "2027-03-19",
+                        "quantity": 2,
+                        "bid": 5.0,
+                        "ask": 5.2,
+                        "mark": 5.1,
+                        "unrealized_return_fraction": -0.2,
+                        "broker_close_ready": False,
+                        "blockers": ["standard account is read-only"],
+                    }
+                ]
+            return {
+                "account": account,
+                "total_value": 10_000,
+                "holdings": holdings,
+            }
+
+    def fake_job_creator(data_dir, *, launch, extra_scan_args, scan_mode):
+        assert launch is False
+        assert scan_mode == "full"
+        assert extra_scan_args[:2] == ["--universe", "RKLB"]
+        scan_calls.append((Path(data_dir), list(extra_scan_args)))
+        return {"ok": True, "job_id": "positions"}
+
+    def fake_runner(job_id, data_dir, scan_args):
+        assert job_id == "positions"
+        assert scan_args == scan_calls[0][1]
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "RKLB",
+                    "top_headline": "Rocket Lab wins a new launch contract",
+                    "news_sent_24h": 0.4,
+                    "news_delta": 0.2,
+                    "news_provider_count": 2,
+                }
+            ]
+        ).to_parquet(Path(data_dir) / "news_20260721_220000.parquet", index=False)
+        pd.DataFrame(
+            [
+                {
+                    "ticker": "RKLB",
+                    "side": "call",
+                    "strike": 65.0,
+                    "expiry": "2026-08-14",
+                    "spot": 73.9,
+                    "fair_vol": 0.9,
+                    "trade_score": 0.7,
+                    "theo_bs": 5.4,
+                    "theo_crr": 5.3,
+                    "theo_bjs": 5.35,
+                    "prob_win": 0.58,
+                }
+            ]
+        ).to_parquet(Path(data_dir) / "ranked_options_20260721_220000.parquet", index=False)
+        return 0
+
+    def fake_sync(manager, *, data_dir):
+        (Path(data_dir) / "robinhood_broker_snapshot.json").write_text(
+            json.dumps({"generated_at": analysis_now.isoformat(), "option_positions": []}),
+            encoding="utf-8",
+        )
+        return {"ok": True, "snapshot_ready": True}
+
+    def fake_exit(portfolio, *, data_dir, now):
+        return {"portfolio_analysis": dict(portfolio), "reviews": []}
+
+    def fake_lookup(symbol, data_dir, **kwargs):
+        assert symbol == "RKLB"
+        assert kwargs["include_sec"] is True
+        assert kwargs["queue_broker_request"] is False
+        return {
+            "generated_at": analysis_now.isoformat(),
+            "query": symbol,
+            "total_hits": 1,
+            "sources": {"news": "news_20260721_220000.parquet"},
+            "brief": {
+                "top_positive_factors": [{"factor": "news", "value": 0.4}],
+                "top_negative_factors": [],
+                "risk_warnings": [],
+                "swing_verdict": {"label": "Selective swing review"},
+            },
+        }
+
+    def fake_save(report, data_dir):
+        return {"html": Path(data_dir) / "lookup_RKLB.html"}
+
+    report = analyze_all_robinhood_accounts_with_optedge(
+        object(),
+        FakeExecutionService(),
+        data_dir=tmp_path,
+        snapshot_syncer=fake_sync,
+        research_job_creator=fake_job_creator,
+        research_runner=fake_runner,
+        lookup_builder=fake_lookup,
+        lookup_saver=fake_save,
+        exit_analyzer=fake_exit,
+        now=analysis_now,
+    )
+
+    assert report["ok"] is True
+    assert report["summary"]["analyzed_account_count"] == 2
+    assert report["summary"]["standard_read_only_account_count"] == 1
+    assert report["summary"]["open_holding_count"] == 1
+    assert report["summary"]["news_covered_symbol_count"] == 1
+    assert report["summary"]["exact_contract_model_match_count"] == 0
+    assert report["summary"]["exact_contract_theoretical_count"] == 1
+    assert report["holdings"][0]["research"]["optedge_layers"]["layers"]["news"]["values"][
+        "top_headline"
+    ].startswith("Rocket Lab")
+    assert report["holdings"][0]["analysis_only"] is True
+    assert report["holdings"][0]["auto_exit_eligible"] is False
+    assert report["holdings"][0]["research"]["exact_contract_theoretical"]["status"] == (
+        "exact_identity_repriced"
+    )
+    assert report["safety"]["broker_actions_authorized"] == 0
+    assert report["safety"]["does_not_preview_orders"] is True
+    assert report["safety"]["does_not_place_orders"] is True
+    assert (tmp_path / cockpit_module.ROBINHOOD_ALL_ACCOUNT_ANALYSIS_FILE).exists()
+    assert scan_calls[0][0].is_relative_to(
+        tmp_path / cockpit_module.ROBINHOOD_POSITION_RESEARCH_DIRNAME
+    )
 
 
 def test_trade_desk_contract_is_manual_and_versioned():
@@ -3088,6 +3254,12 @@ def test_cockpit_html_contains_lookup_controls():
     assert "Verify queued contracts" in html
     assert 'id="rh-scan-tickers"' in html
     assert "Full-chain EV scan: 10 tickers" in html
+    assert 'id="rh-analyze-all-accounts"' in html
+    assert "Analyze every account position" in html
+    assert 'id="rh-all-account-analysis"' in html
+    assert "/api/robinhood-analyze-all-accounts" in html
+    assert "runRobinhoodAllAccountAnalysis" in html
+    assert "Full normal Optedge research ran separately from the main dashboard" in html
     assert "Robinhood full-chain" in html
     assert "Raw theoretical EV" in html
     assert "Conservative EV" in html
@@ -10168,7 +10340,18 @@ def test_option_chain_batch_fills_ten_ticker_research_universe_from_ranked_snaps
     try:
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
-            symbols = ["AAPL", "MSFT", "NVDA", "HOOD", "META", "AMZN", "GOOG", "TSLA", "NFLX", "PLTR"]
+            symbols = [
+                "AAPL",
+                "MSFT",
+                "NVDA",
+                "HOOD",
+                "META",
+                "AMZN",
+                "GOOG",
+                "TSLA",
+                "NFLX",
+                "PLTR",
+            ]
             pd.DataFrame(
                 {
                     "ticker": symbols,

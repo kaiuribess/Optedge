@@ -61,7 +61,9 @@ def _identity(row: Mapping[str, Any]) -> tuple[str, str, float, str] | None:
     return symbol, side, round(strike, 4), expiry
 
 
-def _latest_ranked_options(data_dir: Path, current: datetime) -> tuple[pd.DataFrame, dict[str, Any]]:
+def _latest_ranked_options(
+    data_dir: Path, current: datetime
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     paths = sorted(Path(data_dir).glob("ranked_options_*.parquet"), reverse=True)
     if not paths:
         return pd.DataFrame(), {"available": False, "reason": "ranked_options_missing"}
@@ -91,7 +93,9 @@ def _latest_ranked_options(data_dir: Path, current: datetime) -> tuple[pd.DataFr
     }
 
 
-def _signal_for_identity(frame: pd.DataFrame, identity: tuple[str, str, float, str]) -> dict[str, Any] | None:
+def _signal_for_identity(
+    frame: pd.DataFrame, identity: tuple[str, str, float, str]
+) -> dict[str, Any] | None:
     if frame.empty:
         return None
     for _, series in frame.iterrows():
@@ -109,7 +113,9 @@ def _lifecycle_match(
     open_rows = _read_json(Path(data_dir) / "open_positions.json", [])
     if not isinstance(open_rows, list):
         open_rows = []
-    matches = [dict(row) for row in open_rows if isinstance(row, Mapping) and _identity(row) == identity]
+    matches = [
+        dict(row) for row in open_rows if isinstance(row, Mapping) and _identity(row) == identity
+    ]
     if len(matches) == 1:
         return matches[0], "open_positions.json", []
     if len(matches) > 1:
@@ -181,14 +187,15 @@ def analyze_robinhood_holdings_with_optedge(
     current = (now or datetime.now(UTC)).astimezone(UTC)
     account = portfolio_analysis.get("account")
     account_key = _text(account.get("account_key")) if isinstance(account, Mapping) else ""
+    account_execution_eligible = bool(
+        isinstance(account, Mapping) and account.get("eligible_for_live_options") is True
+    )
     snapshot_positions, snapshot_source = _snapshot_positions(
         Path(data_dir), account_key=account_key, current=current
     )
     ranked, research_source = _latest_ranked_options(Path(data_dir), current)
     holdings = [
-        dict(row)
-        for row in portfolio_analysis.get("holdings", [])
-        if isinstance(row, Mapping)
+        dict(row) for row in portfolio_analysis.get("holdings", []) if isinstance(row, Mapping)
     ]
     reviews: list[dict[str, Any]] = []
     enriched: list[dict[str, Any]] = []
@@ -206,6 +213,10 @@ def analyze_robinhood_holdings_with_optedge(
             if _text(row.get("instrument_id") or row.get("option_id")) == option_id
         ]
         blockers: list[str] = []
+        if not account_execution_eligible:
+            blockers.append(
+                "standard account is read-only in Optedge; exit analysis cannot authorize a broker action"
+            )
         if not snapshot_source.get("available"):
             blockers.append(_text(snapshot_source.get("reason")) or "broker snapshot unavailable")
         if len(exact_broker) != 1:
@@ -268,7 +279,8 @@ def analyze_robinhood_holdings_with_optedge(
         if not broker_ready:
             blockers.append("Robinhood close quote or order state is not execution-ready")
         automatic_exit_allowed = bool(
-            lifecycle
+            account_execution_eligible
+            and lifecycle
             and identity is not None
             and action in AUTOMATIC_EXIT_ACTIONS
             and broker_ready
@@ -315,6 +327,7 @@ def analyze_robinhood_holdings_with_optedge(
         row.get("auto_exit_eligible") is True for row in enriched
     )
     analysis["exit_decision_source"] = "backtest.exit_rules.compute_exit_pressure"
+    analysis["broker_actions_authorized"] = 0
     return {
         "schema": "optedge_robinhood_exit_analysis_v1",
         "generated_at": current.isoformat(),
