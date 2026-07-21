@@ -8123,16 +8123,19 @@ def test_paper_candidate_panel_builds_and_writes_filtered_exports():
 def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        source_quote_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
+        source_quote_at = now.isoformat()
+        long_expiry = (now.date() + timedelta(days=216)).isoformat()
+        short_expiry = (now.date() + timedelta(days=124)).isoformat()
         pd.DataFrame(
             [
                 {
                     "ticker": "AAPL",
-                    "contract": "AAPL 2027-01-15 C 200",
+                    "contract": f"AAPL {long_expiry} C 200",
                     "underlying_type": "equity",
                     "side": "call",
                     "strike": 200,
-                    "expiry": "2027-01-15",
+                    "expiry": long_expiry,
                     "mid": 0.75,
                     "bid": 0.735,
                     "ask": 0.765,
@@ -8152,11 +8155,11 @@ def test_robinhood_agentic_queue_panel_builds_and_writes_long_dated_candidates()
                 },
                 {
                     "ticker": "MSFT",
-                    "contract": "MSFT 2026-10-16 C 500",
+                    "contract": f"MSFT {short_expiry} C 500",
                     "underlying_type": "equity",
                     "side": "call",
                     "strike": 500,
-                    "expiry": "2026-10-16",
+                    "expiry": short_expiry,
                     "mid": 0.65,
                     "bid": 0.637,
                     "ask": 0.663,
@@ -9672,6 +9675,11 @@ def test_agentic_autopilot_paper_book_does_not_fake_zero_pnl_without_quotes():
 
 def test_option_chain_scan_fetches_and_filters_contracts():
     original = cockpit_module._fetch_option_chain
+    now = datetime.now(UTC)
+    source_quote_at = now.isoformat()
+    row_quote_at = (now - timedelta(seconds=5)).isoformat()
+    eligible_expiry = (now.date() + timedelta(days=216)).isoformat()
+    near_expiry = (now.date() + timedelta(days=30)).isoformat()
 
     def fake_fetch(ticker: str, cache_age: int = 600):
         assert ticker == "AAPL"
@@ -9680,14 +9688,14 @@ def test_option_chain_scan_fetches_and_filters_contracts():
             "source": "cboe",
             "quote_quality": "free_or_delayed",
             "data_delay": "delayed",
-            "source_quote_at": "2026-06-13T19:58:00+00:00",
+            "source_quote_at": source_quote_at,
             "source_quote_time_basis": "provider_quote_timestamp",
             "source_attempts": [
                 {"provider": "cboe", "status": "ok", "rows": 3, "expirations": 2},
             ],
-            "expirations": ["2027-01-15", "2026-06-18"],
+            "expirations": [eligible_expiry, near_expiry],
             "chains": {
-                "2027-01-15": pd.DataFrame(
+                eligible_expiry: pd.DataFrame(
                     [
                         {
                             "strike": 220.0,
@@ -9699,7 +9707,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
                             "openInterest": 1000,
                             "impliedVolatility": 0.30,
                             "delta": 0.42,
-                            "source_quote_at": "2026-06-13T19:59:00+00:00",
+                            "source_quote_at": row_quote_at,
                             "source_quote_time_basis": "provider_row.quote_timestamp",
                         },
                         {
@@ -9713,7 +9721,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
                         },
                     ]
                 ),
-                "2026-06-18": pd.DataFrame(
+                near_expiry: pd.DataFrame(
                     [
                         {
                             "strike": 180.0,
@@ -9740,7 +9748,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
                             "ticker": "AAPL",
                             "side": "call",
                             "strike": 220.0,
-                            "expiry": "2027-01-15",
+                            "expiry": eligible_expiry,
                             "entry_price": 4.0,
                             "current_mid": 5.0,
                             "latest_exit_pressure": 25,
@@ -9766,7 +9774,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["source"] == "cboe"
     assert report["quote_quality"] == "free_or_delayed"
     assert report["data_delay"] == "delayed"
-    assert report["source_quote_at"] == "2026-06-13T19:58:00+00:00"
+    assert report["source_quote_at"] == source_quote_at
     assert report["source_quote_time_basis"] == "provider_quote_timestamp"
     assert report["providers_checked"] == 1
     assert report["source_attempts"][0]["provider"] == "cboe"
@@ -9792,7 +9800,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["chain_source"] == "cboe"
     assert row["quote_quality"] == "free_or_delayed"
     assert row["data_delay"] == "delayed"
-    assert row["source_quote_at"] == "2026-06-13T19:59:00+00:00"
+    assert row["source_quote_at"] == row_quote_at
     assert row["source_quote_time_basis"] == "provider_row.quote_timestamp"
     assert row["premium_dollars"] == 500.0
     assert row["breakeven_price"] == 225.0
@@ -9806,7 +9814,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert row["risk_dollars_reference"] == 250.0
     assert row["reward_dollars_reference"] == 500.0
     assert row["reward_risk_reference"] == 2.0
-    assert row["contract_query"] == "AAPL 2027-01-15 C 220"
+    assert row["contract_query"] == f"AAPL {eligible_expiry} C 220"
     assert row["spread_pct"] < 0.10
     assert row["dte_bucket"] in {"180-364d", "365d+"}
     assert row["swing_fit_label"] == "clean_swing"
@@ -9844,14 +9852,14 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert report["open_exposure"]["asset_counts"] == {"option": 1}
     assert report["decision"]["status"] == "primary_review"
     assert report["decision"]["label"] == "Best contract"
-    assert report["decision"]["primary"]["contract_query"] == "AAPL 2027-01-15 C 220"
+    assert report["decision"]["primary"]["contract_query"] == f"AAPL {eligible_expiry} C 220"
     assert report["decision"]["primary"]["chain_factor_summary"] == row["chain_factor_summary"]
     assert report["decision"]["open_exposure"]["open_count"] == 1
     assert "Duplicate exposure check" in " ".join(report["decision"]["risk_notes"])
     assert report["decision"]["saveable_count"] == 1
     trade_plan = report["decision"]["trade_plan"]
     assert trade_plan["action"] == "review_contract"
-    assert trade_plan["contract"] == "AAPL 2027-01-15 C 220"
+    assert trade_plan["contract"] == f"AAPL {eligible_expiry} C 220"
     assert trade_plan["quantity"] == 1
     assert trade_plan["entry_price_reference"] == 5.0
     assert trade_plan["premium_dollars_reference"] == 500.0
@@ -9866,7 +9874,7 @@ def test_option_chain_scan_fetches_and_filters_contracts():
     assert trade_plan["budget_fit"] == "inside_budget"
     assert "Refresh live bid/ask" in trade_plan["checklist"][0]
     assert "Quote may be free/delayed" in " ".join(report["decision"]["risk_notes"])
-    assert report["expiry_summary"][0]["expiry"] == "2027-01-15"
+    assert report["expiry_summary"][0]["expiry"] == eligible_expiry
     assert report["expiry_summary"][0]["reviewable_count"] == 1
     assert report["expiry_summary"][0]["under_budget_count"] == 1
     assert report["expiry_summary"][0]["primary_review_count"] == 1
@@ -10427,13 +10435,16 @@ def test_option_chain_long_dated_preset_retains_broad_comparison_window():
 def test_cboe_option_activity_filters_3m_plus_public_contracts():
     old_run = cockpit_module.cboe_symbol_data_engine.run
     old_resolve = cockpit_module.resolve_symbol
+    eligible_expiry = (datetime.now(UTC).date() + timedelta(days=120)).isoformat()
+    near_expiry = (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
+    eligible_contract = f"AAPL {eligible_expiry} 200.0 Call"
     try:
         cockpit_module.resolve_symbol = lambda query: {"symbol": "AAPL", "name": "Apple Inc."}
         cockpit_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame(
             [
                 {
                     "ticker": "AAPL",
-                    "expiry": "2026-10-16",
+                    "expiry": eligible_expiry,
                     "strike": 200.0,
                     "option_side": "call",
                     "cboe_activity_volume": 1200,
@@ -10442,13 +10453,13 @@ def test_cboe_option_activity_filters_3m_plus_public_contracts():
                     "cboe_activity_bid": 4.9,
                     "cboe_activity_ask": 5.1,
                     "cboe_activity_last": 5.0,
-                    "cboe_activity_contract": "AAPL Oct 16 200.0 Call",
+                    "cboe_activity_contract": eligible_contract,
                     "cboe_activity_venues": "Cboe Options,BZX Options",
                     "cboe_activity_source": "cboe_symbol_data",
                 },
                 {
                     "ticker": "AAPL",
-                    "expiry": "2026-07-17",
+                    "expiry": near_expiry,
                     "strike": 190.0,
                     "option_side": "put",
                     "cboe_activity_volume": 2000,
@@ -10470,7 +10481,7 @@ def test_cboe_option_activity_filters_3m_plus_public_contracts():
     assert report["symbol"] == "AAPL"
     assert report["count"] == 1
     row = report["rows"][0]
-    assert row["contract"] == "AAPL Oct 16 200.0 Call"
+    assert row["contract"] == eligible_contract
     assert row["side"] == "call"
     assert row["premium_dollars"] == 500.0
     assert row["cboe_activity_spread_pct"] == 0.04
@@ -10483,13 +10494,14 @@ def test_cboe_option_activity_filters_3m_plus_public_contracts():
 def test_cboe_option_activity_marks_zero_bid_ask_as_context_only():
     old_run = cockpit_module.cboe_symbol_data_engine.run
     old_resolve = cockpit_module.resolve_symbol
+    eligible_expiry = (datetime.now(UTC).date() + timedelta(days=120)).isoformat()
     try:
         cockpit_module.resolve_symbol = lambda query: {"symbol": "AAPL", "name": "Apple Inc."}
         cockpit_module.cboe_symbol_data_engine.run = lambda symbols, min_volume=1: pd.DataFrame(
             [
                 {
                     "ticker": "AAPL",
-                    "expiry": "2026-10-16",
+                    "expiry": eligible_expiry,
                     "strike": 350.0,
                     "option_side": "call",
                     "cboe_activity_volume": 1500,

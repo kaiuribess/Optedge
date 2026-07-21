@@ -57,7 +57,10 @@ MAX_EXACT_INSTRUMENT_ROWS_WITHOUT_NEXT = 4
 MAX_MATCHING_CHAINS = 6
 MAX_OPERATION_SECONDS = 30.0
 READ_TIMEOUT_SECONDS = 12.0
-FULL_CHAIN_MAX_OPERATION_SECONDS = 120.0
+# Ten large 90-900 DTE chains can require dozens of bounded Robinhood reads.
+# Keep each broker call capped at READ_TIMEOUT_SECONDS, while giving the whole
+# explicitly requested one-shot scan enough time to finish all ten tickers.
+FULL_CHAIN_MAX_OPERATION_SECONDS = 300.0
 FULL_CHAIN_MAX_EXPIRATIONS_PER_TICKER = 32
 FULL_CHAIN_EXPIRATIONS_PER_INSTRUMENT_READ = 6
 FULL_CHAIN_MAX_PAGES_PER_INSTRUMENT_READ = 16
@@ -1746,7 +1749,8 @@ def check_full_chain_option_edges(
     if not tickers:
         raise RobinhoodFinalistCheckError("no_ticker_scan_candidates")
 
-    deadline = time.monotonic() + FULL_CHAIN_MAX_OPERATION_SECONDS
+    scan_started_monotonic = time.monotonic()
+    deadline = scan_started_monotonic + FULL_CHAIN_MAX_OPERATION_SECONDS
     chain_schema = manager.read_tool_input_schema("get_option_chains")
     instrument_schema = manager.read_tool_input_schema("get_option_instruments")
     quote_schema = manager.read_tool_input_schema("get_option_quotes")
@@ -1870,6 +1874,7 @@ def check_full_chain_option_edges(
                 schema=quote_schema,
                 deadline=deadline,
             )
+            quote_observed_at = current if now is not None else datetime.now(UTC)
             broker_read_calls += quote_calls
             quote_by_id = {
                 option_id: dict(row)
@@ -1889,7 +1894,7 @@ def check_full_chain_option_edges(
                         instrument,
                         quote_envelope,
                         symbol=symbol,
-                        current=current,
+                        current=quote_observed_at,
                     )
                     reasons = _full_chain_hard_filter_reasons(
                         record,
@@ -1954,6 +1959,7 @@ def check_full_chain_option_edges(
             schema=quote_schema,
             deadline=deadline,
         )
+        recheck_observed_at = current if now is not None else datetime.now(UTC)
         broker_read_calls += recheck_calls
         recheck_by_id = {
             option_id: dict(row)
@@ -1982,7 +1988,7 @@ def check_full_chain_option_edges(
                 instrument,
                 quote_envelope,
                 symbol=_text(row.get("symbol")).upper(),
-                current=current,
+                current=recheck_observed_at,
             )
             refreshed.update(
                 {
@@ -2048,10 +2054,15 @@ def check_full_chain_option_edges(
         symbol = summary["symbol"]
         summary["finalists"] = sum(row.get("symbol") == symbol for row in displayed)
 
+    completed_at = current if now is not None else datetime.now(UTC)
     result = {
         "schema": FULL_CHAIN_EDGE_SCAN_SCHEMA,
-        "generated_at": current.isoformat(),
-        "expires_at": (current + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)).isoformat(),
+        "scan_started_at": current.isoformat(),
+        "generated_at": completed_at.isoformat(),
+        "expires_at": (
+            completed_at + timedelta(seconds=MAX_QUOTE_AGE_SECONDS)
+        ).isoformat(),
+        "scan_duration_seconds": round(time.monotonic() - scan_started_monotonic, 3),
         "decision": decision,
         "decision_label": (
             "Conservative research finalists found; normal Optedge gates still apply."

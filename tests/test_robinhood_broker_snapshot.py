@@ -338,8 +338,12 @@ def test_normalizes_mcp_bundle_to_cockpit_snapshot():
         "equity_positions": 1,
         "equity_orders": 0,
         "missing_option_contracts": 0,
+        "open_equity_positions": 1,
+        "open_option_positions": 1,
         "option_orders": 1,
         "option_positions": 1,
+        "zero_quantity_equity_positions": 0,
+        "zero_quantity_option_positions": 0,
     }
 
     account = snapshot["accounts"][0]
@@ -366,6 +370,19 @@ def test_normalizes_mcp_bundle_to_cockpit_snapshot():
     assert equity["market_value"] == 84.0
 
 
+def test_snapshot_counts_open_positions_separately_from_zero_quantity_rows():
+    raw = _raw_bundle()
+    zero_row = dict(raw["option_positions"]["FAKE123456"]["results"][0])
+    zero_row.update({"quantity": "0", "state": "", "option_id": "opt-zero"})
+    raw["option_positions"]["FAKE123456"]["results"].append(zero_row)
+
+    snapshot = normalize_broker_snapshot(raw)
+
+    assert snapshot["counts"]["option_positions"] == 2
+    assert snapshot["counts"]["open_option_positions"] == 1
+    assert snapshot["counts"]["zero_quantity_option_positions"] == 1
+
+
 def test_v2_normalizes_current_mcp_account_snapshots_and_joins_option_instrument():
     raw = _mcp_v2_bundle()
     snapshot = normalize_broker_snapshot(raw)
@@ -377,8 +394,12 @@ def test_v2_normalizes_current_mcp_account_snapshots_and_joins_option_instrument
         "equity_positions": 0,
         "equity_orders": 0,
         "missing_option_contracts": 0,
+        "open_equity_positions": 0,
+        "open_option_positions": 1,
         "option_orders": 1,
         "option_positions": 1,
+        "zero_quantity_equity_positions": 0,
+        "zero_quantity_option_positions": 0,
     }
     account = snapshot["accounts"][0]
     assert account["account_mask"] == "...2222"

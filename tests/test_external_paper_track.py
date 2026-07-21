@@ -410,7 +410,10 @@ def test_chain_shortlist_prefers_clean_swing_and_excludes_avoid():
 def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
     with tempfile.TemporaryDirectory() as td:
         data_dir = Path(td)
-        generated_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
+        generated_at = now.isoformat()
+        long_expiry = (now.date() + timedelta(days=216)).isoformat()
+        short_expiry = (now.date() + timedelta(days=124)).isoformat()
         (data_dir / "option_chain_shortlist.json").write_text(
             json.dumps(
                 {
@@ -420,9 +423,9 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
                             "generated_at": generated_at,
                             "symbol": "MSFT",
                             "underlying_type": "equity",
-                            "contract_query": "MSFT 2027-01-15 C 500",
+                            "contract_query": f"MSFT {long_expiry} C 500",
                             "side": "call",
-                            "expiry": "2027-01-15",
+                            "expiry": long_expiry,
                             "strike": 500.0,
                             "dte": 216,
                             "mid": 1.10,
@@ -450,9 +453,9 @@ def test_robinhood_queue_uses_chain_shortlist_when_no_top_options_exist():
                             "generated_at": generated_at,
                             "symbol": "MSFT",
                             "underlying_type": "equity",
-                            "contract_query": "MSFT 2026-10-16 C 520",
+                            "contract_query": f"MSFT {short_expiry} C 520",
                             "side": "call",
-                            "expiry": "2026-10-16",
+                            "expiry": short_expiry,
                             "strike": 520.0,
                             "dte": 124,
                             "mid": 0.55,

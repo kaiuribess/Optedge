@@ -9690,8 +9690,14 @@ def normalize_robinhood_broker_snapshot_file(
         "counts": counts,
         "summary": {
             "accounts": counts.get("accounts", 0),
-            "option_positions": counts.get("option_positions", 0),
-            "equity_positions": counts.get("equity_positions", 0),
+            "option_positions": counts.get(
+                "open_option_positions", counts.get("option_positions", 0)
+            ),
+            "equity_positions": counts.get(
+                "open_equity_positions", counts.get("equity_positions", 0)
+            ),
+            "broker_option_position_rows": counts.get("option_positions", 0),
+            "broker_equity_position_rows": counts.get("equity_positions", 0),
             "option_orders": counts.get("option_orders", 0),
             "equity_orders": counts.get("equity_orders", 0),
         },
@@ -22447,7 +22453,7 @@ async function syncRobinhoodSnapshot() {
     }
     const counts = data.counts || {};
     const readiness = data.snapshot_ready === true ? 'ready for local reconciliation' : `saved with ${Number(data.normalization_blocker_count || 0)} blocker(s)`;
-    if ($('rh-sync-status')) $('rh-sync-status').textContent = `One-shot snapshot complete: ${Number(data.account_count || 0)} account(s), ${Number(counts.equity_positions || 0)} share position(s), ${Number(counts.option_positions || 0)} option position(s); ${readiness}.`;
+    if ($('rh-sync-status')) $('rh-sync-status').textContent = `One-shot snapshot complete: ${Number(data.account_count || 0)} account(s), ${Number(counts.open_equity_positions ?? counts.equity_positions ?? 0)} open share position(s), ${Number(counts.open_option_positions ?? counts.option_positions ?? 0)} open option position(s); ${readiness}.`;
     await loadTradeDesk(true);
   } finally {
     await loadRobinhoodConnection().catch(() => null);

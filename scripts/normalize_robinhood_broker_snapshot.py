@@ -1616,6 +1616,12 @@ def normalize_broker_snapshot(
     ]
     option_orders = [row for account in account_list for row in account.get("option_orders", [])]
     equity_orders = [row for account in account_list for row in account.get("equity_orders", [])]
+    open_option_position_count = sum(
+        _float(row.get("quantity"), 0.0) != 0 for row in option_positions
+    )
+    open_equity_position_count = sum(
+        _float(row.get("quantity"), 0.0) != 0 for row in equity_positions
+    )
     missing_option_contract_count = sum(
         1
         for row in option_positions
@@ -1651,7 +1657,15 @@ def normalize_broker_snapshot(
         "counts": {
             "accounts": len(account_list),
             "option_positions": len(option_positions),
+            "open_option_positions": open_option_position_count,
+            "zero_quantity_option_positions": (
+                len(option_positions) - open_option_position_count
+            ),
             "equity_positions": len(equity_positions),
+            "open_equity_positions": open_equity_position_count,
+            "zero_quantity_equity_positions": (
+                len(equity_positions) - open_equity_position_count
+            ),
             "option_orders": len(option_orders),
             "equity_orders": len(equity_orders),
             "missing_option_contracts": missing_option_contract_count,

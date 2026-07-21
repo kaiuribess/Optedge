@@ -39,6 +39,7 @@ env/
 .codex_git/
 *.egg-info/
 .pytest_cache/
+.pytest_*/
 .pytest_tmp/
 .pytest_tmp_*/
 .ruff_cache/

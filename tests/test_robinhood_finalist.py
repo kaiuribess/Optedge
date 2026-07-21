@@ -492,6 +492,10 @@ def test_full_chain_scan_prices_every_hard_filter_survivor_and_rechecks_finalist
     )
 
     assert result["schema"] == FULL_CHAIN_EDGE_SCAN_SCHEMA
+    assert result["scan_started_at"] == NOW.isoformat()
+    assert result["generated_at"] == NOW.isoformat()
+    assert result["expires_at"] == (NOW + timedelta(seconds=120)).isoformat()
+    assert result["scan_duration_seconds"] >= 0
     assert result["ticker_count"] == 1
     assert result["total_instruments"] == 3
     assert result["total_option_quotes"] == 3
