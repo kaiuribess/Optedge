@@ -2471,6 +2471,7 @@ def render(
     macro: dict[str, Any],
     asof: datetime,
     demo: bool = False,
+    offline_demo: bool = False,
     news: pd.DataFrame = None,
     earnings: pd.DataFrame = None,
     insider: pd.DataFrame = None,
@@ -2498,6 +2499,7 @@ def render(
     validation_summary: dict | None = None,
     v20_factors: dict | None = None,
     empty_engines: list[dict] | None = None,
+    output_dir: str | Path | None = None,
     **_unused,
 ) -> Path:
     """Build a self-contained HTML cockpit. Returns the path."""
@@ -2570,15 +2572,20 @@ def render(
 
     tv_text = to_tv_watchlist(calls, puts, shares)
 
-    demo_banner = (
-        (
-            '<div class="demo-banner"><strong>DEMO/HYBRID MODE</strong> - '
-            "options + sentiment data is synthetic. Insider data is LIVE if SEC EDGAR is reachable. "
-            "Run without <code>--demo</code> on a residential IP for full live mode.</div>"
+    if demo and offline_demo:
+        demo_banner = (
+            '<div class="demo-banner"><strong>OFFLINE DEMO MODE</strong> - '
+            "All displayed market inputs are synthetic, provider access is disabled, and every "
+            "candidate is blocked from broker review. Run without <code>--demo</code> for live providers.</div>"
         )
-        if demo
-        else ""
-    )
+    elif demo:
+        demo_banner = (
+            '<div class="demo-banner"><strong>DEMO FALLBACK MODE</strong> - '
+            "A live provider failed, synthetic replacements are visible, and every candidate is "
+            "blocked from broker review. Refresh providers before relying on live research.</div>"
+        )
+    else:
+        demo_banner = ""
     guard_banner = ""
     if research_guard_report and research_guard_report.get("warnings"):
         status = html.escape(str(research_guard_report.get("status", "review")).upper())
@@ -2768,7 +2775,9 @@ __JS_PLACEHOLDER__
     )
     html_doc = html_doc.replace("__V20_PANELS_PLACEHOLDER__", v20_panels)
 
-    out_path = ROOT / "data" / f"dashboard_{asof.strftime('%Y%m%d_%H%M%S')}.html"
+    destination = Path(output_dir) if output_dir is not None else ROOT / "data"
+    destination.mkdir(parents=True, exist_ok=True)
+    out_path = destination / f"dashboard_{asof.strftime('%Y%m%d_%H%M%S')}.html"
     out_path.write_text(html_doc, encoding="utf-8")
     return out_path
 

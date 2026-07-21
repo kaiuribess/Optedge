@@ -46,6 +46,45 @@ jobs:
       - name: Run tests
         run: python -m pytest
 
+  windows-first-run:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install through the public Windows setup
+        shell: cmd
+        run: |
+          set OPTEDGE_NO_PAUSE=1
+          call install.bat
+
+      - name: Install test tools
+        shell: pwsh
+        run: .\venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+      - name: Verify Windows launcher and tests
+        shell: pwsh
+        run: |
+          .\run.bat --help
+          .\venv\Scripts\python.exe -m pytest
+
+      - name: Run the exact offline first-look flow
+        shell: pwsh
+        run: |
+          $demo = Join-Path $env:RUNNER_TEMP "optedge-demo"
+          .\run.bat --demo --no-open --out-dir $demo
+          $dashboard = Get-ChildItem -LiteralPath $demo -Filter "dashboard_*.html"
+          if (-not $dashboard) { throw "Offline demo did not create a dashboard" }
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10

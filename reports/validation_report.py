@@ -910,6 +910,9 @@ def _write_equity_curve(closed: pd.DataFrame, path: Path) -> None:
         return
     equity = (1.0 + r).cumprod()
     try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(9, 4.5))
@@ -1028,6 +1031,9 @@ def _write_valid_blank_png(path: Path) -> None:
 def _write_empty_equity_curve(path: Path) -> None:
     """Create a valid placeholder chart when no closed trades exist yet."""
     try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(9, 4.5))

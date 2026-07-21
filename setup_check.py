@@ -10,6 +10,7 @@ so `run.py` can auto-fall-back to working sources.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -270,7 +271,15 @@ def maybe_setup_fred() -> str:
     return ""
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Check Optedge installation and data providers")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Check Python and packages only; make no provider requests and save no provider status",
+    )
+    args = parser.parse_args(argv)
+
     print(f"{BOLD}+---------------------------------+{RESET}")
     print(f"{BOLD}|  Optedge - setup health check   |{RESET}")
     print(f"{BOLD}+---------------------------------+{RESET}")
@@ -280,6 +289,23 @@ def main():
     if not (py_ok and pkg_ok):
         print(f"\n{RED}Critical setup issue. Fix the items above and re-run.{RESET}")
         return 1
+
+    if args.offline:
+        launcher = r".\run.bat" if os.name == "nt" else "python run.py"
+        live_check = (
+            r".\venv\Scripts\python.exe setup_check.py"
+            if os.name == "nt"
+            else "venv/bin/python setup_check.py"
+        )
+        banner("Summary")
+        ok("Core installation is ready; no network requests were made.")
+        print(f"    {DIM}First look: {launcher} --demo --no-open{RESET}")
+        print(f"    {DIM}Cockpit:    {launcher} --cockpit{RESET}")
+        print(
+            f"    {DIM}Before a live scan, set OPTEDGE_CONTACT and run "
+            f"{live_check}.{RESET}"
+        )
+        return 0
 
     yf_ok, yf_state = check_yfinance()
     reddit_ok, reddit_state = check_reddit()

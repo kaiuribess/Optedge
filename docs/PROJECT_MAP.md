@@ -38,14 +38,15 @@ that refactor has already happened.
 | `data_provider.py` | Supplies cached and normalized market history, quotes, and provider status. |
 | `demo_data.py` | Generates deterministic schema-compatible demo inputs that never represent live evidence. |
 | `diagnose_gpu.py` | Diagnoses PyTorch, NVIDIA driver, and CUDA readiness for optional FinBERT acceleration. |
-| `install.bat` | Creates and validates a local Optedge environment on Windows. |
-| `install.sh` | Creates and validates a local Optedge environment on Linux or macOS. |
+| `install.bat` | Creates a private Windows environment and validates its core packages without provider requests. |
+| `install.sh` | Creates a private Linux/macOS environment and validates its core packages without provider requests. |
 | `pricing_models.py` | Implements scalar, vectorized, and regime-aware option-pricing models. |
 | `pyproject.toml` | Declares package metadata, dependencies, extras, entry points, build rules, and test tools. |
 | `requirements.txt` | Installs this checkout in editable mode using `pyproject.toml` as the dependency source. |
-| `run.bat` | Launches the source checkout on Windows and prefers its local virtual environment. |
+| `run.bat` | Bootstraps first-time Windows setup and launches the checkout with its private virtual environment. |
 | `run.py` | Starts Optedge from source by delegating command routing to `optedge.cli`. |
 | `setup_check.py` | Checks Python and provider readiness and saves a local health summary. |
+| `start_cockpit.bat` | Provides a double-click Windows path that installs if needed and opens the local cockpit. |
 | `universe_filter.py` | Selects a liquid, relevant ticker subset before expensive research engines run. |
 | `utils.py` | Provides shared retry, option-math, statistics, parsing, time, and numeric helpers. |
 

@@ -346,7 +346,8 @@ def test_dashboard_includes_export_and_workflow_controls():
         dashboard_build.ROOT = root
         try:
             empty = dashboard_build.pd.DataFrame()
-            html = dashboard_build.render(
+            output_dir = root / "first-look"
+            dashboard_path = dashboard_build.render(
                 calls=empty,
                 puts=empty,
                 shares=empty,
@@ -356,10 +357,16 @@ def test_dashboard_includes_export_and_workflow_controls():
                 asof=__import__("datetime").datetime(2026, 6, 1),
                 value_plays=empty,
                 futures_plays=empty,
-            ).read_text(encoding="utf-8")
+                demo=True,
+                offline_demo=True,
+                output_dir=output_dir,
+            )
+            html = dashboard_path.read_text(encoding="utf-8")
         finally:
             dashboard_build.ROOT = old_root
 
+    assert dashboard_path.parent == output_dir
+    assert "OFFLINE DEMO MODE" in html
     assert 'id="download-csv"' in html
     assert 'id="download-json"' in html
     assert 'id="copy-visible"' in html

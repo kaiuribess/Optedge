@@ -694,6 +694,12 @@ def test_empty_equity_curve_writes_valid_png():
         out = Path(td) / "equity_curve.png"
         validation_report._write_equity_curve(pd.DataFrame(), out)
         _assert_valid_png(out)
+        try:
+            import matplotlib
+        except ImportError:
+            return
+
+        assert "agg" in matplotlib.get_backend().lower()
 
 
 def test_closed_equity_curve_writes_real_png_without_matplotlib():

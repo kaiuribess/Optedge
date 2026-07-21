@@ -52,30 +52,34 @@ The goal is not to manufacture a high score or imply guaranteed profit. The goal
 
 Python `3.11` through `3.13` is supported; Python `3.12` is recommended.
 
+### Windows: easiest path
+
 ```powershell
 git clone https://github.com/kaiuribess/Optedge.git
 cd Optedge
-py -3.12 -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-$env:OPTEDGE_CONTACT = Read-Host "Real operator email for SEC requests"
-python setup_check.py
+.\install.bat
 ```
 
-Start with synthetic data if you want to inspect the workflow without relying on live providers:
+You can also double-click `start_cockpit.bat`. On its first launch it runs the
+same private-environment setup automatically, then opens the cockpit. It never
+installs Optedge system-wide.
+
+Start with deterministic synthetic data. Explicit `--demo` mode blocks network
+connections and cannot write signal history, lifecycle positions, or broker actions:
 
 ```powershell
-python run.py --demo --no-open
-python run.py --cockpit
+.\run.bat --demo --no-open
+.\run.bat --cockpit
 ```
 
 For a normal local scan and the decision-first cockpit:
 
 ```powershell
-python run.py --no-open
-python run.py --validation-report
-python run.py --cockpit
+$env:OPTEDGE_CONTACT = Read-Host "Real operator email for SEC requests"
+.\venv\Scripts\python.exe setup_check.py
+.\run.bat --no-open
+.\run.bat --validation-report
+.\run.bat --cockpit
 ```
 
 The cockpit opens on `http://127.0.0.1:8765`. Generated research stays under the Git-ignored runtime paths in `data/`, `logs/`, and `telemetry/`. A new installation is expected to be paper-only until independent evidence matures.
@@ -276,8 +280,13 @@ See [docs/VALIDATION.md](docs/VALIDATION.md) for details.
 Windows:
 
 ```powershell
-install.bat
+.\install.bat
 ```
+
+The installer may be double-clicked. It creates `venv`, installs the project,
+runs an offline package check, and prints exact next commands. A cold scientific
+Python installation can take two to five minutes. `run.bat` always uses that
+private environment and safely starts the installer if setup has not run yet.
 
 Linux or macOS:
 
@@ -306,6 +315,12 @@ directory. A system-wide, non-editable install is not a supported trading-data
 layout.
 
 Python `3.11` through `3.13` is supported; Python `3.12` is recommended.
+
+The installer deliberately performs only an offline health check. Before the
+first live scan, configure the SEC contact below and run `python setup_check.py`
+from the activated environment, or `venv\Scripts\python.exe setup_check.py` on
+Windows. Provider failures are reported independently and do not affect offline
+demo mode.
 
 ### SEC operator contact
 
@@ -663,7 +678,8 @@ operator-focused overview.
 | `SECURITY.md` | Private vulnerability-reporting and sensitive-data guidance. |
 | `CODE_OF_CONDUCT.md` | Community participation and enforcement expectations. |
 | `run.py` | Minimal source-checkout launcher; delegates all routing to `optedge.cli`. |
-| `run.bat` | Windows convenience launcher for the source checkout. |
+| `run.bat` | Windows launcher that bootstraps first-time setup and always uses the private environment. |
+| `start_cockpit.bat` | Double-click Windows entry point for installing and opening the local cockpit. |
 | `optedge/cli.py` | Routes commands to scans, symbol lookup, loop mode, or the local Trade Desk. |
 | `optedge/orchestrator.py` | Coordinates the research engines, ranking, risk controls, tracking, and output generation. |
 | `config.py` | Versioned research defaults, universes, limits, feature flags, and risk settings. |
@@ -699,10 +715,10 @@ operator-focused overview.
 | `optedge/default_weights/` | Immutable shipped strategy weights used when trusted runtime weights are unavailable. |
 | `data/` | Git-ignored local research, broker, model, and lifecycle state; never commit private contents. |
 | `docs/` | Architecture, validation, data-source, risk, broker-workflow, and limitation references. |
-| `tests/` | Regression and safety tests run locally and across Python 3.11-3.13 in CI. |
+| `tests/` | Regression and safety tests run across Python 3.11-3.13, plus a Windows installer and offline-demo smoke path in CI. |
 | `examples/` | Sanitized examples that demonstrate formats without private runtime state. |
 | `pyproject.toml` | Canonical package metadata, dependencies, command entry point, and tool configuration. |
-| `install.bat` / `install.sh` | Reproducible source-first setup for Windows and Linux/macOS. |
+| `install.bat` / `install.sh` | Source-first setup with an offline dependency health check for Windows and Linux/macOS. |
 | `LICENSE` | MIT license terms for the source code. |
 
 ## Tests

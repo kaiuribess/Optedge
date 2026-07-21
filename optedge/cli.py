@@ -3,7 +3,40 @@
 
 from __future__ import annotations
 
+import socket
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+
+class OfflineDemoNetworkError(RuntimeError):
+    """Raised if an explicit demo run attempts to open a network connection."""
+
+
+@contextmanager
+def offline_demo_network() -> Iterator[None]:
+    """Fail closed on every socket path while an explicit demo run is active."""
+    original_create_connection = socket.create_connection
+    original_getaddrinfo = socket.getaddrinfo
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def blocked(*_args, **_kwargs):
+        raise OfflineDemoNetworkError(
+            "Network access is disabled in --demo mode; run without --demo for live providers."
+        )
+
+    socket.create_connection = blocked
+    socket.getaddrinfo = blocked
+    socket.socket.connect = blocked
+    socket.socket.connect_ex = blocked
+    try:
+        yield
+    finally:
+        socket.create_connection = original_create_connection
+        socket.getaddrinfo = original_getaddrinfo
+        socket.socket.connect = original_connect
+        socket.socket.connect_ex = original_connect_ex
 
 
 def _arg_value(flag: str) -> str | None:
@@ -60,9 +93,15 @@ def main() -> int:
 
     from . import orchestrator
 
-    if any(arg == "--loop" or arg.startswith("--loop=") for arg in sys.argv):
-        return orchestrator.main_loop()
-    return orchestrator.main()
+    runner = (
+        orchestrator.main_loop
+        if any(arg == "--loop" or arg.startswith("--loop=") for arg in sys.argv)
+        else orchestrator.main
+    )
+    if _has_arg("--demo"):
+        with offline_demo_network():
+            return runner()
+    return runner()
 
 
 if __name__ == "__main__":

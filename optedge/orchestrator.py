@@ -814,6 +814,7 @@ def main():
         use_demo, auto_skip = auto_detect_mode(args)
     else:
         use_demo, auto_skip = args.demo, {}
+    started_in_offline_demo = bool(use_demo)
     skip_sentiment = args.skip_sentiment or auto_skip.get("sentiment", False)
     skip_insider = args.skip_insider or auto_skip.get("insider", False)
     skip_wsb = args.skip_wsb or auto_skip.get("wsb_trending", False) or use_demo
@@ -919,7 +920,7 @@ def main():
             synthetic_value,
         )
 
-        log.info("== DEMO/HYBRID MODE ==")
+        log.info("== DEMO MODE (OFFLINE SYNTHETIC) ==")
         macro_state = synthetic_macro()
         mp = synthetic_mispricing(universe_options, run_asof)
         contracts = mp["contracts"]
@@ -930,45 +931,12 @@ def main():
         earn_df = pd.DataFrame() if args.skip_earnings else synthetic_earnings(universe_all)
         value_df = pd.DataFrame() if args.skip_value else synthetic_value(universe_all)
         futures_df = pd.DataFrame() if args.skip_futures else synthetic_futures()
-        # Congress: try LIVE first (works if Stock Watcher S3 is reachable), else synthetic
-        if not args.skip_congress:
-            try:
-                live_congress = congress.run(universe_all)
-                congress_df = (
-                    live_congress if not live_congress.empty else synthetic_congress(universe_all)
-                )
-            except Exception as e:
-                log.warning("live congress failed: %s — using synthetic", e)
-                congress_df = synthetic_congress(universe_all)
-        # Social: try LIVE first (StockTwits usually works), else synthetic
-        if not args.skip_social:
-            try:
-                live_social = social.run(universe_all)
-                social_df = live_social if not live_social.empty else synthetic_social(universe_all)
-            except Exception as e:
-                log.warning("live social failed: %s — using synthetic", e)
-                social_df = synthetic_social(universe_all)
-        # Analyst: try LIVE Finnhub first, else synthetic
-        if not args.skip_analyst:
-            try:
-                live_analyst = analyst.run(universe_all)
-                analyst_df = (
-                    live_analyst if not live_analyst.empty else synthetic_analyst(universe_all)
-                )
-            except Exception as e:
-                log.warning("live analyst failed: %s — using synthetic", e)
-                analyst_df = synthetic_analyst(universe_all)
-        # If SEC works, use real insider data even in demo mode
-        status = data_provider.status()
-        if not skip_insider and status.get("sec", {}).get("ok", False):
-            log.info("== Insider (LIVE — SEC EDGAR works from this IP) ==")
-            try:
-                ins_df = insider.run(universe_all, fast_mode=args.fast_insider)
-            except Exception as e:
-                log.warning("live insider failed: %s — using synthetic", e)
-                ins_df = synthetic_insider(universe_all)
-        else:
-            ins_df = pd.DataFrame() if skip_insider else synthetic_insider(universe_all)
+        congress_df = (
+            pd.DataFrame() if args.skip_congress else synthetic_congress(universe_all)
+        )
+        social_df = pd.DataFrame() if args.skip_social else synthetic_social(universe_all)
+        analyst_df = pd.DataFrame() if args.skip_analyst else synthetic_analyst(universe_all)
+        ins_df = pd.DataFrame() if skip_insider else synthetic_insider(universe_all)
     else:
         log.info("== LIVE DATA ==")
         if ENGINE_CONCURRENT and not args.sequential:
@@ -1081,7 +1049,7 @@ def main():
     # v20.3: optional FinBERT pass on news headlines (auto-detects GPU, falls
     # back to CPU torch, no-ops if torch/transformers not installed).
     finbert_df = pd.DataFrame()
-    if not getattr(args, "skip_finbert", False) and not news_df.empty:
+    if not use_demo and not getattr(args, "skip_finbert", False) and not news_df.empty:
         try:
             from engines import finbert as _finbert
 
@@ -1121,7 +1089,14 @@ def main():
     # an explicit research workflow and promoted through a purged OOS review;
     # a scan never fits, persists, or consumes a newly fitted artifact.
     try:
-        trust = bt_predictor.model_trust_status()
+        trust = (
+            {
+                "status": "source_controlled_offline_demo",
+                "trusted_components": [],
+            }
+            if use_demo
+            else bt_predictor.model_trust_status()
+        )
         log.info(
             "adaptive model trust: %s (components=%s; scan training disabled)",
             trust.get("status"),
@@ -1258,6 +1233,8 @@ def main():
         )
     engine_health_summary = {}
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not mutate engine-health history")
         from telemetry.engine_health import record as _record_engine_health
 
         engine_health_summary = _record_engine_health(
@@ -1310,7 +1287,7 @@ def main():
 
     # Options require their own direct broker-observed OOS champion. A share
     # predictor can never flow into option returns.
-    option_coefs = bt_predictor.load_predictor_coefs(asset="option")
+    option_coefs = {} if use_demo else bt_predictor.load_predictor_coefs(asset="option")
     has_option_predictor = any(abs(v) > 1e-6 for v in option_coefs.values())
     if has_option_predictor:
         ranked_opts = bt_predictor.add_predictions_to_options(ranked_opts, option_coefs)
@@ -1318,7 +1295,15 @@ def main():
     # v20 — Drawdown circuit breaker
     drawdown_mult = 1.0
     breaker_state = None
-    if DRAWDOWN_BREAKER_ENABLED:
+    if use_demo:
+        drawdown_mult = 0.0
+        breaker_state = {
+            "multiplier": 0.0,
+            "verdict": "Offline demo: persistent sizing disabled",
+            "max_drawdown": None,
+            "n": 0,
+        }
+    elif DRAWDOWN_BREAKER_ENABLED:
         try:
             from backtest.drawdown_breaker import compute_breaker_state
 
@@ -1353,11 +1338,30 @@ def main():
             save_guard_report as _save_guard_report,
         )
 
-        research_guard_report = _build_guard_report(
-            empty_engines=empty_engines if "empty_engines" in dir() else None,
-            engine_health=engine_health_summary if "engine_health_summary" in dir() else None,
-        )
-        _save_guard_report(research_guard_report)
+        if use_demo:
+            research_guard_report = {
+                "generated_at": run_asof.isoformat(),
+                "status": "blocked",
+                "warnings": [
+                    {
+                        "code": "offline_demo",
+                        "severity": "info",
+                        "message": (
+                            "Offline synthetic demo: signal history, lifecycle state, sizing, "
+                            "validation, and broker review are disabled."
+                        ),
+                        "blocks_trading": True,
+                    }
+                ],
+                "closed_signals": 0,
+                "validation_basis": "offline_synthetic_demo",
+            }
+        else:
+            research_guard_report = _build_guard_report(
+                empty_engines=empty_engines if "empty_engines" in dir() else None,
+                engine_health=engine_health_summary if "engine_health_summary" in dir() else None,
+            )
+            _save_guard_report(research_guard_report)
         ranked_opts, _ = _apply_research_guard(ranked_opts, guard_report=research_guard_report)
         for warning in research_guard_report.get("warnings", [])[:4]:
             log.warning("research guard: %s", warning.get("message"))
@@ -1441,7 +1445,7 @@ def main():
         cluster_buys=cluster_buys_df,
         sec_ftd=sec_ftd_df,
     )
-    share_coefs = bt_predictor.load_predictor_coefs(asset="share")
+    share_coefs = {} if use_demo else bt_predictor.load_predictor_coefs(asset="share")
     has_share_predictor = any(abs(v) > 1e-6 for v in share_coefs.values())
     if has_share_predictor:
         ranked_shares = bt_predictor.add_predictions_to_shares(ranked_shares, share_coefs)
@@ -1606,6 +1610,8 @@ def main():
         json.dump(macro_state, f, indent=2, default=str)
 
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not persist signal history")
         if not top_opts.empty:
             backtest_track.log_signals(top_opts, run_asof)
         if not top_sh.empty:
@@ -1613,12 +1619,14 @@ def main():
         if not top_fut.empty:
             backtest_track.log_signals_futures(top_fut, run_asof)
     except Exception as e:
-        log.warning("signal log failed: %s", e)
+        (log.debug if use_demo else log.warning)("signal log failed: %s", e)
 
     # v20.7 — position-level P&L tracking (distinguishes still-open from closed).
     # Review positions present at scan start before adding new recommendations;
     # this prevents a fresh entry from becoming a synthetic same-scan exit.
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not mutate option lifecycle state")
         from backtest import positions as _pos
 
         position_summary = _pos.mark_to_market(run_asof, current_signals=ranked_opts)
@@ -1634,24 +1642,30 @@ def main():
         log.debug("position tracking skipped: %s", e)
 
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not mutate share lifecycle state")
         from backtest import share_positions as _share_pos
 
         _share_pos.mark_to_market_shares(run_asof, current_signals=ranked_shares)
         if not top_sh.empty:
             _share_pos.add_new_share_signals(top_sh, run_asof)
     except Exception as e:
-        log.warning("share lifecycle skipped: %s", e)
+        (log.debug if use_demo else log.warning)("share lifecycle skipped: %s", e)
 
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not mutate futures lifecycle state")
         from backtest import futures_positions as _fut_pos
 
         _fut_pos.mark_to_market_futures(run_asof, current_signals=futures_df)
         if not top_fut.empty:
             _fut_pos.add_new_futures_signals(top_fut, run_asof)
     except Exception as e:
-        log.warning("futures lifecycle skipped: %s", e)
+        (log.debug if use_demo else log.warning)("futures lifecycle skipped: %s", e)
 
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not refit exit policy")
         from backtest.exit_learning import refit_exit_policy
 
         refit_exit_policy()
@@ -1660,6 +1674,8 @@ def main():
 
     fixed_horizon_result = None
     try:
+        if use_demo:
+            raise RuntimeError("offline demo skips live outcome settlement")
         from backtest.fixed_horizon import run_fixed_horizon_test
 
         fixed_horizon_result = run_fixed_horizon_test()
@@ -1674,10 +1690,12 @@ def main():
             fixed_summary.get("headline_horizon_sessions", 10),
         )
     except Exception as e:
-        log.warning("fixed-horizon validation skipped: %s", e)
+        (log.debug if use_demo else log.warning)("fixed-horizon validation skipped: %s", e)
 
     validation_summary = None
     try:
+        if use_demo:
+            raise RuntimeError("offline demo does not read persistent validation history")
         from reports.validation_report import write_report as _write_validation_report
 
         validation_summary = _write_validation_report(scope="current_model")
@@ -1697,6 +1715,8 @@ def main():
     forward_summary = None
     calibration_summary = None
     try:
+        if use_demo:
+            raise RuntimeError("offline demo skips current-market forward repricing")
         from backtest.forward import run_forward_test
 
         ft = run_forward_test(include_fixed_horizon=False)
@@ -1765,6 +1785,8 @@ def main():
     # Refresh the look-ahead IC diagnostic for inspection only. Predictor
     # guards reject this schema, so it cannot promote runtime weights.
     try:
+        if use_demo:
+            raise RuntimeError("offline demo skips historical provider requests")
         from backtest.historical import run_historical_backtest
 
         factor_dfs = {
@@ -1793,6 +1815,7 @@ def main():
         macro=macro_state,
         asof=run_asof,
         demo=use_demo,
+        offline_demo=started_in_offline_demo,
         news=news_df,
         earnings=earn_df,
         insider=ins_df,
@@ -1818,6 +1841,7 @@ def main():
         validation_summary=validation_summary,
         v20_factors=v20_df_map,
         empty_engines=empty_engines,
+        output_dir=out_dir,
     )
     log.info("dashboard: %s", html_path)
     log.info("tradingview watchlist: %s", tv_path)

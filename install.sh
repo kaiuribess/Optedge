@@ -51,8 +51,8 @@ printf '%b\n' "${YELLOW}Installing Optedge and dependencies...${NC}"
 "$PY" -m pip check
 printf '%b\n' "${GREEN}[OK]${NC} Dependencies installed and consistent"
 
-printf '%b\n\n' "${BOLD}Running setup health check...${NC}"
-"$PY" setup_check.py
+printf '%b\n\n' "${BOLD}Running offline setup health check...${NC}"
+"$PY" setup_check.py --offline
 
 printf '\n%b\n' "${BOLD}+--------------------------------------+${NC}"
 printf '%b\n' "${BOLD}|  Setup complete                      |${NC}"
@@ -61,4 +61,5 @@ printf '%s\n' "Activate later: source venv/bin/activate"
 printf '%s\n' "Run pipeline:   python run.py"
 printf '%s\n' "Run demo:       python run.py --demo"
 printf '%s\n' "Open Trade Desk: python scripts/local_cockpit.py"
+printf '%s\n' "Before a live scan: set OPTEDGE_CONTACT, then run venv/bin/python setup_check.py"
 printf '%s\n' "Outputs:        data/"

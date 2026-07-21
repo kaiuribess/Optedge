@@ -3,6 +3,10 @@ REM Installs Optedge and its dependencies into a local virtual environment on Wi
 REM Usage: double-click install.bat OR run from cmd: install.bat
 
 setlocal EnableDelayedExpansion
+cd /d "%~dp0"
+
+set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 
 echo.
 echo +======================================+
@@ -30,7 +34,7 @@ if "%PY_CMD%"=="" (
     echo ERROR: No compatible Python found ^(need 3.11 - 3.13^)
     echo        Install Python 3.12 from https://www.python.org/downloads/
     echo        Make sure "Add python.exe to PATH" is CHECKED during install.
-    pause
+    if not defined OPTEDGE_NO_PAUSE pause
     exit /b 1
 )
 
@@ -39,7 +43,7 @@ if !errorlevel! neq 0 (
     echo.
     echo ERROR: Optedge requires Python 3.11 through 3.13.
     echo        Install Python 3.12 or 3.13 and run this installer again.
-    pause
+    if not defined OPTEDGE_NO_PAUSE pause
     exit /b 1
 )
 
@@ -53,7 +57,7 @@ if not exist venv (
     %PY_CMD% -m venv venv
     if !errorlevel! neq 0 (
         echo ERROR: venv creation failed
-        pause
+        if not defined OPTEDGE_NO_PAUSE pause
         exit /b 1
     )
 )
@@ -63,7 +67,7 @@ if !errorlevel! neq 0 (
     echo.
     echo ERROR: The existing venv is broken or uses an unsupported Python.
     echo        Remove the venv directory and run this installer again.
-    pause
+    if not defined OPTEDGE_NO_PAUSE pause
     exit /b 1
 )
 
@@ -71,29 +75,35 @@ REM Activate venv
 call venv\Scripts\activate.bat
 
 REM Step 3: install deps
-echo Installing dependencies ^(this takes 30-60 seconds^)...
+echo Installing dependencies ^(a cold install can take 2-5 minutes^)...
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -r requirements.txt
 if !errorlevel! neq 0 (
     echo.
     echo ERROR: pip install failed. Check requirements.txt and your internet.
-    pause
+    if not defined OPTEDGE_NO_PAUSE pause
     exit /b 1
 )
 python -m pip check
 if !errorlevel! neq 0 (
     echo.
     echo ERROR: Installed dependencies are inconsistent.
-    pause
+    if not defined OPTEDGE_NO_PAUSE pause
     exit /b 1
 )
 echo [OK] Dependencies installed
 echo.
 
 REM Step 4: run setup check
-echo Running setup health check...
+echo Running offline setup health check...
 echo.
-python setup_check.py
+python setup_check.py --offline
+if !errorlevel! neq 0 (
+    echo.
+    echo ERROR: Offline setup health check failed.
+    if not defined OPTEDGE_NO_PAUSE pause
+    exit /b 1
+)
 
 REM Step 5: print next steps
 echo.
@@ -101,16 +111,19 @@ echo +======================================+
 echo ^|   Setup complete                     ^|
 echo +======================================+
 echo.
-echo Run the pipeline:           python run.py
-echo Demo mode ^(no network^):    python run.py --demo
-echo Fast insider:               python run.py --fast-insider
-echo Open the Trade Desk:        python scripts\local_cockpit.py
+echo Run the pipeline:           run.bat
+echo Demo mode ^(no network^):    run.bat --demo
+echo Fast insider:               run.bat --fast-insider
+echo Open the Trade Desk:        run.bat --cockpit
+echo Double-click cockpit:       start_cockpit.bat
 echo.
-echo The venv is now active in this window. To re-activate later:
-echo    venv\Scripts\activate.bat
+echo Before the first live scan, set OPTEDGE_CONTACT and run:
+echo    venv\Scripts\python.exe setup_check.py
+echo.
+echo run.bat automatically uses this folder's private Python environment.
 echo.
 echo Outputs land in: data\
 echo   - dashboard_*.html      ^(open in browser^)
 echo   - tradingview_watchlist_*.txt ^(import in TradingView^)
 echo.
-pause
+if not defined OPTEDGE_NO_PAUSE pause
